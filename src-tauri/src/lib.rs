@@ -28,9 +28,27 @@ pub fn run() {
         }
     }
 
-    let next_poll = Arc::new(AtomicI64::new(
-        chrono::Utc::now().timestamp() + 30 * 60,
-    ));
+    let next_poll_val = {
+        let interval: i64 = db::settings::get_setting(&conn, "poll_interval_minutes")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        if let Some(last_str) = db::settings::get_setting(&conn, "last_poll_at")
+            .ok()
+            .flatten()
+        {
+            if let Ok(last) = last_str.parse::<i64>() {
+                let candidate = last + interval * 60;
+                candidate.max(chrono::Utc::now().timestamp())
+            } else {
+                chrono::Utc::now().timestamp() + interval * 60
+            }
+        } else {
+            chrono::Utc::now().timestamp() + interval * 60
+        }
+    };
+    let next_poll = Arc::new(AtomicI64::new(next_poll_val));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
