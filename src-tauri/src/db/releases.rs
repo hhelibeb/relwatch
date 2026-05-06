@@ -21,6 +21,7 @@ pub struct ReleaseInfo {
     pub ai_importance: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn insert_release(
     conn: &Connection,
     source_id: i64,

@@ -28,6 +28,7 @@ pub fn uninit_com() {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn send_release_notification(
     app: &AppHandle,
     release_id: i64,
@@ -68,8 +69,8 @@ pub fn send_release_notification(
                     let state = app.state::<crate::types::AppState>();
                     let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
 
-                    if action.starts_with("go:") {
-                        let rid: i64 = action[3..].parse().unwrap_or(0);
+                    if let Some(rest) = action.strip_prefix("go:") {
+                        let rid: i64 = rest.parse().unwrap_or(0);
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "clicked", None);
                         crate::db::logs::write_log(&conn, "INFO", &format!("前往版本 id={}", rid));
                         drop(conn);
@@ -80,12 +81,12 @@ pub fn send_release_notification(
                                 log::info!("打开浏览器: {}", go_url);
                             }
                         }
-                    } else if action.starts_with("ignore:") {
-                        let rid: i64 = action[7..].parse().unwrap_or(0);
+                    } else if let Some(rest) = action.strip_prefix("ignore:") {
+                        let rid: i64 = rest.parse().unwrap_or(0);
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "ignored", None);
                         crate::db::logs::write_log(&conn, "INFO", &format!("忽略版本 id={}", rid));
-                    } else if action.starts_with("snooze:") {
-                        let rid: i64 = action[7..].parse().unwrap_or(0);
+                    } else if let Some(rest) = action.strip_prefix("snooze:") {
+                        let rid: i64 = rest.parse().unwrap_or(0);
                         let until = chrono::Utc::now() + chrono::Duration::minutes(60);
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "snoozed", Some(&until.to_rfc3339()));
                         crate::db::logs::write_log(&conn, "INFO", &format!("推迟版本 id={}", rid));
