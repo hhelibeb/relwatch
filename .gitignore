@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+
+# Rust build output
+src-tauri/target/
+
+# Frontend build output
+dist/
+
+# Build artifacts
+src-tauri/WebView2Loader.dll
+
+# IDE
+.vscode/
+.idea/
+.trae/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
