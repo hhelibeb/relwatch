@@ -3,7 +3,7 @@ use tauri::Manager;
 use tauri::Emitter;
 
 use crate::db;
-use crate::db::settings::{KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_LAST_POLL_AT};
+use crate::db::settings::{KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT};
 use crate::crypto;
 use crate::github;
 use crate::http;
@@ -105,10 +105,9 @@ fn do_trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
             .unwrap_or(30);
-        state
-            .next_poll_at
-            .store(now + interval * 60, Ordering::Relaxed);
-        let _ = db::settings::set_setting(&conn, KEY_LAST_POLL_AT, &now.to_string());
+        let next = now + interval * 60;
+        state.next_poll_at.store(next, Ordering::Relaxed);
+        let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
     }
 
     Ok(PollResult {
@@ -343,6 +342,12 @@ fn collect_pending_and_notify(
 
 pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc<AtomicI64>) {
     std::thread::spawn(move || {
+        // Save the initial next_poll_at so restart can restore it
+        let initial = next_poll.load(Ordering::Relaxed);
+        if let Ok(conn) = app_handle.state::<AppState>().db.lock() {
+            let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &initial.to_string());
+        }
+
         loop {
             let target = next_poll.load(Ordering::Relaxed);
             let now = chrono::Utc::now().timestamp();
@@ -367,7 +372,6 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
             let interval = {
                 let state = app_handle.state::<AppState>();
                 let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = db::settings::set_setting(&conn, KEY_LAST_POLL_AT, &now.to_string());
                 db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
                     .ok()
                     .flatten()
@@ -376,6 +380,9 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
             };
             let next = now + (interval as i64) * 60;
             next_poll.store(next, Ordering::Relaxed);
+            if let Ok(conn) = app_handle.state::<AppState>().db.lock() {
+                let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
+            }
         }
     });
 }
@@ -493,61 +500,53 @@ mod tests {
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_last_poll_at_next_poll_calculation() {
-        let conn = init_memory_db().unwrap();
+    // Simulates the startup logic in lib.rs
+    fn calc_next_poll(conn: &rusqlite::Connection) -> i64 {
         let now = chrono::Utc::now().timestamp();
-
-        // Simulate: last poll was 10 min ago, interval = 30 min
-        let last = now - 10 * 60;
-        db::settings::set_setting(&conn, KEY_LAST_POLL_AT, &last.to_string()).unwrap();
-        db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
-
-        let last_str = db::settings::get_setting(&conn, KEY_LAST_POLL_AT)
-            .unwrap()
-            .unwrap();
-        let last_val: i64 = last_str.parse().unwrap();
-        let interval: i64 = db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
-            .unwrap()
-            .unwrap()
-            .parse()
-            .unwrap();
-        let candidate = last_val + interval * 60;
-        let result = candidate.max(now);
-        // last + 30 min = now - 10 + 30 = now + 20 min → still in future
-        assert!(result > now);
-        assert_eq!(result - now, 20 * 60);
-
-        // Simulate: last poll was 40 min ago, interval = 30 min
-        let last2 = now - 40 * 60;
-        db::settings::set_setting(&conn, KEY_LAST_POLL_AT, &last2.to_string()).unwrap();
-        let last_str2 = db::settings::get_setting(&conn, KEY_LAST_POLL_AT)
-            .unwrap()
-            .unwrap();
-        let last_val2: i64 = last_str2.parse().unwrap();
-        let candidate2 = last_val2 + interval * 60;
-        let result2 = candidate2.max(now);
-        // last + 30 min = now - 40 + 30 = now - 10 → past due, clamp to now
-        assert!(candidate2 < now);
-        assert_eq!(result2, now);
+        db::settings::get_setting(conn, KEY_NEXT_POLL_AT)
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|&v| v > now)
+            .unwrap_or_else(|| {
+                let interval = db::settings::get_setting(conn, KEY_POLL_INTERVAL)
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(30);
+                now + interval * 60
+            })
     }
 
     #[test]
-    fn test_last_poll_at_first_run_default() {
+    fn test_next_poll_at_startup_restores_future() {
         let conn = init_memory_db().unwrap();
         let now = chrono::Utc::now().timestamp();
+        db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+        // Saved next_poll_at is 20 min in the future → should be used as-is
+        db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &(now + 20 * 60).to_string()).unwrap();
+        let result = calc_next_poll(&conn);
+        assert_eq!(result - now, 20 * 60);
+    }
 
-        // No last_poll_at exists → use interval from now
-        let last_str = db::settings::get_setting(&conn, KEY_LAST_POLL_AT).unwrap();
-        assert!(last_str.is_none());
+    #[test]
+    fn test_next_poll_at_startup_falls_back_when_expired() {
+        let conn = init_memory_db().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+        // Saved next_poll_at is 10 min in the past → expired, fallback to now+30m
+        db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &(now - 10 * 60).to_string()).unwrap();
+        let result = calc_next_poll(&conn);
+        assert_eq!(result, now + 30 * 60);
+    }
 
-        let interval: i64 = db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
-            .unwrap()
-            .unwrap_or_else(|| "30".to_string())
-            .parse()
-            .unwrap_or(30);
-        let result = chrono::Utc::now().timestamp() + interval * 60;
-        assert!(result > now);
-        assert_eq!(result - now, 30 * 60);
+    #[test]
+    fn test_next_poll_at_startup_falls_back_when_missing() {
+        let conn = init_memory_db().unwrap();
+        let now = chrono::Utc::now().timestamp();
+        db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "45").unwrap();
+        // No saved value → fallback to now + interval
+        let result = calc_next_poll(&conn);
+        assert_eq!(result, now + 45 * 60);
     }
 }

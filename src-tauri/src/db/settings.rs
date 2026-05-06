@@ -13,7 +13,7 @@ pub const KEY_DEEPSEEK_PROXY: &str = "deepseek_proxy_enabled";
 pub const KEY_CHECK_PRERELEASES: &str = "check_prereleases";
 pub const KEY_LANGUAGE: &str = "language";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
-pub const KEY_LAST_POLL_AT: &str = "last_poll_at";
+pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 
 // ── 默认值常量 ──────────────────────────────────────
 pub const DEFAULT_POLL_INTERVAL: &str = "30";
@@ -171,12 +171,12 @@ mod tests {
     }
 
     #[test]
-    fn test_last_poll_at_roundtrip() {
+    fn test_next_poll_at_roundtrip() {
         let conn = init_memory_db().unwrap();
-        assert!(get_setting(&conn, KEY_LAST_POLL_AT).unwrap().is_none());
-        set_setting(&conn, KEY_LAST_POLL_AT, "1234567890").unwrap();
+        assert!(get_setting(&conn, KEY_NEXT_POLL_AT).unwrap().is_none());
+        set_setting(&conn, KEY_NEXT_POLL_AT, "1234567890").unwrap();
         assert_eq!(
-            get_setting(&conn, KEY_LAST_POLL_AT).unwrap().unwrap(),
+            get_setting(&conn, KEY_NEXT_POLL_AT).unwrap().unwrap(),
             "1234567890"
         );
     }

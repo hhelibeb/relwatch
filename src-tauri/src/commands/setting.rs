@@ -8,7 +8,7 @@ use crate::types::{AppSettings, AppState};
 use crate::db::settings::{
     self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_LANGUAGE, KEY_GITHUB_TOKEN,
+    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_LANGUAGE, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY,
     DEFAULT_CHECK_PRERELEASES,
@@ -103,6 +103,7 @@ pub fn update_settings(
     if interval_changed {
         let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
         state.next_poll_at.store(next, Ordering::Relaxed);
+        let _ = settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
     }
 
     Ok(())
