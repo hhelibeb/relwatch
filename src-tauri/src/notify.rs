@@ -4,6 +4,7 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use tauri_winrt_notification::Toast;
+use serde_json::json;
 
 static COM_INIT: OnceLock<()> = OnceLock::new();
 static COM_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -74,8 +75,8 @@ pub fn send_release_notification(
                         let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "clicked", None);
                         match rel {
-                            Some(r) => crate::db::logs::write_log(&conn, "INFO", &format!("前往版本 {}/{} {} id={}", r.owner, r.repo, r.tag_name, rid)),
-                            None => crate::db::logs::write_log(&conn, "INFO", &format!("前往版本 id={}", rid)),
+                            Some(r) => crate::db::logs::write_log_key(&conn, "INFO", "release.go", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string()),
+                            None => crate::db::logs::write_log_key(&conn, "INFO", "release.go_unknown", &json!({"id": rid}).to_string()),
                         }
                         drop(conn);
                         if !go_url.is_empty() {
@@ -90,8 +91,8 @@ pub fn send_release_notification(
                         let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "ignored", None);
                         match rel {
-                            Some(r) => crate::db::logs::write_log(&conn, "INFO", &format!("忽略版本 {}/{} {} id={}", r.owner, r.repo, r.tag_name, rid)),
-                            None => crate::db::logs::write_log(&conn, "INFO", &format!("忽略版本 id={}", rid)),
+                            Some(r) => crate::db::logs::write_log_key(&conn, "INFO", "release.ignored", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string()),
+                            None => crate::db::logs::write_log_key(&conn, "INFO", "release.ignored_unknown", &json!({"id": rid}).to_string()),
                         }
                     } else if let Some(rest) = action.strip_prefix("snooze:") {
                         let rid: i64 = rest.parse().unwrap_or(0);
@@ -99,8 +100,8 @@ pub fn send_release_notification(
                         let until = chrono::Utc::now() + chrono::Duration::minutes(60);
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "snoozed", Some(&until.to_rfc3339()));
                         match rel {
-                            Some(r) => crate::db::logs::write_log(&conn, "INFO", &format!("推迟版本 {}/{} {} id={}", r.owner, r.repo, r.tag_name, rid)),
-                            None => crate::db::logs::write_log(&conn, "INFO", &format!("推迟版本 id={}", rid)),
+                            Some(r) => crate::db::logs::write_log_key(&conn, "INFO", "release.snoozed", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string()),
+                            None => crate::db::logs::write_log_key(&conn, "INFO", "release.snoozed_unknown", &json!({"id": rid}).to_string()),
                         }
                     }
                 }

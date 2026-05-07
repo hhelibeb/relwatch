@@ -1,5 +1,27 @@
-import { invoke } from '@tauri-apps/api/core'
+import { invoke, type InvokeArgs } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { t } from './i18n'
+
+export function translateError(raw: string): string {
+  const msg = raw.replace(/^Error:\s*/, '')
+  if (!msg.startsWith('err.')) return raw
+  const parts = msg.split('|')
+  const key = parts[0]
+  const args = parts.slice(1)
+  return t(key, ...args)
+}
+
+async function invokeI18n<T>(cmd: string, args?: InvokeArgs): Promise<T> {
+  try {
+    return await invoke<T>(cmd, args)
+  } catch (e: any) {
+    const raw = e?.message ?? e?.toString?.() ?? String(e)
+    const msg = translateError(raw)
+    const err: any = new Error(msg)
+    err.toString = () => msg
+    throw err
+  }
+}
 
 export interface Source {
   id: number
@@ -36,6 +58,8 @@ export interface LogEntry {
   level: string
   message: string
   created_at: string
+  message_key: string | null
+  message_args: string | null
 }
 
 export interface PollResult {
@@ -68,27 +92,27 @@ export function parseGitHubUrl(raw: string): { owner: string; repo: string } | n
 }
 
 export async function addSource(sourceType: string, owner: string, repo: string): Promise<number> {
-  return invoke<number>('add_source', { sourceType, owner, repo })
+  return invokeI18n<number>('add_source', { sourceType, owner, repo })
 }
 
 export async function removeSource(id: number): Promise<void> {
-  return invoke('remove_source', { id })
+  return invokeI18n('remove_source', { id })
 }
 
 export async function updateSource(id: number, enabled: boolean, pollIntervalMinutes: number): Promise<void> {
-  return invoke('update_source', { id, enabled, pollIntervalMinutes })
+  return invokeI18n('update_source', { id, enabled, pollIntervalMinutes })
 }
 
 export async function listSources(): Promise<Source[]> {
-  return invoke<Source[]>('list_sources')
+  return invokeI18n<Source[]>('list_sources')
 }
 
 export async function getReleases(): Promise<ReleaseInfo[]> {
-  return invoke<ReleaseInfo[]>('get_releases')
+  return invokeI18n<ReleaseInfo[]>('get_releases')
 }
 
 export async function getPendingReleases(): Promise<ReleaseInfo[]> {
-  return invoke<ReleaseInfo[]>('get_pending_releases')
+  return invokeI18n<ReleaseInfo[]>('get_pending_releases')
 }
 
 export async function setNotificationState(
@@ -96,31 +120,31 @@ export async function setNotificationState(
   status: string,
   snoozeMinutes?: number
 ): Promise<void> {
-  return invoke('set_notification_state', { releaseId, status, snoozeMinutes })
+  return invokeI18n('set_notification_state', { releaseId, status, snoozeMinutes })
 }
 
 export async function getLogs(limit: number): Promise<LogEntry[]> {
-  return invoke<LogEntry[]>('get_logs', { limit })
+  return invokeI18n<LogEntry[]>('get_logs', { limit })
 }
 
 export async function clearLogs(): Promise<void> {
-  return invoke('clear_logs')
+  return invokeI18n('clear_logs')
 }
 
 export async function triggerPoll(): Promise<PollResult> {
-  return invoke<PollResult>('trigger_poll')
+  return invokeI18n<PollResult>('trigger_poll')
 }
 
 export async function checkSingleSource(id: number): Promise<PollResult> {
-  return invoke<PollResult>('check_single_source', { id })
+  return invokeI18n<PollResult>('check_single_source', { id })
 }
 
 export async function getPollCountdown(): Promise<number> {
-  return invoke<number>('get_poll_countdown')
+  return invokeI18n<number>('get_poll_countdown')
 }
 
 export async function getSettings(): Promise<AppSettings> {
-  return invoke<AppSettings>('get_settings')
+  return invokeI18n<AppSettings>('get_settings')
 }
 
 export async function updateSettings(
@@ -135,19 +159,19 @@ export async function updateSettings(
   checkPrereleases: boolean,
   language: string,
 ): Promise<void> {
-  return invoke('update_settings', { payload: { pollIntervalMinutes, proxyUrl, minimizeToTray, logRetentionDays, deepseekEnabled, deepseekModel, deepseekBaseUrl, deepseekProxyEnabled, checkPrereleases, language } })
+  return invokeI18n('update_settings', { payload: { pollIntervalMinutes, proxyUrl, minimizeToTray, logRetentionDays, deepseekEnabled, deepseekModel, deepseekBaseUrl, deepseekProxyEnabled, checkPrereleases, language } })
 }
 
 export async function setDeepseekApiKey(apiKey: string): Promise<void> {
-  return invoke('set_deepseek_api_key', { apiKey })
+  return invokeI18n('set_deepseek_api_key', { apiKey })
 }
 
 export async function setGithubToken(token: string): Promise<void> {
-  return invoke('set_github_token', { token })
+  return invokeI18n('set_github_token', { token })
 }
 
 export async function testDeepseekConnection(): Promise<string> {
-  return invoke<string>('test_deepseek_connection')
+  return invokeI18n<string>('test_deepseek_connection')
 }
 
 export async function openReleaseUrl(url: string): Promise<void> {

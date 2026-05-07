@@ -7,6 +7,8 @@ pub struct LogEntry {
     pub level: String,
     pub message: String,
     pub created_at: String,
+    pub message_key: Option<String>,
+    pub message_args: Option<String>,
 }
 
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
@@ -17,10 +19,18 @@ pub fn write_log(conn: &Connection, level: &str, message: &str) {
     );
 }
 
+pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ = conn.execute(
+        "INSERT INTO logs (level, message, message_key, message_args, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![level, key, key, args, now],
+    );
+}
+
 pub fn get_logs(conn: &Connection, limit: i64) -> Result<Vec<LogEntry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, level, message, created_at FROM logs ORDER BY id DESC LIMIT ?1",
+            "SELECT id, level, message, message_key, message_args, created_at FROM logs ORDER BY id DESC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
 
@@ -30,7 +40,9 @@ pub fn get_logs(conn: &Connection, limit: i64) -> Result<Vec<LogEntry>, String> 
                 id: row.get(0)?,
                 level: row.get(1)?,
                 message: row.get(2)?,
-                created_at: row.get(3)?,
+                message_key: row.get(3)?,
+                message_args: row.get(4)?,
+                created_at: row.get(5)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -64,9 +76,12 @@ mod tests {
         let conn = init_memory_db().unwrap();
         write_log(&conn, "INFO", "msg1");
         write_log(&conn, "ERROR", "msg2");
+        write_log_key(&conn, "INFO", "test.key", r#"{"a":"1"}"#);
         let logs = get_logs(&conn, 10).unwrap();
-        assert_eq!(logs.len(), 2);
-        assert_eq!(logs[0].message, "msg2");
+        assert_eq!(logs.len(), 3);
+        assert_eq!(logs[0].message, "test.key");
+        assert_eq!(logs[0].message_key.as_deref(), Some("test.key"));
+        assert_eq!(logs[0].message_args.as_deref(), Some(r#"{"a":"1"}"#));
     }
 
     #[test]

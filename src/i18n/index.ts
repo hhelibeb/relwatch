@@ -32,6 +32,27 @@ export function t(key: string, ...args: string[]): string {
   return text
 }
 
+const actionKeys: Record<string, string> = {
+  ignored: 'status.ignored',
+  snoozed: 'status.snoozed',
+  clicked: 'status.viewed',
+}
+
+export function tm(key: string, args: Record<string, string>): string {
+  const msg = messages[locale.value]
+  if (!msg) return key
+  let text = msg[key]
+  if (text === undefined) return key
+  if (args.action) {
+    const ak = actionKeys[args.action] || args.action
+    args = { ...args, action: t(ak) }
+  }
+  Object.entries(args).forEach(([k, v]) => {
+    text = text!.replace(`{${k}}`, v)
+  })
+  return text.replace(/setting\.\w+/g, (match) => t(match))
+}
+
 export const languages = [
   { value: 'zh-CN', label: '中文' },
   { value: 'en-US', label: 'English' },

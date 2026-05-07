@@ -76,7 +76,7 @@ function formatCountdown(secs: number) {
 }
 
 async function loadAll() {
-  await Promise.all([loadSources(), loadReleases(), loadLogs(), loadSettings()])
+  await Promise.allSettled([loadSources(), loadReleases(), loadLogs(), loadSettings()])
 }
 
 async function loadSources() { sources.value = await listSources() }

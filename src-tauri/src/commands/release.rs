@@ -1,6 +1,7 @@
 use crate::db;
 use crate::poll;
 use crate::types::{AppState, PollResult};
+use serde_json::json;
 
 #[tauri::command]
 pub fn get_releases(
@@ -36,15 +37,9 @@ pub fn set_notification_state(
     db::releases::set_notification_state(&conn, release_id, &status, snooze_str)?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-    let action = match status.as_str() {
-        "ignored" => "忽略",
-        "snoozed" => "推迟",
-        "clicked" => "已查看",
-        _ => &status,
-    };
     match rel {
-        Some(r) => db::logs::write_log(&conn, "INFO", &format!("{}/{} {} 已{}(id={})", r.owner, r.repo, r.tag_name, action, release_id)),
-        None => db::logs::write_log(&conn, "INFO", &format!("版本 id={} 状态: {}", release_id, action)),
+        Some(r) => db::logs::write_log_key(&conn, "INFO", "release.status_changed", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": release_id, "action": &status}).to_string()),
+        None => db::logs::write_log_key(&conn, "INFO", "release.status_changed_unknown", &json!({"id": release_id, "action": &status}).to_string()),
     }
     Ok(())
 }

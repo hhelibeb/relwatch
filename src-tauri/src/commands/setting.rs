@@ -14,6 +14,7 @@ use crate::db::settings::{
     DEFAULT_CHECK_PRERELEASES,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
 };
+use serde_json::json;
 
 #[tauri::command]
 pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
@@ -81,16 +82,16 @@ pub fn update_settings(
     let (interval_changed, changes) = settings::apply_settings(
         &conn,
         &[
-            (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "轮询间隔"),
-            (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "代理地址"),
-            (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "最小化到托盘"),
-            (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "日志保留天数"),
-            (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "AI 摘要"),
-            (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "AI 模型"),
-            (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "AI 地址"),
-            (KEY_DEEPSEEK_PROXY, &old_ds_proxy, &payload.deepseek_proxy_enabled.to_string(), "AI 代理"),
-            (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "检查预发布版本"),
-            (KEY_LANGUAGE, &old_language, &payload.language, "界面语言"),
+            (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "setting.poll_interval"),
+            (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "setting.proxy_url"),
+            (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "setting.minimize_to_tray"),
+            (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "setting.log_retention_days"),
+            (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
+            (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "setting.deepseek_model"),
+            (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
+            (KEY_DEEPSEEK_PROXY, &old_ds_proxy, &payload.deepseek_proxy_enabled.to_string(), "setting.deepseek_proxy"),
+            (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
+            (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
         ],
     )?;
 
@@ -98,7 +99,7 @@ pub fn update_settings(
         return Ok(());
     }
 
-    db::logs::write_log(&conn, "INFO", &format!("更新设置: {}", changes.join(", ")));
+    db::logs::write_log_key(&conn, "INFO", "setting.updated", &json!({"changes": changes.join(", ")}).to_string());
 
     if interval_changed {
         let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
@@ -121,7 +122,7 @@ pub fn set_deepseek_api_key(
         let encrypted = crypto::encrypt(&api_key);
         settings::set_setting(&conn, KEY_DEEPSEEK_API_KEY, &encrypted)?;
     }
-    db::logs::write_log(&conn, "INFO", "已更新 DeepSeek API Key");
+    db::logs::write_log_key(&conn, "INFO", "setting.deepseek_key_updated", &json!({}).to_string());
     Ok(())
 }
 
@@ -137,7 +138,7 @@ pub fn set_github_token(
         let encrypted = crypto::encrypt(&token);
         settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted)?;
     }
-    db::logs::write_log(&conn, "INFO", "已更新 GitHub Token");
+    db::logs::write_log_key(&conn, "INFO", "setting.github_token_updated", &json!({}).to_string());
     Ok(())
 }
 
@@ -225,7 +226,7 @@ mod tests {
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
                 (KEY_PROXY_URL, &old_proxy, "http://old", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
-                (KEY_LOG_RETENTION, &old_retention, "14", "日志保留天数"),
+                (KEY_LOG_RETENTION, &old_retention, "14", "setting.log_retention_days"),
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
@@ -237,7 +238,7 @@ mod tests {
         drop(conn);
 
         assert_eq!(changes.len(), 1);
-        assert!(changes[0].contains("日志保留天数"));
+        assert!(changes[0].contains("setting.log_retention_days"));
 
         let conn = state.db.lock().unwrap();
         assert_eq!(get_setting_str(&conn, KEY_POLL_INTERVAL, "").unwrap(), "30");
@@ -311,7 +312,7 @@ mod tests {
         let (interval_changed, changes) = settings::apply_settings(
             &conn,
             &[
-                (KEY_POLL_INTERVAL, &old_interval, "60", "轮询间隔"),
+                (KEY_POLL_INTERVAL, &old_interval, "60", "setting.poll_interval"),
                 (KEY_PROXY_URL, &old_proxy, "", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
                 (KEY_LOG_RETENTION, &old_retention, "0", ""),
@@ -327,7 +328,7 @@ mod tests {
 
         assert!(interval_changed);
         assert_eq!(changes.len(), 1);
-        assert!(changes[0].contains("轮询间隔"));
+        assert!(changes[0].contains("setting.poll_interval"));
     }
 
     /// 确保所有可更新设置都被 apply_settings 覆盖。

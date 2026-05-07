@@ -8,6 +8,7 @@ use crate::crypto;
 use crate::github;
 use crate::http;
 use crate::deepseek;
+use serde_json::json;
 use crate::notify;
 use crate::types::{AppState, PollResult};
 
@@ -34,7 +35,7 @@ fn acquire_lock() -> Result<PollGuard, String> {
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
     {
-        return Err("轮询正在进行中，请稍后再试".to_string());
+        return Err("err.poll_in_progress".to_string());
     }
     Ok(PollGuard)
 }
@@ -53,7 +54,7 @@ fn fetch_for_source(
 ) -> Result<Vec<serde_json::Value>, String> {
     match source.source_type.as_str() {
         "github" => github::fetch_releases(client, &source.owner, &source.repo),
-        other => Err(format!("不支持的监控源类型: {}", other)),
+        other => Err(format!("err.unsupported_source|{}", other)),
     }
 }
 
@@ -129,7 +130,7 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
         let source = sources
             .into_iter()
             .find(|s| s.id == id)
-            .ok_or("监控源不存在")?;
+            .ok_or("err.source_not_found")?;
         let proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         let github_token = get_github_token(&conn);
         drop(conn);
@@ -143,15 +144,11 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
         let state = app.state::<AppState>();
         let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
         saved = save_for_source(&conn, &source_obj, &releases);
-        db::logs::write_log(
+        db::logs::write_log_key(
             &conn,
             "INFO",
-            &format!(
-                "[手动] 检查 {}/{}: {} 个新版本",
-                source_obj.owner,
-                source_obj.repo,
-                saved.len()
-            ),
+            "check.manual",
+            &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "count": saved.len()}).to_string(),
         );
     }
 
@@ -207,7 +204,7 @@ fn do_poll_sync(app: tauri::AppHandle) {
     if enabled.is_empty() {
         let state = app.state::<AppState>();
         if let Ok(conn) = state.db.lock() {
-            db::logs::write_log(&conn, "INFO", "[自动] 无启用监控源，跳过检查");
+            db::logs::write_log_key(&conn, "INFO", "check.skipped", "{}");
         }
         return;
     }
@@ -237,7 +234,7 @@ fn poll_all_sources(
         Err(e) => {
             let state = app.state::<AppState>();
             if let Ok(conn) = state.db.lock() {
-                db::logs::write_log(&conn, "ERROR", &format!("创建 HTTP 客户端失败: {}", e));
+                db::logs::write_log_key(&conn, "ERROR", "check.http_client_error", &json!({"error": &e}).to_string());
             }
             return (all_new_ids, all_saved);
         }
@@ -253,24 +250,21 @@ fn poll_all_sources(
                 let new_count = ids.len();
                 all_new_ids.extend(ids);
                 all_saved.extend(saved);
-                db::logs::write_log(
+                db::logs::write_log_key(
                     &conn,
                     "INFO",
-                    &format!(
-                        "检查 {}/{}: {} 个新版本",
-                        source.owner,
-                        source.repo,
-                        new_count
-                    ),
+                    "check.auto",
+                    &json!({"owner": &source.owner, "repo": &source.repo, "count": new_count}).to_string(),
                 );
             }
             Err(e) => {
                 let state = app.state::<AppState>();
                 let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
-                db::logs::write_log(
+                db::logs::write_log_key(
                     &conn,
                     "ERROR",
-                    &format!("检查 {}/{} 失败: {}", source.owner, source.repo, e),
+                    "check.failed",
+                    &json!({"owner": &source.owner, "repo": &source.repo, "error": &e}).to_string(),
                 );
             }
         }
@@ -325,10 +319,11 @@ fn collect_pending_and_notify(
     if is_manual {
         let state = app.state::<AppState>();
         let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
-        db::logs::write_log(
+        db::logs::write_log_key(
             &conn,
             "INFO",
-            &format!("[手动] 全局检查完成, {} 个新版本", new_ids.len()),
+            "check.manual_all_done",
+            &json!({"count": new_ids.len()}).to_string(),
         );
     }
 

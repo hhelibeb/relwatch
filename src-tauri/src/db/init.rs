@@ -98,5 +98,15 @@ fn migrate(conn: &Connection) -> Result<()> {
              ALTER TABLE releases ADD COLUMN ai_importance TEXT;",
         )?;
     }
+    let has_msg_key: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('logs') WHERE name='message_key'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_msg_key {
+        conn.execute_batch(
+            "ALTER TABLE logs ADD COLUMN message_key TEXT;
+             ALTER TABLE logs ADD COLUMN message_args TEXT;",
+        )?;
+    }
     Ok(())
 }
