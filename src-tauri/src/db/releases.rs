@@ -89,6 +89,51 @@ pub fn set_notification_state(
     Ok(())
 }
 
+pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
+                    r.tag_name, r.release_name, r.html_url, r.published_at,
+                    r.prerelease, r.body, r.detected_at,
+                    COALESCE(ns.status, 'pending'), ns.snooze_until,
+                    r.ai_summary, r.ai_importance
+             FROM releases r
+             JOIN sources s ON r.source_id = s.id
+             LEFT JOIN notification_state ns ON r.id = ns.release_id
+             WHERE r.id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut rows = stmt
+        .query_map(params![id], |row| {
+            Ok(ReleaseInfo {
+                id: row.get(0)?,
+                source_id: row.get(1)?,
+                source_type: row.get(2)?,
+                owner: row.get(3)?,
+                repo: row.get(4)?,
+                tag_name: row.get(5)?,
+                release_name: row.get(6)?,
+                html_url: row.get(7)?,
+                published_at: row.get(8)?,
+                prerelease: row.get::<_, i64>(9)? != 0,
+                body: row.get(10)?,
+                detected_at: row.get(11)?,
+                notification_status: row.get(12)?,
+                snooze_until: row.get(13)?,
+                ai_summary: row.get(14)?,
+                ai_importance: row.get(15)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    match rows.next() {
+        Some(Ok(release)) => Ok(Some(release)),
+        Some(Err(e)) => Err(e.to_string()),
+        None => Ok(None),
+    }
+}
+
 pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
     let mut stmt = conn
         .prepare(

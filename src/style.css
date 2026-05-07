@@ -35,12 +35,24 @@ body {
 
 .app-header {
   display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 12px 20px;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 20px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+}
+
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.header-bottom {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .app-header h1 {
@@ -84,7 +96,6 @@ body {
 }
 
 .btn-primary {
-  margin-left: auto;
   padding: 6px 16px;
   background: var(--primary);
   color: #fff;
@@ -243,11 +254,12 @@ body {
 }
 
 .btn-danger {
-  border-color: var(--danger);
-  color: var(--danger);
+  border-color: var(--border);
+  color: var(--text-muted);
 }
 
 .btn-danger:hover {
+  border-color: var(--danger);
   background: var(--danger);
   color: #fff;
 }

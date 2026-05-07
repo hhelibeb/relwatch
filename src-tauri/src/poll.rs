@@ -147,10 +147,10 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
             &conn,
             "INFO",
             &format!(
-                "[手动] 检查 {}/{}: {} 个版本",
+                "[手动] 检查 {}/{}: {} 个新版本",
                 source_obj.owner,
                 source_obj.repo,
-                releases.len()
+                saved.len()
             ),
         );
     }
@@ -250,16 +250,17 @@ fn poll_all_sources(
                 let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
                 let saved = save_for_source(&conn, source, &releases);
                 let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
+                let new_count = ids.len();
                 all_new_ids.extend(ids);
                 all_saved.extend(saved);
                 db::logs::write_log(
                     &conn,
                     "INFO",
                     &format!(
-                        "检查 {}/{}: {} 个版本",
+                        "检查 {}/{}: {} 个新版本",
                         source.owner,
                         source.repo,
-                        releases.len()
+                        new_count
                     ),
                 );
             }

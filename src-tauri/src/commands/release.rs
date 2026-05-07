@@ -35,17 +35,17 @@ pub fn set_notification_state(
     let snooze_str = snooze_until.as_deref();
     db::releases::set_notification_state(&conn, release_id, &status, snooze_str)?;
 
+    let rel = db::releases::get_release(&conn, release_id).ok().flatten();
     let action = match status.as_str() {
         "ignored" => "忽略",
         "snoozed" => "推迟",
         "clicked" => "已查看",
         _ => &status,
     };
-    db::logs::write_log(
-        &conn,
-        "INFO",
-        &format!("版本 id={} 状态: {}", release_id, action),
-    );
+    match rel {
+        Some(r) => db::logs::write_log(&conn, "INFO", &format!("{}/{} {} 已{}(id={})", r.owner, r.repo, r.tag_name, action, release_id)),
+        None => db::logs::write_log(&conn, "INFO", &format!("版本 id={} 状态: {}", release_id, action)),
+    }
     Ok(())
 }
 

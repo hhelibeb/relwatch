@@ -71,8 +71,12 @@ pub fn send_release_notification(
 
                     if let Some(rest) = action.strip_prefix("go:") {
                         let rid: i64 = rest.parse().unwrap_or(0);
+                        let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "clicked", None);
-                        crate::db::logs::write_log(&conn, "INFO", &format!("前往版本 id={}", rid));
+                        match rel {
+                            Some(r) => crate::db::logs::write_log(&conn, "INFO", &format!("前往版本 {}/{} {} id={}", r.owner, r.repo, r.tag_name, rid)),
+                            None => crate::db::logs::write_log(&conn, "INFO", &format!("前往版本 id={}", rid)),
+                        }
                         drop(conn);
                         if !go_url.is_empty() {
                             if let Err(e) = app_handle.opener().open_url(&go_url, None::<&str>) {
@@ -83,13 +87,21 @@ pub fn send_release_notification(
                         }
                     } else if let Some(rest) = action.strip_prefix("ignore:") {
                         let rid: i64 = rest.parse().unwrap_or(0);
+                        let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "ignored", None);
-                        crate::db::logs::write_log(&conn, "INFO", &format!("忽略版本 id={}", rid));
+                        match rel {
+                            Some(r) => crate::db::logs::write_log(&conn, "INFO", &format!("忽略版本 {}/{} {} id={}", r.owner, r.repo, r.tag_name, rid)),
+                            None => crate::db::logs::write_log(&conn, "INFO", &format!("忽略版本 id={}", rid)),
+                        }
                     } else if let Some(rest) = action.strip_prefix("snooze:") {
                         let rid: i64 = rest.parse().unwrap_or(0);
+                        let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
                         let until = chrono::Utc::now() + chrono::Duration::minutes(60);
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "snoozed", Some(&until.to_rfc3339()));
-                        crate::db::logs::write_log(&conn, "INFO", &format!("推迟版本 id={}", rid));
+                        match rel {
+                            Some(r) => crate::db::logs::write_log(&conn, "INFO", &format!("推迟版本 {}/{} {} id={}", r.owner, r.repo, r.tag_name, rid)),
+                            None => crate::db::logs::write_log(&conn, "INFO", &format!("推迟版本 id={}", rid)),
+                        }
                     }
                 }
                 Ok(())

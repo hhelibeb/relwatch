@@ -12,7 +12,7 @@ export default {
   'app.already_latest': 'Already up to date',
   'app.no_sources': 'No monitoring sources',
 
-  'source.placeholder': 'GitHub repo URL (e.g. https://github.com/microsoft/vscode)',
+  'source.placeholder': 'GitHub repo URL or owner/repo (e.g. https://github.com/microsoft/vscode)',
   'source.add': 'Add',
   'source.empty': 'No sources yet. Add a GitHub repo URL above.',
   'source.enabled': 'Enabled',
@@ -23,7 +23,7 @@ export default {
   'source.pause': 'Pause',
   'source.resume': 'Resume',
   'source.delete': 'Delete',
-  'source.invalid_url': 'Please enter a valid GitHub repo URL, e.g. https://github.com/microsoft/vscode',
+  'source.invalid_url': 'Please enter a valid GitHub repo URL or owner/repo, e.g. https://github.com/microsoft/vscode or microsoft/vscode',
   'source.input_invalid': 'Invalid Input',
   'source.add_failed': 'Failed to add: ',
   'source.delete_failed': 'Failed to delete: ',

@@ -170,14 +170,19 @@ pub fn generate_summaries_for_new(
                 ) {
                     log::error!("保存摘要失败 id={}: {}", release_id, e);
                 } else {
-                    db::logs::write_log(
-                        &conn,
-                        "INFO",
-                        &format!(
-                            "AI 摘要已生成: release_id={} 重要度={}",
-                            release_id, importance
+                    let rel = db::releases::get_release(&conn, *release_id).ok().flatten();
+                    match rel {
+                        Some(r) => db::logs::write_log(
+                            &conn,
+                            "INFO",
+                            &format!("AI 摘要已生成: {}/{} {} 重要度={}", r.owner, r.repo, r.tag_name, importance),
                         ),
-                    );
+                        None => db::logs::write_log(
+                            &conn,
+                            "INFO",
+                            &format!("AI 摘要已生成: id={} 重要度={}", release_id, importance),
+                        ),
+                    }
                 }
             }
             Err(e) => {

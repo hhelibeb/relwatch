@@ -58,9 +58,13 @@ export interface AppSettings {
 }
 
 export function parseGitHubUrl(raw: string): { owner: string; repo: string } | null {
-  const match = raw.trim().match(/github\.com\/([^/]+)\/([^/?#]+)/)
-  if (!match) return null
-  return { owner: match[1], repo: match[2] }
+  const input = raw.trim()
+  const urlMatch = input.match(/github\.com\/([^/]+)\/([^/?#]+)/)
+  if (urlMatch) return { owner: urlMatch[1], repo: urlMatch[2] }
+  if (input.includes('github.com')) return null
+  const repoMatch = input.match(/^([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/([a-zA-Z0-9_.-]+)$/)
+  if (repoMatch) return { owner: repoMatch[1], repo: repoMatch[2] }
+  return null
 }
 
 export async function addSource(sourceType: string, owner: string, repo: string): Promise<number> {

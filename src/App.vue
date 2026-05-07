@@ -174,17 +174,21 @@ onMounted(async () => {
 <template>
   <div class="app">
     <header class="app-header">
-      <h1>{{ t('app.title') }}</h1>
-      <nav class="tabs">
-        <button :class="{ active: activeTab === 'sources' }" @click="activeTab = 'sources'"><svg class="tab-icon"><use href="/icons.svg#sources-icon"/></svg>{{ t('tab.sources') }}</button>
-        <button :class="{ active: activeTab === 'releases' }" @click="activeTab = 'releases'"><svg class="tab-icon"><use href="/icons.svg#release-icon"/></svg>{{ t('tab.releases') }}</button>
-        <button :class="{ active: activeTab === 'logs' }" @click="activeTab = 'logs'"><svg class="tab-icon"><use href="/icons.svg#log-icon"/></svg>{{ t('tab.logs') }}</button>
-        <button :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'"><svg class="tab-icon"><use href="/icons.svg#settings-icon"/></svg>{{ t('tab.settings') }}</button>
-      </nav>
-      <span class="countdown-text" v-if="countdown">{{ t('app.next_check') }}{{ countdown }}</span>
-      <button class="btn-primary" :disabled="polling" @click="handlePoll">
-        {{ polling ? t('app.checking') : t('app.check_now') }}
-      </button>
+      <div class="header-top">
+        <h1>{{ t('app.title') }}</h1>
+        <button class="btn-primary" :disabled="polling" @click="handlePoll">
+          {{ polling ? t('app.checking') : t('app.check_now') }}
+        </button>
+      </div>
+      <div class="header-bottom">
+        <nav class="tabs">
+          <button :class="{ active: activeTab === 'sources' }" @click="activeTab = 'sources'"><svg class="tab-icon"><use href="/icons.svg#sources-icon"/></svg>{{ t('tab.sources') }}</button>
+          <button :class="{ active: activeTab === 'releases' }" @click="activeTab = 'releases'"><svg class="tab-icon"><use href="/icons.svg#release-icon"/></svg>{{ t('tab.releases') }}</button>
+          <button :class="{ active: activeTab === 'logs' }" @click="activeTab = 'logs'"><svg class="tab-icon"><use href="/icons.svg#log-icon"/></svg>{{ t('tab.logs') }}</button>
+          <button :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'"><svg class="tab-icon"><use href="/icons.svg#settings-icon"/></svg>{{ t('tab.settings') }}</button>
+        </nav>
+        <span class="countdown-text" v-if="countdown">{{ t('app.next_check') }}{{ countdown }}</span>
+      </div>
     </header>
 
     <main class="app-main">

@@ -61,4 +61,34 @@ describe('parseGitHubUrl', () => {
     const result = parseGitHubUrl('https://www.github.com/vercel/next.js')
     expect(result).toEqual({ owner: 'vercel', repo: 'next.js' })
   })
+
+  it('parses owner/repo format', () => {
+    const result = parseGitHubUrl('microsoft/vscode')
+    expect(result).toEqual({ owner: 'microsoft', repo: 'vscode' })
+  })
+
+  it('parses owner/repo with hyphens', () => {
+    const result = parseGitHubUrl('my-org/my-repo')
+    expect(result).toEqual({ owner: 'my-org', repo: 'my-repo' })
+  })
+
+  it('parses owner/repo with dots and underscores', () => {
+    const result = parseGitHubUrl('user.name/repo_test')
+    expect(result).toEqual({ owner: 'user.name', repo: 'repo_test' })
+  })
+
+  it('rejects owner/repo with spaces', () => {
+    const result = parseGitHubUrl('user /repo')
+    expect(result).toBeNull()
+  })
+
+  it('rejects owner/repo without slash', () => {
+    const result = parseGitHubUrl('justmonorepo')
+    expect(result).toBeNull()
+  })
+
+  it('rejects owner starting with hyphen', () => {
+    const result = parseGitHubUrl('-badowner/repo')
+    expect(result).toBeNull()
+  })
 })

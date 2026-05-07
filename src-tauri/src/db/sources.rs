@@ -38,6 +38,36 @@ pub fn remove_source(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled, created_at, updated_at
+             FROM sources WHERE id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let mut rows = stmt
+        .query_map(params![id], |row| {
+            Ok(Source {
+                id: row.get(0)?,
+                source_type: row.get(1)?,
+                owner: row.get(2)?,
+                repo: row.get(3)?,
+                poll_interval_minutes: row.get(4)?,
+                enabled: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+
+    match rows.next() {
+        Some(Ok(source)) => Ok(Some(source)),
+        Some(Err(e)) => Err(e.to_string()),
+        None => Ok(None),
+    }
+}
+
 pub fn update_source(
     conn: &Connection,
     id: i64,
