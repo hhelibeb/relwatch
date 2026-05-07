@@ -156,7 +156,7 @@ body {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
   padding: 12px;
   background: var(--surface);
   border-radius: var(--radius);
