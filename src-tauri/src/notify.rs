@@ -68,7 +68,7 @@ pub fn send_release_notification(
                     if let Some(action) = action {
                     let app = app_handle.clone();
                     let state = app.state::<crate::types::AppState>();
-                    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let conn = state.db.get().unwrap();
 
                     if let Some(rest) = action.strip_prefix("go:") {
                         let rid: i64 = rest.parse().unwrap_or(0);

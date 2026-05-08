@@ -19,6 +19,57 @@ pub fn init_memory_db() -> Result<Connection> {
     Ok(conn)
 }
 
+pub fn init_memory_pool(
+) -> Result<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    let name = format!(
+        "file:relwatch_test_{}?mode=memory&cache=shared",
+        NEXT_ID.fetch_add(1, Ordering::Relaxed)
+    );
+    let manager = r2d2_sqlite::SqliteConnectionManager::file(&name);
+    let pool = r2d2::Pool::builder()
+        .max_size(2)
+        .build(manager)
+        .map_err(|e| e.to_string())?;
+    {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA foreign_keys=ON;")
+            .map_err(|e| e.to_string())?;
+        apply_schema(&conn).map_err(|e| e.to_string())?;
+        migrate(&conn).map_err(|e| e.to_string())?;
+    }
+    Ok(pool)
+}
+
+pub fn init_pool(
+) -> Result<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, String> {
+    let dir = app_data_dir();
+    std::fs::create_dir_all(&dir).expect("Failed to create app data dir");
+
+    let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path())
+        .with_init(|conn| {
+            conn.execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=1000;
+                 PRAGMA foreign_keys=ON;",
+            )
+        });
+
+    let pool = r2d2::Pool::builder()
+        .max_size(5)
+        .build(manager)
+        .map_err(|e| e.to_string())?;
+
+    {
+        let conn = pool.get().map_err(|e| e.to_string())?;
+        apply_schema(&conn).map_err(|e| e.to_string())?;
+        migrate(&conn).map_err(|e| e.to_string())?;
+    }
+
+    Ok(pool)
+}
+
 fn apply_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sources (

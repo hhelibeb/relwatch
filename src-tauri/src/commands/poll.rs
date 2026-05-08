@@ -2,8 +2,10 @@ use crate::poll;
 use crate::types::{AppState, PollResult};
 
 #[tauri::command]
-pub fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
-    poll::trigger_poll(app)
+pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
+    tokio::task::spawn_blocking(move || poll::trigger_poll(app))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

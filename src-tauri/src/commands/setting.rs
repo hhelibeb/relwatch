@@ -18,7 +18,7 @@ use serde_json::json;
 
 #[tauri::command]
 pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     Ok(AppSettings {
         poll_interval_minutes: get_setting_i64(&conn, KEY_POLL_INTERVAL, 30)?,
         proxy_url: get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?,
@@ -66,7 +66,7 @@ pub fn update_settings(
     let log_retention_days = payload.log_retention_days.clamp(0, 3650);
 
     let state = app.state::<AppState>();
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.get().map_err(|e| e.to_string())?;
 
     let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)?;
     let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
@@ -115,7 +115,7 @@ pub fn set_deepseek_api_key(
     state: tauri::State<AppState>,
     api_key: String,
 ) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.get().map_err(|e| e.to_string())?;
     if api_key.is_empty() {
         settings::set_setting(&conn, KEY_DEEPSEEK_API_KEY, "")?;
     } else {
@@ -131,7 +131,7 @@ pub fn set_github_token(
     state: tauri::State<AppState>,
     token: String,
 ) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let conn = state.db.get().map_err(|e| e.to_string())?;
     if token.is_empty() {
         settings::set_setting(&conn, KEY_GITHUB_TOKEN, "")?;
     } else {
@@ -146,7 +146,7 @@ pub fn set_github_token(
 pub fn test_deepseek_connection(state: tauri::State<AppState>) -> Result<String, String> {
     let (model, base_url, api_key, deepseek_proxy_enabled, proxy_url);
     {
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         let config = deepseek::read_config(&conn);
         model = config.1;
         base_url = config.2;
@@ -188,12 +188,12 @@ pub fn test_deepseek_connection(state: tauri::State<AppState>) -> Result<String,
 mod tests {
     use super::*;
     use crate::db;
-    use std::sync::Mutex;
+    use std::sync::Arc;
 
     fn test_state() -> AppState {
         AppState {
-            db: Mutex::new(db::init::init_memory_db().unwrap()),
-            next_poll_at: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(0)),
+            db: db::init::init_memory_pool().unwrap(),
+            next_poll_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
         }
     }
 
@@ -201,13 +201,13 @@ mod tests {
     fn test_update_settings_only_writes_changed() {
         let state = test_state();
         {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.get().unwrap();
             settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
             settings::set_setting(&conn, KEY_PROXY_URL, "http://old").unwrap();
             settings::set_setting(&conn, KEY_LOG_RETENTION, "7").unwrap();
         }
 
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(changes.len(), 1);
         assert!(changes[0].contains("setting.log_retention_days"));
 
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.get().unwrap();
         assert_eq!(get_setting_str(&conn, KEY_POLL_INTERVAL, "").unwrap(), "30");
         assert_eq!(get_setting_str(&conn, KEY_PROXY_URL, "").unwrap(), "http://old");
         assert_eq!(get_setting_str(&conn, KEY_LOG_RETENTION, "").unwrap(), "14");
@@ -250,13 +250,13 @@ mod tests {
     fn test_update_settings_no_changes() {
         let state = test_state();
         {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.get().unwrap();
             settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
             settings::set_setting(&conn, KEY_PROXY_URL, "http://proxy").unwrap();
             settings::set_setting(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         }
 
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
@@ -293,11 +293,11 @@ mod tests {
     fn test_update_settings_poll_interval_triggers_flag() {
         let state = test_state();
         {
-            let conn = state.db.lock().unwrap();
+            let conn = state.db.get().unwrap();
             settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         }
 
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn test_apply_settings_covers_all_keys() {
         let state = test_state();
-        let conn = state.db.lock().unwrap();
+        let conn = state.db.get().unwrap();
 
         // 为所有可更新设置写入旧值
         let old_values = [

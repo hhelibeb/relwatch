@@ -10,38 +10,40 @@ mod deepseek;
 mod poll;
 
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tauri::Manager;
 
 use types::AppState;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let conn = db::init::init_db().expect("Failed to initialize database");
+    let pool = db::init::init_pool().expect("Failed to initialize database");
 
+    let next_poll_val;
     {
+        let conn = pool.get().expect("Failed to get db connection");
         if db::settings::get_setting(&conn, "poll_interval_minutes")
             .unwrap_or(None)
             .is_none()
         {
             let _ = db::settings::set_setting(&conn, "poll_interval_minutes", "30");
         }
-    }
 
-    let now = chrono::Utc::now().timestamp();
-    let next_poll_val = db::settings::get_setting(&conn, "next_poll_at")
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<i64>().ok())
-        .filter(|&v| v > now)
-        .unwrap_or_else(|| {
-            let interval = db::settings::get_setting(&conn, "poll_interval_minutes")
-                .ok()
-                .flatten()
-                .and_then(|v| v.parse::<i64>().ok())
-                .unwrap_or(30);
-            now + interval * 60
-        });
+        let now = chrono::Utc::now().timestamp();
+        next_poll_val = db::settings::get_setting(&conn, "next_poll_at")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|&v| v > now)
+            .unwrap_or_else(|| {
+                let interval = db::settings::get_setting(&conn, "poll_interval_minutes")
+                    .ok()
+                    .flatten()
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(30);
+                now + interval * 60
+            });
+    }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
 
     tauri::Builder::default()
@@ -56,7 +58,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState {
-            db: Mutex::new(conn),
+            db: pool,
             next_poll_at: next_poll.clone(),
         })
         .invoke_handler(tauri::generate_handler![
@@ -95,7 +97,7 @@ pub fn run() {
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         let state = app_clone.state::<AppState>();
-                        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                        let conn = state.db.get().unwrap_or_else(|e| panic!("DB pool error: {}", e));
                         let minimize = db::settings::get_setting(&conn, "minimize_to_tray")
                             .ok()
                             .flatten()

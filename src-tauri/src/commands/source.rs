@@ -12,7 +12,7 @@ pub fn add_source(
     repo: String,
 ) -> Result<i64, String> {
     {
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         let proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         let github_token = get_setting(&conn, KEY_GITHUB_TOKEN)
             .ok()
@@ -32,7 +32,7 @@ pub fn add_source(
             return Err(format!("err.repo_api_error|{}", resp.status().as_u16()));
         }
     }
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     let id = db::sources::add_source(&conn, &source_type, &owner, &repo)?;
     db::logs::write_log_key(
         &conn,
@@ -45,7 +45,7 @@ pub fn add_source(
 
 #[tauri::command]
 pub fn remove_source(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     let source = db::sources::get_source(&conn, id)?;
     db::sources::remove_source(&conn, id)?;
     match source {
@@ -62,7 +62,7 @@ pub fn update_source(
     enabled: bool,
     poll_interval_minutes: i64,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     let source = db::sources::get_source(&conn, id)?;
     db::sources::update_source(&conn, id, enabled, poll_interval_minutes)?;
     match source {
@@ -74,6 +74,6 @@ pub fn update_source(
 
 #[tauri::command]
 pub fn list_sources(state: tauri::State<AppState>) -> Result<Vec<db::sources::Source>, String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     db::sources::list_sources(&conn)
 }

@@ -82,7 +82,7 @@ fn do_trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         sources = db::sources::list_sources(&conn)?
             .into_iter()
             .filter(|s| s.enabled)
@@ -99,7 +99,7 @@ fn do_trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         let now = chrono::Utc::now().timestamp();
         let interval = db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
             .ok()
@@ -125,7 +125,7 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
     let (client, source_obj);
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         let sources = db::sources::list_sources(&conn)?;
         let source = sources
             .into_iter()
@@ -142,7 +142,7 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
     let saved: Vec<(i64, Option<String>)>;
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         saved = save_for_source(&conn, &source_obj, &releases);
         db::logs::write_log_key(
             &conn,
@@ -182,7 +182,7 @@ fn do_poll_sync(app: tauri::AppHandle) {
     let (sources, proxy_url, retention_days, github_token);
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         sources = db::sources::list_sources(&conn).unwrap_or_default();
         proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
             .ok()
@@ -203,7 +203,7 @@ fn do_poll_sync(app: tauri::AppHandle) {
         sources.into_iter().filter(|s| s.enabled).collect();
     if enabled.is_empty() {
         let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.lock() {
+        if let Ok(conn) = state.db.get() {
             db::logs::write_log_key(&conn, "INFO", "check.skipped", "{}");
         }
         return;
@@ -233,7 +233,7 @@ fn poll_all_sources(
         Ok(c) => c,
         Err(e) => {
             let state = app.state::<AppState>();
-            if let Ok(conn) = state.db.lock() {
+            if let Ok(conn) = state.db.get() {
                 db::logs::write_log_key(&conn, "ERROR", "check.http_client_error", &json!({"error": &e}).to_string());
             }
             return (all_new_ids, all_saved);
@@ -244,7 +244,7 @@ fn poll_all_sources(
         match fetch_for_source(&client, source) {
             Ok(releases) => {
                 let state = app.state::<AppState>();
-                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                let conn = state.db.get().unwrap();
                 let saved = save_for_source(&conn, source, &releases);
                 let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
                 let new_count = ids.len();
@@ -259,7 +259,7 @@ fn poll_all_sources(
             }
             Err(e) => {
                 let state = app.state::<AppState>();
-                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                let conn = state.db.get().unwrap();
                 db::logs::write_log_key(
                     &conn,
                     "ERROR",
@@ -281,7 +281,7 @@ fn collect_pending_and_notify(
     let pending;
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
     }
 
@@ -318,7 +318,7 @@ fn collect_pending_and_notify(
 
     if is_manual {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         db::logs::write_log_key(
             &conn,
             "INFO",
@@ -329,7 +329,7 @@ fn collect_pending_and_notify(
 
     let all_pending = {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         db::releases::get_pending_releases(&conn).unwrap_or_default()
     };
 
@@ -340,7 +340,7 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
     std::thread::spawn(move || {
         // Save the initial next_poll_at so restart can restore it
         let initial = next_poll.load(Ordering::Relaxed);
-        if let Ok(conn) = app_handle.state::<AppState>().db.lock() {
+        if let Ok(conn) = app_handle.state::<AppState>().db.get() {
             let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &initial.to_string());
         }
 
@@ -367,7 +367,7 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
             let now = chrono::Utc::now().timestamp();
             let interval = {
                 let state = app_handle.state::<AppState>();
-                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                let conn = state.db.get().unwrap();
                 db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
                     .ok()
                     .flatten()
@@ -376,7 +376,7 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
             };
             let next = now + (interval as i64) * 60;
             next_poll.store(next, Ordering::Relaxed);
-            if let Ok(conn) = app_handle.state::<AppState>().db.lock() {
+            if let Ok(conn) = app_handle.state::<AppState>().db.get() {
                 let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
             }
         }

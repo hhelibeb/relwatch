@@ -7,7 +7,7 @@ use serde_json::json;
 pub fn get_releases(
     state: tauri::State<AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     db::releases::get_releases_with_state(&conn)
 }
 
@@ -15,7 +15,7 @@ pub fn get_releases(
 pub fn get_pending_releases(
     state: tauri::State<AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
     db::releases::get_pending_releases(&conn)
 }
 
@@ -26,7 +26,7 @@ pub fn set_notification_state(
     status: String,
     snooze_minutes: Option<i64>,
 ) -> Result<(), String> {
-    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+    let conn = state.db.get().unwrap();
 
     let snooze_until = snooze_minutes.map(|minutes| {
         let until = chrono::Utc::now() + chrono::Duration::minutes(minutes);
@@ -45,6 +45,8 @@ pub fn set_notification_state(
 }
 
 #[tauri::command]
-pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
-    poll::check_single_source(app, id)
+pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
+    tokio::task::spawn_blocking(move || poll::check_single_source(app, id))
+        .await
+        .map_err(|e| e.to_string())?
 }

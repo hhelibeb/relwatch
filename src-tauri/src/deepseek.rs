@@ -118,7 +118,7 @@ pub fn generate_summaries_for_new(
 
     {
         let state = app.state::<AppState>();
-        let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+        let conn = state.db.get().unwrap();
         let cfg = read_config(&conn);
         enabled = cfg.0;
         model = cfg.1;
@@ -164,7 +164,7 @@ pub fn generate_summaries_for_new(
         match call_summary(&client, &model, &base_url, &truncated) {
             Ok((summary, importance)) => {
                 let state = app.state::<AppState>();
-                let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                let conn = state.db.get().unwrap();
                 if let Err(e) = db::releases::set_ai_summary(
                     &conn, *release_id, &summary, &importance,
                 ) {
