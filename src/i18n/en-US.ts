@@ -10,6 +10,7 @@ export default {
   'app.check_soon': 'Checking soon...',
   'app.min_sec': '{0}m {1}s',
   'app.already_latest': 'Already up to date',
+  'app.new_found': 'Found {0} new release(s)',
   'app.no_sources': 'No monitoring sources',
 
   'source.placeholder': 'GitHub repo URL or owner/repo (e.g. https://github.com/microsoft/vscode)',

@@ -5,8 +5,8 @@ use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL};
 use serde_json::json;
 
 #[tauri::command]
-pub fn add_source(
-    state: tauri::State<AppState>,
+pub async fn add_source(
+    state: tauri::State<'_, AppState>,
     source_type: String,
     owner: String,
     repo: String,
@@ -24,6 +24,7 @@ pub fn add_source(
         let resp = client
             .get(&url)
             .send()
+            .await
             .map_err(|e| format!("err.repo_verify_failed|{}", e))?;
         if resp.status() == 404 {
             return Err(format!("err.repo_not_found|{}|{}", owner, repo));

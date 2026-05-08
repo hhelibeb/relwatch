@@ -1,4 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::Arc;
 use tauri::Manager;
 use tauri::Emitter;
 
@@ -14,6 +15,7 @@ use crate::types::{AppState, PollResult};
 
 static POLL_LOCK: AtomicBool = AtomicBool::new(false);
 static POLL_RUNNING: AtomicBool = AtomicBool::new(true);
+const MAX_CONCURRENCY: usize = 10;
 
 pub fn is_poll_running() -> bool {
     POLL_RUNNING.load(Ordering::Relaxed)
@@ -48,12 +50,12 @@ fn get_github_token(conn: &rusqlite::Connection) -> Option<String> {
     crypto::decrypt(&encrypted)
 }
 
-fn fetch_for_source(
-    client: &reqwest::blocking::Client,
+async fn fetch_for_source_async(
+    client: &reqwest::Client,
     source: &db::sources::Source,
 ) -> Result<Vec<serde_json::Value>, String> {
     match source.source_type.as_str() {
-        "github" => github::fetch_releases(client, &source.owner, &source.repo),
+        "github" => github::fetch_releases(client, &source.owner, &source.repo).await,
         other => Err(format!("err.unsupported_source|{}", other)),
     }
 }
@@ -72,12 +74,12 @@ fn save_for_source(
     }
 }
 
-pub fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
+pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
-    do_trigger_poll(app)
+    do_trigger_poll_async(app).await
 }
 
-fn do_trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
+async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
     let (sources, proxy_url, github_token);
 
     {
@@ -91,9 +93,11 @@ fn do_trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
         github_token = get_github_token(&conn);
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources(&app, &sources, &proxy_url, github_token.as_deref());
+    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, github_token.as_deref()).await;
 
-    deepseek::generate_summaries_for_new(&app, &all_saved);
+    if !all_saved.is_empty() {
+        deepseek::generate_summaries_for_new(&app, &all_saved).await;
+    }
 
     let (_pending, new_releases) = collect_pending_and_notify(&app, &all_new_ids, true);
 
@@ -119,7 +123,7 @@ fn do_trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     })
 }
 
-pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
+pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
     let (client, source_obj);
@@ -138,7 +142,7 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
         source_obj = source;
     }
 
-    let releases = fetch_for_source(&client, &source_obj)?;
+    let releases = fetch_for_source_async(&client, &source_obj).await?;
     let saved: Vec<(i64, Option<String>)>;
     {
         let state = app.state::<AppState>();
@@ -154,7 +158,9 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
 
     let new_ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
 
-    deepseek::generate_summaries_for_new(&app, &saved);
+    if !saved.is_empty() {
+        deepseek::generate_summaries_for_new(&app, &saved).await;
+    }
 
     let (_, new_releases) = collect_pending_and_notify(&app, &new_ids, false);
 
@@ -163,10 +169,12 @@ pub fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult,
 
 #[allow(dead_code)]
 pub fn do_poll(app: tauri::AppHandle) {
-    do_poll_sync(app);
+    tauri::async_runtime::spawn(async move {
+        do_poll_async(app).await;
+    });
 }
 
-fn do_poll_sync(app: tauri::AppHandle) {
+async fn do_poll_async(app: tauri::AppHandle) {
     if POLL_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -209,9 +217,11 @@ fn do_poll_sync(app: tauri::AppHandle) {
         return;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources(&app, &enabled, &proxy_url, github_token.as_deref());
+    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &enabled, &proxy_url, github_token.as_deref()).await;
 
-    deepseek::generate_summaries_for_new(&app, &all_saved);
+    if !all_saved.is_empty() {
+        deepseek::generate_summaries_for_new(&app, &all_saved).await;
+    }
 
     if !all_new_ids.is_empty() {
         collect_pending_and_notify(&app, &all_new_ids, false);
@@ -220,15 +230,12 @@ fn do_poll_sync(app: tauri::AppHandle) {
     let _ = app.emit("poll-completed", ());
 }
 
-fn poll_all_sources(
+async fn poll_all_sources_async(
     app: &tauri::AppHandle,
     sources: &[db::sources::Source],
     proxy_url: &str,
     github_token: Option<&str>,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
-    let mut all_new_ids = Vec::new();
-    let mut all_saved = Vec::new();
-
     let client = match http::build_http_client(proxy_url, github_token) {
         Ok(c) => c,
         Err(e) => {
@@ -236,37 +243,57 @@ fn poll_all_sources(
             if let Ok(conn) = state.db.get() {
                 db::logs::write_log_key(&conn, "ERROR", "check.http_client_error", &json!({"error": &e}).to_string());
             }
-            return (all_new_ids, all_saved);
+            return (vec![], vec![]);
         }
     };
 
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENCY));
+    let mut handles = Vec::new();
+
     for source in sources {
-        match fetch_for_source(&client, source) {
-            Ok(releases) => {
-                let state = app.state::<AppState>();
-                let conn = state.db.get().unwrap();
-                let saved = save_for_source(&conn, source, &releases);
-                let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
-                let new_count = ids.len();
-                all_new_ids.extend(ids);
-                all_saved.extend(saved);
-                db::logs::write_log_key(
-                    &conn,
-                    "INFO",
-                    "check.auto",
-                    &json!({"owner": &source.owner, "repo": &source.repo, "count": new_count}).to_string(),
-                );
+        let sem = semaphore.clone();
+        let client = client.clone();
+        let source = source.clone();
+        let app = app.clone();
+
+        handles.push(tokio::spawn(async move {
+            let _permit = sem.acquire_owned().await.expect("semaphore closed");
+            match fetch_for_source_async(&client, &source).await {
+                Ok(releases) => {
+                    let state = app.state::<AppState>();
+                    let conn = state.db.get().unwrap();
+                    let saved = save_for_source(&conn, &source, &releases);
+                    let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
+                    let new_count = ids.len();
+                    db::logs::write_log_key(
+                        &conn,
+                        "INFO",
+                        "check.auto",
+                        &json!({"owner": &source.owner, "repo": &source.repo, "count": new_count}).to_string(),
+                    );
+                    (ids, saved)
+                }
+                Err(e) => {
+                    let state = app.state::<AppState>();
+                    let conn = state.db.get().unwrap();
+                    db::logs::write_log_key(
+                        &conn,
+                        "ERROR",
+                        "check.failed",
+                        &json!({"owner": &source.owner, "repo": &source.repo, "error": &e}).to_string(),
+                    );
+                    (vec![], vec![])
+                }
             }
-            Err(e) => {
-                let state = app.state::<AppState>();
-                let conn = state.db.get().unwrap();
-                db::logs::write_log_key(
-                    &conn,
-                    "ERROR",
-                    "check.failed",
-                    &json!({"owner": &source.owner, "repo": &source.repo, "error": &e}).to_string(),
-                );
-            }
+        }));
+    }
+
+    let mut all_new_ids = Vec::new();
+    let mut all_saved = Vec::new();
+    for handle in handles {
+        if let Ok((ids, saved)) = handle.await {
+            all_new_ids.extend(ids);
+            all_saved.extend(saved);
         }
     }
 
@@ -337,7 +364,7 @@ fn collect_pending_and_notify(
 }
 
 pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc<AtomicI64>) {
-    std::thread::spawn(move || {
+    tauri::async_runtime::spawn(async move {
         // Save the initial next_poll_at so restart can restore it
         let initial = next_poll.load(Ordering::Relaxed);
         if let Ok(conn) = app_handle.state::<AppState>().db.get() {
@@ -353,16 +380,13 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
                 if !is_poll_running() {
                     return;
                 }
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                 if chrono::Utc::now().timestamp() >= target {
                     break;
                 }
             }
 
-            let app_clone = app_handle.clone();
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                do_poll_sync(app_clone);
-            }));
+            do_poll_async(app_handle.clone()).await;
 
             let now = chrono::Utc::now().timestamp();
             let interval = {

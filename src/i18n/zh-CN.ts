@@ -10,6 +10,7 @@ export default {
   'app.check_soon': '即将检查...',
   'app.min_sec': '{0}分{1}秒',
   'app.already_latest': '已经是最新版本',
+  'app.new_found': '发现 {0} 个新版本',
   'app.no_sources': '没有监控源',
 
   'source.placeholder': 'GitHub 仓库 URL 或 owner/repo (如 https://github.com/microsoft/vscode)',

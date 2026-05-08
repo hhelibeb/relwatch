@@ -143,7 +143,7 @@ pub fn set_github_token(
 }
 
 #[tauri::command]
-pub fn test_deepseek_connection(state: tauri::State<AppState>) -> Result<String, String> {
+pub async fn test_deepseek_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let (model, base_url, api_key, deepseek_proxy_enabled, proxy_url);
     {
         let conn = state.db.get().unwrap();
@@ -175,10 +175,11 @@ pub fn test_deepseek_connection(state: tauri::State<AppState>) -> Result<String,
         ))
         .json(&body)
         .send()
+        .await
         .map_err(|e| format!("请求失败: {}", e))?;
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().unwrap_or_default();
+        let text = resp.text().await.unwrap_or_default();
         return Err(format!("API 返回错误 {}: {}", status, text));
     }
     Ok("连接成功".to_string())

@@ -46,7 +46,5 @@ pub fn set_notification_state(
 
 #[tauri::command]
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
-    tokio::task::spawn_blocking(move || poll::check_single_source(app, id))
-        .await
-        .map_err(|e| e.to_string())?
+    poll::check_single_source(app, id).await
 }

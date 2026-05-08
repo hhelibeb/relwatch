@@ -32,7 +32,7 @@ pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>) 
     (enabled, model, base_url, api_key)
 }
 
-pub fn build_client(api_key: &str, proxy_url: &str) -> Result<reqwest::blocking::Client, String> {
+pub fn build_client(api_key: &str, proxy_url: &str) -> Result<reqwest::Client, String> {
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
         reqwest::header::AUTHORIZATION,
@@ -43,7 +43,7 @@ pub fn build_client(api_key: &str, proxy_url: &str) -> Result<reqwest::blocking:
         reqwest::header::CONTENT_TYPE,
         reqwest::header::HeaderValue::from_static("application/json"),
     );
-    let mut builder = reqwest::blocking::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .default_headers(headers)
         .timeout(std::time::Duration::from_secs(60))
         .connect_timeout(std::time::Duration::from_secs(10));
@@ -55,8 +55,8 @@ pub fn build_client(api_key: &str, proxy_url: &str) -> Result<reqwest::blocking:
     builder.build().map_err(|e| e.to_string())
 }
 
-fn call_summary(
-    client: &reqwest::blocking::Client,
+async fn call_summary(
+    client: &reqwest::Client,
     model: &str,
     base_url: &str,
     body_text: &str,
@@ -81,36 +81,56 @@ fn call_summary(
         "max_tokens": 300,
         "response_format": {"type": "json_object"}
     });
-    let resp = client
-        .post(format!(
-            "{}/v1/chat/completions",
-            base_url.trim_end_matches('/')
-        ))
-        .json(&body_json)
-        .send()
-        .map_err(|e| format!("DeepSeek 请求失败: {}", e))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().unwrap_or_default();
-        return Err(format!("DeepSeek API 返回错误 {}: {}", status, text));
+
+    let max_retries = 3;
+    let mut attempt = 0;
+    loop {
+        let resp = client
+            .post(format!(
+                "{}/v1/chat/completions",
+                base_url.trim_end_matches('/')
+            ))
+            .json(&body_json)
+            .send()
+            .await
+            .map_err(|e| format!("DeepSeek 请求失败: {}", e))?;
+        if resp.status().is_success() {
+            let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
+            let content = json["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content))?;
+            let summary = parsed["summary"].as_str().unwrap_or("").to_string();
+            let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
+            if summary.is_empty() {
+                return Err("摘要为空".to_string());
+            }
+            return Ok((summary, importance));
+        }
+
+        let status = resp.status().as_u16();
+        let text = resp.text().await.unwrap_or_default();
+        let msg = format!("DeepSeek API 返回错误 {}: {}", status, text);
+
+        // 429: 指数退避重试
+        if status == 429 {
+            attempt += 1;
+            if attempt > max_retries {
+                return Err(format!("重试{}次后仍然失败: {}", max_retries, msg));
+            }
+            let delay = std::time::Duration::from_secs(1 << attempt);
+            log::warn!("DeepSeek 限流(429), {}后重试({}/{}): {}", delay.as_secs(), attempt, max_retries, msg);
+            tokio::time::sleep(delay).await;
+            continue;
+        }
+        return Err(msg);
     }
-    let json: serde_json::Value = resp.json().map_err(|e| format!("解析响应失败: {}", e))?;
-    let content = json["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content))?;
-    let summary = parsed["summary"].as_str().unwrap_or("").to_string();
-    let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
-    if summary.is_empty() {
-        return Err("摘要为空".to_string());
-    }
-    Ok((summary, importance))
 }
 
-pub fn generate_summaries_for_new(
+pub async fn generate_summaries_for_new(
     app: &tauri::AppHandle,
     saved: &[(i64, Option<String>)],
 ) {
@@ -155,39 +175,137 @@ pub fn generate_summaries_for_new(
         }
     };
 
+    let mut handles = Vec::new();
     for (release_id, body) in saved {
         let body_text = match body {
             Some(b) if !b.is_empty() => b,
             _ => continue,
         };
         let truncated: String = body_text.chars().take(4000).collect();
-        match call_summary(&client, &model, &base_url, &truncated) {
-            Ok((summary, importance)) => {
-                let state = app.state::<AppState>();
-                let conn = state.db.get().unwrap();
-                if let Err(e) = db::releases::set_ai_summary(
-                    &conn, *release_id, &summary, &importance,
-                ) {
-                    log::error!("保存摘要失败 id={}: {}", release_id, e);
-                } else {
-                    let rel = db::releases::get_release(&conn, *release_id).ok().flatten();
-                    match rel {
-                        Some(r) => db::logs::write_log(
-                            &conn,
-                            "INFO",
-                            &format!("AI 摘要已生成: {}/{} {} 重要度={}", r.owner, r.repo, r.tag_name, importance),
-                        ),
-                        None => db::logs::write_log(
-                            &conn,
-                            "INFO",
-                            &format!("AI 摘要已生成: id={} 重要度={}", release_id, importance),
-                        ),
+        let client = client.clone();
+        let model = model.clone();
+        let base_url = base_url.clone();
+        let app = app.clone();
+        let release_id = *release_id;
+
+        handles.push(tokio::spawn(async move {
+            match call_summary(&client, &model, &base_url, &truncated).await {
+                Ok((summary, importance)) => {
+                    let state = app.state::<AppState>();
+                    let conn = state.db.get().unwrap();
+                    if let Err(e) = db::releases::set_ai_summary(
+                        &conn, release_id, &summary, &importance,
+                    ) {
+                        log::error!("保存摘要失败 id={}: {}", release_id, e);
+                    } else {
+                        let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+                        match rel {
+                            Some(r) => db::logs::write_log(
+                                &conn,
+                                "INFO",
+                                &format!("AI 摘要已生成: {}/{} {} 重要度={}", r.owner, r.repo, r.tag_name, importance),
+                            ),
+                            None => db::logs::write_log(
+                                &conn,
+                                "INFO",
+                                &format!("AI 摘要已生成: id={} 重要度={}", release_id, importance),
+                            ),
+                        }
                     }
                 }
+                Err(e) => {
+                    log::error!("生成摘要失败 id={}: {}", release_id, e);
+                }
             }
-            Err(e) => {
-                log::error!("生成摘要失败 id={}: {}", release_id, e);
-            }
-        }
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+
+    fn sample_response() -> serde_json::Value {
+        serde_json::json!({
+            "choices": [{
+                "message": {
+                    "content": r#"{"summary":"测试摘要内容","importance":"中"}"#
+                }
+            }]
+        })
+    }
+
+    #[tokio::test]
+    async fn test_call_summary_200_success() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_response()))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        assert!(result.is_ok());
+        let (summary, importance) = result.unwrap();
+        assert_eq!(summary, "测试摘要内容");
+        assert_eq!(importance, "中");
+    }
+
+    #[tokio::test]
+    async fn test_call_summary_429_then_200() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_response()))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_call_summary_429_exhausted() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("重试3次后仍然失败"));
+    }
+
+    #[tokio::test]
+    async fn test_call_summary_400_no_retry() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        assert!(result.is_err());
+        // 非429不重试，错误不应包含"重试"
+        assert!(!result.unwrap_err().contains("重试"));
     }
 }

@@ -128,6 +128,8 @@ async function handlePoll() {
     startCountdown()
     if (result.new_releases.length === 0) {
       showToast(t('app.already_latest'))
+    } else {
+      showToast(t('app.new_found', [result.new_releases.length]))
     }
   } finally {
     polling.value = false
@@ -137,6 +139,8 @@ async function handlePoll() {
 function handleSourceCheckResult(count: number) {
   if (count === 0) {
     showToast(t('app.already_latest'))
+  } else {
+    showToast(t('app.new_found', [count]))
   }
 }
 

@@ -1,5 +1,5 @@
-pub fn build_http_client(proxy_url: &str, github_token: Option<&str>) -> Result<reqwest::blocking::Client, String> {
-    let mut builder = reqwest::blocking::Client::builder()
+pub fn build_http_client(proxy_url: &str, github_token: Option<&str>) -> Result<reqwest::Client, String> {
+    let mut builder = reqwest::Client::builder()
         .user_agent("RelWatch/0.4")
         .timeout(std::time::Duration::from_secs(30))
         .connect_timeout(std::time::Duration::from_secs(10));
