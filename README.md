@@ -14,6 +14,14 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。
 | 多语言 | 中文 / English |
 | 安全存储 | GitHub Token、API Key 加密存储 |
 
+## 安装
+
+从 [GitHub Releases](https://github.com/hhelibeb/relwatch/releases/latest) 页面下载对应平台的最新安装包即可。
+
+## 界面
+
+![Screenshot](images/screenshot.png)
+
 ## 技术栈
 
 Tauri v2 + Rust + Vue 3 + TypeScript + SQLite
