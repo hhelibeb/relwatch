@@ -16,7 +16,7 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。
 
 ## 安装
 
-从 [GitHub Releases](https://github.com/hhelibeb/relwatch/releases/latest) 页面下载对应平台的最新安装包即可。
+从 [GitHub Releases](https://github.com/hhelibeb/relwatch/releases/latest) 页面下载安装包安装即可。
 
 ## 界面
 
