@@ -13,8 +13,8 @@
     "windows": [
       {
         "title": "RelWatch",
-        "width": 900,
-        "height": 650,
+        "width": 750,
+        "height": 750,
         "minWidth": 700,
         "minHeight": 450,
         "resizable": true,
