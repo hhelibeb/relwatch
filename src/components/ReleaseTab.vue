@@ -202,6 +202,16 @@ const monthGrid = computed(() => {
   return cells
 })
 
+const now = new Date()
+const currentYear = now.getFullYear()
+const currentMonth = now.getMonth() + 1
+
+const isNextDisabled = computed(() => {
+  const nextY = calendarMonth.value === 12 ? calendarYear.value + 1 : calendarYear.value
+  const nextM = calendarMonth.value === 12 ? 1 : calendarMonth.value + 1
+  return nextY > currentYear || (nextY === currentYear && nextM > currentMonth)
+})
+
 function prevMonth() {
   if (calendarMonth.value === 1) {
     calendarMonth.value = 12
@@ -212,6 +222,9 @@ function prevMonth() {
 }
 
 function nextMonth() {
+  let y = calendarMonth.value === 12 ? calendarYear.value + 1 : calendarYear.value
+  let m = calendarMonth.value === 12 ? 1 : calendarMonth.value + 1
+  if (y > currentYear || (y === currentYear && m > currentMonth)) return
   if (calendarMonth.value === 12) {
     calendarMonth.value = 1
     calendarYear.value++
@@ -242,6 +255,7 @@ function handleCellLeave() {
 
 function handleCellClick(cell: CalendarCell) {
   if (!cell.isCurrentMonth || cell.count === 0) return
+  tooltip.value = null
   selectedDate.value = cell.key
 }
 
@@ -483,7 +497,7 @@ function handleOpenLink() {
             <svg><use href="/icons.svg#chevron-left-icon"/></svg>
           </button>
           <span class="calendar-month-label">{{ monthLabel }}</span>
-          <button @click="nextMonth">
+          <button @click="nextMonth" :disabled="isNextDisabled">
             <svg><use href="/icons.svg#chevron-right-icon"/></svg>
           </button>
         </div>
