@@ -2,7 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import { type NotificationStatus, type ReleaseInfo, openReleaseUrl, setNotificationState } from '../api'
 import { t, getLocale } from '../i18n'
-import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
+import { formatDate, isReadStatus, isUnreadStatus, releaseMatchesSearch, statusClass, statusLabel } from '../utils'
 
 const props = defineProps<{ releases: ReleaseInfo[]; search?: string }>()
 const emit = defineEmits<{ update: []; 'update:search': [value: string] }>()
@@ -35,13 +35,7 @@ onUnmounted(() => document.removeEventListener('click', closeMenus))
 const filteredReleases = computed(() => {
   const q = releaseSearch.value.trim().toLowerCase()
   if (!q) return props.releases
-  return props.releases.filter(r =>
-    r.owner.toLowerCase().includes(q) ||
-    r.repo.toLowerCase().includes(q) ||
-    r.tag_name.toLowerCase().includes(q) ||
-    r.release_name.toLowerCase().includes(q) ||
-    (r.body || '').toLowerCase().includes(q)
-  )
+  return props.releases.filter(r => releaseMatchesSearch(r, q))
 })
 
 // 按发布时间排序（最新在前）

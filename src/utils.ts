@@ -1,5 +1,13 @@
 import { t, getLocale } from './i18n'
 
+interface SearchableRelease {
+  owner: string
+  repo: string
+  tag_name: string
+  release_name: string
+  body: string | null
+}
+
 export function importanceLabel(imp: string | null): string {
   if (!imp) return ''
   switch (imp) {
@@ -12,6 +20,19 @@ export function importanceLabel(imp: string | null): string {
 
 export function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleString(getLocale())
+}
+
+export function releaseMatchesSearch(release: SearchableRelease, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+
+  const repoName = `${release.owner}/${release.repo}`.toLowerCase()
+  return repoName.includes(q) ||
+    release.owner.toLowerCase().includes(q) ||
+    release.repo.toLowerCase().includes(q) ||
+    release.tag_name.toLowerCase().includes(q) ||
+    release.release_name.toLowerCase().includes(q) ||
+    (release.body || '').toLowerCase().includes(q)
 }
 
 export function logLevelClass(level: string): string {
