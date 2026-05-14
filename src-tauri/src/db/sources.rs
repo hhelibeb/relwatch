@@ -9,6 +9,11 @@ pub struct Source {
     pub repo: String,
     pub poll_interval_minutes: i64,
     pub enabled: bool,
+    pub last_checked_at: Option<String>,
+    pub last_check_status: String,
+    pub last_check_message: Option<String>,
+    pub consecutive_failures: i64,
+    pub last_new_count: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -32,6 +37,23 @@ pub fn add_source(
     Ok(conn.last_insert_rowid())
 }
 
+pub fn source_exists(
+    conn: &Connection,
+    source_type: &str,
+    owner: &str,
+    repo: &str,
+) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT 1 FROM sources
+             WHERE source_type = ?1 AND lower(owner) = lower(?2) AND lower(repo) = lower(?3)
+             LIMIT 1",
+        )
+        .map_err(|e| e.to_string())?;
+    stmt.exists(params![source_type, owner, repo])
+        .map_err(|e| e.to_string())
+}
+
 pub fn remove_source(conn: &Connection, id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM sources WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
@@ -41,7 +63,9 @@ pub fn remove_source(conn: &Connection, id: i64) -> Result<(), String> {
 pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled, created_at, updated_at
+            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
+                    last_checked_at, last_check_status, last_check_message,
+                    consecutive_failures, last_new_count, created_at, updated_at
              FROM sources WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -55,8 +79,13 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
                 repo: row.get(3)?,
                 poll_interval_minutes: row.get(4)?,
                 enabled: row.get::<_, i64>(5)? != 0,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                last_checked_at: row.get(6)?,
+                last_check_status: row.get(7)?,
+                last_check_message: row.get(8)?,
+                consecutive_failures: row.get(9)?,
+                last_new_count: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -83,10 +112,47 @@ pub fn update_source(
     Ok(())
 }
 
+pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE sources
+         SET last_checked_at = ?1,
+             last_check_status = 'ok',
+             last_check_message = NULL,
+             consecutive_failures = 0,
+             last_new_count = ?2,
+             updated_at = ?1
+         WHERE id = ?3",
+        params![now, new_count as i64, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let trimmed: String = message.chars().take(500).collect();
+    conn.execute(
+        "UPDATE sources
+         SET last_checked_at = ?1,
+             last_check_status = 'error',
+             last_check_message = ?2,
+             consecutive_failures = consecutive_failures + 1,
+             last_new_count = 0,
+             updated_at = ?1
+         WHERE id = ?3",
+        params![now, trimmed, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled, created_at, updated_at
+            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
+                    last_checked_at, last_check_status, last_check_message,
+                    consecutive_failures, last_new_count, created_at, updated_at
              FROM sources ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -100,8 +166,13 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
                 repo: row.get(3)?,
                 poll_interval_minutes: row.get(4)?,
                 enabled: row.get::<_, i64>(5)? != 0,
-                created_at: row.get(6)?,
-                updated_at: row.get(7)?,
+                last_checked_at: row.get(6)?,
+                last_check_status: row.get(7)?,
+                last_check_message: row.get(8)?,
+                consecutive_failures: row.get(9)?,
+                last_new_count: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -125,6 +196,8 @@ mod tests {
         assert_eq!(sources.len(), 1);
         assert_eq!(sources[0].owner, "microsoft");
         assert!(sources[0].enabled);
+        assert_eq!(sources[0].last_check_status, "unknown");
+        assert_eq!(sources[0].consecutive_failures, 0);
     }
 
     #[test]
@@ -143,6 +216,27 @@ mod tests {
         let s = &list_sources(&conn).unwrap()[0];
         assert!(!s.enabled);
         assert_eq!(s.poll_interval_minutes, 60);
+    }
+
+    #[test]
+    fn test_source_health_success_and_failure() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "x", "y").unwrap();
+
+        record_check_failure(&conn, id, "network failed").unwrap();
+        let s = &list_sources(&conn).unwrap()[0];
+        assert_eq!(s.last_check_status, "error");
+        assert_eq!(s.last_check_message.as_deref(), Some("network failed"));
+        assert_eq!(s.consecutive_failures, 1);
+        assert_eq!(s.last_new_count, 0);
+        assert!(s.last_checked_at.is_some());
+
+        record_check_success(&conn, id, 3).unwrap();
+        let s = &list_sources(&conn).unwrap()[0];
+        assert_eq!(s.last_check_status, "ok");
+        assert!(s.last_check_message.is_none());
+        assert_eq!(s.consecutive_failures, 0);
+        assert_eq!(s.last_new_count, 3);
     }
 
     #[test]

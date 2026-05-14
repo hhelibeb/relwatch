@@ -79,6 +79,11 @@ fn apply_schema(conn: &Connection) -> Result<()> {
             repo TEXT NOT NULL,
             poll_interval_minutes INTEGER NOT NULL DEFAULT 30,
             enabled INTEGER NOT NULL DEFAULT 1,
+            last_checked_at TEXT,
+            last_check_status TEXT NOT NULL DEFAULT 'unknown',
+            last_check_message TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            last_new_count INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(source_type, owner, repo)
@@ -157,6 +162,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "ALTER TABLE logs ADD COLUMN message_key TEXT;
              ALTER TABLE logs ADD COLUMN message_args TEXT;",
+        )?;
+    }
+    let has_source_health: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='last_checked_at'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_source_health {
+        conn.execute_batch(
+            "ALTER TABLE sources ADD COLUMN last_checked_at TEXT;
+             ALTER TABLE sources ADD COLUMN last_check_status TEXT NOT NULL DEFAULT 'unknown';
+             ALTER TABLE sources ADD COLUMN last_check_message TEXT;
+             ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE sources ADD COLUMN last_new_count INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
     Ok(())

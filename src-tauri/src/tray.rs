@@ -6,12 +6,17 @@ use tauri::{
 
 pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let sources = MenuItemBuilder::with_id("tray_sources", "监控源").build(app)?;
+    let releases = MenuItemBuilder::with_id("tray_releases", "版本列表").build(app)?;
     let settings = MenuItemBuilder::with_id("tray_settings", "设置").build(app)?;
+    let check_now = MenuItemBuilder::with_id("tray_check_now", "立即检查").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
 
     let menu = MenuBuilder::new(app)
         .item(&sources)
+        .item(&releases)
         .item(&settings)
+        .separator()
+        .item(&check_now)
         .separator()
         .item(&quit)
         .build()?;
@@ -32,12 +37,22 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
                         let _ = app.emit("navigate", "sources");
                     }
                 }
+                "tray_releases" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                        let _ = app.emit("navigate", "releases");
+                    }
+                }
                 "tray_settings" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
                         let _ = app.emit("navigate", "settings");
                     }
+                }
+                "tray_check_now" => {
+                    crate::poll::trigger_poll_async(app.clone());
                 }
                 "quit" => {
                     crate::poll::stop_poll();

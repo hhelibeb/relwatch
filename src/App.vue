@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, provide } from 'vue'
+import { computed, ref, onMounted, provide } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import {
   type Source,
@@ -14,6 +14,7 @@ import {
   getPollCountdown,
 } from './api'
 import { t, setLocale } from './i18n'
+import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
 import LogTab from './components/LogTab.vue'
@@ -40,7 +41,9 @@ const settings = ref<AppSettings>({
 })
 
 const countdown = ref('')
+const releaseSearch = ref('')
 const polling = ref(false)
+const sourceChecking = ref(false)
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 let countdownSeconds = 0
 let countdownReady = false
@@ -68,6 +71,20 @@ function showToast(msg: string) {
 
 provide('showToast', showToast)
 
+function repoKey(owner: string, repo: string): string {
+  return `${owner}/${repo}`.toLowerCase()
+}
+
+const unreadReleaseCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {}
+  for (const release of releases.value) {
+    if (!isUnreadStatus(release.notification_status)) continue
+    const key = repoKey(release.owner, release.repo)
+    counts[key] = (counts[key] || 0) + 1
+  }
+  return counts
+})
+
 function formatCountdown(secs: number) {
   if (secs <= 0) return t('app.check_soon')
   const m = Math.floor(secs / 60)
@@ -79,20 +96,26 @@ async function loadAll() {
   await Promise.allSettled([loadSources(), loadReleases(), loadLogs(), loadSettings()])
 }
 
-async function loadSources() { sources.value = await listSources() }
-async function loadReleases() { releases.value = await getReleases() }
-async function loadLogs() { logs.value = await getLogs(100) }
+async function loadSources() {
+  sources.value = await listSources()
+}
+async function loadReleases() {
+  releases.value = await getReleases()
+}
+async function loadLogs() {
+  logs.value = await getLogs(100)
+}
 async function loadSettings() {
   settings.value = await getSettings()
   setLocale(settings.value.language)
 }
 
-async function syncCountdown() {
+async function syncCountdown(refreshLogsOnJump = true) {
   const secs = await getPollCountdown()
   const prev = countdownSeconds
   countdownSeconds = secs
   countdown.value = formatCountdown(secs)
-  if (countdownReady && secs > prev + 30) {
+  if (refreshLogsOnJump && countdownReady && secs > prev + 30) {
     await loadLogs()
   }
   countdownReady = true
@@ -115,6 +138,7 @@ function startCountdown() {
 }
 
 async function handlePoll() {
+  if (polling.value || sourceChecking.value) return
   const enabled = sources.value.filter(s => s.enabled)
   if (enabled.length === 0) {
     showToast(t('app.no_sources'))
@@ -123,9 +147,6 @@ async function handlePoll() {
   polling.value = true
   try {
     const result = await triggerPoll()
-    await loadReleases()
-    await loadLogs()
-    startCountdown()
     if (result.new_releases.length === 0) {
       showToast(t('app.already_latest'))
     } else {
@@ -142,6 +163,11 @@ function handleSourceCheckResult(count: number) {
   } else {
     showToast(t('app.new_found', [count]))
   }
+}
+
+function openSourceReleases(query: string) {
+  releaseSearch.value = query
+  activeTab.value = 'releases'
 }
 
 onMounted(async () => {
@@ -162,15 +188,21 @@ onMounted(async () => {
   document.addEventListener('click', closeSelectionMenu)
 
   listen<string>('navigate', (event) => {
-    if (event.payload === 'sources' || event.payload === 'settings') {
+    if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {
       activeTab.value = event.payload as 'sources' | 'releases' | 'logs' | 'settings'
     }
   })
 
   listen('poll-completed', () => {
+    loadSources()
     loadReleases()
     loadLogs()
-    syncCountdown()
+    syncCountdown(false)
+  })
+
+  listen('release-state-changed', () => {
+    loadReleases()
+    loadLogs()
   })
 })
 </script>
@@ -180,8 +212,8 @@ onMounted(async () => {
     <header class="app-header">
       <div class="header-top">
         <h1>{{ t('app.title') }}</h1>
-        <button class="btn-primary" :disabled="polling" @click="handlePoll">
-          {{ polling ? t('app.checking') : t('app.check_now') }}
+        <button class="btn-primary" :disabled="polling || sourceChecking" @click="handlePoll">
+          {{ polling || sourceChecking ? t('app.checking') : t('app.check_now') }}
         </button>
       </div>
       <div class="header-bottom">
@@ -196,10 +228,12 @@ onMounted(async () => {
     </header>
 
     <main class="app-main">
-      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling"
+      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts"
         @update="loadSources(); loadReleases(); loadLogs()"
-        @check-result="handleSourceCheckResult" />
-      <ReleaseTab v-show="activeTab === 'releases'" :releases="releases" />
+        @check-result="handleSourceCheckResult"
+        @check-busy="sourceChecking = $event"
+        @open-releases="openSourceReleases" />
+      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" :releases="releases" @update="loadReleases(); loadLogs()" />
       <LogTab v-show="activeTab === 'logs'" :logs="logs" @update="loadLogs()" />
       <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged) => { loadSettings(); if (pollChanged) startCountdown(); loadLogs() }" />
     </main>

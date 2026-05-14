@@ -13,6 +13,9 @@ pub async fn add_source(
 ) -> Result<i64, String> {
     {
         let conn = state.db.get().unwrap();
+        if db::sources::source_exists(&conn, &source_type, &owner, &repo)? {
+            return Ok(0);
+        }
         let proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         let github_token = get_setting(&conn, KEY_GITHUB_TOKEN)
             .ok()
@@ -35,6 +38,9 @@ pub async fn add_source(
     }
     let conn = state.db.get().unwrap();
     let id = db::sources::add_source(&conn, &source_type, &owner, &repo)?;
+    if id == 0 {
+        return Ok(0);
+    }
     db::logs::write_log_key(
         &conn,
         "INFO",

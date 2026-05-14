@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { inject, ref, onMounted, onUnmounted } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
 import {
   type Source,
@@ -11,13 +11,20 @@ import {
   openReleaseUrl,
 } from '../api'
 import { t } from '../i18n'
+import { formatDate } from '../utils'
 
-const props = defineProps<{ sources: Source[]; polling: boolean }>()
-const emit = defineEmits<{ update: []; checkResult: [count: number] }>()
+const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number> }>()
+const emit = defineEmits<{
+  update: []
+  checkResult: [count: number]
+  checkBusy: [busy: boolean]
+  openReleases: [query: string]
+}>()
 
 const urlInput = ref('')
 const loading = ref(false)
 const checkingId = ref<number | null>(null)
+const showToast = inject<((msg: string) => void) | undefined>('showToast', undefined)
 
 const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
 
@@ -27,6 +34,29 @@ onUnmounted(() => document.removeEventListener('click', closeContextMenu))
 
 function openSourceUrl(owner: string, repo: string) {
   openReleaseUrl(`https://github.com/${owner}/${repo}`)
+}
+
+function sourceQuery(source: Source): string {
+  return `${source.owner}/${source.repo}`
+}
+
+function sourceKey(source: Source): string {
+  return sourceQuery(source).toLowerCase()
+}
+
+function unreadReleaseCount(source: Source): number {
+  return props.unreadReleaseCounts[sourceKey(source)] || 0
+}
+
+function openSourceReleases(source: Source) {
+  emit('openReleases', sourceQuery(source))
+}
+
+function sourceExists(owner: string, repo: string): boolean {
+  return props.sources.some(source =>
+    source.owner.toLowerCase() === owner.toLowerCase() &&
+    source.repo.toLowerCase() === repo.toLowerCase()
+  )
 }
 
 function handleContextMenu(e: MouseEvent, url: string) {
@@ -51,9 +81,17 @@ async function handleAdd() {
     await message(t('source.invalid_url'), { title: t('source.input_invalid'), kind: 'warning' })
     return
   }
+  if (sourceExists(parsed.owner, parsed.repo)) {
+    showToast?.(t('source.exists'))
+    return
+  }
   loading.value = true
   try {
-    await addSource('github', parsed.owner, parsed.repo)
+    const id = await addSource('github', parsed.owner, parsed.repo)
+    if (id === 0) {
+      showToast?.(t('source.exists'))
+      return
+    }
     urlInput.value = ''
     emit('update')
   } catch (e: any) {
@@ -82,7 +120,9 @@ async function handleToggle(source: Source) {
 }
 
 async function handleCheckSingle(id: number) {
+  if (props.polling || checkingId.value !== null) return
   checkingId.value = id
+  emit('checkBusy', true)
   try {
     const result = await checkSingleSource(id)
     emit('update')
@@ -91,33 +131,84 @@ async function handleCheckSingle(id: number) {
     await message(t('source.check_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
   } finally {
     checkingId.value = null
+    emit('checkBusy', false)
   }
+}
+
+function sourceHealthClass(source: Source): string {
+  if (!source.enabled) return 'health-paused'
+  if (source.last_check_status === 'ok') return 'health-ok'
+  if (source.last_check_status === 'error') return 'health-error'
+  return 'health-unknown'
+}
+
+function sourceHealthLabel(source: Source): string {
+  if (!source.enabled) return t('source.health_paused')
+  if (source.last_check_status === 'ok') {
+    return t('source.no_pending_updates')
+  }
+  if (source.last_check_status === 'error') return t('source.health_error')
+  return t('source.health_unknown')
+}
+
+function sourceCheckedText(source: Source): string {
+  if (!source.last_checked_at) return t('source.never_checked')
+  return t('source.last_checked', formatDate(source.last_checked_at))
 }
 </script>
 
 <template>
   <section class="tab-content">
     <div class="add-source">
-      <input
-        v-model="urlInput"
-        :placeholder="t('source.placeholder')"
-        @keyup.enter="handleAdd"
-      />
+      <div class="input-clear-wrap">
+        <input
+          v-model="urlInput"
+          :placeholder="t('source.placeholder')"
+          @keyup.enter="handleAdd"
+        />
+        <button v-if="urlInput" type="button" class="input-clear-btn" :title="t('input.clear')" @click="urlInput = ''">✕</button>
+      </div>
       <button :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
     </div>
     <div class="source-list">
       <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
       <div v-for="source in props.sources" :key="source.id" class="source-item">
-        <div class="source-info">
-          <span class="source-name">{{ source.owner }}/{{ source.repo }}</span>
-          <button class="btn-icon-link" @click="openSourceUrl(source.owner, source.repo)" @contextmenu.prevent.stop="handleContextMenu($event, `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
-            <svg><use href="/icons.svg#link-icon"/></svg>
-          </button>
-          <span v-if="source.enabled" class="badge badge-on">{{ t('source.enabled') }}</span>
-          <span v-else class="badge badge-off">{{ t('source.paused') }}</span>
+        <div class="source-main">
+          <div class="source-info">
+            <span class="source-name">{{ source.owner }}/{{ source.repo }}</span>
+            <button class="btn-icon-link" @click="openSourceUrl(source.owner, source.repo)" @contextmenu.prevent.stop="handleContextMenu($event, `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
+              <svg><use href="/icons.svg#link-icon"/></svg>
+            </button>
+            <span v-if="source.enabled" class="badge badge-on">{{ t('source.enabled') }}</span>
+            <span v-else class="badge badge-off">{{ t('source.paused') }}</span>
+          </div>
+          <div class="source-health">
+            <span class="health-dot" :class="sourceHealthClass(source)"></span>
+            <template v-if="source.enabled && source.last_check_status === 'ok'">
+              <button
+                v-if="unreadReleaseCount(source) > 0"
+                class="source-pending-link"
+                @click="openSourceReleases(source)"
+              >
+                {{ t('source.pending_updates', String(unreadReleaseCount(source))) }}
+              </button>
+              <span v-else class="source-health-label source-health-label-empty" aria-label="ok"></span>
+              <span class="source-health-meta">{{ sourceCheckedText(source) }}</span>
+            </template>
+            <template v-else>
+              <span class="source-health-label">{{ sourceHealthLabel(source) }}</span>
+              <span class="source-health-meta">{{ sourceCheckedText(source) }}</span>
+              <span v-if="source.consecutive_failures > 0" class="source-health-meta">
+                {{ t('source.failure_count', String(source.consecutive_failures)) }}
+              </span>
+            </template>
+          </div>
+          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error" :title="source.last_check_message">
+            {{ source.last_check_message }}
+          </div>
         </div>
         <div class="source-actions">
-          <button class="btn-sm btn-check" :disabled="checkingId === source.id || (props.polling && source.enabled)" @click="handleCheckSingle(source.id)">{{ checkingId === source.id || (props.polling && source.enabled) ? t('source.checking') : t('source.check') }}</button>
+          <button class="btn-sm btn-check" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)">{{ checkingId === source.id ? t('source.checking') : t('source.check') }}</button>
           <button class="btn-sm" :class="source.enabled ? 'btn-yellow' : 'btn-green'" @click="handleToggle(source)">
             {{ source.enabled ? t('source.pause') : t('source.resume') }}
           </button>

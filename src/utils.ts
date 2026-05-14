@@ -23,15 +23,21 @@ export function logLevelClass(level: string): string {
 }
 
 export function statusLabel(status: string): string {
-  switch (status) {
-    case 'pending': return t('status.pending')
-    case 'ignored': return t('status.ignored')
-    case 'snoozed': return t('status.snoozed')
-    case 'clicked': return t('status.viewed')
-    default: return status
-  }
+  if (isUnreadStatus(status)) return t('status.pending')
+  if (isReadStatus(status)) return t('status.viewed')
+  return status
 }
 
 export function statusClass(status: string): string {
-  return 'status-' + status
+  if (isUnreadStatus(status)) return 'status-unread'
+  if (isReadStatus(status)) return 'status-read'
+  return 'status-unknown'
+}
+
+export function isUnreadStatus(status: string): boolean {
+  return status === 'pending' || status === 'snoozed'
+}
+
+export function isReadStatus(status: string): boolean {
+  return status === 'clicked' || status === 'ignored'
 }

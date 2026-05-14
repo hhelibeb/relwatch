@@ -1,6 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 use tauri::AppHandle;
+use tauri::Emitter;
 use tauri::Manager;
 use tauri_plugin_opener::OpenerExt;
 use tauri_winrt_notification::Toast;
@@ -78,6 +79,7 @@ pub fn send_release_notification(
                             Some(r) => crate::db::logs::write_log_key(&conn, "INFO", "release.go", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string()),
                             None => crate::db::logs::write_log_key(&conn, "INFO", "release.go_unknown", &json!({"id": rid}).to_string()),
                         }
+                        let _ = app.emit("release-state-changed", rid);
                         drop(conn);
                         if !go_url.is_empty() {
                             if let Err(e) = app_handle.opener().open_url(&go_url, None::<&str>) {
@@ -94,15 +96,17 @@ pub fn send_release_notification(
                             Some(r) => crate::db::logs::write_log_key(&conn, "INFO", "release.ignored", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string()),
                             None => crate::db::logs::write_log_key(&conn, "INFO", "release.ignored_unknown", &json!({"id": rid}).to_string()),
                         }
+                        let _ = app.emit("release-state-changed", rid);
                     } else if let Some(rest) = action.strip_prefix("snooze:") {
                         let rid: i64 = rest.parse().unwrap_or(0);
                         let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
-                        let until = chrono::Utc::now() + chrono::Duration::minutes(60);
+                        let until = chrono::Utc::now() + chrono::Duration::hours(24);
                         let _ = crate::db::releases::set_notification_state(&conn, rid, "snoozed", Some(&until.to_rfc3339()));
                         match rel {
                             Some(r) => crate::db::logs::write_log_key(&conn, "INFO", "release.snoozed", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string()),
                             None => crate::db::logs::write_log_key(&conn, "INFO", "release.snoozed_unknown", &json!({"id": rid}).to_string()),
                         }
+                        let _ = app.emit("release-state-changed", rid);
                     }
                 }
                 Ok(())

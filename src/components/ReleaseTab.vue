@@ -1,24 +1,35 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { type ReleaseInfo, openReleaseUrl } from '../api'
+import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
+import { type NotificationStatus, type ReleaseInfo, openReleaseUrl, setNotificationState } from '../api'
 import { t, getLocale } from '../i18n'
-import { importanceLabel, formatDate } from '../utils'
+import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 
-const props = defineProps<{ releases: ReleaseInfo[] }>()
+const props = defineProps<{ releases: ReleaseInfo[]; search?: string }>()
+const emit = defineEmits<{ update: []; 'update:search': [value: string] }>()
+const showToast = inject<((msg: string) => void) | undefined>('showToast', undefined)
 
 type ViewMode = 'simple' | 'aggregated' | 'calendar'
 const viewMode = ref<ViewMode>('simple')
-const releaseSearch = ref('')
+const releaseSearch = computed({
+  get: () => props.search ?? '',
+  set: (value: string) => emit('update:search', value),
+})
 const expandedRepos = ref<Set<string>>(new Set())
 const selectedDate = ref<string | null>(null)
 const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth() + 1)
 const tooltip = ref<{ x: number; y: number; date: string; releases: ReleaseInfo[] } | null>(null)
+const summaryTooltip = ref<{ x: number; y: number; text: string } | null>(null)
 const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
+const updatingReleaseId = ref<number | null>(null)
+const snoozeMinutes = 24 * 60
 
-function closeContextMenu() { contextMenu.value = null }
-onMounted(() => document.addEventListener('click', closeContextMenu))
-onUnmounted(() => document.removeEventListener('click', closeContextMenu))
+function closeMenus() {
+  contextMenu.value = null
+  summaryTooltip.value = null
+}
+onMounted(() => document.addEventListener('click', closeMenus))
+onUnmounted(() => document.removeEventListener('click', closeMenus))
 
 // 筛选
 const filteredReleases = computed(() => {
@@ -295,12 +306,100 @@ function handleContextMenu(e: MouseEvent, url: string) {
 
 async function handleCopyLink() {
   try { await navigator.clipboard.writeText(contextMenu.value!.url) } catch { /* ignore */ }
-  closeContextMenu()
+  closeMenus()
 }
 
 function handleOpenLink() {
   openReleaseUrl(contextMenu.value!.url)
-  closeContextMenu()
+  closeMenus()
+}
+
+function placeSummaryTooltip(x: number, y: number, text: string) {
+  const maxWidth = 520
+  const margin = 16
+  const left = Math.max(margin, Math.min(x + 12, window.innerWidth - maxWidth - margin))
+  summaryTooltip.value = { x: left, y: y + 12, text }
+}
+
+function isSummaryTruncated(el: HTMLElement): boolean {
+  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1
+}
+
+function handleSummaryEnter(e: MouseEvent, summary: string | null) {
+  if (!summary) return
+  const el = e.currentTarget as HTMLElement
+  if (!isSummaryTruncated(el)) return
+  placeSummaryTooltip(e.clientX, e.clientY, summary)
+}
+
+function handleSummaryMove(e: MouseEvent) {
+  if (!summaryTooltip.value) return
+  placeSummaryTooltip(e.clientX, e.clientY, summaryTooltip.value.text)
+}
+
+function handleSummaryFocus(e: FocusEvent, summary: string | null) {
+  if (!summary) return
+  const el = e.currentTarget as HTMLElement
+  if (!isSummaryTruncated(el)) return
+  const rect = el.getBoundingClientRect()
+  placeSummaryTooltip(rect.left, rect.bottom, summary)
+}
+
+function hideSummaryTooltip() {
+  summaryTooltip.value = null
+}
+
+function statusSuccessMessage(status: NotificationStatus): string {
+  if (status === 'snoozed') return t('release.snooze_scheduled')
+  if (status === 'ignored') return t('release.notification_cancelled')
+  return ''
+}
+
+async function updateReleaseStatus(release: ReleaseInfo, status: NotificationStatus, minutes?: number) {
+  closeMenus()
+  updatingReleaseId.value = release.id
+  try {
+    await setNotificationState(release.id, status, minutes)
+    const msg = statusSuccessMessage(status)
+    if (msg) showToast?.(msg)
+    emit('update')
+  } catch (e: any) {
+    showToast?.(t('release.status_failed') + (e?.toString?.() ?? String(e)))
+  } finally {
+    updatingReleaseId.value = null
+  }
+}
+
+async function handleGoRelease(release: ReleaseInfo) {
+  openReleaseUrl(release.html_url)
+  if (isReadStatus(release.notification_status)) return
+  updatingReleaseId.value = release.id
+  try {
+    await setNotificationState(release.id, 'clicked')
+    emit('update')
+  } catch {
+    // Opening the release is the primary action; status sync is best-effort here.
+  } finally {
+    updatingReleaseId.value = null
+  }
+}
+
+function releaseDisplayTitle(release: ReleaseInfo): string {
+  const name = release.release_name.trim()
+  return name && name !== release.tag_name ? name : ''
+}
+
+function releaseImportanceText(release: ReleaseInfo): string {
+  return release.ai_importance || ''
+}
+
+function releaseImportanceClass(release: ReleaseInfo): string {
+  switch (release.ai_importance) {
+    case '大': return 'release-importance-high'
+    case '中': return 'release-importance-medium'
+    case '小': return 'release-importance-low'
+    default: return ''
+  }
 }
 </script>
 
@@ -309,11 +408,14 @@ function handleOpenLink() {
     <!-- ============ 简单视图 ============ -->
     <template v-if="viewMode === 'simple'">
       <div class="log-search-row">
-        <input
-          v-model="releaseSearch"
-          :placeholder="t('release.search')"
-          class="search-input"
-        />
+        <div class="input-clear-wrap">
+          <input
+            v-model="releaseSearch"
+            :placeholder="t('release.search')"
+            class="search-input"
+          />
+          <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
+        </div>
         <div class="view-tabs">
           <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
             <svg><use href="/icons.svg#list-icon"/></svg>
@@ -334,20 +436,37 @@ function handleOpenLink() {
           {{ releaseSearch ? t('release.no_match') : t('release.empty') }}
         </div>
         <div v-for="release in sortedReleases" :key="release.id" class="release-item"
-          :class="{ 'is-prerelease': release.prerelease }">
+          :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
           <div class="release-header">
-            <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-            <span class="release-tag">{{ release.tag_name }}</span>
-            <button class="btn-icon-link" @click="handleOpenUrl(release.html_url)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
-              <svg><use href="/icons.svg#link-icon"/></svg>
-            </button>
-            <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+            <div class="release-heading">
+              <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
+              <span class="release-tag">{{ release.tag_name }}</span>
+              <span class="release-dot">·</span>
+              <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
+              <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+            </div>
             <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
           </div>
-          <div class="release-title">{{ release.release_name }}</div>
-          <div v-if="release.ai_summary" class="release-ai-summary">
-            <span class="ai-badge" :class="'ai-' + (release.ai_importance || '')">{{ importanceLabel(release.ai_importance) }}</span>
-            {{ release.ai_summary }}
+          <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
+          <div v-if="release.ai_summary" class="release-summary-line">
+            <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+            <span
+              class="release-summary-text"
+              tabindex="0"
+              @mouseenter="handleSummaryEnter($event, release.ai_summary)"
+              @mousemove="handleSummaryMove"
+              @mouseleave="hideSummaryTooltip"
+              @focus="handleSummaryFocus($event, release.ai_summary)"
+              @blur="hideSummaryTooltip"
+            >{{ release.ai_summary }}</span>
+          </div>
+          <div class="release-actions">
+            <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
+            <button class="btn-icon-link release-link-action" :disabled="updatingReleaseId === release.id" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
+              <svg><use href="/icons.svg#link-icon"/></svg>
+            </button>
+            <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
+            <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
           </div>
         </div>
       </div>
@@ -356,12 +475,15 @@ function handleOpenLink() {
     <!-- ============ 聚合视图 ============ -->
     <template v-if="viewMode === 'aggregated'">
       <div class="log-search-row">
-        <input
-          v-model="releaseSearch"
-          :placeholder="t('release.search')"
-          class="search-input"
-          @keydown.enter.prevent="expandAllSearchResults"
-        />
+        <div class="input-clear-wrap">
+          <input
+            v-model="releaseSearch"
+            :placeholder="t('release.search')"
+            class="search-input"
+            @keydown.enter.prevent="expandAllSearchResults"
+          />
+          <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
+        </div>
         <div class="view-tabs">
           <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
             <svg><use href="/icons.svg#list-icon"/></svg>
@@ -401,19 +523,37 @@ function handleOpenLink() {
         </div>
         <div v-if="expandedRepos.has(group.key)" class="repo-group-body">
           <div v-for="release in group.releases" :key="release.id" class="release-item"
-            :class="{ 'is-prerelease': release.prerelease }">
+            :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
             <div class="release-header">
-              <span class="release-tag">{{ release.tag_name }}</span>
-              <button class="btn-icon-link" @click="handleOpenUrl(release.html_url)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
-                <svg><use href="/icons.svg#link-icon"/></svg>
-              </button>
-              <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+              <div class="release-heading">
+                <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
+                <span class="release-tag">{{ release.tag_name }}</span>
+                <span class="release-dot">·</span>
+                <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
+                <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+              </div>
               <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
             </div>
-            <div class="release-title">{{ release.release_name }}</div>
-            <div v-if="release.ai_summary" class="release-ai-summary">
-              <span class="ai-badge" :class="'ai-' + (release.ai_importance || '')">{{ importanceLabel(release.ai_importance) }}</span>
-              {{ release.ai_summary }}
+            <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
+            <div v-if="release.ai_summary" class="release-summary-line">
+              <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+              <span
+                class="release-summary-text"
+                tabindex="0"
+                @mouseenter="handleSummaryEnter($event, release.ai_summary)"
+                @mousemove="handleSummaryMove"
+                @mouseleave="hideSummaryTooltip"
+                @focus="handleSummaryFocus($event, release.ai_summary)"
+                @blur="hideSummaryTooltip"
+              >{{ release.ai_summary }}</span>
+            </div>
+            <div class="release-actions">
+              <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
+              <button class="btn-icon-link release-link-action" :disabled="updatingReleaseId === release.id" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
+                <svg><use href="/icons.svg#link-icon"/></svg>
+              </button>
+              <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
+              <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
             </div>
           </div>
         </div>
@@ -429,12 +569,15 @@ function handleOpenLink() {
           {{ t('release.back_calendar') }}
         </button>
         <div class="log-search-row">
-        <input
-          v-model="releaseSearch"
-          :placeholder="t('release.search')"
-          class="search-input"
-          @keydown.enter.prevent="expandAllSearchResults"
-        />
+        <div class="input-clear-wrap">
+          <input
+            v-model="releaseSearch"
+            :placeholder="t('release.search')"
+            class="search-input"
+            @keydown.enter.prevent="expandAllSearchResults"
+          />
+          <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
+        </div>
           <div class="view-tabs">
             <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
               <svg><use href="/icons.svg#list-icon"/></svg>
@@ -454,20 +597,37 @@ function handleOpenLink() {
         <div class="release-list">
           <div v-if="dateDetailReleases.length === 0" class="empty">{{ t('release.no_match') }}</div>
           <div v-for="release in dateDetailReleases" :key="release.id" class="release-item"
-            :class="{ 'is-prerelease': release.prerelease }">
+            :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
             <div class="release-header">
-              <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-              <span class="release-tag">{{ release.tag_name }}</span>
-              <button class="btn-icon-link" @click="handleOpenUrl(release.html_url)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
-                <svg><use href="/icons.svg#link-icon"/></svg>
-              </button>
-              <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+              <div class="release-heading">
+                <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
+                <span class="release-tag">{{ release.tag_name }}</span>
+                <span class="release-dot">·</span>
+                <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
+                <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+              </div>
               <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
             </div>
-            <div class="release-title">{{ release.release_name }}</div>
-            <div v-if="release.ai_summary" class="release-ai-summary">
-              <span class="ai-badge" :class="'ai-' + (release.ai_importance || '')">{{ importanceLabel(release.ai_importance) }}</span>
-              {{ release.ai_summary }}
+            <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
+            <div v-if="release.ai_summary" class="release-summary-line">
+              <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+              <span
+                class="release-summary-text"
+                tabindex="0"
+                @mouseenter="handleSummaryEnter($event, release.ai_summary)"
+                @mousemove="handleSummaryMove"
+                @mouseleave="hideSummaryTooltip"
+                @focus="handleSummaryFocus($event, release.ai_summary)"
+                @blur="hideSummaryTooltip"
+              >{{ release.ai_summary }}</span>
+            </div>
+            <div class="release-actions">
+              <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
+              <button class="btn-icon-link release-link-action" :disabled="updatingReleaseId === release.id" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
+                <svg><use href="/icons.svg#link-icon"/></svg>
+              </button>
+              <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
+              <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
             </div>
           </div>
         </div>
@@ -540,6 +700,14 @@ function handleOpenLink() {
     <div v-if="contextMenu" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
       <button @click="handleOpenLink">{{ t('context.open') }}</button>
       <button @click="handleCopyLink">{{ t('context.copy_link') }}</button>
+    </div>
+
+    <div
+      v-if="summaryTooltip"
+      class="release-summary-tooltip"
+      :style="{ left: summaryTooltip.x + 'px', top: summaryTooltip.y + 'px' }"
+    >
+      {{ summaryTooltip.text }}
     </div>
   </section>
 </template>

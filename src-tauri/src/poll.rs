@@ -115,6 +115,8 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
     }
 
+    let _ = app.emit("poll-completed", ());
+
     Ok(PollResult {
         new_releases: new_releases
             .into_iter()
@@ -126,7 +128,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
-    let (client, source_obj);
+    let (source_obj, proxy_url, github_token);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -135,19 +137,42 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             .into_iter()
             .find(|s| s.id == id)
             .ok_or("err.source_not_found")?;
-        let proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
-        let github_token = get_github_token(&conn);
-        drop(conn);
-        client = http::build_http_client(&proxy_url, github_token.as_deref())?;
+        proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
+        github_token = get_github_token(&conn);
         source_obj = source;
     }
 
-    let releases = fetch_for_source_async(&client, &source_obj).await?;
+    let client = match http::build_http_client(&proxy_url, github_token.as_deref()) {
+        Ok(client) => client,
+        Err(e) => {
+            let state = app.state::<AppState>();
+            let conn = state.db.get().unwrap();
+            let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
+            return Err(e);
+        }
+    };
+
+    let releases = match fetch_for_source_async(&client, &source_obj).await {
+        Ok(releases) => releases,
+        Err(e) => {
+            let state = app.state::<AppState>();
+            let conn = state.db.get().unwrap();
+            let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
+            db::logs::write_log_key(
+                &conn,
+                "ERROR",
+                "check.failed",
+                &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &e}).to_string(),
+            );
+            return Err(e);
+        }
+    };
     let saved: Vec<(i64, Option<String>)>;
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
         saved = save_for_source(&conn, &source_obj, &releases);
+        let _ = db::sources::record_check_success(&conn, source_obj.id, saved.len());
         db::logs::write_log_key(
             &conn,
             "INFO",
@@ -171,6 +196,12 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 pub fn do_poll(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         do_poll_async(app).await;
+    });
+}
+
+pub fn trigger_poll_async(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let _ = trigger_poll(app).await;
     });
 }
 
@@ -223,9 +254,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
     }
 
-    if !all_new_ids.is_empty() {
-        collect_pending_and_notify(&app, &all_new_ids, false);
-    }
+    collect_pending_and_notify(&app, &all_new_ids, false);
 
     let _ = app.emit("poll-completed", ());
 }
@@ -241,6 +270,9 @@ async fn poll_all_sources_async(
         Err(e) => {
             let state = app.state::<AppState>();
             if let Ok(conn) = state.db.get() {
+                for source in sources {
+                    let _ = db::sources::record_check_failure(&conn, source.id, &e);
+                }
                 db::logs::write_log_key(&conn, "ERROR", "check.http_client_error", &json!({"error": &e}).to_string());
             }
             return (vec![], vec![]);
@@ -265,6 +297,7 @@ async fn poll_all_sources_async(
                     let saved = save_for_source(&conn, &source, &releases);
                     let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
                     let new_count = ids.len();
+                    let _ = db::sources::record_check_success(&conn, source.id, new_count);
                     db::logs::write_log_key(
                         &conn,
                         "INFO",
@@ -276,6 +309,7 @@ async fn poll_all_sources_async(
                 Err(e) => {
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
+                    let _ = db::sources::record_check_failure(&conn, source.id, &e);
                     db::logs::write_log_key(
                         &conn,
                         "ERROR",
@@ -312,10 +346,8 @@ fn collect_pending_and_notify(
         pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
     }
 
+    // Pending here means unread and eligible now, including expired snoozes.
     for release in &pending {
-        if !new_ids.contains(&release.id) {
-            continue;
-        }
         let app_clone = app.clone();
         let release_id = release.id;
         let html_url = release.html_url.clone();

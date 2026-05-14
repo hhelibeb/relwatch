@@ -30,9 +30,16 @@ export interface Source {
   repo: string
   poll_interval_minutes: number
   enabled: boolean
+  last_checked_at: string | null
+  last_check_status: string
+  last_check_message: string | null
+  consecutive_failures: number
+  last_new_count: number
   created_at: string
   updated_at: string
 }
+
+export type NotificationStatus = 'pending' | 'snoozed' | 'clicked' | 'ignored'
 
 export interface ReleaseInfo {
   id: number
@@ -47,7 +54,7 @@ export interface ReleaseInfo {
   prerelease: boolean
   body: string | null
   detected_at: string
-  notification_status: string
+  notification_status: NotificationStatus
   snooze_until: string | null
   ai_summary: string | null
   ai_importance: string | null
@@ -117,10 +124,12 @@ export async function getPendingReleases(): Promise<ReleaseInfo[]> {
 
 export async function setNotificationState(
   releaseId: number,
-  status: string,
+  status: NotificationStatus,
   snoozeMinutes?: number
 ): Promise<void> {
-  return invokeI18n('set_notification_state', { releaseId, status, snoozeMinutes })
+  const args: InvokeArgs = { releaseId, status }
+  if (snoozeMinutes !== undefined) args.snoozeMinutes = snoozeMinutes
+  return invokeI18n('set_notification_state', args)
 }
 
 export async function getLogs(limit: number): Promise<LogEntry[]> {

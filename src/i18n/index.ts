@@ -33,6 +33,7 @@ export function t(key: string, ...args: string[]): string {
 }
 
 const actionKeys: Record<string, string> = {
+  pending: 'status.pending',
   ignored: 'status.ignored',
   snoozed: 'status.snoozed',
   clicked: 'status.viewed',

@@ -44,11 +44,14 @@ async function handleClearLogs() {
 <template>
   <section class="tab-content">
     <div class="log-search">
-      <input
-        v-model="logSearch"
-        :placeholder="t('log.search')"
-        class="search-input"
-      />
+      <div class="input-clear-wrap">
+        <input
+          v-model="logSearch"
+          :placeholder="t('log.search')"
+          class="search-input"
+        />
+        <button v-if="logSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="logSearch = ''">✕</button>
+      </div>
       <button class="btn-icon" :title="t('log.clear')" @click="handleClearLogs">
         <svg><use href="/icons.svg#trash-icon"/></svg>
       </button>
