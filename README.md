@@ -20,7 +20,7 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。
 
 ## 界面
 
-![Screenshot](images/screenshot.png)
+![Screenshot](images/screenshot.png?v=1.1.0)
 
 ## 技术栈
 
