@@ -71,6 +71,11 @@ export default {
   'settings.saved': 'Settings saved',
   'settings.save_failed': 'Failed to save settings: ',
   'settings.connect_failed': 'Connection failed: ',
+  'settings.appearance': 'Appearance',
+  'settings.theme': 'Theme',
+  'settings.theme_system': 'Follow System',
+  'settings.theme_light': 'Light',
+  'settings.theme_dark': 'Dark',
   'settings.hint': 'Hint',
   'settings.error': 'Error',
 
@@ -149,6 +154,7 @@ export default {
   'setting.deepseek_proxy': 'AI Proxy',
   'setting.check_prereleases': 'Check Pre-releases',
   'setting.language': 'Language',
+  'setting.theme': 'Theme',
 
   'log.cleared': 'All operation logs cleared',
 

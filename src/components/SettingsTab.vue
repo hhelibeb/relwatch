@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject } from 'vue'
+import { ref, inject, watch, nextTick, onUnmounted } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
 import { version } from '../../package.json'
 import {
@@ -16,12 +16,93 @@ const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{ update: [pollIntervalChanged: boolean] }>()
 const showToast = inject<(msg: string) => void>('showToast')!
 
-const settingsTab = ref<'general' | 'ai'>('general')
+const settingsTab = ref<'general' | 'ai' | 'appearance'>('general')
 const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
+
+const themeDropdownOpen = ref(false)
+const previewTheme = ref<string | null>(null)
+const themeOptions = [
+  { value: 'system', label: 'settings.theme_system' },
+  { value: 'light', label: 'settings.theme_light' },
+  { value: 'dark', label: 'settings.theme_dark' },
+]
+
+const themeSelectRef = ref<HTMLElement | null>(null)
+
+let outsideClickHandler: ((e: MouseEvent) => void) | null = null
+
+function handleOutsideClick(e: MouseEvent) {
+  if (themeSelectRef.value && !themeSelectRef.value.contains(e.target as Node)) {
+    themeDropdownOpen.value = false
+    clearThemePreview()
+  }
+}
+
+watch(themeDropdownOpen, (isOpen) => {
+  if (isOpen) {
+    nextTick(() => {
+      outsideClickHandler = handleOutsideClick
+      document.addEventListener('click', outsideClickHandler)
+    })
+  } else {
+    if (outsideClickHandler) {
+      document.removeEventListener('click', outsideClickHandler)
+      outsideClickHandler = null
+    }
+  }
+})
+
+onUnmounted(() => {
+  if (outsideClickHandler) {
+    document.removeEventListener('click', outsideClickHandler)
+    outsideClickHandler = null
+  }
+})
+
+function setThemePreview(val: string) {
+  previewTheme.value = val
+  if (val === 'dark') {
+    document.documentElement.dataset.theme = 'dark'
+  } else if (val === 'light') {
+    document.documentElement.dataset.theme = 'light'
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
+  }
+}
+
+function clearThemePreview() {
+  previewTheme.value = null
+  const theme = props.settings.theme
+  if (theme === 'dark') {
+    document.documentElement.dataset.theme = 'dark'
+  } else if (theme === 'light') {
+    document.documentElement.dataset.theme = 'light'
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
+  }
+}
+
+function selectTheme(val: string) {
+  props.settings.theme = val
+  previewTheme.value = null
+  setThemePreview(val)
+  setTimeout(() => {
+    themeDropdownOpen.value = false
+  }, 0)
+}
+
+function toggleDropdown() {
+  themeDropdownOpen.value = !themeDropdownOpen.value
+  if (!themeDropdownOpen.value) {
+    clearThemePreview()
+  }
+}
 
 async function handleSave() {
   savingSettings.value = true
@@ -37,6 +118,7 @@ async function handleSave() {
       props.settings.deepseek_proxy_enabled,
       props.settings.check_prereleases,
       props.settings.language,
+      props.settings.theme,
     )
     if (deepseekApiKey.value) {
       await setDeepseekApiKey(deepseekApiKey.value)
@@ -78,6 +160,7 @@ async function handleTestDeepseek() {
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <button :class="{ active: settingsTab === 'general' }" @click="settingsTab = 'general'">{{ t('settings.general') }}</button>
+        <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}</button>
         <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}</button>
         <div class="version-row">
           <button class="version-github-btn" @click="openReleaseUrl('https://github.com/hhelibeb/relwatch')" title="GitHub">
@@ -184,6 +267,29 @@ async function handleTestDeepseek() {
             <button class="btn-secondary" :disabled="testingDeepseek" @click="handleTestDeepseek">
               {{ testingDeepseek ? t('settings.testing') : t('settings.test_connection') }}
             </button>
+          </div>
+        </div>
+        <div v-if="settingsTab === 'appearance'" class="settings-form">
+          <div class="setting-row">
+            <span class="setting-label">{{ t('settings.theme') }}</span>
+            <div ref="themeSelectRef" class="theme-select" @mouseleave="clearThemePreview">
+              <button type="button" class="theme-select-trigger setting-input" @click="toggleDropdown">
+                <span>{{ previewTheme ? t('settings.theme_' + previewTheme) : t('settings.theme_' + props.settings.theme) }}</span>
+                <svg class="theme-select-arrow" viewBox="0 0 12 12" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M3 5l3 3 3-3"/></svg>
+              </button>
+              <div v-if="themeDropdownOpen" class="theme-select-dropdown">
+                <div
+                  v-for="opt in themeOptions"
+                  :key="opt.value"
+                  class="theme-select-option"
+                  :class="{ selected: props.settings.theme === opt.value && !previewTheme, previewed: previewTheme === opt.value }"
+                  @click.stop="selectTheme(opt.value)"
+                  @mouseenter="setThemePreview(opt.value)"
+                >
+                  {{ t(opt.label) }}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
         <div class="setting-actions">

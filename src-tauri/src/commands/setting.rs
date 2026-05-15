@@ -8,10 +8,10 @@ use crate::types::{AppSettings, AppState};
 use crate::db::settings::{
     self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_LANGUAGE, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
+    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY,
-    DEFAULT_CHECK_PRERELEASES,
+    DEFAULT_CHECK_PRERELEASES, DEFAULT_THEME,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
 };
 use serde_json::json;
@@ -34,6 +34,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
         deepseek_proxy_enabled: get_setting_bool(&conn, KEY_DEEPSEEK_PROXY, false)?,
         check_prereleases: get_setting_bool(&conn, KEY_CHECK_PRERELEASES, false)?,
         language: get_setting_str(&conn, KEY_LANGUAGE, &get_default_language())?,
+        theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
             .chars()
             .next()
@@ -55,6 +56,7 @@ pub struct UpdateSettingsPayload {
     deepseek_proxy_enabled: bool,
     check_prereleases: bool,
     language: String,
+    theme: String,
 }
 
 #[tauri::command]
@@ -78,6 +80,7 @@ pub fn update_settings(
     let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, DEFAULT_DEEPSEEK_PROXY)?;
     let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
     let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
+    let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
 
     let (interval_changed, changes) = settings::apply_settings(
         &conn,
@@ -92,6 +95,7 @@ pub fn update_settings(
             (KEY_DEEPSEEK_PROXY, &old_ds_proxy, &payload.deepseek_proxy_enabled.to_string(), "setting.deepseek_proxy"),
             (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
             (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
+            (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
         ],
     )?;
 
@@ -219,6 +223,7 @@ mod tests {
         let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "").unwrap();
+        let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
         // 仅改 log_retention_days 7→14
         let (_, changes) = settings::apply_settings(
@@ -234,6 +239,7 @@ mod tests {
                 (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_LANGUAGE, &old_language, "zh-CN", ""),
+                (KEY_THEME, &old_theme, DEFAULT_THEME, ""),
             ],
         ).unwrap();
         drop(conn);
@@ -268,6 +274,7 @@ mod tests {
         let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "").unwrap();
+        let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
         let (interval_changed, changes) = settings::apply_settings(
             &conn,
@@ -282,6 +289,7 @@ mod tests {
                 (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_LANGUAGE, &old_language, "zh-CN", ""),
+                (KEY_THEME, &old_theme, DEFAULT_THEME, ""),
             ],
         ).unwrap();
         drop(conn);
@@ -309,6 +317,7 @@ mod tests {
         let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "").unwrap();
+        let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
         let (interval_changed, changes) = settings::apply_settings(
             &conn,
@@ -323,6 +332,7 @@ mod tests {
                 (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_LANGUAGE, &old_language, "zh-CN", ""),
+                (KEY_THEME, &old_theme, DEFAULT_THEME, ""),
             ],
         ).unwrap();
         drop(conn);
@@ -351,6 +361,7 @@ mod tests {
             (KEY_DEEPSEEK_PROXY, "false"),
             (KEY_CHECK_PRERELEASES, "false"),
             (KEY_LANGUAGE, "zh-CN"),
+            (KEY_THEME, "system"),
         ];
         for &(key, val) in &old_values {
             settings::set_setting(&conn, key, val).unwrap();
@@ -368,6 +379,7 @@ mod tests {
             (KEY_DEEPSEEK_PROXY, "true"),
             (KEY_CHECK_PRERELEASES, "true"),
             (KEY_LANGUAGE, "en-US"),
+            (KEY_THEME, "dark"),
         ];
 
         let items: Vec<(&str, &str, &str, &str)> = old_values.iter()
@@ -378,7 +390,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 10,
+        assert_eq!(items.len(), 11,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -393,7 +405,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 10;
+        const EXPECTED_SETTING_FIELDS: usize = 11;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyUrl": "",
@@ -405,6 +417,7 @@ mod tests {
             "deepseekProxyEnabled": false,
             "checkPrereleases": false,
             "language": "zh-CN",
+            "theme": "system",
         });
         let payload: UpdateSettingsPayload = serde_json::from_value(json)
             .expect("UpdateSettingsPayload 反序列化失败，前端字段名可能不匹配");
@@ -420,6 +433,7 @@ mod tests {
         assert!(!payload.deepseek_proxy_enabled);
         assert!(!payload.check_prereleases);
         assert_eq!(payload.language, "zh-CN");
+        assert_eq!(payload.theme, "system");
 
         // 常量标记，修改配置项时需同步改这里
         let _guard = EXPECTED_SETTING_FIELDS;

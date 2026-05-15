@@ -71,6 +71,11 @@ export default {
   'settings.saved': '设置已保存',
   'settings.save_failed': '保存设置失败: ',
   'settings.connect_failed': '连接失败: ',
+  'settings.appearance': '界面',
+  'settings.theme': '主题',
+  'settings.theme_system': '跟随系统',
+  'settings.theme_light': '白天模式',
+  'settings.theme_dark': '夜间模式',
   'settings.hint': '提示',
   'settings.error': '错误',
 
@@ -149,6 +154,7 @@ export default {
   'setting.deepseek_proxy': 'AI 代理',
   'setting.check_prereleases': '检查预发布版本',
   'setting.language': '界面语言',
+  'setting.theme': '主题',
 
   'log.cleared': '已清空所有操作日志',
 

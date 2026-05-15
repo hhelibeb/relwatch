@@ -26,5 +26,6 @@ pub struct AppSettings {
     pub deepseek_proxy_enabled: bool,
     pub check_prereleases: bool,
     pub language: String,
+    pub theme: String,
     pub github_token_set: bool,
 }

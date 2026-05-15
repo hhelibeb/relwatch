@@ -12,6 +12,7 @@ pub const KEY_DEEPSEEK_API_KEY: &str = "deepseek_api_key";
 pub const KEY_DEEPSEEK_PROXY: &str = "deepseek_proxy_enabled";
 pub const KEY_CHECK_PRERELEASES: &str = "check_prereleases";
 pub const KEY_LANGUAGE: &str = "language";
+pub const KEY_THEME: &str = "theme";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
 pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 
@@ -25,6 +26,7 @@ pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEFAULT_DEEPSEEK_PROXY: &str = "false";
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
+pub const DEFAULT_THEME: &str = "system";
 
 // ── 语言检测 ────────────────────────────────────────
 

@@ -18,6 +18,19 @@
   --radius: 8px;
 }
 
+[data-theme="dark"] {
+  --bg: #0f172a;
+  --surface: #1e293b;
+  --primary: #60a5fa;
+  --success: #4ade80;
+  --warning: #facc15;
+  --danger: #f87171;
+  --text: #e2e8f0;
+  --text-muted: #94a3b8;
+  --border: #334155;
+  --input-bg: #1e293b;
+}
+
 body {
   font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
   background: var(--bg);
@@ -1454,4 +1467,107 @@ select.setting-input {
 .toast-leave-to {
   opacity: 0;
   transform: translateX(60px);
+}
+
+/* ── 深色主题组件覆盖 ───────────────────────────── */
+[data-theme="dark"] .tabs button {
+  color: #94a3b8;
+}
+[data-theme="dark"] .tabs button:hover {
+  background: rgba(255,255,255,0.06);
+}
+[data-theme="dark"] .tabs button.active {
+  background: rgba(255,255,255,0.1);
+  box-shadow: none;
+  position: relative;
+}
+[data-theme="dark"] .tabs button.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  background: var(--primary);
+  border-radius: 1px;
+}
+[data-theme="dark"] .view-tabs button {
+  color: #94a3b8;
+}
+[data-theme="dark"] .view-tabs button:hover {
+  background: rgba(255,255,255,0.06);
+}
+[data-theme="dark"] .view-tabs button.active {
+  background: rgba(255,255,255,0.1);
+  box-shadow: none;
+}
+[data-theme="dark"] .version-github-btn {
+  color: #94a3b8;
+}
+[data-theme="dark"] .version-github-btn:hover {
+  color: #e2e8f0;
+  background: rgba(255,255,255,0.06);
+}
+[data-theme="dark"] .calendar-tooltip,
+[data-theme="dark"] .release-summary-tooltip,
+[data-theme="dark"] .context-menu {
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+[data-theme="dark"] .toast {
+  background: #334155;
+  color: #e2e8f0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+/* ── 自定义主题下拉选择器 ───────────────────────── */
+.theme-select {
+  position: relative;
+  width: 18ch;
+}
+
+.theme-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  cursor: pointer;
+  text-align: left;
+  font-size: 13px;
+}
+
+.theme-select-arrow {
+  flex-shrink: 0;
+  margin-left: 4px;
+  transition: transform 0.2s;
+}
+
+.theme-select-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.theme-select-option {
+  padding: 8px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background 0.1s;
+}
+
+.theme-select-option:hover,
+.theme-select-option.previewed {
+  background: var(--primary);
+  color: #fff;
+}
+
+.theme-select-option.selected {
+  font-weight: 600;
 }

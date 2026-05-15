@@ -37,6 +37,7 @@ const settings = ref<AppSettings>({
   deepseek_proxy_enabled: false,
   check_prereleases: false,
   language: 'zh-CN',
+  theme: 'system',
   github_token_set: false,
 })
 
@@ -108,6 +109,29 @@ async function loadLogs() {
 async function loadSettings() {
   settings.value = await getSettings()
   setLocale(settings.value.language)
+  applyTheme(settings.value.theme)
+}
+
+function applyTheme(theme: string) {
+  if (theme === 'dark') {
+    document.documentElement.dataset.theme = 'dark'
+  } else if (theme === 'light') {
+    document.documentElement.dataset.theme = 'light'
+  } else {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
+  }
+}
+
+let systemThemeMedia: MediaQueryList | null = null
+function watchSystemTheme() {
+  if (systemThemeMedia) systemThemeMedia.onchange = null
+  systemThemeMedia = window.matchMedia('(prefers-color-scheme: dark)')
+  systemThemeMedia.onchange = () => {
+    if (settings.value.theme === 'system') {
+      applyTheme('system')
+    }
+  }
 }
 
 async function syncCountdown(refreshLogsOnJump = true) {
@@ -172,6 +196,7 @@ function openSourceReleases(query: string) {
 
 onMounted(async () => {
   await loadAll()
+  watchSystemTheme()
   startCountdown()
 
   document.addEventListener('contextmenu', (e) => {
@@ -235,7 +260,7 @@ onMounted(async () => {
         @open-releases="openSourceReleases" />
       <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" :releases="releases" @update="loadReleases(); loadLogs()" />
       <LogTab v-show="activeTab === 'logs'" :logs="logs" @update="loadLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged) => { loadSettings(); if (pollChanged) startCountdown(); loadLogs() }" />
+      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged) => { loadSettings(); if (pollChanged) startCountdown(); loadLogs(); applyTheme(settings.value.theme) }" />
     </main>
 
     <Transition name="toast">
