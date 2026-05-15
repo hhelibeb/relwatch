@@ -14,9 +14,9 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。
 | 多语言 | 中文 / English |
 | 安全存储 | GitHub Token、API Key 加密存储 |
 
-## 安装
+## 安装 & 使用
 
-从 [GitHub Releases](https://github.com/hhelibeb/relwatch/releases/latest) 页面下载安装包安装即可。
+从 [GitHub Releases](https://github.com/hhelibeb/relwatch/releases/latest) 页面下载安装包安装，在监控源中添加想要监控的repo即可。
 
 ## 界面
 
