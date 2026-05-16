@@ -1,4 +1,5 @@
 use rusqlite::backup::Backup;
+use serde_json::json;
 use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
@@ -9,7 +10,11 @@ async fn save_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
     app.dialog()
         .file()
         .add_filter("Database", &["db"])
-        .set_file_name("relwatch-backup.db")
+        .set_file_name(&format!(
+            "relwatch-backup.{}.{}.db",
+            chrono::Local::now().format("%Y%m%d-%H%M%S"),
+            hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_else(|_| "unknown".to_string())
+        ))
         .save_file(move |path| {
             let _ = tx.send(path);
         });
@@ -51,6 +56,10 @@ pub async fn export_backup(app: tauri::AppHandle) -> Result<String, String> {
     conn
         .execute_batch(&format!("VACUUM INTO '{}';", escaped))
         .map_err(|e| format!("导出备份失败: {}", e))?;
+
+    if let Ok(conn) = state.db.get() {
+        crate::db::logs::write_log_key(&conn, "INFO", "backup.exported", &json!({"path": &path_str}).to_string());
+    }
 
     Ok(path_str)
 }
@@ -100,6 +109,11 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     backup
         .run_to_completion(100, Duration::from_millis(250), None)
         .map_err(|e| format!("恢复数据失败: {}", e))?;
+
+    let state = app.state::<crate::types::AppState>();
+    if let Ok(conn) = state.db.get() {
+        crate::db::logs::write_log_key(&conn, "INFO", "backup.imported", &json!({"path": &path_str}).to_string());
+    }
 
     Ok(())
 }

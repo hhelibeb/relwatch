@@ -567,14 +567,7 @@ mod tests {
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
             .filter(|&v| v > now)
-            .unwrap_or_else(|| {
-                let interval = db::settings::get_setting(conn, KEY_POLL_INTERVAL)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .unwrap_or(30);
-                now + interval * 60
-            })
+            .unwrap_or(now)
     }
 
     #[test]
@@ -593,10 +586,10 @@ mod tests {
         let conn = init_memory_db().unwrap();
         let now = chrono::Utc::now().timestamp();
         db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
-        // Saved next_poll_at is 10 min in the past → expired, fallback to now+30m
+        // Saved next_poll_at is 10 min in the past → expired, fallback to now → immediate check
         db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &(now - 10 * 60).to_string()).unwrap();
         let result = calc_next_poll(&conn);
-        assert_eq!(result, now + 30 * 60);
+        assert_eq!(result, now);
     }
 
     #[test]
@@ -604,8 +597,8 @@ mod tests {
         let conn = init_memory_db().unwrap();
         let now = chrono::Utc::now().timestamp();
         db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "45").unwrap();
-        // No saved value → fallback to now + interval
+        // No saved value → fallback to now → immediate check
         let result = calc_next_poll(&conn);
-        assert_eq!(result, now + 45 * 60);
+        assert_eq!(result, now);
     }
 }

@@ -15,7 +15,7 @@ import {
 import { t, setLocale, languages } from '../i18n'
 
 const props = defineProps<{ settings: AppSettings }>()
-const emit = defineEmits<{ update: [pollIntervalChanged: boolean] }>()
+const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
 const showToast = inject<(msg: string) => void>('showToast')!
 
 const settingsTab = ref<'general' | 'data' | 'appearance' | 'ai'>('general')
@@ -159,13 +159,15 @@ async function handleTestDeepseek() {
 async function handleExportBackup() {
   try {
     const path = await exportBackup()
-    let msg = t('backup.export_success') + ': ' + path
-    if (props.settings.github_token_set) {
-      msg += ' ' + t('backup.token_warning')
-    }
-    showToast(msg)
+    showToast(t('backup.export_success') + ': ' + path)
+    emit('update', false)
   } catch (e: any) {
-    showToast(t('backup.export_failed') + (e?.toString?.() ?? String(e)))
+    const msg = e?.toString?.() ?? String(e)
+    if (msg.includes('取消')) {
+      showToast(t('backup.export_cancelled'))
+    } else {
+      showToast(t('backup.export_failed') + msg)
+    }
   }
 }
 
@@ -175,8 +177,14 @@ async function handleImportBackup() {
   try {
     await importBackup()
     showToast(t('backup.import_success'))
+    emit('update', false, true)
   } catch (e: any) {
-    showToast(t('backup.import_failed') + (e?.toString?.() ?? String(e)))
+    const msg = e?.toString?.() ?? String(e)
+    if (msg.includes('取消')) {
+      showToast(t('backup.import_cancelled'))
+    } else {
+      showToast(t('backup.import_failed') + msg)
+    }
   }
 }
 </script>
@@ -254,9 +262,11 @@ async function handleImportBackup() {
             <span class="setting-label">{{ t('settings.check_prereleases') }}</span>
           </label>
         </div>
-        <div v-if="settingsTab === 'data'" class="settings-form">
+        <div v-if="settingsTab === 'data'" class="settings-form" style="gap:13px">
           <h3 class="setting-section-title">{{ t('backup.section_title') }}</h3>
-          <p class="setting-section-desc">{{ t('backup.section_desc') }}</p>
+          <p class="setting-section-desc">
+            {{ t('backup.section_desc') }}<template v-if="props.settings.github_token_set"><br>{{ t('backup.token_note') }}</template>
+          </p>
           <div class="setting-row backup-actions">
             <button class="btn-secondary" @click="handleExportBackup">{{ t('backup.export_btn') }}</button>
             <button class="btn-secondary btn-danger" @click="handleImportBackup">{{ t('backup.import_btn') }}</button>

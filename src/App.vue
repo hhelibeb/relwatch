@@ -269,7 +269,7 @@ onMounted(async () => {
         @open-releases="openSourceReleases" />
       <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" :releases="releases" @update="loadReleases(); loadLogs()" />
       <LogTab v-show="activeTab === 'logs'" :logs="logs" @update="loadLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged) => { loadSettings(); if (pollChanged) startCountdown(); loadLogs(); applyTheme(settings.value.theme) }" />
+      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } loadLogs(); applyTheme(settings.value.theme) }" />
     </main>
 
     <Transition name="toast">

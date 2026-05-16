@@ -35,14 +35,7 @@ pub fn run() {
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
             .filter(|&v| v > now)
-            .unwrap_or_else(|| {
-                let interval = db::settings::get_setting(&conn, "poll_interval_minutes")
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse::<i64>().ok())
-                    .unwrap_or(30);
-                now + interval * 60
-            });
+            .unwrap_or(now);
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
 
