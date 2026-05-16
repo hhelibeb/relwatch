@@ -21,6 +21,12 @@ import LogTab from './components/LogTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 
 const activeTab = ref<'sources' | 'releases' | 'logs' | 'settings'>('sources')
+const mainScrolled = ref(false)
+
+function onMainScroll(e: Event) {
+  const el = e.currentTarget as HTMLElement
+  mainScrolled.value = el.scrollTop > 0
+}
 
 const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
@@ -263,7 +269,7 @@ onMounted(async () => {
       </div>
     </header>
 
-    <main class="app-main">
+    <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
       <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts"
         @update="loadSources(); loadReleases(); loadLogs()"
         @check-result="handleSourceCheckResult"

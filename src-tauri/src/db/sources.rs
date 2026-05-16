@@ -169,7 +169,7 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
                     last_checked_at, last_check_status, last_check_message,
                     consecutive_failures, last_new_count, created_at, updated_at,
                     description
-             FROM sources ORDER BY id",
+             FROM sources ORDER BY id DESC",
         )
         .map_err(|e| e.to_string())?;
 

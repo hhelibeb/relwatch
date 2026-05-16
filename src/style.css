@@ -170,6 +170,9 @@ body {
 
 /* 添加监控源 */
 .add-source {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -178,6 +181,7 @@ body {
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 
 .add-source .input-clear-wrap {
@@ -395,6 +399,22 @@ body {
   flex-shrink: 0;
 }
 
+/* 新增源高亮动画 */
+.source-highlight {
+  animation: highlight-pulse 2s ease-out;
+}
+
+@keyframes highlight-pulse {
+  0% {
+    background-color: rgba(37, 99, 235, 0.12);
+    border-color: rgba(37, 99, 235, 0.3);
+  }
+  100% {
+    background-color: transparent;
+    border-color: var(--border);
+  }
+}
+
 /* 按钮 */
 .btn-sm {
   padding: 4px 12px;
@@ -536,10 +556,15 @@ body {
 
 /* 操作日志 */
 .log-search {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
+  padding: 4px 0;
+  background: var(--bg);
 }
 
 .btn-icon {
@@ -1127,10 +1152,15 @@ select.setting-input {
 
 /* 搜索栏 + 视图切换同行 */
 .log-search-row {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
+  padding: 4px 0;
+  background: var(--bg);
 }
 
 .log-search-row .search-input {
@@ -1149,6 +1179,13 @@ select.setting-input {
 
 .log-search-row .input-clear-wrap .search-input {
   max-width: none;
+}
+
+/* 滚动后 sticky 元素显示分隔线 */
+.app-main.is-scrolled .log-search-row,
+.app-main.is-scrolled .log-search {
+  border-radius: var(--radius);
+  box-shadow: 0 0 0 1px var(--border), 0 2px 6px rgba(0,0,0,0.04);
 }
 
 /* 聚合视图 */

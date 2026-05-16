@@ -24,6 +24,7 @@ const emit = defineEmits<{
 const urlInput = ref('')
 const loading = ref(false)
 const checkingId = ref<number | null>(null)
+const highlightedId = ref<number | null>(null)
 const showToast = inject<((msg: string) => void) | undefined>('showToast', undefined)
 
 const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
@@ -93,6 +94,8 @@ async function handleAdd() {
       return
     }
     urlInput.value = ''
+    highlightedId.value = id
+    setTimeout(() => { highlightedId.value = null }, 2200)
     emit('update')
   } catch (e: any) {
     await message(t('source.add_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
@@ -213,7 +216,7 @@ function hideHealthTooltip() {
     </div>
     <div class="source-list">
       <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
-      <div v-for="source in props.sources" :key="source.id" class="source-item">
+      <div v-for="source in props.sources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }">
         <div class="source-main">
           <div class="source-info">
             <span class="source-name">{{ source.owner }}/{{ source.repo }}</span>
