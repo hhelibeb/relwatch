@@ -215,6 +215,22 @@ pub async fn generate_summaries_for_new(
                 }
                 Err(e) => {
                     log::error!("生成摘要失败 id={}: {}", release_id, e);
+                    let state = app.state::<AppState>();
+                    if let Ok(conn) = state.db.get() {
+                        let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+                        match rel {
+                            Some(r) => db::logs::write_log(
+                                &conn,
+                                "ERROR",
+                                &format!("AI 摘要生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
+                            ),
+                            None => db::logs::write_log(
+                                &conn,
+                                "ERROR",
+                                &format!("AI 摘要生成失败: id={}: {}", release_id, e),
+                            ),
+                        }
+                    }
                 }
             }
         }));

@@ -119,6 +119,8 @@ async function handleSave() {
       props.settings.deepseek_base_url.trim() || 'https://api.deepseek.com',
       props.settings.deepseek_proxy_enabled,
       props.settings.check_prereleases,
+      props.settings.fetch_history,
+      props.settings.fetch_history_count ?? 1,
       props.settings.language,
       props.settings.theme,
     )
@@ -260,6 +262,20 @@ async function handleImportBackup() {
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="props.settings.check_prereleases" />
             <span class="setting-label">{{ t('settings.check_prereleases') }}</span>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="props.settings.fetch_history" />
+            <span class="setting-label">{{ t('settings.fetch_history') }}</span>
+          </label>
+          <label class="setting-row" v-if="props.settings.fetch_history">
+            <span class="setting-label">{{ t('settings.fetch_history_count') }}</span>
+            <input
+              type="number"
+              v-model.number="props.settings.fetch_history_count"
+              min="1"
+              max="50"
+              class="setting-input setting-input-narrow"
+            />
           </label>
         </div>
         <div v-if="settingsTab === 'data'" class="settings-form" style="gap:13px">

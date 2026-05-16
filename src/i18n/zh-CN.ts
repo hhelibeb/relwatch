@@ -63,6 +63,8 @@ export default {
   'settings.minimize_tray': '关闭窗口时最小化到托盘',
   'settings.log_retention': '操作日志保留天数（0=永久保留）',
   'settings.check_prereleases': '检查预发布版本',
+  'settings.fetch_history': '首次查询时拉取历史版本',
+  'settings.fetch_history_count': '拉取数量',
   'settings.enable_ai': '启用 AI 版本摘要',
   'settings.api_key': 'API Key',
   'settings.api_key_set': '已设置（留空不修改）',
@@ -175,6 +177,8 @@ export default {
   'setting.deepseek_base_url': 'AI 地址',
   'setting.deepseek_proxy': 'AI 代理',
   'setting.check_prereleases': '检查预发布版本',
+  'setting.fetch_history': '拉取历史版本',
+  'setting.fetch_history_count': '历史版本数量',
   'setting.language': '界面语言',
   'setting.theme': '主题',
 

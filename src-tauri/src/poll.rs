@@ -4,7 +4,10 @@ use tauri::Manager;
 use tauri::Emitter;
 
 use crate::db;
-use crate::db::settings::{KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT};
+use crate::db::settings::{
+    KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
+    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
+};
 use crate::crypto;
 use crate::github;
 use crate::http;
@@ -53,9 +56,10 @@ fn get_github_token(conn: &rusqlite::Connection) -> Option<String> {
 async fn fetch_for_source_async(
     client: &reqwest::Client,
     source: &db::sources::Source,
+    per_page: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
     match source.source_type.as_str() {
-        "github" => github::fetch_releases(client, &source.owner, &source.repo).await,
+        "github" => github::fetch_releases(client, &source.owner, &source.repo, per_page).await,
         other => Err(format!("err.unsupported_source|{}", other)),
     }
 }
@@ -64,9 +68,10 @@ fn save_for_source(
     conn: &rusqlite::Connection,
     source: &db::sources::Source,
     data: &[serde_json::Value],
+    max_count: usize,
 ) -> Vec<(i64, Option<String>)> {
     match source.source_type.as_str() {
-        "github" => github::save_releases(conn, source.id, data),
+        "github" => github::save_releases(conn, source.id, data, max_count),
         other => {
             log::error!("不支持的监控源类型: {}", other);
             vec![]
@@ -80,7 +85,7 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 }
 
 async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
-    let (sources, proxy_url, github_token);
+    let (sources, proxy_url, github_token, fetch_history, fetch_history_count);
 
     {
         let state = app.state::<AppState>();
@@ -91,9 +96,11 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
             .collect::<Vec<_>>();
         proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         github_token = get_github_token(&conn);
+        fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
+        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, github_token.as_deref()).await;
+    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, github_token.as_deref(), fetch_history, fetch_history_count).await;
 
     if !all_saved.is_empty() {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
@@ -128,7 +135,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
-    let (source_obj, proxy_url, github_token);
+    let (source_obj, proxy_url, github_token, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -139,8 +146,18 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             .ok_or("err.source_not_found")?;
         proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         github_token = get_github_token(&conn);
+        fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
+        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
         source_obj = source;
     }
+
+    let is_first_query = source_obj.last_checked_at.is_none()
+        || source_obj.last_checked_at.as_deref() == Some("");
+    let (max_count, per_page) = if fetch_history && is_first_query {
+        (fetch_history_count, std::cmp::max(10, fetch_history_count + 5))
+    } else {
+        (1, 10)
+    };
 
     let client = match http::build_http_client(&proxy_url, github_token.as_deref()) {
         Ok(client) => client,
@@ -152,7 +169,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     };
 
-    let releases = match fetch_for_source_async(&client, &source_obj).await {
+    let releases = match fetch_for_source_async(&client, &source_obj, per_page).await {
         Ok(releases) => releases,
         Err(e) => {
             let state = app.state::<AppState>();
@@ -171,7 +188,12 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
-        saved = save_for_source(&conn, &source_obj, &releases);
+        saved = save_for_source(&conn, &source_obj, &releases, max_count);
+        if saved.len() > 1 {
+            for (id, _) in saved.iter().skip(1) {
+                let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+            }
+        }
         let _ = db::sources::record_check_success(&conn, source_obj.id, saved.len());
         db::logs::write_log_key(
             &conn,
@@ -225,7 +247,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (sources, proxy_url, retention_days, github_token);
+    let (sources, proxy_url, retention_days, github_token, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -243,6 +265,8 @@ async fn do_poll_async(app: tauri::AppHandle) {
             db::logs::delete_old_logs(&conn, retention_days);
         }
         github_token = get_github_token(&conn);
+        fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
+        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
     }
 
     let enabled: Vec<db::sources::Source> =
@@ -255,7 +279,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &enabled, &proxy_url, github_token.as_deref()).await;
+    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &enabled, &proxy_url, github_token.as_deref(), fetch_history, fetch_history_count).await;
 
     if !all_saved.is_empty() {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
@@ -271,6 +295,8 @@ async fn poll_all_sources_async(
     sources: &[db::sources::Source],
     proxy_url: &str,
     github_token: Option<&str>,
+    fetch_history: bool,
+    fetch_history_count: usize,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
     let client = match http::build_http_client(proxy_url, github_token) {
         Ok(c) => c,
@@ -295,13 +321,27 @@ async fn poll_all_sources_async(
         let source = source.clone();
         let app = app.clone();
 
+        let is_first_query = source.last_checked_at.is_none()
+            || source.last_checked_at.as_deref() == Some("");
+        let (max_count, per_page) = if fetch_history && is_first_query {
+            (fetch_history_count, std::cmp::max(10, fetch_history_count + 5))
+        } else {
+            (1, 10)
+        };
+
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
-            match fetch_for_source_async(&client, &source).await {
+            match fetch_for_source_async(&client, &source, per_page).await {
                 Ok(releases) => {
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
-                    let saved = save_for_source(&conn, &source, &releases);
+                    let saved = save_for_source(&conn, &source, &releases, max_count);
+                    // 标记历史版本（除最新一条外）为已读
+                    if saved.len() > 1 {
+                        for (id, _) in saved.iter().skip(1) {
+                            let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+                        }
+                    }
                     let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
                     let new_count = ids.len();
                     let _ = db::sources::record_check_success(&conn, source.id, new_count);

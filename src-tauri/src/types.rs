@@ -25,6 +25,8 @@ pub struct AppSettings {
     pub deepseek_api_key_set: bool,
     pub deepseek_proxy_enabled: bool,
     pub check_prereleases: bool,
+    pub fetch_history: bool,
+    pub fetch_history_count: i64,
     pub language: String,
     pub theme: String,
     pub github_token_set: bool,

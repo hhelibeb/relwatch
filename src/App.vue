@@ -36,6 +36,8 @@ const settings = ref<AppSettings>({
   deepseek_api_key_set: false,
   deepseek_proxy_enabled: false,
   check_prereleases: false,
+  fetch_history: false,
+  fetch_history_count: 1,
   language: 'zh-CN',
   theme: 'system',
   github_token_set: false,

@@ -8,10 +8,11 @@ use crate::types::{AppSettings, AppState};
 use crate::db::settings::{
     self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
+    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
+    KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY,
-    DEFAULT_CHECK_PRERELEASES, DEFAULT_THEME,
+    DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
 };
 use serde_json::json;
@@ -33,6 +34,8 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
             .is_some(),
         deepseek_proxy_enabled: get_setting_bool(&conn, KEY_DEEPSEEK_PROXY, false)?,
         check_prereleases: get_setting_bool(&conn, KEY_CHECK_PRERELEASES, false)?,
+        fetch_history: get_setting_bool(&conn, KEY_FETCH_HISTORY, false)?,
+        fetch_history_count: get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1)?.max(1),
         language: get_setting_str(&conn, KEY_LANGUAGE, &get_default_language())?,
         theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
@@ -55,6 +58,8 @@ pub struct UpdateSettingsPayload {
     deepseek_base_url: String,
     deepseek_proxy_enabled: bool,
     check_prereleases: bool,
+    fetch_history: bool,
+    fetch_history_count: i64,
     language: String,
     theme: String,
 }
@@ -66,6 +71,7 @@ pub fn update_settings(
 ) -> Result<(), String> {
     let poll_interval_minutes = payload.poll_interval_minutes.clamp(5, 1440);
     let log_retention_days = payload.log_retention_days.clamp(0, 3650);
+    let fetch_history_count = payload.fetch_history_count.max(1);
 
     let state = app.state::<AppState>();
     let conn = state.db.get().map_err(|e| e.to_string())?;
@@ -79,6 +85,8 @@ pub fn update_settings(
     let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)?;
     let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, DEFAULT_DEEPSEEK_PROXY)?;
     let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
+    let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
+    let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
     let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
     let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
 
@@ -94,6 +102,8 @@ pub fn update_settings(
             (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
             (KEY_DEEPSEEK_PROXY, &old_ds_proxy, &payload.deepseek_proxy_enabled.to_string(), "setting.deepseek_proxy"),
             (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
+            (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
+            (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, &fetch_history_count.to_string(), "setting.fetch_history_count"),
             (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
             (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
         ],
@@ -222,6 +232,8 @@ mod tests {
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
         let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
+        let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
+        let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "").unwrap();
         let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
@@ -238,6 +250,8 @@ mod tests {
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
                 (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
+                (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
+                (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
                 (KEY_LANGUAGE, &old_language, "zh-CN", ""),
                 (KEY_THEME, &old_theme, DEFAULT_THEME, ""),
             ],
@@ -273,6 +287,8 @@ mod tests {
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
         let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
+        let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
+        let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "").unwrap();
         let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
@@ -288,6 +304,8 @@ mod tests {
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
                 (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
+                (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
+                (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
                 (KEY_LANGUAGE, &old_language, "zh-CN", ""),
                 (KEY_THEME, &old_theme, DEFAULT_THEME, ""),
             ],
@@ -316,6 +334,8 @@ mod tests {
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
         let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
+        let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
+        let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "").unwrap();
         let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
@@ -331,6 +351,8 @@ mod tests {
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
                 (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
+                (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
+                (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
                 (KEY_LANGUAGE, &old_language, "zh-CN", ""),
                 (KEY_THEME, &old_theme, DEFAULT_THEME, ""),
             ],
@@ -360,6 +382,8 @@ mod tests {
             (KEY_DEEPSEEK_BASE_URL, "https://old.api"),
             (KEY_DEEPSEEK_PROXY, "false"),
             (KEY_CHECK_PRERELEASES, "false"),
+            (KEY_FETCH_HISTORY, "false"),
+            (KEY_FETCH_HISTORY_COUNT, "3"),
             (KEY_LANGUAGE, "zh-CN"),
             (KEY_THEME, "system"),
         ];
@@ -378,6 +402,8 @@ mod tests {
             (KEY_DEEPSEEK_BASE_URL, "https://new.api"),
             (KEY_DEEPSEEK_PROXY, "true"),
             (KEY_CHECK_PRERELEASES, "true"),
+            (KEY_FETCH_HISTORY, "true"),
+            (KEY_FETCH_HISTORY_COUNT, "5"),
             (KEY_LANGUAGE, "en-US"),
             (KEY_THEME, "dark"),
         ];
@@ -390,7 +416,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 11,
+        assert_eq!(items.len(), 13,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -405,7 +431,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 11;
+        const EXPECTED_SETTING_FIELDS: usize = 13;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyUrl": "",
@@ -416,6 +442,8 @@ mod tests {
             "deepseekBaseUrl": "u",
             "deepseekProxyEnabled": false,
             "checkPrereleases": false,
+            "fetchHistory": true,
+            "fetchHistoryCount": 3,
             "language": "zh-CN",
             "theme": "system",
         });
@@ -432,6 +460,8 @@ mod tests {
         assert_eq!(payload.deepseek_base_url, "u");
         assert!(!payload.deepseek_proxy_enabled);
         assert!(!payload.check_prereleases);
+        assert!(payload.fetch_history);
+        assert_eq!(payload.fetch_history_count, 3);
         assert_eq!(payload.language, "zh-CN");
         assert_eq!(payload.theme, "system");
 

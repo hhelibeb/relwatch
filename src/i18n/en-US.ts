@@ -63,6 +63,8 @@ export default {
   'settings.minimize_tray': 'Minimize to tray on close',
   'settings.log_retention': 'Log retention days (0=forever)',
   'settings.check_prereleases': 'Check prereleases',
+  'settings.fetch_history': 'Fetch history on first query',
+  'settings.fetch_history_count': 'History count',
   'settings.enable_ai': 'Enable AI summaries',
   'settings.api_key': 'API Key',
   'settings.api_key_set': 'Already set (leave empty to keep)',
@@ -175,6 +177,8 @@ export default {
   'setting.deepseek_base_url': 'AI API URL',
   'setting.deepseek_proxy': 'AI Proxy',
   'setting.check_prereleases': 'Check Pre-releases',
+  'setting.fetch_history': 'Fetch History',
+  'setting.fetch_history_count': 'History Version Count',
   'setting.language': 'Language',
   'setting.theme': 'Theme',
 

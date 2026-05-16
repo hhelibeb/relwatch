@@ -7,12 +7,14 @@ async fn fetch_releases_inner(
     owner: &str,
     repo: &str,
     api_base: &str,
+    per_page: usize,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let url = format!(
-        "{}/repos/{}/{}/releases?per_page=10",
+        "{}/repos/{}/{}/releases?per_page={}",
         api_base.trim_end_matches('/'),
         owner,
-        repo
+        repo,
+        per_page,
     );
     let resp = client
         .get(&url)
@@ -32,11 +34,12 @@ async fn fetch_releases_with_retry(
     owner: &str,
     repo: &str,
     api_base: &str,
+    per_page: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
     let max_retries = 3;
     let mut attempt = 0;
     loop {
-        match fetch_releases_inner(client, owner, repo, api_base).await {
+        match fetch_releases_inner(client, owner, repo, api_base, per_page).await {
             Ok(data) => return Ok(data),
             Err((status, msg)) => {
                 if status == 403 {
@@ -58,8 +61,9 @@ pub async fn fetch_releases(
     client: &reqwest::Client,
     owner: &str,
     repo: &str,
+    per_page: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
-    fetch_releases_with_retry(client, owner, repo, "https://api.github.com").await
+    fetch_releases_with_retry(client, owner, repo, "https://api.github.com", per_page).await
 }
 
 pub async fn fetch_repo_info(
@@ -90,6 +94,7 @@ pub fn save_releases(
     conn: &Connection,
     source_id: i64,
     gh_releases: &[serde_json::Value],
+    max_count: usize,
 ) -> Vec<(i64, Option<String>)> {
     let check_pre = crate::db::settings::get_setting(
         conn,
@@ -108,7 +113,7 @@ pub fn save_releases(
         pb.cmp(pa)
     });
 
-    // 找到第一条符合条件的 release 即返回（后面的比它旧，无需处理）
+    let mut saved = Vec::new();
     for rel in &sorted {
         let pre = rel["prerelease"].as_bool().unwrap_or(false);
         if pre && !check_pre {
@@ -123,18 +128,26 @@ pub fn save_releases(
             releases::insert_release(conn, source_id, tag, name, html_url, published, pre, body)
         {
             if id > 0 {
-                return vec![(id, body.map(|s| s.to_string()))];
+                saved.push((id, body.map(|s| s.to_string())));
+                if saved.len() >= max_count {
+                    return saved;
+                }
+                continue;
             }
         }
-        // 已入库说明不是新版，后面的都比它旧，停止
-        return vec![];
+        // 已入库且普通模式（max_count=1）时，说明不是新版，停止
+        if max_count == 1 {
+            return vec![];
+        }
+        // 历史模式：已存在的跳过，继续找更新/更旧的新版
     }
-    vec![]
+    saved
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path, query_param};
 
@@ -160,7 +173,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri()).await;
+        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_ok());
         let releases = result.unwrap();
         assert_eq!(releases.len(), 1);
@@ -177,7 +190,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri()).await;
+        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, 403);
     }
@@ -200,7 +213,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri()).await;
+        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_ok());
     }
 
@@ -214,7 +227,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri()).await;
+        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("403"));
     }
@@ -229,8 +242,129 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
-        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri()).await;
+        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("重试3次后仍然失败"));
+    }
+
+    fn rel(tag: &str, date: &str, pre: bool, body: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "name": tag,
+            "html_url": format!("https://github.com/o/r/releases/tag/{}", tag),
+            "published_at": date,
+            "prerelease": pre,
+            "body": body,
+        })
+    }
+
+    #[test]
+    fn test_save_releases_max_count_1() {
+        let conn = db::init::init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
+            rel("v2.0.0", "2024-02-01T00:00:00Z", false, Some("v2 body")),
+        ];
+        let result = save_releases(&conn, sid, &data, 1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].1.as_deref(), Some("v3 body"));
+    }
+
+    #[test]
+    fn test_save_releases_max_count_3() {
+        let conn = db::init::init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
+            rel("v2.0.0", "2024-02-01T00:00:00Z", false, Some("v2 body")),
+            rel("v1.0.0", "2024-01-01T00:00:00Z", false, Some("v1 body")),
+        ];
+        let result = save_releases(&conn, sid, &data, 3);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].1.as_deref(), Some("v3 body"));
+        assert_eq!(result[1].1.as_deref(), Some("v2 body"));
+        assert_eq!(result[2].1.as_deref(), Some("v1 body"));
+    }
+
+    #[test]
+    fn test_save_releases_max_count_1_existing_returns_empty() {
+        let conn = db::init::init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
+            rel("v2.0.0", "2024-02-01T00:00:00Z", false, Some("v2 body")),
+        ];
+        // First save: v3.0.0 is new
+        let result = save_releases(&conn, sid, &data, 1);
+        assert_eq!(result.len(), 1);
+
+        // Second save with same data: v3.0.0 already exists, should return empty
+        let result = save_releases(&conn, sid, &data, 1);
+        assert_eq!(result.len(), 0);
+    }
+
+    #[test]
+    fn test_save_releases_historical_skips_existing_and_continues() {
+        let conn = db::init::init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
+            rel("v2.0.0", "2024-02-01T00:00:00Z", false, Some("v2 body")),
+            rel("v1.0.0", "2024-01-01T00:00:00Z", false, Some("v1 body")),
+        ];
+        // First save v3.0.0
+        let result = save_releases(&conn, sid, &data, 1);
+        assert_eq!(result.len(), 1);
+
+        // Historical mode: v3.0.0 exists (skip), v2.0.0 is new, v1.0.0 is new
+        // max_count=2 should return v2.0.0 and v1.0.0
+        let result = save_releases(&conn, sid, &data, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].1.as_deref(), Some("v2 body"));
+        assert_eq!(result[1].1.as_deref(), Some("v1 body"));
+    }
+
+    #[test]
+    fn test_save_releases_skips_prerelease_when_disabled() {
+        let conn = db::init::init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            rel("v4.0.0-pre", "2024-04-01T00:00:00Z", true, Some("pre body")),
+            rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
+            rel("v2.0.0", "2024-02-01T00:00:00Z", false, Some("v2 body")),
+        ];
+        // Skip prerelease, take v3.0.0 and v2.0.0
+        let result = save_releases(&conn, sid, &data, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].1.as_deref(), Some("v3 body"));
+        assert_eq!(result[1].1.as_deref(), Some("v2 body"));
+    }
+
+    #[test]
+    fn test_save_releases_includes_prerelease_when_enabled() {
+        let conn = db::init::init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "true").unwrap();
+        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            rel("v4.0.0-pre", "2024-04-01T00:00:00Z", true, Some("pre body")),
+            rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
+            rel("v2.0.0", "2024-02-01T00:00:00Z", false, Some("v2 body")),
+        ];
+        let result = save_releases(&conn, sid, &data, 2);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].1.as_deref(), Some("pre body"));
+        assert_eq!(result[1].1.as_deref(), Some("v3 body"));
     }
 }

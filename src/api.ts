@@ -85,6 +85,8 @@ export interface AppSettings {
   deepseek_api_key_set: boolean
   deepseek_proxy_enabled: boolean
   check_prereleases: boolean
+  fetch_history: boolean
+  fetch_history_count: number
   language: string
   theme: string
   github_token_set: boolean
@@ -168,10 +170,12 @@ export async function updateSettings(
   deepseekBaseUrl: string,
   deepseekProxyEnabled: boolean,
   checkPrereleases: boolean,
+  fetchHistory: boolean,
+  fetchHistoryCount: number,
   language: string,
   theme: string,
 ): Promise<void> {
-  return invokeI18n('update_settings', { payload: { pollIntervalMinutes, proxyUrl, minimizeToTray, logRetentionDays, deepseekEnabled, deepseekModel, deepseekBaseUrl, deepseekProxyEnabled, checkPrereleases, language, theme } })
+  return invokeI18n('update_settings', { payload: { pollIntervalMinutes, proxyUrl, minimizeToTray, logRetentionDays, deepseekEnabled, deepseekModel, deepseekBaseUrl, deepseekProxyEnabled, checkPrereleases, fetchHistory, fetchHistoryCount, language, theme } })
 }
 
 export async function setDeepseekApiKey(apiKey: string): Promise<void> {
