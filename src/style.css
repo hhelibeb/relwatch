@@ -296,12 +296,49 @@ body {
   color: var(--text-muted);
 }
 
+.source-health-tooltip {
+  position: fixed;
+  z-index: 10002;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.14);
+  font-size: 12px;
+  line-height: 1.6;
+  pointer-events: none;
+  max-width: 360px;
+  overflow-wrap: break-word;
+}
+
+.tooltip-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tooltip-line-wrap {
+  white-space: normal;
+  word-break: break-word;
+}
+
 .health-dot {
+  position: relative;
   width: 7px;
   height: 7px;
   border-radius: 999px;
   flex-shrink: 0;
   background: var(--text-muted);
+}
+
+.health-dot::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  right: -5px;
+  bottom: -5px;
+  border-radius: 999px;
 }
 
 .health-ok {
@@ -804,6 +841,25 @@ select.setting-input {
   font-size: 15px;
   font-weight: 600;
   margin: 0;
+}
+
+.setting-section-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 16px 0;
+}
+
+.setting-section-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 4px 0 12px;
+  line-height: 1.5;
+}
+
+.backup-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
 }
 
 .setting-actions {
@@ -1510,6 +1566,7 @@ select.setting-input {
 }
 [data-theme="dark"] .calendar-tooltip,
 [data-theme="dark"] .release-summary-tooltip,
+[data-theme="dark"] .source-health-tooltip,
 [data-theme="dark"] .context-menu {
   box-shadow: 0 6px 20px rgba(0,0,0,0.4);
 }

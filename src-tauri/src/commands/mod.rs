@@ -1,3 +1,4 @@
+pub mod backup;
 pub mod source;
 pub mod release;
 pub mod log;

@@ -86,6 +86,15 @@ const unreadReleaseCounts = computed<Record<string, number>>(() => {
   return counts
 })
 
+const totalReleaseCounts = computed<Record<string, number>>(() => {
+  const counts: Record<string, number> = {}
+  for (const release of releases.value) {
+    const key = repoKey(release.owner, release.repo)
+    counts[key] = (counts[key] || 0) + 1
+  }
+  return counts
+})
+
 function formatCountdown(secs: number) {
   if (secs <= 0) return t('app.check_soon')
   const m = Math.floor(secs / 60)
@@ -253,7 +262,7 @@ onMounted(async () => {
     </header>
 
     <main class="app-main">
-      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts"
+      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts"
         @update="loadSources(); loadReleases(); loadLogs()"
         @check-result="handleSourceCheckResult"
         @check-busy="sourceChecking = $event"

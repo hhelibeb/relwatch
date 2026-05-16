@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, ref, onMounted, onUnmounted } from 'vue'
+import { inject, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
 import {
   type Source,
@@ -13,7 +13,7 @@ import {
 import { t } from '../i18n'
 import { formatDate } from '../utils'
 
-const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number> }>()
+const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number> }>()
 const emit = defineEmits<{
   update: []
   checkResult: [count: number]
@@ -155,6 +155,47 @@ function sourceCheckedText(source: Source): string {
   if (!source.last_checked_at) return t('source.never_checked')
   return t('source.last_checked', formatDate(source.last_checked_at))
 }
+
+function sourceHealthAriaLabel(source: Source): string {
+  if (!source.enabled) return t('source.health_paused')
+  if (source.last_check_status === 'ok') return t('source.health_normal')
+  if (source.last_check_status === 'error') return t('source.health_error')
+  return t('source.health_unknown')
+}
+
+const tooltip = ref<{ visible: boolean; x: number; y: number; lines: { text: string; wrap: boolean }[] }>({ visible: false, x: 0, y: 0, lines: [] })
+
+function showHealthTooltip(e: MouseEvent, source: Source) {
+  const lines: { text: string; wrap: boolean }[] = []
+  let statusText: string
+  if (!source.enabled) statusText = t('source.health_paused')
+  else if (source.last_check_status === 'ok') statusText = t('source.health_normal')
+  else if (source.last_check_status === 'error') statusText = t('source.health_error')
+  else statusText = t('source.health_unknown')
+  lines.push({ text: t('source.tooltip_status') + statusText, wrap: false })
+  const count = props.totalReleaseCounts[sourceKey(source)]
+  if (count > 0) {
+    lines.push({ text: t('source.tooltip_history') + t('source.recorded_versions', String(count)), wrap: false })
+  }
+  if (source.description) {
+    lines.push({ text: t('source.tooltip_about') + source.description, wrap: true })
+  }
+  tooltip.value = { visible: true, x: e.clientX + 10, y: e.clientY + 10, lines }
+  nextTick(() => {
+    const el = document.querySelector('.source-health-tooltip') as HTMLElement | null
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    let { x, y } = tooltip.value
+    if (rect.right > window.innerWidth - 4) x = e.clientX - rect.width - 10
+    if (rect.bottom > window.innerHeight - 4) y = e.clientY - rect.height - 10
+    tooltip.value.x = Math.max(4, x)
+    tooltip.value.y = Math.max(4, y)
+  })
+}
+
+function hideHealthTooltip() {
+  tooltip.value.visible = false
+}
 </script>
 
 <template>
@@ -183,7 +224,7 @@ function sourceCheckedText(source: Source): string {
             <span v-else class="badge badge-off">{{ t('source.paused') }}</span>
           </div>
           <div class="source-health">
-            <span class="health-dot" :class="sourceHealthClass(source)"></span>
+            <span class="health-dot" :class="sourceHealthClass(source)" :aria-label="sourceHealthAriaLabel(source)" @mouseenter="showHealthTooltip($event, source)" @mouseleave="hideHealthTooltip"></span>
             <template v-if="source.enabled && source.last_check_status === 'ok'">
               <button
                 v-if="unreadReleaseCount(source) > 0"
@@ -192,7 +233,6 @@ function sourceCheckedText(source: Source): string {
               >
                 {{ t('source.pending_updates', String(unreadReleaseCount(source))) }}
               </button>
-              <span v-else class="source-health-label source-health-label-empty" aria-label="ok"></span>
               <span class="source-health-meta">{{ sourceCheckedText(source) }}</span>
             </template>
             <template v-else>
@@ -219,6 +259,9 @@ function sourceCheckedText(source: Source): string {
     <div v-if="contextMenu" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
       <button @click="handleOpenLink">{{ t('context.open') }}</button>
       <button @click="handleCopyLink">{{ t('context.copy_link') }}</button>
+    </div>
+    <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+      <div v-for="(line, i) in tooltip.lines" :key="i" class="tooltip-line" :class="{ 'tooltip-line-wrap': line.wrap }">{{ line.text }}</div>
     </div>
   </section>
 </template>

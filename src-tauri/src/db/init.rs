@@ -177,5 +177,12 @@ fn migrate(conn: &Connection) -> Result<()> {
              ALTER TABLE sources ADD COLUMN last_new_count INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
+    let has_desc: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='description'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_desc {
+        conn.execute_batch("ALTER TABLE sources ADD COLUMN description TEXT")?;
+    }
     Ok(())
 }

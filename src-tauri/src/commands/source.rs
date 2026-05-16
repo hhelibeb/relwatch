@@ -11,8 +11,9 @@ pub async fn add_source(
     owner: String,
     repo: String,
 ) -> Result<i64, String> {
+    let description: String;
     {
-        let conn = state.db.get().unwrap();
+        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
         if db::sources::source_exists(&conn, &source_type, &owner, &repo)? {
             return Ok(0);
         }
@@ -35,9 +36,14 @@ pub async fn add_source(
         if !resp.status().is_success() {
             return Err(format!("err.repo_api_error|{}", resp.status().as_u16()));
         }
+        let repo_info: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|_| "err.repo_verify_failed|Failed to parse repo info".to_string())?;
+        description = repo_info["description"].as_str().unwrap_or("").to_string();
     }
-    let conn = state.db.get().unwrap();
-    let id = db::sources::add_source(&conn, &source_type, &owner, &repo)?;
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let id = db::sources::add_source(&conn, &source_type, &owner, &repo, &description)?;
     if id == 0 {
         return Ok(0);
     }

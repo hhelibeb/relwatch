@@ -181,6 +181,13 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         );
     }
 
+    if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo).await {
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db.get() {
+            let _ = db::sources::update_source_description(&conn, source_obj.id, &desc);
+        }
+    }
+
     let new_ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
 
     if !saved.is_empty() {

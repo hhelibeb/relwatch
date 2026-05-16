@@ -79,6 +79,8 @@ pub fn run() {
             commands::set_deepseek_api_key,
             commands::set_github_token,
             commands::test_deepseek_connection,
+            commands::backup::export_backup,
+            commands::backup::import_backup,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -37,6 +37,7 @@ export interface Source {
   last_new_count: number
   created_at: string
   updated_at: string
+  description: string | null
 }
 
 export type NotificationStatus = 'pending' | 'snoozed' | 'clicked' | 'ignored'
@@ -187,4 +188,12 @@ export async function testDeepseekConnection(): Promise<string> {
 
 export async function openReleaseUrl(url: string): Promise<void> {
   await openUrl(url)
+}
+
+export async function exportBackup(): Promise<string> {
+  return invokeI18n<string>('export_backup')
+}
+
+export async function importBackup(): Promise<void> {
+  return invokeI18n('import_backup')
 }

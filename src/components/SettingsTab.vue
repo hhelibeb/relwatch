@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, inject, watch, nextTick, onUnmounted } from 'vue'
-import { message } from '@tauri-apps/plugin-dialog'
+import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { version } from '../../package.json'
 import {
   type AppSettings,
@@ -8,6 +8,8 @@ import {
   setDeepseekApiKey,
   setGithubToken,
   testDeepseekConnection,
+  exportBackup,
+  importBackup,
   openReleaseUrl,
 } from '../api'
 import { t, setLocale, languages } from '../i18n'
@@ -16,7 +18,7 @@ const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{ update: [pollIntervalChanged: boolean] }>()
 const showToast = inject<(msg: string) => void>('showToast')!
 
-const settingsTab = ref<'general' | 'ai' | 'appearance'>('general')
+const settingsTab = ref<'general' | 'data' | 'appearance' | 'ai'>('general')
 const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
@@ -153,6 +155,30 @@ async function handleTestDeepseek() {
     testingDeepseek.value = false
   }
 }
+
+async function handleExportBackup() {
+  try {
+    const path = await exportBackup()
+    let msg = t('backup.export_success') + ': ' + path
+    if (props.settings.github_token_set) {
+      msg += ' ' + t('backup.token_warning')
+    }
+    showToast(msg)
+  } catch (e: any) {
+    showToast(t('backup.export_failed') + (e?.toString?.() ?? String(e)))
+  }
+}
+
+async function handleImportBackup() {
+  const confirmed = await confirm(t('backup.import_confirm'), { title: t('backup.import_confirm_title'), kind: 'warning' })
+  if (!confirmed) return
+  try {
+    await importBackup()
+    showToast(t('backup.import_success'))
+  } catch (e: any) {
+    showToast(t('backup.import_failed') + (e?.toString?.() ?? String(e)))
+  }
+}
 </script>
 
 <template>
@@ -160,6 +186,7 @@ async function handleTestDeepseek() {
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <button :class="{ active: settingsTab === 'general' }" @click="settingsTab = 'general'">{{ t('settings.general') }}</button>
+        <button :class="{ active: settingsTab === 'data' }" @click="settingsTab = 'data'">{{ t('settings.data') }}</button>
         <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}</button>
         <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}</button>
         <div class="version-row">
@@ -227,6 +254,14 @@ async function handleTestDeepseek() {
             <span class="setting-label">{{ t('settings.check_prereleases') }}</span>
           </label>
         </div>
+        <div v-if="settingsTab === 'data'" class="settings-form">
+          <h3 class="setting-section-title">{{ t('backup.section_title') }}</h3>
+          <p class="setting-section-desc">{{ t('backup.section_desc') }}</p>
+          <div class="setting-row backup-actions">
+            <button class="btn-secondary" @click="handleExportBackup">{{ t('backup.export_btn') }}</button>
+            <button class="btn-secondary btn-danger" @click="handleImportBackup">{{ t('backup.import_btn') }}</button>
+          </div>
+        </div>
         <div v-if="settingsTab === 'ai'" class="settings-form">
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="props.settings.deepseek_enabled" />
@@ -292,7 +327,7 @@ async function handleTestDeepseek() {
             </div>
           </div>
         </div>
-        <div class="setting-actions">
+        <div v-if="settingsTab !== 'data'" class="setting-actions">
           <button class="btn-primary" :disabled="savingSettings" @click="handleSave">
             {{ savingSettings ? t('settings.saving') : t('settings.save') }}
           </button>

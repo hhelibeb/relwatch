@@ -62,6 +62,30 @@ pub async fn fetch_releases(
     fetch_releases_with_retry(client, owner, repo, "https://api.github.com").await
 }
 
+pub async fn fetch_repo_info(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("err.repo_verify_failed|{}", e))?;
+    if resp.status() == 404 {
+        return Err(format!("err.repo_not_found|{}|{}", owner, repo));
+    }
+    if !resp.status().is_success() {
+        return Err(format!("err.repo_api_error|{}", resp.status().as_u16()));
+    }
+    let info: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|_| "Failed to parse repo info".to_string())?;
+    Ok(info["description"].as_str().unwrap_or("").to_string())
+}
+
 pub fn save_releases(
     conn: &Connection,
     source_id: i64,

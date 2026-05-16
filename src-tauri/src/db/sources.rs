@@ -16,6 +16,7 @@ pub struct Source {
     pub last_new_count: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub description: Option<String>,
 }
 
 pub fn add_source(
@@ -23,12 +24,14 @@ pub fn add_source(
     source_type: &str,
     owner: &str,
     repo: &str,
+    description: &str,
 ) -> Result<i64, String> {
     let now = chrono::Utc::now().to_rfc3339();
+    let desc = if description.is_empty() { None } else { Some(description) };
     conn.execute(
-        "INSERT OR IGNORE INTO sources (source_type, owner, repo, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![source_type, owner, repo, now, now],
+        "INSERT OR IGNORE INTO sources (source_type, owner, repo, description, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![source_type, owner, repo, desc, now, now],
     )
     .map_err(|e| e.to_string())?;
     if conn.changes() == 0 {
@@ -65,7 +68,8 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
         .prepare(
             "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
                     last_checked_at, last_check_status, last_check_message,
-                    consecutive_failures, last_new_count, created_at, updated_at
+                    consecutive_failures, last_new_count, created_at, updated_at,
+                    description
              FROM sources WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -86,6 +90,7 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
                 last_new_count: row.get(10)?,
                 created_at: row.get(11)?,
                 updated_at: row.get(12)?,
+                description: row.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -147,12 +152,23 @@ pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> Result
     Ok(())
 }
 
+pub fn update_source_description(conn: &Connection, id: i64, description: &str) -> Result<(), String> {
+    let desc = if description.is_empty() { None } else { Some(description) };
+    conn.execute(
+        "UPDATE sources SET description = ?1, updated_at = ?2 WHERE id = ?3",
+        params![desc, chrono::Utc::now().to_rfc3339(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
                     last_checked_at, last_check_status, last_check_message,
-                    consecutive_failures, last_new_count, created_at, updated_at
+                    consecutive_failures, last_new_count, created_at, updated_at,
+                    description
              FROM sources ORDER BY id",
         )
         .map_err(|e| e.to_string())?;
@@ -173,6 +189,7 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
                 last_new_count: row.get(10)?,
                 created_at: row.get(11)?,
                 updated_at: row.get(12)?,
+                description: row.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -190,7 +207,7 @@ mod tests {
     #[test]
     fn test_source_add_and_list() {
         let conn = init_memory_db().unwrap();
-        let id = add_source(&conn, "github", "microsoft", "vscode").unwrap();
+        let id = add_source(&conn, "github", "microsoft", "vscode", "Code editor").unwrap();
         assert!(id > 0);
         let sources = list_sources(&conn).unwrap();
         assert_eq!(sources.len(), 1);
@@ -203,7 +220,7 @@ mod tests {
     #[test]
     fn test_source_remove() {
         let conn = init_memory_db().unwrap();
-        let id = add_source(&conn, "github", "a", "b").unwrap();
+        let id = add_source(&conn, "github", "a", "b", "").unwrap();
         remove_source(&conn, id).unwrap();
         assert_eq!(list_sources(&conn).unwrap().len(), 0);
     }
@@ -211,7 +228,7 @@ mod tests {
     #[test]
     fn test_source_update() {
         let conn = init_memory_db().unwrap();
-        let id = add_source(&conn, "github", "x", "y").unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
         update_source(&conn, id, false, 60).unwrap();
         let s = &list_sources(&conn).unwrap()[0];
         assert!(!s.enabled);
@@ -221,7 +238,7 @@ mod tests {
     #[test]
     fn test_source_health_success_and_failure() {
         let conn = init_memory_db().unwrap();
-        let id = add_source(&conn, "github", "x", "y").unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
 
         record_check_failure(&conn, id, "network failed").unwrap();
         let s = &list_sources(&conn).unwrap()[0];
@@ -242,9 +259,9 @@ mod tests {
     #[test]
     fn test_add_source_duplicate() {
         let conn = init_memory_db().unwrap();
-        let id1 = add_source(&conn, "github", "microsoft", "vscode").unwrap();
+        let id1 = add_source(&conn, "github", "microsoft", "vscode", "Code editor").unwrap();
         assert!(id1 > 0);
-        let id2 = add_source(&conn, "github", "microsoft", "vscode").unwrap();
+        let id2 = add_source(&conn, "github", "microsoft", "vscode", "Code editor").unwrap();
         assert_eq!(id2, 0);
         let sources = list_sources(&conn).unwrap();
         assert_eq!(sources.len(), 1);
