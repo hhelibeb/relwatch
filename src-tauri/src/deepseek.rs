@@ -78,7 +78,7 @@ async fn call_summary(
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 300,
+        "max_tokens": 800,
         "response_format": {"type": "json_object"}
     });
 
