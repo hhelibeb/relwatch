@@ -10,7 +10,7 @@ async fn save_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
     app.dialog()
         .file()
         .add_filter("Database", &["db"])
-        .set_file_name(&format!(
+        .set_file_name(format!(
             "relwatch-backup.{}.{}.db",
             chrono::Local::now().format("%Y%m%d-%H%M%S"),
             hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_else(|_| "unknown".to_string())
