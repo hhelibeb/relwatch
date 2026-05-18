@@ -1,6 +1,7 @@
 use crate::db;
 use crate::poll;
 use crate::types::{AppState, PollResult};
+use tauri::Emitter;
 use serde_json::json;
 
 #[tauri::command]
@@ -21,6 +22,7 @@ pub fn get_pending_releases(
 
 #[tauri::command]
 pub fn set_notification_state(
+    app: tauri::AppHandle,
     state: tauri::State<AppState>,
     release_id: i64,
     status: String,
@@ -41,6 +43,9 @@ pub fn set_notification_state(
         Some(r) => db::logs::write_log_key(&conn, "INFO", "release.status_changed", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": release_id, "action": &status}).to_string()),
         None => db::logs::write_log_key(&conn, "INFO", "release.status_changed_unknown", &json!({"id": release_id, "action": &status}).to_string()),
     }
+
+    let _ = app.emit("release-state-changed", release_id);
+
     Ok(())
 }
 

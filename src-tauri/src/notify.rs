@@ -5,8 +5,6 @@ use tauri::AppHandle;
 // ═══════════════════════════════════════════════════════════════
 #[cfg(windows)]
 mod inner {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::OnceLock;
     use tauri::AppHandle;
     use tauri::Emitter;
     use tauri::Manager;
@@ -14,28 +12,39 @@ mod inner {
     use tauri_winrt_notification::Toast;
     use serde_json::json;
 
-    static COM_INIT: OnceLock<()> = OnceLock::new();
-    static COM_INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-    fn ensure_com() {
-        COM_INIT.get_or_init(|| {
-            unsafe {
-                let _ = windows::Win32::System::Com::CoInitializeEx(
+    /// 每个线程独立的 COM 守卫。
+    /// 首次在线程上访问时调用 CoInitializeEx，线程退出时自动调用 CoUninitialize。
+    struct ComGuard;
+    impl ComGuard {
+        fn new() -> Self {
+            let _result = unsafe {
+                windows::Win32::System::Com::CoInitializeEx(
                     None,
                     windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
-                );
-            }
-            COM_INITIALIZED.store(true, Ordering::Relaxed);
-        });
+                )
+            };
+            ComGuard
+        }
     }
-
-    pub fn uninit_com() {
-        if COM_INITIALIZED.swap(false, Ordering::Relaxed) {
+    impl Drop for ComGuard {
+        fn drop(&mut self) {
             unsafe {
                 windows::Win32::System::Com::CoUninitialize();
             }
         }
     }
+
+    thread_local! {
+        static COM_CTX: ComGuard = ComGuard::new();
+    }
+
+    pub fn ensure_com() {
+        let _ = COM_CTX.with(|_| {});
+    }
+
+    /// 保留以保持 API 兼容，不再需要显式调用——thread_local! 在线程退出时自动清理。
+    #[allow(dead_code)]
+    pub fn uninit_com() {}
 
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
@@ -180,9 +189,9 @@ mod inner {
     use tauri::{AppHandle, Emitter, Manager};
     use tauri_plugin_opener::OpenerExt;
 
-    pub fn uninit_com() {
-        // Linux 上不需要 COM 清理
-    }
+    pub fn uninit_com() {}
+
+    pub fn ensure_com() {}
 
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
@@ -340,6 +349,8 @@ mod inner {
 
     pub fn uninit_com() {}
 
+    pub fn ensure_com() {}
+
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
         _app: &AppHandle,
@@ -356,7 +367,45 @@ mod inner {
 }
 
 // ── Re-export ─────────────────────────────────────────
-pub use inner::{send_release_notification, uninit_com};
+// uninit_com 保留以保持外部兼容
+#[allow(unused_imports)]
+pub use inner::{send_release_notification, uninit_com, ensure_com};
 
 // ── 权限请求（跨平台空操作）─────────────────────────
 pub fn request_permission(_app: &AppHandle) {}
+
+// ── 测试 ────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_ensure_com_called_once() {
+        // 确保 ensure_com 可以被首次调用而不 panic
+        ensure_com();
+    }
+
+    #[test]
+    fn test_ensure_com_is_idempotent() {
+        // 多次调用 ensure_com 应该安全（线程级 COM ref-counting）
+        ensure_com();
+        ensure_com();
+        ensure_com();
+    }
+
+    #[test]
+    fn test_uninit_com_noop() {
+        // uninit_com 在所有平台上都应安全调用
+        uninit_com();
+        uninit_com();
+    }
+
+    #[test]
+    fn test_ensure_com_then_uninit_com() {
+        // ensure_com 和 uninit_com 交替调用不应 panic
+        ensure_com();
+        uninit_com();
+        ensure_com();
+        uninit_com();
+    }
+}

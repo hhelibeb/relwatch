@@ -85,6 +85,8 @@ pub fn run() {
             }
 
             tray::create_tray(app.handle())?;
+            tray::setup_tray_listeners(app.handle());
+            tray::update_tray_badge(app.handle());
             notify::request_permission(app.handle());
 
             if let Some(window) = app.get_webview_window("main") {

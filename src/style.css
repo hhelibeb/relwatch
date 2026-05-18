@@ -713,6 +713,9 @@ body {
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
   padding: 8px;
 }
 

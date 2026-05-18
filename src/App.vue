@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, provide } from 'vue'
+import { computed, ref, onMounted, onUnmounted, provide } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import {
   type Source,
@@ -56,6 +56,8 @@ const sourceChecking = ref(false)
 let countdownTimer: ReturnType<typeof setInterval> | null = null
 let countdownSeconds = 0
 let countdownReady = false
+
+const unlisteners: (() => void)[] = []
 
 const toastMessage = ref('')
 const toastVisible = ref(false)
@@ -216,7 +218,7 @@ onMounted(async () => {
   watchSystemTheme()
   startCountdown()
 
-  document.addEventListener('contextmenu', (e) => {
+  const handleContextMenu = (e: MouseEvent) => {
     const selection = window.getSelection()
     const selected = selection && selection.toString().trim()
     if (selected) {
@@ -225,27 +227,40 @@ onMounted(async () => {
       return
     }
     e.preventDefault()
-  })
+  }
+  document.addEventListener('contextmenu', handleContextMenu)
+  unlisteners.push(() => document.removeEventListener('contextmenu', handleContextMenu))
 
   document.addEventListener('click', closeSelectionMenu)
+  unlisteners.push(() => document.removeEventListener('click', closeSelectionMenu))
 
-  listen<string>('navigate', (event) => {
+  const navigateUnlisten = await listen<string>('navigate', (event) => {
     if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {
       activeTab.value = event.payload as 'sources' | 'releases' | 'logs' | 'settings'
     }
   })
+  unlisteners.push(navigateUnlisten)
 
-  listen('poll-completed', () => {
+  const pollUnlisten = await listen('poll-completed', () => {
     loadSources()
     loadReleases()
     loadLogs()
     syncCountdown(false)
   })
+  unlisteners.push(pollUnlisten)
 
-  listen('release-state-changed', () => {
+  const stateUnlisten = await listen('release-state-changed', () => {
     loadReleases()
     loadLogs()
   })
+  unlisteners.push(stateUnlisten)
+})
+
+onUnmounted(() => {
+  for (const unlisten of unlisteners) {
+    unlisten()
+  }
+  unlisteners.length = 0
 })
 </script>
 
