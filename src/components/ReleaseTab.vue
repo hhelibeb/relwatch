@@ -31,11 +31,50 @@ function closeMenus() {
 onMounted(() => document.addEventListener('click', closeMenus))
 onUnmounted(() => document.removeEventListener('click', closeMenus))
 
+const statusFilter = ref<'all' | 'unread' | 'read'>('all')
+const importanceFilter = ref<'all' | '大' | '中' | '小'>('all')
+
+const openFilter = ref<'status' | 'importance' | null>(null)
+let hoverFilterTimer: ReturnType<typeof setTimeout> | null = null
+
+function hoverFilterEnter() {
+  if (hoverFilterTimer) {
+    clearTimeout(hoverFilterTimer)
+    hoverFilterTimer = null
+  }
+}
+
+function hoverFilterLeave() {
+  hoverFilterTimer = setTimeout(() => {
+    openFilter.value = null
+  }, 120)
+}
+
+const importanceDisplayText = computed(() => {
+  if (importanceFilter.value === '大') return '🔴 ' + t('release.importance_high')
+  if (importanceFilter.value === '中') return '🟡 ' + t('release.importance_medium')
+  if (importanceFilter.value === '小') return '🟢 ' + t('release.importance_low')
+  return t('release.filter_all')
+})
+
 // 筛选
 const filteredReleases = computed(() => {
+  let list = props.releases
+
   const q = releaseSearch.value.trim().toLowerCase()
-  if (!q) return props.releases
-  return props.releases.filter(r => releaseMatchesSearch(r, q))
+  if (q) list = list.filter(r => releaseMatchesSearch(r, q))
+
+  if (statusFilter.value === 'unread') {
+    list = list.filter(r => isUnreadStatus(r.notification_status))
+  } else if (statusFilter.value === 'read') {
+    list = list.filter(r => isReadStatus(r.notification_status))
+  }
+
+  if (importanceFilter.value !== 'all') {
+    list = list.filter(r => r.ai_importance === importanceFilter.value)
+  }
+
+  return list
 })
 
 // 按发布时间排序（最新在前）
@@ -410,6 +449,34 @@ function releaseImportanceClass(release: ReleaseInfo): string {
           />
           <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
         </div>
+        <div class="filter-group" @mouseleave="hoverFilterLeave()">
+          <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
+            <button class="filter-trigger">
+              <span class="filter-label">{{ t('tab.status') }}</span>
+              <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
+              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+            </button>
+            <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+              <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+              <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
+              <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
+            </div>
+          </div>
+          <div class="filter-divider"></div>
+          <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
+            <button class="filter-trigger">
+              <span class="filter-label">{{ t('tab.importance') }}</span>
+              <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
+              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+            </button>
+            <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+              <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+              <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
+              <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
+              <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
+            </div>
+          </div>
+        </div>
         <div class="view-tabs">
           <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
             <svg><use href="/icons.svg#list-icon"/></svg>
@@ -427,7 +494,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
       </div>
       <div class="release-list">
         <div v-if="sortedReleases.length === 0" class="empty">
-          {{ releaseSearch ? t('release.no_match') : t('release.empty') }}
+          {{ releaseSearch || statusFilter !== 'all' || importanceFilter !== 'all' ? t('release.no_match') : t('release.empty') }}
         </div>
         <div v-for="release in sortedReleases" :key="release.id" class="release-item"
           :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
@@ -478,6 +545,34 @@ function releaseImportanceClass(release: ReleaseInfo): string {
           />
           <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
         </div>
+        <div class="filter-group" @mouseleave="hoverFilterLeave()">
+          <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
+            <button class="filter-trigger">
+              <span class="filter-label">{{ t('tab.status') }}</span>
+              <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
+              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+            </button>
+            <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+              <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+              <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
+              <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
+            </div>
+          </div>
+          <div class="filter-divider"></div>
+          <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
+            <button class="filter-trigger">
+              <span class="filter-label">{{ t('tab.importance') }}</span>
+              <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
+              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+            </button>
+            <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+              <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+              <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
+              <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
+              <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
+            </div>
+          </div>
+        </div>
         <div class="view-tabs">
           <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
             <svg><use href="/icons.svg#list-icon"/></svg>
@@ -494,7 +589,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         </div>
       </div>
       <div v-if="repoGroups.length === 0" class="empty">
-        {{ releaseSearch ? t('release.no_match') : t('release.empty') }}
+        {{ releaseSearch || statusFilter !== 'all' || importanceFilter !== 'all' ? t('release.no_match') : t('release.empty') }}
       </div>
       <div v-else class="repo-toolbar">
         <button class="btn-sm" @click="toggleAllRepos">
@@ -572,6 +667,34 @@ function releaseImportanceClass(release: ReleaseInfo): string {
           />
           <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
         </div>
+          <div class="filter-group" @mouseleave="hoverFilterLeave()">
+            <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
+              <button class="filter-trigger">
+                <span class="filter-label">{{ t('tab.status') }}</span>
+                <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
+                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+              </button>
+              <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+                <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+                <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
+                <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
+              </div>
+            </div>
+            <div class="filter-divider"></div>
+            <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
+              <button class="filter-trigger">
+                <span class="filter-label">{{ t('tab.importance') }}</span>
+                <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
+                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+              </button>
+              <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+                <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+                <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
+                <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
+                <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
+              </div>
+            </div>
+          </div>
           <div class="view-tabs">
             <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
               <svg><use href="/icons.svg#list-icon"/></svg>
@@ -631,6 +754,34 @@ function releaseImportanceClass(release: ReleaseInfo): string {
       <template v-else>
         <div class="log-search-row">
           <div style="flex:1"></div>
+          <div class="filter-group" @mouseleave="hoverFilterLeave()">
+            <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
+              <button class="filter-trigger">
+                <span class="filter-label">{{ t('tab.status') }}</span>
+                <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
+                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+              </button>
+              <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+                <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+                <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
+                <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
+              </div>
+            </div>
+            <div class="filter-divider"></div>
+            <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
+              <button class="filter-trigger">
+                <span class="filter-label">{{ t('tab.importance') }}</span>
+                <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
+                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+              </button>
+              <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+                <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
+                <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
+                <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
+                <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
+              </div>
+            </div>
+          </div>
           <div class="view-tabs">
             <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
               <svg><use href="/icons.svg#list-icon"/></svg>

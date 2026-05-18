@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { inject, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, inject, ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
 import {
   type Source,
@@ -154,6 +154,14 @@ function sourceHealthLabel(source: Source): string {
   return t('source.health_unknown')
 }
 
+const sortedSources = computed(() => {
+  return [...props.sources].sort((a, b) => {
+    const aPending = props.unreadReleaseCounts[sourceKey(a)] || 0
+    const bPending = props.unreadReleaseCounts[sourceKey(b)] || 0
+    return bPending - aPending || b.id - a.id
+  })
+})
+
 function sourceCheckedText(source: Source): string {
   if (!source.last_checked_at) return t('source.never_checked')
   return t('source.last_checked', formatDate(source.last_checked_at))
@@ -216,7 +224,7 @@ function hideHealthTooltip() {
     </div>
     <div class="source-list">
       <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
-      <div v-for="source in props.sources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }">
+      <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }">
         <div class="source-main">
           <div class="source-info">
             <span class="source-name">{{ source.owner }}/{{ source.repo }}</span>
