@@ -1,6 +1,6 @@
 # Release Note 生成规则
 
-当生成 release note 时，请遵循以下规则：
+生成简要的release note。当生成 release note 时，请遵循以下规则：
 
 1. 使用 `git tag --sort=-v:refname` 找最新 tag，对比 `tag..HEAD`
 2. 按 Conventional Commit 前缀分类，如果某项分类没有对应内容，可以省略：

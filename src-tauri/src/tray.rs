@@ -56,6 +56,7 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
                 }
                 "quit" => {
                     crate::poll::stop_poll();
+                    #[cfg(windows)]
                     let _ = app.run_on_main_thread(|| {
                         crate::notify::uninit_com();
                     });

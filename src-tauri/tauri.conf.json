@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "RelWatch",
-  "version": "1.1.4",
+  "version": "1.2.0",
   "identifier": "com.relwatch.app",
   "build": {
     "frontendDist": "../dist",
@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "nsis",
+    "targets": ["nsis", "deb", "appimage"],
     "windows": {
         "nsis": {
             "template": "nsis/installer.nsi"
