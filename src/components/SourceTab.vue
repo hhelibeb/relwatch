@@ -98,8 +98,8 @@ async function handleAdd() {
     highlightedId.value = id
     setTimeout(() => { highlightedId.value = null }, 2200)
     emit('update')
-  } catch (e: any) {
-    await message(t('source.add_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
+  } catch (e: unknown) {
+    await message(t('source.add_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   } finally {
     loading.value = false
   }
@@ -109,8 +109,8 @@ async function handleRemove(id: number) {
   try {
     await removeSource(id)
     emit('update')
-  } catch (e: any) {
-    await message(t('source.delete_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
+  } catch (e: unknown) {
+    await message(t('source.delete_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
 }
 
@@ -118,8 +118,8 @@ async function handleToggle(source: Source) {
   try {
     await updateSource(source.id, !source.enabled, source.poll_interval_minutes)
     emit('update')
-  } catch (e: any) {
-    await message(t('source.operation_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
+  } catch (e: unknown) {
+    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
 }
 
@@ -131,8 +131,8 @@ async function handleCheckSingle(id: number) {
     const result = await checkSingleSource(id)
     emit('update')
     emit('checkResult', result.new_releases.length)
-  } catch (e: any) {
-    await message(t('source.check_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
+  } catch (e: unknown) {
+    await message(t('source.check_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   } finally {
     checkingId.value = null
     emit('checkBusy', false)

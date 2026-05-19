@@ -188,10 +188,10 @@ pub async fn generate_summaries_for_new(
         let base_url = base_url.clone();
         let app = app.clone();
         let release_id = *release_id;
-        let permit = semaphore.clone().acquire_owned().await.unwrap();
+        let sem_clone = semaphore.clone();
 
         handles.push(tokio::spawn(async move {
-            let _permit = permit;
+            let _permit = sem_clone.acquire_owned().await.unwrap();
             match call_summary(&client, &model, &base_url, &truncated).await {
                 Ok((summary, importance)) => {
                     let state = app.state::<AppState>();
@@ -247,6 +247,7 @@ pub async fn generate_summaries_for_new(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
 
@@ -326,5 +327,74 @@ mod tests {
         assert!(result.is_err());
         // 非429不重试，错误不应包含"重试"
         assert!(!result.unwrap_err().contains("重试"));
+    }
+
+    // ── Semaphore 并发限制测试 ────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_semaphore_limits_concurrency() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // 模拟生产代码的 Semaphore 模式：acquire_owned 在 spawn 内部
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let s = sem.clone();
+            let p = peak.clone();
+            let a = active.clone();
+
+            handles.push(tokio::spawn(async move {
+                // acquire 在 spawn 内部，与生产代码模式一致
+                let _permit = s.acquire_owned().await.unwrap();
+                let v = a.fetch_add(1, Ordering::SeqCst) + 1;
+                p.fetch_max(v, Ordering::SeqCst);
+                // 保持一段时间让其他任务有机会同时运行
+                tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                a.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let max = peak.load(Ordering::SeqCst);
+        assert!(max <= 2, "并发峰值 {} 不应超过信号量限制 2", max);
+        assert_eq!(max, 2, "应能同时运行 2 个任务");
+    }
+
+    #[tokio::test]
+    async fn test_semaphore_single_permit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let sem = Arc::new(tokio::sync::Semaphore::new(1));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let s = sem.clone();
+            let p = peak.clone();
+            let a = active.clone();
+
+            handles.push(tokio::spawn(async move {
+                let _permit = s.acquire_owned().await.unwrap();
+                let v = a.fetch_add(1, Ordering::SeqCst) + 1;
+                p.fetch_max(v, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                a.fetch_sub(1, Ordering::SeqCst);
+            }));
+        }
+
+        for h in handles {
+            h.await.unwrap();
+        }
+
+        let max = peak.load(Ordering::SeqCst);
+        assert!(max <= 1, "并发峰值 {} 不应超过信号量限制 1", max);
+        assert_eq!(max, 1, "应严格串行执行");
     }
 }

@@ -5,7 +5,7 @@ import { type NotificationStatus, type ReleaseInfo, openReleaseUrl, setNotificat
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 
-const props = defineProps<{ release: ReleaseInfo }>()
+defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: [] }>()
 const showToast = inject(ShowToastKey, () => {})
 
@@ -89,8 +89,8 @@ async function updateReleaseStatus(release: ReleaseInfo, status: NotificationSta
     const msg = statusSuccessMessage(status)
     if (msg) showToast?.(msg)
     emit('update')
-  } catch (e: any) {
-    showToast?.(t('release.status_failed') + (e?.toString?.() ?? String(e)))
+  } catch (e: unknown) {
+    showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     isUpdating.value = false
   }

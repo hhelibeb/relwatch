@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
+import type { ReleaseInfo } from '../api'
 
 vi.mock('../api', () => ({
   openReleaseUrl: vi.fn(),
@@ -19,7 +20,7 @@ vi.mock('../utils', () => ({
   releaseMatchesSearch: vi.fn(() => true),
 }))
 
-function createRelease(overrides: Record<string, unknown> = {}) {
+function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
   const now = new Date()
   return {
     id: 1,
@@ -42,7 +43,7 @@ function createRelease(overrides: Record<string, unknown> = {}) {
   }
 }
 
-function createWrapper(releases: Record<string, unknown>[] = []) {
+function createWrapper(releases: ReleaseInfo[] = []) {
   return shallowMount(ReleaseTab, {
     props: { releases },
   })
@@ -94,23 +95,23 @@ describe('ReleaseTab — ReleaseSearchBar showSearch', () => {
     const bar = () => wrapper.findComponent(ReleaseSearchBar)
 
     // 简单视图
-    expect(bar().props('showSearch')).toBe(true)
+    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
 
     // 聚合视图
     bar().vm.$emit('update:viewMode', 'aggregated')
     await wrapper.vm.$nextTick()
-    expect(bar().props('showSearch')).toBe(true)
+    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
 
     // 日历主视图
     bar().vm.$emit('update:viewMode', 'calendar')
     await wrapper.vm.$nextTick()
-    expect(bar().props('showSearch')).toBe(true)
+    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
 
     // 日历钻取视图
     const cell = wrapper.find('.calendar-cell.current-month.today')
     await cell.trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.date-detail-title').exists()).toBe(true)
-    expect(bar().props('showSearch')).toBe(true)
+    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
   })
 })

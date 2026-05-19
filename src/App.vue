@@ -194,7 +194,7 @@ async function handlePoll() {
     if (result.new_releases.length === 0) {
       showToast(t('app.already_latest'))
     } else {
-      showToast(t('app.new_found', [result.new_releases.length]))
+      showToast(t('app.new_found', String(result.new_releases.length)))
     }
   } finally {
     polling.value = false
@@ -205,7 +205,7 @@ function handleSourceCheckResult(count: number) {
   if (count === 0) {
     showToast(t('app.already_latest'))
   } else {
-    showToast(t('app.new_found', [count]))
+    showToast(t('app.new_found', String(count)))
   }
 }
 
@@ -293,7 +293,7 @@ onUnmounted(() => {
         @open-releases="openSourceReleases" />
       <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" :releases="releases" @update="loadReleases(); loadLogs()" />
       <LogTab v-show="activeTab === 'logs'" :logs="logs" @update="loadLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } loadLogs(); applyTheme(settings.value.theme) }" />
+      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } loadLogs(); applyTheme(settings.theme) }" />
     </main>
 
     <Transition name="toast">

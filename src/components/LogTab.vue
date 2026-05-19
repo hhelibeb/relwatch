@@ -35,8 +35,8 @@ async function handleClearLogs() {
   try {
     await clearLogs()
     emit('update')
-  } catch (e: any) {
-    await message(t('log.clear_failed') + (e?.toString?.() ?? String(e)), { title: t('settings.error'), kind: 'error' })
+  } catch (e: unknown) {
+    await message(t('log.clear_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
 }
 </script>

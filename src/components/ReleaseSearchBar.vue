@@ -59,7 +59,6 @@ function onSearchEnter() {
       />
       <button v-if="modelValue" type="button" class="input-clear-btn" :title="t('input.clear')" @click="emit('update:modelValue', '')">✕</button>
     </div>
-    <div v-else style="flex:1"></div>
     <div class="filter-group" @mouseleave="hoverFilterLeave()">
       <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
         <button class="filter-trigger">

@@ -321,7 +321,7 @@ function handleOpenUrl(url: string) {
       v-model:importanceFilter="importanceFilter"
       v-model:viewMode="viewMode"
       :showSearch="true"
-      @searchEnter="viewMode !== 'simple' ? expandAllSearchResults() : undefined"
+      @searchEnter="viewMode === 'aggregated' ? expandAllSearchResults() : undefined"
     />
 
     <!-- ============ 简单视图 ============ -->
@@ -361,7 +361,7 @@ function handleOpenUrl(url: string) {
             <svg><use href="/icons.svg#link-icon"/></svg>
           </button>
           <span class="repo-latest-date">{{ formatDate(group.releases[0].published_at) }}</span>
-          <span class="repo-meta">{{ t('release.versions', [group.releases.length]) }}</span>
+          <span class="repo-meta">{{ t('release.versions', String(group.releases.length)) }}</span>
         </div>
         <div v-if="expandedRepos.has(group.key)" class="repo-group-body">
           <ReleaseItem
