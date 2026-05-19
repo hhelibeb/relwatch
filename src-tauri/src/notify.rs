@@ -39,7 +39,7 @@ mod inner {
     }
 
     pub fn ensure_com() {
-        let _ = COM_CTX.with(|_| {});
+        COM_CTX.with(|_| {});
     }
 
     /// 保留以保持 API 兼容，不再需要显式调用——thread_local! 在线程退出时自动清理。
