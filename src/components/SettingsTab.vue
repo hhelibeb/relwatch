@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject, watch, nextTick, onUnmounted } from 'vue'
+import { ref, reactive, inject, watch, nextTick, onUnmounted } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { version } from '../../package.json'
@@ -25,6 +25,12 @@ const deepseekApiKey = ref('')
 const githubToken = ref('')
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
+
+// 本地 form 副本用于 v-model 双向绑定，避免直接修改 props
+const form = reactive({ ...props.settings })
+watch(() => props.settings, (s) => {
+  Object.assign(form, s)
+}, { deep: true })
 
 const themeDropdownOpen = ref(false)
 const previewTheme = ref<string | null>(null)
@@ -92,7 +98,7 @@ function clearThemePreview() {
 }
 
 function selectTheme(val: string) {
-  props.settings.theme = val
+  form.theme = val
   previewTheme.value = null
   setThemePreview(val)
   setTimeout(() => {
@@ -110,7 +116,7 @@ function toggleDropdown() {
 async function handleSave() {
   savingSettings.value = true
   try {
-    const s = props.settings
+    const s = form
     await updateSettings({
       pollIntervalMinutes: s.poll_interval_minutes,
       proxyUrl: s.proxy_url.trim(),
@@ -129,20 +135,20 @@ async function handleSave() {
     if (deepseekApiKey.value) {
       await setDeepseekApiKey(deepseekApiKey.value)
       deepseekApiKey.value = ''
-      props.settings.deepseek_api_key_set = true
+      form.deepseek_api_key_set = true
     }
     if (githubToken.value) {
       await setGithubToken(githubToken.value)
       githubToken.value = ''
-      props.settings.github_token_set = true
+      form.github_token_set = true
     }
-    setLocale(props.settings.language)
+    setLocale(form.language)
     showToast(t('settings.saved'))
-    const pollChanged = props.settings.poll_interval_minutes !== prevPollInterval.value
-    if (pollChanged) prevPollInterval.value = props.settings.poll_interval_minutes
+    const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
+    if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
     emit('update', pollChanged)
-  } catch (e: any) {
-    showToast(t('settings.save_failed') + (e?.toString?.() ?? String(e)))
+  } catch (e: unknown) {
+    showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     savingSettings.value = false
   }
@@ -153,8 +159,8 @@ async function handleTestDeepseek() {
   try {
     const msg = await testDeepseekConnection()
     await message(msg, { title: 'DeepSeek Connection Test', kind: 'info' })
-  } catch (e: any) {
-    await message(t('settings.connect_failed') + (e?.toString?.() ?? String(e)), { title: 'DeepSeek Connection Test', kind: 'error' })
+  } catch (e: unknown) {
+    await message(t('settings.connect_failed') + (e instanceof Error ? e.message : String(e)), { title: 'DeepSeek Connection Test', kind: 'error' })
   } finally {
     testingDeepseek.value = false
   }
@@ -165,8 +171,8 @@ async function handleExportBackup() {
     const path = await exportBackup()
     showToast(t('backup.export_success') + ': ' + path)
     emit('update', false)
-  } catch (e: any) {
-    const msg = e?.toString?.() ?? String(e)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('取消')) {
       showToast(t('backup.export_cancelled'))
     } else {
@@ -182,8 +188,8 @@ async function handleImportBackup() {
     await importBackup()
     showToast(t('backup.import_success'))
     emit('update', false, true)
-  } catch (e: any) {
-    const msg = e?.toString?.() ?? String(e)
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e)
     if (msg.includes('取消')) {
       showToast(t('backup.import_cancelled'))
     } else {
@@ -214,7 +220,7 @@ async function handleImportBackup() {
         <div v-if="settingsTab === 'general'" class="settings-form">
           <label class="setting-row">
             <span class="setting-label">{{ t('settings.language') }}<svg class="label-icon"><use href="/icons.svg#language-icon"/></svg></span>
-            <select v-model="props.settings.language" class="setting-input setting-input-narrow">
+            <select v-model="form.language" class="setting-input setting-input-narrow">
               <option v-for="lang in languages" :key="lang.value" :value="lang.value">{{ lang.label }}</option>
             </select>
           </label>
@@ -222,7 +228,7 @@ async function handleImportBackup() {
             <span class="setting-label">{{ t('settings.poll_interval') }}</span>
             <input
               type="number"
-              v-model.number="props.settings.poll_interval_minutes"
+              v-model.number="form.poll_interval_minutes"
               min="5"
               max="1440"
               class="setting-input setting-input-narrow"
@@ -232,7 +238,7 @@ async function handleImportBackup() {
             <span class="setting-label">{{ t('settings.proxy') }}</span>
             <input
               type="text"
-              v-model="props.settings.proxy_url"
+              v-model="form.proxy_url"
               :placeholder="t('settings.proxy_placeholder')"
               class="setting-input"
             />
@@ -242,38 +248,38 @@ async function handleImportBackup() {
             <input
               type="password"
               v-model="githubToken"
-              :placeholder="props.settings.github_token_set ? t('settings.github_token_set') : t('settings.github_token_input')"
+              :placeholder="form.github_token_set ? t('settings.github_token_set') : t('settings.github_token_input')"
               class="setting-input"
             />
             <span class="setting-note">{{ t('settings.github_token_note') }}</span>
           </label>
           <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="props.settings.minimize_to_tray" />
+            <input type="checkbox" v-model="form.minimize_to_tray" />
             <span class="setting-label">{{ t('settings.minimize_tray') }}</span>
           </label>
           <label class="setting-row">
             <span class="setting-label">{{ t('settings.log_retention') }}</span>
             <input
               type="number"
-              v-model.number="props.settings.log_retention_days"
+              v-model.number="form.log_retention_days"
               min="0"
               max="3650"
               class="setting-input setting-input-narrow"
             />
           </label>
           <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="props.settings.check_prereleases" />
+            <input type="checkbox" v-model="form.check_prereleases" />
             <span class="setting-label">{{ t('settings.check_prereleases') }}</span>
           </label>
           <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="props.settings.fetch_history" />
+            <input type="checkbox" v-model="form.fetch_history" />
             <span class="setting-label">{{ t('settings.fetch_history') }}</span>
           </label>
-          <label class="setting-row" v-if="props.settings.fetch_history">
+          <label class="setting-row" v-if="form.fetch_history">
             <span class="setting-label">{{ t('settings.fetch_history_count') }}</span>
             <input
               type="number"
-              v-model.number="props.settings.fetch_history_count"
+              v-model.number="form.fetch_history_count"
               min="1"
               max="50"
               class="setting-input setting-input-narrow"
@@ -283,7 +289,7 @@ async function handleImportBackup() {
         <div v-if="settingsTab === 'data'" class="settings-form" style="gap:13px">
           <h3 class="setting-section-title">{{ t('backup.section_title') }}</h3>
           <p class="setting-section-desc">
-            {{ t('backup.section_desc') }}<template v-if="props.settings.github_token_set"><br>{{ t('backup.token_note') }}</template>
+            {{ t('backup.section_desc') }}<template v-if="form.github_token_set"><br>{{ t('backup.token_note') }}</template>
           </p>
           <div class="setting-row backup-actions">
             <button class="btn-secondary" @click="handleExportBackup">{{ t('backup.export_btn') }}</button>
@@ -292,7 +298,7 @@ async function handleImportBackup() {
         </div>
         <div v-if="settingsTab === 'ai'" class="settings-form">
           <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="props.settings.deepseek_enabled" />
+            <input type="checkbox" v-model="form.deepseek_enabled" />
             <span class="setting-label">{{ t('settings.enable_ai') }}</span>
           </label>
           <label class="setting-row">
@@ -300,7 +306,7 @@ async function handleImportBackup() {
             <input
               type="password"
               v-model="deepseekApiKey"
-              :placeholder="props.settings.deepseek_api_key_set ? t('settings.api_key_set') : t('settings.api_key_input')"
+              :placeholder="form.deepseek_api_key_set ? t('settings.api_key_set') : t('settings.api_key_input')"
               class="setting-input"
             />
           </label>
@@ -308,7 +314,7 @@ async function handleImportBackup() {
             <span class="setting-label">{{ t('settings.model') }}</span>
             <input
               type="text"
-              v-model="props.settings.deepseek_model"
+              v-model="form.deepseek_model"
               placeholder="deepseek-v4-flash"
               class="setting-input"
             />
@@ -317,13 +323,13 @@ async function handleImportBackup() {
             <span class="setting-label">{{ t('settings.api_url') }}</span>
             <input
               type="text"
-              v-model="props.settings.deepseek_base_url"
+              v-model="form.deepseek_base_url"
               placeholder="https://api.deepseek.com"
               class="setting-input"
             />
           </label>
           <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="props.settings.deepseek_proxy_enabled" />
+            <input type="checkbox" v-model="form.deepseek_proxy_enabled" />
             <span class="setting-label">{{ t('settings.use_proxy') }}</span>
           </label>
           <div class="setting-row">
@@ -337,7 +343,7 @@ async function handleImportBackup() {
             <span class="setting-label">{{ t('settings.theme') }}</span>
             <div ref="themeSelectRef" class="theme-select" @mouseleave="clearThemePreview">
               <button type="button" class="theme-select-trigger setting-input" @click="toggleDropdown">
-                <span>{{ previewTheme ? t('settings.theme_' + previewTheme) : t('settings.theme_' + props.settings.theme) }}</span>
+                <span>{{ previewTheme ? t('settings.theme_' + previewTheme) : t('settings.theme_' + form.theme) }}</span>
                 <svg class="theme-select-arrow" viewBox="0 0 12 12" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M3 5l3 3 3-3"/></svg>
               </button>
               <div v-if="themeDropdownOpen" class="theme-select-dropdown">
@@ -345,7 +351,7 @@ async function handleImportBackup() {
                   v-for="opt in themeOptions"
                   :key="opt.value"
                   class="theme-select-option"
-                  :class="{ selected: props.settings.theme === opt.value && !previewTheme, previewed: previewTheme === opt.value }"
+                  :class="{ selected: form.theme === opt.value && !previewTheme, previewed: previewTheme === opt.value }"
                   @click.stop="selectTheme(opt.value)"
                   @mouseenter="setThemePreview(opt.value)"
                 >
