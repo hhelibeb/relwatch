@@ -175,6 +175,7 @@ pub async fn generate_summaries_for_new(
         }
     };
 
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(5));
     let mut handles = Vec::new();
     for (release_id, body) in saved {
         let body_text = match body {
@@ -187,8 +188,10 @@ pub async fn generate_summaries_for_new(
         let base_url = base_url.clone();
         let app = app.clone();
         let release_id = *release_id;
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
 
         handles.push(tokio::spawn(async move {
+            let _permit = permit;
             match call_summary(&client, &model, &base_url, &truncated).await {
                 Ok((summary, importance)) => {
                     let state = app.state::<AppState>();
