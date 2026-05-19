@@ -26,6 +26,9 @@ grep '^version' src-tauri/Cargo.toml
 # 前端测试
 npm test
 
+# ESLint 检查（必须！零错误零警告）
+npm run lint
+
 # Rust 编译检查
 cd src-tauri && cargo check
 
