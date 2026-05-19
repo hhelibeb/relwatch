@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { ShowToastKey } from '../injection-keys'
 import { message } from '@tauri-apps/plugin-dialog'
 import {
   type Source,
@@ -25,7 +26,7 @@ const urlInput = ref('')
 const loading = ref(false)
 const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
-const showToast = inject<((msg: string) => void) | undefined>('showToast', undefined)
+const showToast = inject(ShowToastKey, () => {})
 
 const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
 

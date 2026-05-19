@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
+import { ShowToastKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, openReleaseUrl, setNotificationState } from '../api'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, releaseMatchesSearch, statusClass, statusLabel } from '../utils'
 
 const props = defineProps<{ releases: ReleaseInfo[]; search?: string }>()
 const emit = defineEmits<{ update: []; 'update:search': [value: string] }>()
-const showToast = inject<((msg: string) => void) | undefined>('showToast', undefined)
+const showToast = inject(ShowToastKey, () => {})
 
 type ViewMode = 'simple' | 'aggregated' | 'calendar'
 const viewMode = ref<ViewMode>('simple')

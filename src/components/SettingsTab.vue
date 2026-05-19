@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, inject, watch, nextTick, onUnmounted } from 'vue'
+import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { version } from '../../package.json'
 import {
@@ -16,7 +17,7 @@ import { t, setLocale, languages } from '../i18n'
 
 const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
-const showToast = inject<(msg: string) => void>('showToast')!
+const showToast = inject(ShowToastKey)!
 
 const settingsTab = ref<'general' | 'data' | 'appearance' | 'ai'>('general')
 const savingSettings = ref(false)
@@ -109,21 +110,22 @@ function toggleDropdown() {
 async function handleSave() {
   savingSettings.value = true
   try {
-    await updateSettings(
-      props.settings.poll_interval_minutes,
-      props.settings.proxy_url.trim(),
-      props.settings.minimize_to_tray,
-      props.settings.log_retention_days,
-      props.settings.deepseek_enabled,
-      props.settings.deepseek_model.trim() || 'deepseek-v4-flash',
-      props.settings.deepseek_base_url.trim() || 'https://api.deepseek.com',
-      props.settings.deepseek_proxy_enabled,
-      props.settings.check_prereleases,
-      props.settings.fetch_history,
-      props.settings.fetch_history_count ?? 1,
-      props.settings.language,
-      props.settings.theme,
-    )
+    const s = props.settings
+    await updateSettings({
+      pollIntervalMinutes: s.poll_interval_minutes,
+      proxyUrl: s.proxy_url.trim(),
+      minimizeToTray: s.minimize_to_tray,
+      logRetentionDays: s.log_retention_days,
+      deepseekEnabled: s.deepseek_enabled,
+      deepseekModel: s.deepseek_model.trim() || 'deepseek-v4-flash',
+      deepseekBaseUrl: s.deepseek_base_url.trim() || 'https://api.deepseek.com',
+      deepseekProxyEnabled: s.deepseek_proxy_enabled,
+      checkPrereleases: s.check_prereleases,
+      fetchHistory: s.fetch_history,
+      fetchHistoryCount: s.fetch_history_count ?? 1,
+      language: s.language,
+      theme: s.theme,
+    })
     if (deepseekApiKey.value) {
       await setDeepseekApiKey(deepseekApiKey.value)
       deepseekApiKey.value = ''

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide } from 'vue'
+import { ShowToastKey } from './injection-keys'
 import { listen } from '@tauri-apps/api/event'
 import {
   type Source,
@@ -80,7 +81,7 @@ function showToast(msg: string) {
   }, 3000)
 }
 
-provide('showToast', showToast)
+provide(ShowToastKey, showToast)
 
 function repoKey(owner: string, repo: string): string {
   return `${owner}/${repo}`.toLowerCase()

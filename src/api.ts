@@ -14,11 +14,12 @@ export function translateError(raw: string): string {
 async function invokeI18n<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   try {
     return await invoke<T>(cmd, args)
-  } catch (e: any) {
-    const raw = e?.message ?? e?.toString?.() ?? String(e)
+  } catch (e: unknown) {
+    const raw = e instanceof Error ? e.message : String(e)
     const msg = translateError(raw)
-    const err: any = new Error(msg)
-    err.toString = () => msg
+    // 复用原始 Error 以保留调用堆栈
+    const err = e instanceof Error ? e : new Error(raw)
+    err.message = msg
     throw err
   }
 }
@@ -160,22 +161,27 @@ export async function getSettings(): Promise<AppSettings> {
   return invokeI18n<AppSettings>('get_settings')
 }
 
+/** 与 Rust 端 UpdateSettingsPayload (camelCase) 对应 */
+export interface UpdateSettingsPayload {
+  pollIntervalMinutes: number
+  proxyUrl: string
+  minimizeToTray: boolean
+  logRetentionDays: number
+  deepseekEnabled: boolean
+  deepseekModel: string
+  deepseekBaseUrl: string
+  deepseekProxyEnabled: boolean
+  checkPrereleases: boolean
+  fetchHistory: boolean
+  fetchHistoryCount: number
+  language: string
+  theme: string
+}
+
 export async function updateSettings(
-  pollIntervalMinutes: number,
-  proxyUrl: string,
-  minimizeToTray: boolean,
-  logRetentionDays: number,
-  deepseekEnabled: boolean,
-  deepseekModel: string,
-  deepseekBaseUrl: string,
-  deepseekProxyEnabled: boolean,
-  checkPrereleases: boolean,
-  fetchHistory: boolean,
-  fetchHistoryCount: number,
-  language: string,
-  theme: string,
+  payload: UpdateSettingsPayload,
 ): Promise<void> {
-  return invokeI18n('update_settings', { payload: { pollIntervalMinutes, proxyUrl, minimizeToTray, logRetentionDays, deepseekEnabled, deepseekModel, deepseekBaseUrl, deepseekProxyEnabled, checkPrereleases, fetchHistory, fetchHistoryCount, language, theme } })
+  return invokeI18n('update_settings', { payload })
 }
 
 export async function setDeepseekApiKey(apiKey: string): Promise<void> {
