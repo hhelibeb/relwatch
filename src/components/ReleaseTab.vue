@@ -1,13 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
-import { ShowToastKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, openReleaseUrl, setNotificationState } from '../api'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { type ReleaseInfo, openReleaseUrl } from '../api'
 import { t, getLocale } from '../i18n'
-import { formatDate, isReadStatus, isUnreadStatus, releaseMatchesSearch, statusClass, statusLabel } from '../utils'
+import { formatDate, isReadStatus, isUnreadStatus, releaseMatchesSearch } from '../utils'
+import ReleaseItem from './ReleaseItem.vue'
+import ReleaseSearchBar from './ReleaseSearchBar.vue'
 
 const props = defineProps<{ releases: ReleaseInfo[]; search?: string }>()
 const emit = defineEmits<{ update: []; 'update:search': [value: string] }>()
-const showToast = inject(ShowToastKey, () => {})
 
 type ViewMode = 'simple' | 'aggregated' | 'calendar'
 const viewMode = ref<ViewMode>('simple')
@@ -20,45 +20,11 @@ const selectedDate = ref<string | null>(null)
 const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth() + 1)
 const tooltip = ref<{ x: number; y: number; date: string; releases: ReleaseInfo[] } | null>(null)
-const summaryTooltip = ref<{ x: number; y: number; text: string } | null>(null)
-const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
-const updatingReleaseId = ref<number | null>(null)
-const snoozeMinutes = 24 * 60
-
-function closeMenus() {
-  contextMenu.value = null
-  summaryTooltip.value = null
-}
-onMounted(() => document.addEventListener('click', closeMenus))
-onUnmounted(() => document.removeEventListener('click', closeMenus))
 
 const statusFilter = ref<'all' | 'unread' | 'read'>('all')
 const importanceFilter = ref<'all' | '大' | '中' | '小'>('all')
 
-const openFilter = ref<'status' | 'importance' | null>(null)
-let hoverFilterTimer: ReturnType<typeof setTimeout> | null = null
-
-function hoverFilterEnter() {
-  if (hoverFilterTimer) {
-    clearTimeout(hoverFilterTimer)
-    hoverFilterTimer = null
-  }
-}
-
-function hoverFilterLeave() {
-  hoverFilterTimer = setTimeout(() => {
-    openFilter.value = null
-  }, 120)
-}
-
-const importanceDisplayText = computed(() => {
-  if (importanceFilter.value === '大') return '🔴 ' + t('release.importance_high')
-  if (importanceFilter.value === '中') return '🟡 ' + t('release.importance_medium')
-  if (importanceFilter.value === '小') return '🟢 ' + t('release.importance_low')
-  return t('release.filter_all')
-})
-
-// 筛选
+// ========== 筛选 ==========
 const filteredReleases = computed(() => {
   let list = props.releases
 
@@ -78,14 +44,13 @@ const filteredReleases = computed(() => {
   return list
 })
 
-// 按发布时间排序（最新在前）
 const sortedReleases = computed(() => {
   return [...filteredReleases.value].sort(
     (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
   )
 })
 
-// ========== 聚合视图逻辑 ==========
+// ========== 聚合视图 ==========
 const repoGroups = computed(() => {
   const map = new Map<string, ReleaseInfo[]>()
   for (const r of filteredReleases.value) {
@@ -130,12 +95,11 @@ function toggleAllRepos() {
   }
 }
 
-// 数据变化时：所有 repo 默认折叠
 watch(() => repoGroups.value, () => {
   expandedRepos.value = new Set()
 }, { immediate: true })
 
-// ========== 日历视图逻辑 ==========
+// ========== 日历视图 ==========
 function toDateKey(date: Date): string {
   const y = date.getFullYear()
   const m = String(date.getMonth() + 1).padStart(2, '0')
@@ -188,13 +152,10 @@ const monthGrid = computed(() => {
   const firstDay = new Date(year, month - 1, 1)
   const lastDay = new Date(year, month, 0)
   const totalDays = lastDay.getDate()
-
-  // 本月1号是星期几 (0=Sun)
   const startDow = firstDay.getDay()
 
   const cells: CalendarCell[] = []
 
-  // 填充上月末的空白格
   const prevMonthLastDay = new Date(year, month - 1, 0).getDate()
   for (let i = startDow - 1; i >= 0; i--) {
     const d = new Date(year, month - 2, prevMonthLastDay - i)
@@ -210,7 +171,6 @@ const monthGrid = computed(() => {
     })
   }
 
-  // 本月日期
   for (let day = 1; day <= totalDays; day++) {
     const d = new Date(year, month - 1, day)
     const key = toDateKey(d)
@@ -225,7 +185,6 @@ const monthGrid = computed(() => {
     })
   }
 
-  // 填充下月初的空白格（凑满整行或至少6行）
   const remaining = 7 - (cells.length % 7)
   if (remaining < 7 || cells.length < 35) {
     const fill = remaining < 7 ? remaining + (cells.length < 35 ? 7 : 0) : 0
@@ -304,7 +263,6 @@ function handleCellClick(cell: CalendarCell) {
   selectedDate.value = cell.key
 }
 
-// 钻取日期的版本列表
 const dateDetailReleases = computed(() => {
   if (!selectedDate.value) return []
   return [...(calendarMap.value.get(selectedDate.value) || [])].sort(
@@ -312,7 +270,6 @@ const dateDetailReleases = computed(() => {
   )
 })
 
-// 钻取日期的格式化标题
 const dateDetailTitle = computed(() => {
   if (!selectedDate.value) return ''
   const d = parseDateKey(selectedDate.value)
@@ -324,271 +281,66 @@ function backToCalendar() {
   selectedDate.value = null
 }
 
-// 切换视图时重置状态（保留搜索内容）
 watch(viewMode, () => {
   selectedDate.value = null
 })
 
-// 右键菜单 / 打开链接
+// ========== Repo 级别的右键菜单（聚合视图的 repo header 专用） ==========
+const repoContextMenu = ref<{ x: number; y: number; url: string } | null>(null)
+
+function closeRepoContextMenu() {
+  repoContextMenu.value = null
+}
+onMounted(() => document.addEventListener('click', closeRepoContextMenu))
+onUnmounted(() => document.removeEventListener('click', closeRepoContextMenu))
+
+function handleRepoContextMenu(e: MouseEvent, url: string) {
+  repoContextMenu.value = { x: e.clientX, y: e.clientY, url }
+}
+
+async function handleRepoCopyLink() {
+  try { await navigator.clipboard.writeText(repoContextMenu.value!.url) } catch { /* ignore */ }
+  closeRepoContextMenu()
+}
+
+function handleRepoOpenLink() {
+  openReleaseUrl(repoContextMenu.value!.url)
+  closeRepoContextMenu()
+}
+
 function handleOpenUrl(url: string) {
   openReleaseUrl(url)
-}
-
-function handleContextMenu(e: MouseEvent, url: string) {
-  contextMenu.value = { x: e.clientX, y: e.clientY, url }
-}
-
-async function handleCopyLink() {
-  try { await navigator.clipboard.writeText(contextMenu.value!.url) } catch { /* ignore */ }
-  closeMenus()
-}
-
-function handleOpenLink() {
-  openReleaseUrl(contextMenu.value!.url)
-  closeMenus()
-}
-
-function placeSummaryTooltip(x: number, y: number, text: string) {
-  const maxWidth = 520
-  const margin = 16
-  const left = Math.max(margin, Math.min(x + 12, window.innerWidth - maxWidth - margin))
-  summaryTooltip.value = { x: left, y: y + 12, text }
-}
-
-function isSummaryTruncated(el: HTMLElement): boolean {
-  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1
-}
-
-function handleSummaryEnter(e: MouseEvent, summary: string | null) {
-  if (!summary) return
-  const el = e.currentTarget as HTMLElement
-  if (!isSummaryTruncated(el)) return
-  placeSummaryTooltip(e.clientX, e.clientY, summary)
-}
-
-function handleSummaryMove(e: MouseEvent) {
-  if (!summaryTooltip.value) return
-  placeSummaryTooltip(e.clientX, e.clientY, summaryTooltip.value.text)
-}
-
-function handleSummaryFocus(e: FocusEvent, summary: string | null) {
-  if (!summary) return
-  const el = e.currentTarget as HTMLElement
-  if (!isSummaryTruncated(el)) return
-  const rect = el.getBoundingClientRect()
-  placeSummaryTooltip(rect.left, rect.bottom, summary)
-}
-
-function hideSummaryTooltip() {
-  summaryTooltip.value = null
-}
-
-function statusSuccessMessage(status: NotificationStatus): string {
-  if (status === 'snoozed') return t('release.snooze_scheduled')
-  if (status === 'ignored') return t('release.notification_cancelled')
-  return ''
-}
-
-async function updateReleaseStatus(release: ReleaseInfo, status: NotificationStatus, minutes?: number) {
-  closeMenus()
-  updatingReleaseId.value = release.id
-  try {
-    await setNotificationState(release.id, status, minutes)
-    const msg = statusSuccessMessage(status)
-    if (msg) showToast?.(msg)
-    emit('update')
-  } catch (e: any) {
-    showToast?.(t('release.status_failed') + (e?.toString?.() ?? String(e)))
-  } finally {
-    updatingReleaseId.value = null
-  }
-}
-
-async function handleGoRelease(release: ReleaseInfo) {
-  openReleaseUrl(release.html_url)
-  if (isReadStatus(release.notification_status)) return
-  updatingReleaseId.value = release.id
-  try {
-    await setNotificationState(release.id, 'clicked')
-    emit('update')
-  } catch {
-    // Opening the release is the primary action; status sync is best-effort here.
-  } finally {
-    updatingReleaseId.value = null
-  }
-}
-
-function releaseDisplayTitle(release: ReleaseInfo): string {
-  const name = release.release_name.trim()
-  return name && name !== release.tag_name ? name : ''
-}
-
-function releaseImportanceText(release: ReleaseInfo): string {
-  return release.ai_importance || ''
-}
-
-function releaseImportanceClass(release: ReleaseInfo): string {
-  switch (release.ai_importance) {
-    case '大': return 'release-importance-high'
-    case '中': return 'release-importance-medium'
-    case '小': return 'release-importance-low'
-    default: return ''
-  }
 }
 </script>
 
 <template>
   <section class="tab-content">
+    <ReleaseSearchBar
+      v-model="releaseSearch"
+      v-model:statusFilter="statusFilter"
+      v-model:importanceFilter="importanceFilter"
+      v-model:viewMode="viewMode"
+      :showSearch="viewMode !== 'calendar' || selectedDate !== null"
+      @searchEnter="viewMode !== 'simple' ? expandAllSearchResults() : undefined"
+    />
+
     <!-- ============ 简单视图 ============ -->
     <template v-if="viewMode === 'simple'">
-      <div class="log-search-row">
-        <div class="input-clear-wrap">
-          <input
-            v-model="releaseSearch"
-            :placeholder="t('release.search')"
-            class="search-input"
-          />
-          <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
-        </div>
-        <div class="filter-group" @mouseleave="hoverFilterLeave()">
-          <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
-            <button class="filter-trigger">
-              <span class="filter-label">{{ t('tab.status') }}</span>
-              <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
-              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-            </button>
-            <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-              <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-              <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
-              <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
-            </div>
-          </div>
-          <div class="filter-divider"></div>
-          <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
-            <button class="filter-trigger">
-              <span class="filter-label">{{ t('tab.importance') }}</span>
-              <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
-              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-            </button>
-            <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-              <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-              <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
-              <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
-              <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
-            </div>
-          </div>
-        </div>
-        <div class="view-tabs">
-          <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
-            <svg><use href="/icons.svg#list-icon"/></svg>
-            {{ t('release.view_simple') }}
-          </button>
-          <button :class="{ active: viewMode === 'aggregated' }" @click="viewMode = 'aggregated'">
-            <svg><use href="/icons.svg#grid-icon"/></svg>
-            {{ t('release.view_aggregated') }}
-          </button>
-          <button :class="{ active: viewMode === 'calendar' }" @click="viewMode = 'calendar'">
-            <svg><use href="/icons.svg#calendar-icon"/></svg>
-            {{ t('release.view_calendar') }}
-          </button>
-        </div>
-      </div>
       <div class="release-list">
         <div v-if="sortedReleases.length === 0" class="empty">
           {{ releaseSearch || statusFilter !== 'all' || importanceFilter !== 'all' ? t('release.no_match') : t('release.empty') }}
         </div>
-        <div v-for="release in sortedReleases" :key="release.id" class="release-item"
-          :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
-          <div class="release-header">
-            <div class="release-heading">
-              <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-              <span class="release-tag">{{ release.tag_name }}</span>
-              <span class="release-dot">·</span>
-              <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
-              <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
-            </div>
-            <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
-          </div>
-          <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
-          <div v-if="release.ai_summary" class="release-summary-line">
-            <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-            <span
-              class="release-summary-text"
-              tabindex="0"
-              @mouseenter="handleSummaryEnter($event, release.ai_summary)"
-              @mousemove="handleSummaryMove"
-              @mouseleave="hideSummaryTooltip"
-              @focus="handleSummaryFocus($event, release.ai_summary)"
-              @blur="hideSummaryTooltip"
-            >{{ release.ai_summary }}</span>
-          </div>
-          <div class="release-actions">
-            <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-            <button class="btn-icon-link release-link-action" :disabled="updatingReleaseId === release.id" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
-              <svg><use href="/icons.svg#link-icon"/></svg>
-            </button>
-            <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
-            <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
-          </div>
-        </div>
+        <ReleaseItem
+          v-for="release in sortedReleases"
+          :key="release.id"
+          :release="release"
+          @update="emit('update')"
+        />
       </div>
     </template>
 
     <!-- ============ 聚合视图 ============ -->
     <template v-if="viewMode === 'aggregated'">
-      <div class="log-search-row">
-        <div class="input-clear-wrap">
-          <input
-            v-model="releaseSearch"
-            :placeholder="t('release.search')"
-            class="search-input"
-            @keydown.enter.prevent="expandAllSearchResults"
-          />
-          <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
-        </div>
-        <div class="filter-group" @mouseleave="hoverFilterLeave()">
-          <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
-            <button class="filter-trigger">
-              <span class="filter-label">{{ t('tab.status') }}</span>
-              <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
-              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-            </button>
-            <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-              <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-              <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
-              <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
-            </div>
-          </div>
-          <div class="filter-divider"></div>
-          <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
-            <button class="filter-trigger">
-              <span class="filter-label">{{ t('tab.importance') }}</span>
-              <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
-              <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-            </button>
-            <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-              <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-              <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
-              <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
-              <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
-            </div>
-          </div>
-        </div>
-        <div class="view-tabs">
-          <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
-            <svg><use href="/icons.svg#list-icon"/></svg>
-            {{ t('release.view_simple') }}
-          </button>
-          <button :class="{ active: viewMode === 'aggregated' }" @click="viewMode = 'aggregated'">
-            <svg><use href="/icons.svg#grid-icon"/></svg>
-            {{ t('release.view_aggregated') }}
-          </button>
-          <button :class="{ active: viewMode === 'calendar' }" @click="viewMode = 'calendar'">
-            <svg><use href="/icons.svg#calendar-icon"/></svg>
-            {{ t('release.view_calendar') }}
-          </button>
-        </div>
-      </div>
       <div v-if="repoGroups.length === 0" class="empty">
         {{ releaseSearch || statusFilter !== 'all' || importanceFilter !== 'all' ? t('release.no_match') : t('release.empty') }}
       </div>
@@ -605,47 +357,19 @@ function releaseImportanceClass(release: ReleaseInfo): string {
           </button>
           <span class="repo-name">{{ group.key }}</span>
           <span class="repo-latest-tag">{{ group.releases[0].tag_name }}</span>
-          <button class="btn-icon-link" @click.stop="handleOpenUrl(group.releases[0].html_url)" @contextmenu.prevent.stop="handleContextMenu($event, group.releases[0].html_url)" :title="t('release.open_link')">
+          <button class="btn-icon-link" @click.stop="handleOpenUrl(group.releases[0].html_url)" @contextmenu.prevent.stop="handleRepoContextMenu($event, group.releases[0].html_url)" :title="t('release.open_link')">
             <svg><use href="/icons.svg#link-icon"/></svg>
           </button>
           <span class="repo-latest-date">{{ formatDate(group.releases[0].published_at) }}</span>
           <span class="repo-meta">{{ t('release.versions', [group.releases.length]) }}</span>
         </div>
         <div v-if="expandedRepos.has(group.key)" class="repo-group-body">
-          <div v-for="release in group.releases" :key="release.id" class="release-item"
-            :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
-            <div class="release-header">
-              <div class="release-heading">
-                <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-                <span class="release-tag">{{ release.tag_name }}</span>
-                <span class="release-dot">·</span>
-                <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
-                <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
-              </div>
-              <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
-            </div>
-            <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
-            <div v-if="release.ai_summary" class="release-summary-line">
-              <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-              <span
-                class="release-summary-text"
-                tabindex="0"
-                @mouseenter="handleSummaryEnter($event, release.ai_summary)"
-                @mousemove="handleSummaryMove"
-                @mouseleave="hideSummaryTooltip"
-                @focus="handleSummaryFocus($event, release.ai_summary)"
-                @blur="hideSummaryTooltip"
-              >{{ release.ai_summary }}</span>
-            </div>
-            <div class="release-actions">
-              <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-              <button class="btn-icon-link release-link-action" :disabled="updatingReleaseId === release.id" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
-                <svg><use href="/icons.svg#link-icon"/></svg>
-              </button>
-              <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
-              <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
-            </div>
-          </div>
+          <ReleaseItem
+            v-for="release in group.releases"
+            :key="release.id"
+            :release="release"
+            @update="emit('update')"
+          />
         </div>
       </div>
     </template>
@@ -658,146 +382,35 @@ function releaseImportanceClass(release: ReleaseInfo): string {
           <svg><use href="/icons.svg#chevron-left-icon"/></svg>
           {{ t('release.back_calendar') }}
         </button>
-        <div class="log-search-row">
-        <div class="input-clear-wrap">
-          <input
-            v-model="releaseSearch"
-            :placeholder="t('release.search')"
-            class="search-input"
-            @keydown.enter.prevent="expandAllSearchResults"
-          />
-          <button v-if="releaseSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="releaseSearch = ''">✕</button>
-        </div>
-          <div class="filter-group" @mouseleave="hoverFilterLeave()">
-            <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
-              <button class="filter-trigger">
-                <span class="filter-label">{{ t('tab.status') }}</span>
-                <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
-                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-              </button>
-              <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-                <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-                <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
-                <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
-              </div>
-            </div>
-            <div class="filter-divider"></div>
-            <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
-              <button class="filter-trigger">
-                <span class="filter-label">{{ t('tab.importance') }}</span>
-                <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
-                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-              </button>
-              <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-                <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-                <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
-                <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
-                <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
-              </div>
-            </div>
-          </div>
-          <div class="view-tabs">
-            <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
-              <svg><use href="/icons.svg#list-icon"/></svg>
-              {{ t('release.view_simple') }}
-            </button>
-            <button :class="{ active: viewMode === 'aggregated' }" @click="viewMode = 'aggregated'">
-              <svg><use href="/icons.svg#grid-icon"/></svg>
-              {{ t('release.view_aggregated') }}
-            </button>
-            <button :class="{ active: viewMode === 'calendar' }" @click="viewMode = 'calendar'">
-              <svg><use href="/icons.svg#calendar-icon"/></svg>
-              {{ t('release.view_calendar') }}
-            </button>
-          </div>
-        </div>
+        <ReleaseSearchBar
+          v-model="releaseSearch"
+          v-model:statusFilter="statusFilter"
+          v-model:importanceFilter="importanceFilter"
+          v-model:viewMode="viewMode"
+          :showSearch="true"
+          @searchEnter="expandAllSearchResults"
+        />
         <div class="date-detail-title">{{ dateDetailTitle }}</div>
         <div class="release-list">
           <div v-if="dateDetailReleases.length === 0" class="empty">{{ t('release.no_match') }}</div>
-          <div v-for="release in dateDetailReleases" :key="release.id" class="release-item"
-            :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
-            <div class="release-header">
-              <div class="release-heading">
-                <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-                <span class="release-tag">{{ release.tag_name }}</span>
-                <span class="release-dot">·</span>
-                <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
-                <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
-              </div>
-              <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
-            </div>
-            <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
-            <div v-if="release.ai_summary" class="release-summary-line">
-              <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-              <span
-                class="release-summary-text"
-                tabindex="0"
-                @mouseenter="handleSummaryEnter($event, release.ai_summary)"
-                @mousemove="handleSummaryMove"
-                @mouseleave="hideSummaryTooltip"
-                @focus="handleSummaryFocus($event, release.ai_summary)"
-                @blur="hideSummaryTooltip"
-              >{{ release.ai_summary }}</span>
-            </div>
-            <div class="release-actions">
-              <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-              <button class="btn-icon-link release-link-action" :disabled="updatingReleaseId === release.id" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
-                <svg><use href="/icons.svg#link-icon"/></svg>
-              </button>
-              <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
-              <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="updatingReleaseId === release.id" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
-            </div>
-          </div>
+          <ReleaseItem
+            v-for="release in dateDetailReleases"
+            :key="release.id"
+            :release="release"
+            @update="emit('update')"
+          />
         </div>
       </template>
 
       <!-- 日历主视图 -->
       <template v-else>
-        <div class="log-search-row">
-          <div style="flex:1"></div>
-          <div class="filter-group" @mouseleave="hoverFilterLeave()">
-            <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
-              <button class="filter-trigger">
-                <span class="filter-label">{{ t('tab.status') }}</span>
-                <span class="filter-value" :style="{ color: statusFilter === 'unread' ? 'var(--primary)' : statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ statusFilter === 'all' ? t('release.filter_all') : (statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
-                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-              </button>
-              <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-                <button :class="{ selected: statusFilter === 'all' }" @click="statusFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-                <button :class="{ selected: statusFilter === 'unread' }" @click="statusFilter = 'unread'; openFilter = null">{{ t('release.filter_unread') }}</button>
-                <button :class="{ selected: statusFilter === 'read' }" @click="statusFilter = 'read'; openFilter = null">{{ t('release.filter_read') }}</button>
-              </div>
-            </div>
-            <div class="filter-divider"></div>
-            <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
-              <button class="filter-trigger">
-                <span class="filter-label">{{ t('tab.importance') }}</span>
-                <span class="filter-value" :style="{ color: importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
-                <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-              </button>
-              <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-                <button :class="{ selected: importanceFilter === 'all' }" @click="importanceFilter = 'all'; openFilter = null">{{ t('release.filter_all') }}</button>
-                <button :class="{ selected: importanceFilter === '大' }" @click="importanceFilter = '大'; openFilter = null">🔴 {{ t('release.importance_high') }}</button>
-                <button :class="{ selected: importanceFilter === '中' }" @click="importanceFilter = '中'; openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
-                <button :class="{ selected: importanceFilter === '小' }" @click="importanceFilter = '小'; openFilter = null">🟢 {{ t('release.importance_low') }}</button>
-              </div>
-            </div>
-          </div>
-          <div class="view-tabs">
-            <button :class="{ active: viewMode === 'simple' }" @click="viewMode = 'simple'">
-              <svg><use href="/icons.svg#list-icon"/></svg>
-              {{ t('release.view_simple') }}
-            </button>
-            <button :class="{ active: viewMode === 'aggregated' }" @click="viewMode = 'aggregated'">
-              <svg><use href="/icons.svg#grid-icon"/></svg>
-              {{ t('release.view_aggregated') }}
-            </button>
-            <button :class="{ active: viewMode === 'calendar' }" @click="viewMode = 'calendar'">
-              <svg><use href="/icons.svg#calendar-icon"/></svg>
-              {{ t('release.view_calendar') }}
-            </button>
-          </div>
-        </div>
+        <ReleaseSearchBar
+          v-model="releaseSearch"
+          v-model:statusFilter="statusFilter"
+          v-model:importanceFilter="importanceFilter"
+          v-model:viewMode="viewMode"
+          :showSearch="false"
+        />
         <div class="calendar-nav">
           <button @click="prevMonth">
             <svg><use href="/icons.svg#chevron-left-icon"/></svg>
@@ -842,18 +455,10 @@ function releaseImportanceClass(release: ReleaseInfo): string {
       </div>
     </template>
 
-    <!-- 右键菜单 -->
-    <div v-if="contextMenu" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
-      <button @click="handleOpenLink">{{ t('context.open') }}</button>
-      <button @click="handleCopyLink">{{ t('context.copy_link') }}</button>
-    </div>
-
-    <div
-      v-if="summaryTooltip"
-      class="release-summary-tooltip"
-      :style="{ left: summaryTooltip.x + 'px', top: summaryTooltip.y + 'px' }"
-    >
-      {{ summaryTooltip.text }}
+    <!-- Repo 级别的右键菜单 -->
+    <div v-if="repoContextMenu" class="context-menu" :style="{ left: repoContextMenu.x + 'px', top: repoContextMenu.y + 'px' }" @click.stop>
+      <button @click="handleRepoOpenLink">{{ t('context.open') }}</button>
+      <button @click="handleRepoCopyLink">{{ t('context.copy_link') }}</button>
     </div>
   </section>
 </template>
