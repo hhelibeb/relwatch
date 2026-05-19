@@ -320,7 +320,7 @@ function handleOpenUrl(url: string) {
       v-model:statusFilter="statusFilter"
       v-model:importanceFilter="importanceFilter"
       v-model:viewMode="viewMode"
-      :showSearch="viewMode !== 'calendar' || selectedDate !== null"
+      :showSearch="true"
       @searchEnter="viewMode !== 'simple' ? expandAllSearchResults() : undefined"
     />
 
@@ -382,14 +382,6 @@ function handleOpenUrl(url: string) {
           <svg><use href="/icons.svg#chevron-left-icon"/></svg>
           {{ t('release.back_calendar') }}
         </button>
-        <ReleaseSearchBar
-          v-model="releaseSearch"
-          v-model:statusFilter="statusFilter"
-          v-model:importanceFilter="importanceFilter"
-          v-model:viewMode="viewMode"
-          :showSearch="true"
-          @searchEnter="expandAllSearchResults"
-        />
         <div class="date-detail-title">{{ dateDetailTitle }}</div>
         <div class="release-list">
           <div v-if="dateDetailReleases.length === 0" class="empty">{{ t('release.no_match') }}</div>
@@ -404,13 +396,6 @@ function handleOpenUrl(url: string) {
 
       <!-- 日历主视图 -->
       <template v-else>
-        <ReleaseSearchBar
-          v-model="releaseSearch"
-          v-model:statusFilter="statusFilter"
-          v-model:importanceFilter="importanceFilter"
-          v-model:viewMode="viewMode"
-          :showSearch="false"
-        />
         <div class="calendar-nav">
           <button @click="prevMonth">
             <svg><use href="/icons.svg#chevron-left-icon"/></svg>

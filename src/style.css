@@ -181,9 +181,11 @@ body {
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
+  transition: top 0.15s ease;
 }
 
 .app-main.is-scrolled .add-source {
+  top: -16px;
   box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 
@@ -566,8 +568,9 @@ body {
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
-  padding: 4px 0;
+  padding: 0;
   background: var(--bg);
+  transition: top 0.15s ease;
 }
 
 .btn-icon {
@@ -1304,8 +1307,9 @@ select.setting-input {
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
-  padding: 4px 0;
+  padding: 0;
   background: var(--bg);
+  transition: top 0.15s ease;
 }
 
 .log-search-row .search-input {
@@ -1329,6 +1333,7 @@ select.setting-input {
 /* 滚动后 sticky 元素显示分隔线 */
 .app-main.is-scrolled .log-search-row,
 .app-main.is-scrolled .log-search {
+  top: -16px;
   border-radius: var(--radius);
   box-shadow: 0 0 0 1px var(--border), 0 2px 6px rgba(0,0,0,0.04);
 }
