@@ -218,7 +218,14 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     let (_, new_releases) = collect_pending_and_notify(&app, &new_ids, false);
 
-    Ok(PollResult { new_releases })
+    let _ = app.emit("poll-completed", ());
+
+    Ok(PollResult {
+        new_releases: new_releases
+            .into_iter()
+            .filter(|r| r.notification_status == "pending")
+            .collect(),
+    })
 }
 
 #[allow(dead_code)]
@@ -283,6 +290,16 @@ async fn do_poll_async(app: tauri::AppHandle) {
 
     if !all_saved.is_empty() {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
+    }
+
+    // 重试之前失败的 AI 摘要（ai_summary IS NULL）
+    let missing = {
+        let state = app.state::<AppState>();
+        let conn = state.db.get().unwrap();
+        db::releases::get_releases_without_summary(&conn).unwrap_or_default()
+    };
+    if !missing.is_empty() {
+        deepseek::generate_summaries_for_new(&app, &missing).await;
     }
 
     collect_pending_and_notify(&app, &all_new_ids, false);

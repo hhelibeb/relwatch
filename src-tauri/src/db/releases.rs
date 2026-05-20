@@ -58,6 +58,26 @@ pub fn insert_release(
     Ok(release_id)
 }
 
+/// Returns (id, body) tuples for releases where AI summary generation is missing.
+/// Used by the poll cycle to retry failed summaries.
+pub fn get_releases_without_summary(
+    conn: &Connection,
+) -> Result<Vec<(i64, Option<String>)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, body FROM releases WHERE ai_summary IS NULL AND body IS NOT NULL AND body != ''",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let releases = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok(releases)
+}
+
 pub fn set_ai_summary(
     conn: &Connection,
     release_id: i64,

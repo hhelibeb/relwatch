@@ -38,6 +38,7 @@ pub fn run() {
             .unwrap_or(now);
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
+    let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(5));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -53,6 +54,7 @@ pub fn run() {
         .manage(AppState {
             db: pool,
             next_poll_at: next_poll.clone(),
+            deepseek_semaphore,
         })
         .invoke_handler(tauri::generate_handler![
             commands::add_source,

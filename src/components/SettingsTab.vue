@@ -86,7 +86,7 @@ function setThemePreview(val: string) {
 
 function clearThemePreview() {
   previewTheme.value = null
-  const theme = props.settings.theme
+  const theme = form.theme
   if (theme === 'dark') {
     document.documentElement.dataset.theme = 'dark'
   } else if (theme === 'light') {
@@ -117,6 +117,18 @@ async function handleSave() {
   savingSettings.value = true
   try {
     const s = form
+    // 先设置敏感凭据，最后持久化全部设置到 DB
+    if (deepseekApiKey.value) {
+      await setDeepseekApiKey(deepseekApiKey.value)
+      deepseekApiKey.value = ''
+      form.deepseek_api_key_set = true
+    }
+    if (githubToken.value) {
+      await setGithubToken(githubToken.value)
+      githubToken.value = ''
+      form.github_token_set = true
+    }
+    setLocale(form.language)
     await updateSettings({
       pollIntervalMinutes: s.poll_interval_minutes,
       proxyUrl: s.proxy_url.trim(),
@@ -132,17 +144,6 @@ async function handleSave() {
       language: s.language,
       theme: s.theme,
     })
-    if (deepseekApiKey.value) {
-      await setDeepseekApiKey(deepseekApiKey.value)
-      deepseekApiKey.value = ''
-      form.deepseek_api_key_set = true
-    }
-    if (githubToken.value) {
-      await setGithubToken(githubToken.value)
-      githubToken.value = ''
-      form.github_token_set = true
-    }
-    setLocale(form.language)
     showToast(t('settings.saved'))
     const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes

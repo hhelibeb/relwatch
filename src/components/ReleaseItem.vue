@@ -97,14 +97,17 @@ async function updateReleaseStatus(release: ReleaseInfo, status: NotificationSta
 }
 
 async function handleGoRelease(release: ReleaseInfo) {
-  openReleaseUrl(release.html_url)
-  if (isReadStatus(release.notification_status)) return
+  if (isReadStatus(release.notification_status)) {
+    openReleaseUrl(release.html_url)
+    return
+  }
   isUpdating.value = true
+  openReleaseUrl(release.html_url)
   try {
     await setNotificationState(release.id, 'clicked')
     emit('update')
-  } catch {
-    // Opening the release is the primary action; status sync is best-effort here.
+  } catch (e: unknown) {
+    showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     isUpdating.value = false
   }

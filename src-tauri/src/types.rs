@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicI64;
+use tokio::sync::Semaphore;
 
 use crate::db::releases::ReleaseInfo;
 
 pub struct AppState {
     pub db: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     pub next_poll_at: std::sync::Arc<AtomicI64>,
+    pub deepseek_semaphore: std::sync::Arc<Semaphore>,
 }
 
 #[derive(Serialize)]

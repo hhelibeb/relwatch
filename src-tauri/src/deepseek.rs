@@ -175,7 +175,11 @@ pub async fn generate_summaries_for_new(
         }
     };
 
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(5));
+    let semaphore: std::sync::Arc<tokio::sync::Semaphore>;
+    {
+        let state = app.state::<AppState>();
+        semaphore = state.deepseek_semaphore.clone();
+    }
     let mut handles = Vec::new();
     for (release_id, body) in saved {
         let body_text = match body {
