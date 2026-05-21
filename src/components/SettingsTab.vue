@@ -213,7 +213,46 @@ async function handleSave() {
     showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     savingSettings.value = false
+    // dirty 标记会在 props.settings 更新后自动清除
   }
+}
+
+// ── 脏标记 ────────────────────────────────────────────
+
+const trackedKeys = [
+  'poll_interval_minutes', 'proxy_url', 'minimize_to_tray',
+  'log_retention_days', 'check_prereleases', 'fetch_history',
+  'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
+  'deepseek_base_url', 'deepseek_proxy_enabled', 'language', 'theme',
+] as const
+
+const dirtyFields = computed(() => {
+  const dirty = new Set<string>()
+  for (const key of trackedKeys) {
+    if ((form as any)[key] !== (props.settings as any)[key]) {
+      dirty.add(key)
+    }
+  }
+  if (deepseekApiKey.value) dirty.add('deepseek_api_key')
+  if (githubToken.value) dirty.add('github_token')
+  return dirty
+})
+
+const dirtyCount = computed(() => dirtyFields.value.size)
+
+const dirtyByTab = computed(() => {
+  const f = dirtyFields.value
+  return {
+    general: ['poll_interval_minutes', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
+    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_enabled'].filter(k => f.has(k)).length,
+  }
+})
+
+function discardChanges() {
+  Object.assign(form, props.settings)
+  deepseekApiKey.value = ''
+  githubToken.value = ''
 }
 
 async function handleTestDeepseek() {
@@ -265,10 +304,10 @@ async function handleImportBackup() {
   <section class="tab-content">
     <div class="settings-layout">
       <aside class="settings-sidebar">
-        <button :class="{ active: settingsTab === 'general' }" @click="settingsTab = 'general'">{{ t('settings.general') }}</button>
+        <button :class="{ active: settingsTab === 'general' }" @click="settingsTab = 'general'">{{ t('settings.general') }}<span v-if="dirtyByTab.general" class="sidebar-dirty-dot"></span></button>
+        <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}<span v-if="dirtyByTab.appearance" class="sidebar-dirty-dot"></span></button>
+        <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}<span v-if="dirtyByTab.ai" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'data' }" @click="settingsTab = 'data'">{{ t('settings.data') }}</button>
-        <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}</button>
-        <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}</button>
         <div class="version-row">
           <button class="version-github-btn" @click="openReleaseUrl('https://github.com/hhelibeb/relwatch')" title="GitHub">
             <svg viewBox="0 0 19 19" width="16" height="16" fill="currentColor">
@@ -279,9 +318,16 @@ async function handleImportBackup() {
         </div>
       </aside>
       <div class="settings-main">
+        <div v-if="dirtyCount > 0" class="settings-banner">
+          <span class="settings-banner-text">{{ t('settings.unsaved_banner', String(dirtyCount)) }}</span>
+          <div class="settings-banner-actions">
+            <button class="btn-secondary" @click="discardChanges">{{ t('settings.discard') }}</button>
+            <button class="btn-primary" @click="handleSave">{{ t('settings.save') }}</button>
+          </div>
+        </div>
         <div v-if="settingsTab === 'general'" class="settings-form">
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.poll_interval') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('poll_interval_minutes') || null">{{ t('settings.poll_interval') }}</span>
             <input
               type="number"
               v-model.number="form.poll_interval_minutes"
@@ -291,7 +337,7 @@ async function handleImportBackup() {
             />
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.proxy') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('proxy_url') || null">{{ t('settings.proxy') }}</span>
             <input
               type="text"
               v-model="form.proxy_url"
@@ -300,7 +346,7 @@ async function handleImportBackup() {
             />
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.github_token') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('github_token') || null">{{ t('settings.github_token') }}</span>
             <input
               type="password"
               v-model="githubToken"
@@ -310,7 +356,7 @@ async function handleImportBackup() {
             <span class="setting-note">{{ t('settings.github_token_note') }}</span>
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.log_retention') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('log_retention_days') || null">{{ t('settings.log_retention') }}</span>
             <input
               type="number"
               v-model.number="form.log_retention_days"
@@ -321,14 +367,14 @@ async function handleImportBackup() {
           </label>
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.check_prereleases" />
-            <span class="setting-label">{{ t('settings.check_prereleases') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('check_prereleases') || null">{{ t('settings.check_prereleases') }}</span>
           </label>
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.fetch_history" />
-            <span class="setting-label">{{ t('settings.fetch_history') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('fetch_history') || null">{{ t('settings.fetch_history') }}</span>
           </label>
           <label class="setting-row" v-if="form.fetch_history">
-            <span class="setting-label">{{ t('settings.fetch_history_count') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('fetch_history_count') || null">{{ t('settings.fetch_history_count') }}</span>
             <input
               type="number"
               v-model.number="form.fetch_history_count"
@@ -351,10 +397,10 @@ async function handleImportBackup() {
         <div v-if="settingsTab === 'ai'" class="settings-form">
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.deepseek_enabled" />
-            <span class="setting-label">{{ t('settings.enable_ai') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_enabled') || null">{{ t('settings.enable_ai') }}</span>
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.api_key') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_api_key') || null">{{ t('settings.api_key') }}</span>
             <input
               type="password"
               v-model="deepseekApiKey"
@@ -363,7 +409,7 @@ async function handleImportBackup() {
             />
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.model') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_model') || null">{{ t('settings.model') }}</span>
             <input
               type="text"
               v-model="form.deepseek_model"
@@ -372,7 +418,7 @@ async function handleImportBackup() {
             />
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('settings.api_url') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_base_url') || null">{{ t('settings.api_url') }}</span>
             <input
               type="text"
               v-model="form.deepseek_base_url"
@@ -382,7 +428,7 @@ async function handleImportBackup() {
           </label>
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.deepseek_proxy_enabled" />
-            <span class="setting-label">{{ t('settings.use_proxy') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_proxy_enabled') || null">{{ t('settings.use_proxy') }}</span>
           </label>
           <div class="setting-row">
             <button class="btn-secondary" :disabled="testingDeepseek" @click="handleTestDeepseek">
@@ -392,7 +438,7 @@ async function handleImportBackup() {
         </div>
         <div v-if="settingsTab === 'appearance'" class="settings-form">
           <div class="setting-row">
-            <span class="setting-label">{{ t('settings.language') }}<svg class="label-icon"><use href="/icons.svg#language-icon"/></svg></span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('language') || null">{{ t('settings.language') }}<svg class="label-icon"><use href="/icons.svg#language-icon"/></svg></span>
             <div ref="langSelectRef" class="theme-select" @mouseleave="clearLangPreview">
               <button type="button" class="theme-select-trigger setting-input" @click="toggleLangDropdown">
                 <span>{{ previewLang ? languages.find(l => l.value === previewLang)?.label : languages.find(l => l.value === form.language)?.label }}</span>
@@ -413,7 +459,7 @@ async function handleImportBackup() {
             </div>
           </div>
           <div class="setting-row">
-            <span class="setting-label">{{ t('settings.theme') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('theme') || null">{{ t('settings.theme') }}</span>
             <div ref="themeSelectRef" class="theme-select" @mouseleave="clearThemePreview">
               <button type="button" class="theme-select-trigger setting-input" @click="toggleDropdown">
                 <span>{{ previewTheme ? t('settings.theme_' + previewTheme) : t('settings.theme_' + form.theme) }}</span>
@@ -435,7 +481,7 @@ async function handleImportBackup() {
           </div>
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.minimize_to_tray" />
-            <span class="setting-label">{{ t('settings.minimize_tray') }}</span>
+            <span class="setting-label" :data-dirty="dirtyFields.has('minimize_to_tray') || null">{{ t('settings.minimize_tray') }}</span>
           </label>
         </div>
         <div v-if="settingsTab !== 'data'" class="setting-actions">

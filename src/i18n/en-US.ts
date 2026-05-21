@@ -86,6 +86,8 @@ export default {
   'settings.theme_system': 'Follow System',
   'settings.theme_light': 'Light',
   'settings.theme_dark': 'Dark',
+  'settings.unsaved_banner': '{0} unsaved change(s)',
+  'settings.discard': 'Discard',
   'settings.hint': 'Hint',
   'settings.error': 'Error',
 

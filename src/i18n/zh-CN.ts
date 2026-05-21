@@ -86,6 +86,8 @@ export default {
   'settings.theme_system': '跟随系统',
   'settings.theme_light': '白天模式',
   'settings.theme_dark': '夜间模式',
+  'settings.unsaved_banner': '有 {0} 项未保存的设置',
+  'settings.discard': '放弃修改',
   'settings.hint': '提示',
   'settings.error': '错误',
 

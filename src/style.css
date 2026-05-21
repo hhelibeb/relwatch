@@ -723,6 +723,7 @@ body {
 }
 
 .settings-sidebar button {
+  position: relative;
   padding: 10px 14px;
   border: none;
   background: transparent;
@@ -732,6 +733,17 @@ body {
   cursor: pointer;
   text-align: left;
   transition: background 0.15s;
+}
+
+.sidebar-dirty-dot {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning);
 }
 
 .settings-sidebar button:hover {
@@ -816,6 +828,13 @@ body {
   gap: 4px;
 }
 
+.setting-label[data-dirty]::after {
+  content: '●';
+  color: var(--warning);
+  font-size: 10px;
+  margin-left: 2px;
+}
+
 .label-icon {
   width: 14px;
   height: 14px;
@@ -869,6 +888,37 @@ select.setting-input {
   border: none;
   border-top: 1px solid var(--border);
   margin: 4px 0;
+}
+
+.settings-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 14px;
+  margin-bottom: 12px;
+  background: var(--surface);
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+}
+
+.settings-banner-text {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.settings-banner-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.settings-banner-actions .btn-primary,
+.settings-banner-actions .btn-secondary {
+  padding: 6px 14px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .setting-section-title {
