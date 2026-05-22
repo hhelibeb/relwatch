@@ -268,13 +268,13 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::config;
+    use crate::db::sources;
     use crate::db::init::init_memory_db;
 
     #[test]
     fn test_release_insert() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid > 0);
         let releases = get_releases_with_state(&conn).unwrap();
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_notification_state_ignored() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "t", "r", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "t", "r", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         set_notification_state(&conn, rid, "ignored", None).unwrap();
         assert_eq!(get_pending_releases(&conn).unwrap().len(), 0);
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn test_insert_release_duplicate() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid1 = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid1 > 0);
         let rid2 = insert_release(&conn, sid, "v1.0", "R2", "https://y", "2024-02-02T00:00:00Z", false, None).unwrap();
@@ -307,7 +307,7 @@ mod tests {
     #[test]
     fn test_insert_release_prerelease_and_body() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", true, Some("release body")).unwrap();
         assert!(rid > 0);
         let releases = get_releases_with_state(&conn).unwrap();
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn test_pending_releases_snooze_boundaries() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
 
         let rid1 = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid1 > 0);
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn test_set_notification_state_upsert() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
 
         let releases = get_releases_with_state(&conn).unwrap();
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn test_get_releases_coalesce_null() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
 
         conn.execute("DELETE FROM notification_state WHERE release_id = ?1", rusqlite::params![rid]).unwrap();
@@ -394,7 +394,7 @@ mod tests {
     #[test]
     fn test_ai_summary_store_and_retrieve() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, Some("body")).unwrap();
         assert!(rid > 0);
 
@@ -414,7 +414,7 @@ mod tests {
     #[test]
     fn test_ai_summary_null_by_default() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid > 0);
 

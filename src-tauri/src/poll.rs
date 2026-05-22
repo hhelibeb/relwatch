@@ -159,7 +159,11 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         (1, 10)
     };
 
-    let client = match http::build_http_client(&proxy_url, github_token.as_deref()) {
+    let client = match http::build_http_client(http::HttpClientConfig {
+        proxy_url: &proxy_url,
+        bearer_token: github_token.as_deref(),
+        ..Default::default()
+    }) {
         Ok(client) => client,
         Err(e) => {
             let state = app.state::<AppState>();
@@ -315,7 +319,11 @@ async fn poll_all_sources_async(
     fetch_history: bool,
     fetch_history_count: usize,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
-    let client = match http::build_http_client(proxy_url, github_token) {
+    let client = match http::build_http_client(http::HttpClientConfig {
+        proxy_url,
+        bearer_token: github_token,
+        ..Default::default()
+    }) {
         Ok(c) => c,
         Err(e) => {
             let state = app.state::<AppState>();
@@ -565,14 +573,14 @@ mod tests {
     fn test_read_deepseek_config_configured() {
         let conn = init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_ENABLED, "true").unwrap();
-        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_MODEL, "deepseek-v3").unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_MODEL, "deepseek-v4-pro").unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_BASE_URL, "https://custom.api").unwrap();
         let encrypted = crate::crypto::encrypt("sk-test");
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_API_KEY, &encrypted).unwrap();
 
         let (enabled, model, base_url, api_key) = deepseek::read_config(&conn);
         assert!(enabled);
-        assert_eq!(model, "deepseek-v3");
+        assert_eq!(model, "deepseek-v4-pro");
         assert_eq!(base_url, "https://custom.api");
         assert_eq!(api_key.unwrap(), "sk-test");
     }
@@ -581,20 +589,26 @@ mod tests {
 
     #[test]
     fn test_build_http_client_empty() {
-        let result = http::build_http_client("", None);
+        let result = http::build_http_client(http::HttpClientConfig::default());
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_http_client_invalid() {
-        let result = http::build_http_client("://invalid", None);
+        let result = http::build_http_client(http::HttpClientConfig {
+            proxy_url: "://invalid",
+            ..Default::default()
+        });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Invalid proxy URL"));
     }
 
     #[test]
     fn test_build_http_client_valid() {
-        let result = http::build_http_client("http://127.0.0.1:1080", None);
+        let result = http::build_http_client(http::HttpClientConfig {
+            proxy_url: "http://127.0.0.1:1080",
+            ..Default::default()
+        });
         assert!(result.is_ok());
     }
 

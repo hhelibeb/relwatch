@@ -36,25 +36,18 @@ async fn fetch_releases_with_retry(
     api_base: &str,
     per_page: usize,
 ) -> Result<Vec<serde_json::Value>, String> {
-    let max_retries = 3;
-    let mut attempt = 0;
-    loop {
-        match fetch_releases_inner(client, owner, repo, api_base, per_page).await {
-            Ok(data) => return Ok(data),
-            Err((status, msg)) => {
-                if status == 403 {
-                    return Err(msg);
-                }
-                attempt += 1;
-                if attempt > max_retries {
-                    return Err(format!("重试{}次后仍然失败: {}", max_retries, msg));
-                }
-                let delay = std::time::Duration::from_secs(1 << attempt);
-                log::warn!("请求失败(状态={}), {}后重试({}/{}): {}", status, delay.as_secs(), attempt, max_retries, msg);
-                tokio::time::sleep(delay).await;
-            }
+    let config = crate::retry::RetryConfig::default();
+    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
+        if e.0 == 403 {
+            return false;
         }
-    }
+        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
+        true
+    }, || async {
+        fetch_releases_inner(client, owner, repo, api_base, per_page).await
+    })
+    .await
+    .map_err(|(_, msg)| msg)
 }
 
 pub async fn fetch_releases(
@@ -173,7 +166,11 @@ mod tests {
             .await;
 
         let client = reqwest::Client::new();
+        let url = format!("{}/repos/{}/{}/releases?per_page={}", mock.uri(), "owner", "repo", 10);
+        let raw_resp = client.get(&url).send().await;
+        eprintln!("DEBUG raw_resp: {:?}", raw_resp);
         let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10).await;
+        eprintln!("DEBUG result err: {:?}", result.as_ref().map_err(|e| &e.1));
         assert!(result.is_ok());
         let releases = result.unwrap();
         assert_eq!(releases.len(), 1);
@@ -262,7 +259,7 @@ mod tests {
     fn test_save_releases_max_count_1() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
 
         let data = vec![
             rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
@@ -277,7 +274,7 @@ mod tests {
     fn test_save_releases_max_count_3() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
 
         let data = vec![
             rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
@@ -295,7 +292,7 @@ mod tests {
     fn test_save_releases_max_count_1_existing_returns_empty() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
 
         let data = vec![
             rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
@@ -314,7 +311,7 @@ mod tests {
     fn test_save_releases_historical_skips_existing_and_continues() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
 
         let data = vec![
             rel("v3.0.0", "2024-03-01T00:00:00Z", false, Some("v3 body")),
@@ -337,7 +334,7 @@ mod tests {
     fn test_save_releases_skips_prerelease_when_disabled() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
 
         let data = vec![
             rel("v4.0.0-pre", "2024-04-01T00:00:00Z", true, Some("pre body")),
@@ -355,7 +352,7 @@ mod tests {
     fn test_save_releases_includes_prerelease_when_enabled() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "true").unwrap();
-        let sid = db::config::add_source(&conn, "github", "o", "r", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
 
         let data = vec![
             rel("v4.0.0-pre", "2024-04-01T00:00:00Z", true, Some("pre body")),

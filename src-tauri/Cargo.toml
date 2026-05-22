@@ -2,7 +2,7 @@
 name = "relwatch"
 version = "1.2.3"
 description = "RelWatch - Monitor GitHub releases"
-authors = ["you"]
+authors = ["hhelibeb <hhelibeb@foxmail.com>"]
 license = ""
 repository = ""
 edition = "2021"

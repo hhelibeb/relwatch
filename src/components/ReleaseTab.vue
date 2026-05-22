@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { type ReleaseInfo, openReleaseUrl } from '../api'
+import { ref, computed, watch } from 'vue'
+import ContextMenu from './common/ContextMenu.vue'
+import { type ReleaseInfo } from '../api/releases'
+import { openReleaseUrl } from '../api/client'
+import { useContextMenu } from '../composables/useContextMenu'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, releaseMatchesSearch } from '../utils'
 import ReleaseItem from './ReleaseItem.vue'
@@ -286,27 +289,12 @@ watch(viewMode, () => {
 })
 
 // ========== Repo 级别的右键菜单（聚合视图的 repo header 专用） ==========
-const repoContextMenu = ref<{ x: number; y: number; url: string } | null>(null)
-
-function closeRepoContextMenu() {
-  repoContextMenu.value = null
-}
-onMounted(() => document.addEventListener('click', closeRepoContextMenu))
-onUnmounted(() => document.removeEventListener('click', closeRepoContextMenu))
-
-function handleRepoContextMenu(e: MouseEvent, url: string) {
-  repoContextMenu.value = { x: e.clientX, y: e.clientY, url }
-}
-
-async function handleRepoCopyLink() {
-  try { await navigator.clipboard.writeText(repoContextMenu.value!.url) } catch { /* ignore */ }
-  closeRepoContextMenu()
-}
-
-function handleRepoOpenLink() {
-  openReleaseUrl(repoContextMenu.value!.url)
-  closeRepoContextMenu()
-}
+const {
+  contextMenu: repoContextMenu,
+  handleContextMenu: handleRepoContextMenu,
+  handleCopyLink: handleRepoCopyLink,
+  handleOpenLink: handleRepoOpenLink,
+} = useContextMenu()
 
 function handleOpenUrl(url: string) {
   openReleaseUrl(url)
@@ -440,10 +428,6 @@ function handleOpenUrl(url: string) {
       </div>
     </template>
 
-    <!-- Repo 级别的右键菜单 -->
-    <div v-if="repoContextMenu" class="context-menu" :style="{ left: repoContextMenu.x + 'px', top: repoContextMenu.y + 'px' }" @click.stop>
-      <button @click="handleRepoOpenLink">{{ t('context.open') }}</button>
-      <button @click="handleRepoCopyLink">{{ t('context.copy_link') }}</button>
-    </div>
+    <ContextMenu v-if="repoContextMenu" :x="repoContextMenu.x" :y="repoContextMenu.y" @open="handleRepoOpenLink" @copy="handleRepoCopyLink" />
   </section>
 </template>

@@ -1,6 +1,6 @@
 use crate::db;
 use crate::types::AppState;
-use crate::{crypto, http};
+use crate::{crypto, http, github};
 use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL};
 use serde_json::json;
 
@@ -23,24 +23,12 @@ pub async fn add_source(
             .flatten()
             .filter(|s| !s.is_empty())
             .and_then(|s| crypto::decrypt(&s));
-        let client = http::build_http_client(&proxy_url, github_token.as_deref())?;
-        let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| format!("err.repo_verify_failed|{}", e))?;
-        if resp.status() == 404 {
-            return Err(format!("err.repo_not_found|{}|{}", owner, repo));
-        }
-        if !resp.status().is_success() {
-            return Err(format!("err.repo_api_error|{}", resp.status().as_u16()));
-        }
-        let repo_info: serde_json::Value = resp
-            .json()
-            .await
-            .map_err(|_| "err.repo_verify_failed|Failed to parse repo info".to_string())?;
-        description = repo_info["description"].as_str().unwrap_or("").to_string();
+        let client = http::build_http_client(http::HttpClientConfig {
+            proxy_url: &proxy_url,
+            bearer_token: github_token.as_deref(),
+            ..Default::default()
+        })?;
+        description = github::fetch_repo_info(&client, &owner, &repo).await?;
     }
     let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let id = db::sources::add_source(&conn, &source_type, &owner, &repo, &description)?;

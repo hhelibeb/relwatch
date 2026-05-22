@@ -22,7 +22,8 @@ vi.mock('../i18n', () => ({
   t: vi.fn((key: string) => key),
 }))
 
-import { parseGitHubUrl, translateError } from '../api'
+import { parseGitHubUrl } from '../api/sources'
+import { translateError } from '../api/client'
 
 describe('parseGitHubUrl', () => {
   it('parses standard GitHub URL', () => {
@@ -150,7 +151,7 @@ describe('invokeI18n 错误处理', () => {
     const { invoke } = await import('@tauri-apps/api/core')
     ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 1, owner: 'test', repo: 'repo' }])
 
-    const { listSources } = await import('../api')
+    const { listSources } = await import('../api/sources')
     const result = await listSources()
     expect(result).toEqual([{ id: 1, owner: 'test', repo: 'repo' }])
     expect(invoke).toHaveBeenCalledWith('list_sources', undefined)
@@ -160,7 +161,7 @@ describe('invokeI18n 错误处理', () => {
     const { invoke } = await import('@tauri-apps/api/core')
     ;(invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Error: err.db_query_failed'))
 
-    const { listSources } = await import('../api')
+    const { listSources } = await import('../api/sources')
     await expect(listSources()).rejects.toThrow('err.db_query_failed')
   })
 
@@ -168,7 +169,7 @@ describe('invokeI18n 错误处理', () => {
     const { invoke } = await import('@tauri-apps/api/core')
     ;(invoke as ReturnType<typeof vi.fn>).mockRejectedValue('string error')
 
-    const { listSources } = await import('../api')
+    const { listSources } = await import('../api/sources')
     await expect(listSources()).rejects.toThrow('string error')
   })
 
@@ -177,7 +178,7 @@ describe('invokeI18n 错误处理', () => {
     const { t } = await import('../i18n')
     ;(invoke as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Error: network timeout'))
 
-    const { listSources } = await import('../api')
+    const { listSources } = await import('../api/sources')
     await expect(listSources()).rejects.toThrow('network timeout')
     expect(t).not.toHaveBeenCalled()
   })
@@ -186,7 +187,7 @@ describe('invokeI18n 错误处理', () => {
     const { invoke } = await import('@tauri-apps/api/core')
     ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue([])
 
-    const { getLogs } = await import('../api')
+    const { getLogs } = await import('../api/logs')
     await getLogs(50)
     expect(invoke).toHaveBeenCalledWith('get_logs', { limit: 50 })
   })
