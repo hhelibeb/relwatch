@@ -192,13 +192,14 @@ async function handleSave() {
     setLocale(form.language)
     await updateSettings({
       pollIntervalMinutes: s.poll_interval_minutes,
+      proxyMode: s.proxy_mode,
       proxyUrl: s.proxy_url.trim(),
       minimizeToTray: s.minimize_to_tray,
       logRetentionDays: s.log_retention_days,
       deepseekEnabled: s.deepseek_enabled,
       deepseekModel: s.deepseek_model.trim() || 'deepseek-v4-flash',
       deepseekBaseUrl: s.deepseek_base_url.trim() || 'https://api.deepseek.com',
-      deepseekProxyEnabled: s.deepseek_proxy_enabled,
+
       checkPrereleases: s.check_prereleases,
       fetchHistory: s.fetch_history,
       fetchHistoryCount: s.fetch_history_count ?? 1,
@@ -220,10 +221,10 @@ async function handleSave() {
 // ── 脏标记 ────────────────────────────────────────────
 
 const trackedKeys = [
-  'poll_interval_minutes', 'proxy_url', 'minimize_to_tray',
+  'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'minimize_to_tray',
   'log_retention_days', 'check_prereleases', 'fetch_history',
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
-  'deepseek_base_url', 'deepseek_proxy_enabled', 'language', 'theme',
+  'deepseek_base_url', 'language', 'theme',
 ] as const
 
 const dirtyFields = computed(() => {
@@ -243,9 +244,9 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['poll_interval_minutes', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    general: ['poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
-    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_enabled'].filter(k => f.has(k)).length,
+    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url'].filter(k => f.has(k)).length,
   }
 })
 
@@ -337,6 +338,14 @@ async function handleImportBackup() {
             />
           </label>
           <label class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('proxy_mode') || null">{{ t('settings.proxy_mode') }}</span>
+            <select v-model="form.proxy_mode" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+              <option value="none">{{ t('settings.proxy_none') }}</option>
+              <option value="system">{{ t('settings.proxy_system') }}</option>
+              <option value="custom">{{ t('settings.proxy_custom') }}</option>
+            </select>
+          </label>
+          <label class="setting-row" v-if="form.proxy_mode === 'custom'">
             <span class="setting-label" :data-dirty="dirtyFields.has('proxy_url') || null">{{ t('settings.proxy') }}</span>
             <input
               type="text"
@@ -426,10 +435,7 @@ async function handleImportBackup() {
               class="setting-input"
             />
           </label>
-          <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="form.deepseek_proxy_enabled" />
-            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_proxy_enabled') || null">{{ t('settings.use_proxy') }}</span>
-          </label>
+
           <div class="setting-row">
             <button class="btn-secondary" :disabled="testingDeepseek" @click="handleTestDeepseek">
               {{ testingDeepseek ? t('settings.testing') : t('settings.test_connection') }}

@@ -1,6 +1,7 @@
 /// HTTP 客户端构建配置。
 pub struct HttpClientConfig<'a> {
     pub proxy_url: &'a str,
+    pub proxy_mode: &'a str,
     pub bearer_token: Option<&'a str>,
     pub timeout_secs: u64,
     pub content_type_json: bool,
@@ -10,6 +11,7 @@ impl<'a> Default for HttpClientConfig<'a> {
     fn default() -> Self {
         Self {
             proxy_url: "",
+            proxy_mode: "none",
             bearer_token: None,
             timeout_secs: 30,
             content_type_json: false,
@@ -42,17 +44,28 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
     } else {
         builder = builder.default_headers(headers);
     }
-    if !config.proxy_url.is_empty() {
-        if let Ok(proxy) = reqwest::Proxy::all(config.proxy_url) {
-            builder = builder.proxy(proxy);
-        } else {
-            return Err(format!(
-                "Invalid proxy URL: {} — 仅支持 http://、https:// 和 socks5:// 协议",
-                config.proxy_url
-            ));
+    match config.proxy_mode {
+        "none" => {
+            builder = builder.no_proxy();
         }
-    } else {
-        builder = builder.no_proxy();
+        "system" => {
+            // 不设置任何 proxy，让 reqwest 使用系统代理（Windows 默认行为）
+        }
+        _ => {
+            // "custom" 或其他值：使用 proxy_url
+            if !config.proxy_url.is_empty() {
+                if let Ok(proxy) = reqwest::Proxy::all(config.proxy_url) {
+                    builder = builder.proxy(proxy);
+                } else {
+                    return Err(format!(
+                        "Invalid proxy URL: {} — 仅支持 http://、https:// 和 socks5:// 协议",
+                        config.proxy_url
+                    ));
+                }
+            } else {
+                builder = builder.no_proxy();
+            }
+        }
     }
     builder.build().map_err(|e| e.to_string())
 }

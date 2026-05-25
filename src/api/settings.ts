@@ -2,6 +2,7 @@ import { invokeI18n } from './client'
 
 export interface AppSettings {
   poll_interval_minutes: number
+  proxy_mode: string
   proxy_url: string
   minimize_to_tray: boolean
   log_retention_days: number
@@ -9,7 +10,7 @@ export interface AppSettings {
   deepseek_model: string
   deepseek_base_url: string
   deepseek_api_key_set: boolean
-  deepseek_proxy_enabled: boolean
+
   check_prereleases: boolean
   fetch_history: boolean
   fetch_history_count: number
@@ -20,13 +21,14 @@ export interface AppSettings {
 
 export interface UpdateSettingsPayload {
   pollIntervalMinutes: number
+  proxyMode: string
   proxyUrl: string
   minimizeToTray: boolean
   logRetentionDays: number
   deepseekEnabled: boolean
   deepseekModel: string
   deepseekBaseUrl: string
-  deepseekProxyEnabled: boolean
+
   checkPrereleases: boolean
   fetchHistory: boolean
   fetchHistoryCount: number

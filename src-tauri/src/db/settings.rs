@@ -3,13 +3,14 @@ use rusqlite::{params, Connection};
 // ── 设置键常量 ──────────────────────────────────────
 pub const KEY_POLL_INTERVAL: &str = "poll_interval_minutes";
 pub const KEY_PROXY_URL: &str = "proxy_url";
+pub const KEY_PROXY_MODE: &str = "proxy_mode";
 pub const KEY_MINIMIZE_TO_TRAY: &str = "minimize_to_tray";
 pub const KEY_LOG_RETENTION: &str = "log_retention_days";
 pub const KEY_DEEPSEEK_ENABLED: &str = "deepseek_enabled";
 pub const KEY_DEEPSEEK_MODEL: &str = "deepseek_model";
 pub const KEY_DEEPSEEK_BASE_URL: &str = "deepseek_base_url";
 pub const KEY_DEEPSEEK_API_KEY: &str = "deepseek_api_key";
-pub const KEY_DEEPSEEK_PROXY: &str = "deepseek_proxy_enabled";
+
 pub const KEY_CHECK_PRERELEASES: &str = "check_prereleases";
 pub const KEY_FETCH_HISTORY: &str = "fetch_history";
 pub const KEY_FETCH_HISTORY_COUNT: &str = "fetch_history_count";
@@ -26,7 +27,7 @@ pub const DEFAULT_LOG_RETENTION: &str = "0";
 pub const DEFAULT_DEEPSEEK_ENABLED: &str = "false";
 pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
-pub const DEFAULT_DEEPSEEK_PROXY: &str = "false";
+
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";
 pub const DEFAULT_THEME: &str = "system";

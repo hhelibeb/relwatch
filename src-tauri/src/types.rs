@@ -19,13 +19,14 @@ pub struct PollResult {
 pub struct AppSettings {
     pub poll_interval_minutes: i64,
     pub proxy_url: String,
+    pub proxy_mode: String,
     pub minimize_to_tray: bool,
     pub log_retention_days: i64,
     pub deepseek_enabled: bool,
     pub deepseek_model: String,
     pub deepseek_base_url: String,
     pub deepseek_api_key_set: bool,
-    pub deepseek_proxy_enabled: bool,
+
     pub check_prereleases: bool,
     pub fetch_history: bool,
     pub fetch_history_count: i64,

@@ -5,7 +5,7 @@ use tauri::Emitter;
 
 use crate::db;
 use crate::db::settings::{
-    KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
+    KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
 };
 use crate::crypto;
@@ -85,7 +85,7 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 }
 
 async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
-    let (sources, proxy_url, github_token, fetch_history, fetch_history_count);
+    let (sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count);
 
     {
         let state = app.state::<AppState>();
@@ -95,12 +95,15 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
             .filter(|s| s.enabled)
             .collect::<Vec<_>>();
         proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
+        proxy_mode = db::settings::get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
+            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+        });
         github_token = get_github_token(&conn);
         fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
         fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, github_token.as_deref(), fetch_history, fetch_history_count).await;
+    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, &proxy_mode, github_token.as_deref(), fetch_history, fetch_history_count).await;
 
     if !all_saved.is_empty() {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
@@ -135,7 +138,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
-    let (source_obj, proxy_url, github_token, fetch_history, fetch_history_count);
+    let (source_obj, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -145,6 +148,9 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             .find(|s| s.id == id)
             .ok_or("err.source_not_found")?;
         proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
+        proxy_mode = db::settings::get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
+            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+        });
         github_token = get_github_token(&conn);
         fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
         fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
@@ -161,6 +167,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     let client = match http::build_http_client(http::HttpClientConfig {
         proxy_url: &proxy_url,
+        proxy_mode: &proxy_mode,
         bearer_token: github_token.as_deref(),
         ..Default::default()
     }) {
@@ -272,7 +279,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (sources, proxy_url, retention_days, github_token, fetch_history, fetch_history_count);
+    let (sources, proxy_url, proxy_mode, retention_days, github_token, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -281,6 +288,12 @@ async fn do_poll_async(app: tauri::AppHandle) {
             .ok()
             .flatten()
             .unwrap_or_default();
+        proxy_mode = db::settings::get_setting(&conn, KEY_PROXY_MODE)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+            });
         retention_days = db::settings::get_setting(&conn, KEY_LOG_RETENTION)
             .ok()
             .flatten()
@@ -304,7 +317,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &enabled, &proxy_url, github_token.as_deref(), fetch_history, fetch_history_count).await;
+    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &enabled, &proxy_url, &proxy_mode, github_token.as_deref(), fetch_history, fetch_history_count).await;
 
     if !all_saved.is_empty() {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
@@ -319,12 +332,14 @@ async fn poll_all_sources_async(
     app: &tauri::AppHandle,
     sources: &[db::sources::Source],
     proxy_url: &str,
+    proxy_mode: &str,
     github_token: Option<&str>,
     fetch_history: bool,
     fetch_history_count: usize,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
     let client = match http::build_http_client(http::HttpClientConfig {
         proxy_url,
+        proxy_mode,
         bearer_token: github_token,
         ..Default::default()
     }) {
@@ -624,6 +639,7 @@ mod tests {
     fn test_build_http_client_invalid() {
         let result = http::build_http_client(http::HttpClientConfig {
             proxy_url: "://invalid",
+            proxy_mode: "custom",
             ..Default::default()
         });
         assert!(result.is_err());
@@ -634,26 +650,53 @@ mod tests {
     fn test_build_http_client_valid() {
         let result = http::build_http_client(http::HttpClientConfig {
             proxy_url: "http://127.0.0.1:1080",
+            proxy_mode: "custom",
             ..Default::default()
         });
         assert!(result.is_ok());
     }
 
     #[test]
+    fn test_build_http_client_none_ignores_proxy_url() {
+        // mode=none 时传无效 URL 也不报错
+        let result = http::build_http_client(http::HttpClientConfig {
+            proxy_url: "://invalid",
+            proxy_mode: "none",
+            ..Default::default()
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_http_client_system() {
+        let result = http::build_http_client(http::HttpClientConfig {
+            proxy_mode: "system",
+            ..Default::default()
+        });
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_build_deepseek_client_system_proxy() {
+        let result = deepseek::build_client("sk-test", "", "system");
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_build_deepseek_client_success() {
-        let result = deepseek::build_client("sk-test", "");
+        let result = deepseek::build_client("sk-test", "", "none");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_deepseek_client_with_proxy() {
-        let result = deepseek::build_client("sk-test", "http://127.0.0.1:1080");
+        let result = deepseek::build_client("sk-test", "http://127.0.0.1:1080", "custom");
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_deepseek_client_invalid_key() {
-        let result = deepseek::build_client("key\nwith\nnewlines", "");
+        let result = deepseek::build_client("key\nwith\nnewlines", "", "none");
         assert!(result.is_err());
     }
 

@@ -1,7 +1,7 @@
 use crate::db;
 use crate::types::AppState;
 use crate::{crypto, http, github};
-use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL};
+use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE};
 use serde_json::json;
 
 #[tauri::command]
@@ -18,6 +18,9 @@ pub async fn add_source(
             return Ok(0);
         }
         let proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
+        let proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
+            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+        });
         let github_token = get_setting(&conn, KEY_GITHUB_TOKEN)
             .ok()
             .flatten()
@@ -25,6 +28,7 @@ pub async fn add_source(
             .and_then(|s| crypto::decrypt(&s));
         let client = http::build_http_client(http::HttpClientConfig {
             proxy_url: &proxy_url,
+            proxy_mode: &proxy_mode,
             bearer_token: github_token.as_deref(),
             ..Default::default()
         })?;

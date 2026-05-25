@@ -5,7 +5,7 @@ use crate::crypto;
 use crate::db;
 use crate::db::settings::{
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY, KEY_PROXY_URL,
+    KEY_PROXY_URL,
     DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
 };
 use crate::types::AppState;
@@ -32,9 +32,10 @@ pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>) 
     (enabled, model, base_url, api_key)
 }
 
-pub fn build_client(api_key: &str, proxy_url: &str) -> Result<reqwest::Client, String> {
+pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<reqwest::Client, String> {
     crate::http::build_http_client(crate::http::HttpClientConfig {
         proxy_url,
+        proxy_mode,
         bearer_token: Some(api_key),
         timeout_secs: 60,
         content_type_json: true,
@@ -130,7 +131,7 @@ pub async fn generate_summaries_for_new(
     app: &tauri::AppHandle,
     saved: &[(i64, Option<String>)],
 ) {
-    let (enabled, model, base_url, api_key, proxy_url);
+    let (enabled, model, base_url, api_key, proxy_url, proxy_mode);
 
     {
         let state = app.state::<AppState>();
@@ -140,20 +141,16 @@ pub async fn generate_summaries_for_new(
         model = cfg.1;
         base_url = cfg.2;
         api_key = cfg.3;
-        let deepseek_proxy_enabled =
-            db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY)
-                .ok()
-                .flatten()
-                .map(|v| v == "true")
-                .unwrap_or(false);
-        proxy_url = if deepseek_proxy_enabled {
-            db::settings::get_setting(&conn, KEY_PROXY_URL)
-                .ok()
-                .flatten()
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
+        proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        proxy_mode = db::settings::get_setting(&conn, db::settings::KEY_PROXY_MODE)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+            });
     }
 
     if !enabled {
@@ -163,7 +160,7 @@ pub async fn generate_summaries_for_new(
         Some(k) => k,
         None => return,
     };
-    let client = match build_client(&api_key, &proxy_url) {
+    let client = match build_client(&api_key, &proxy_url, &proxy_mode) {
         Ok(c) => c,
         Err(e) => {
             log::error!("创建 DeepSeek 客户端失败: {}", e);

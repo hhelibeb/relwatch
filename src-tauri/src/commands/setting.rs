@@ -6,12 +6,12 @@ use crate::db;
 use crate::deepseek;
 use crate::types::{AppSettings, AppState};
 use crate::db::settings::{
-    self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
+    self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY, KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
+    KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
-    DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY,
+    DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
 };
@@ -20,9 +20,12 @@ use serde_json::json;
 #[tauri::command]
 pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
     let conn = state.db.get().unwrap();
+    let proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
+    let proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, if proxy_url.is_empty() { "none" } else { "custom" })?;
     Ok(AppSettings {
         poll_interval_minutes: get_setting_i64(&conn, KEY_POLL_INTERVAL, 30)?,
-        proxy_url: get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?,
+        proxy_url,
+        proxy_mode,
         minimize_to_tray: get_setting_bool(&conn, KEY_MINIMIZE_TO_TRAY, true)?,
         log_retention_days: get_setting_i64(&conn, KEY_LOG_RETENTION, 0)?,
         deepseek_enabled: get_setting_bool(&conn, KEY_DEEPSEEK_ENABLED, false)?,
@@ -32,7 +35,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
             .chars()
             .next()
             .is_some(),
-        deepseek_proxy_enabled: get_setting_bool(&conn, KEY_DEEPSEEK_PROXY, false)?,
+
         check_prereleases: get_setting_bool(&conn, KEY_CHECK_PRERELEASES, false)?,
         fetch_history: get_setting_bool(&conn, KEY_FETCH_HISTORY, false)?,
         fetch_history_count: get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1)?.max(1),
@@ -51,12 +54,13 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
 pub struct UpdateSettingsPayload {
     poll_interval_minutes: i64,
     proxy_url: String,
+    proxy_mode: String,
     minimize_to_tray: bool,
     log_retention_days: i64,
     deepseek_enabled: bool,
     deepseek_model: String,
     deepseek_base_url: String,
-    deepseek_proxy_enabled: bool,
+
     check_prereleases: bool,
     fetch_history: bool,
     fetch_history_count: i64,
@@ -77,13 +81,14 @@ pub fn update_settings(
     let conn = state.db.get().map_err(|e| e.to_string())?;
 
     let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)?;
+    let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
     let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
     let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, DEFAULT_MINIMIZE_TO_TRAY)?;
     let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, DEFAULT_LOG_RETENTION)?;
     let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_ENABLED)?;
     let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL)?;
     let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)?;
-    let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, DEFAULT_DEEPSEEK_PROXY)?;
+
     let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
     let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
     let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
@@ -94,13 +99,14 @@ pub fn update_settings(
         &conn,
         &[
             (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "setting.poll_interval"),
+            (KEY_PROXY_MODE, &old_proxy_mode, &payload.proxy_mode, "setting.proxy_mode"),
             (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "setting.proxy_url"),
             (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "setting.minimize_to_tray"),
             (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "setting.log_retention_days"),
             (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
             (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "setting.deepseek_model"),
             (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
-            (KEY_DEEPSEEK_PROXY, &old_ds_proxy, &payload.deepseek_proxy_enabled.to_string(), "setting.deepseek_proxy"),
+
             (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
             (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
             (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, &fetch_history_count.to_string(), "setting.fetch_history_count"),
@@ -158,22 +164,18 @@ pub fn set_github_token(
 
 #[tauri::command]
 pub async fn test_deepseek_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let (model, base_url, api_key, deepseek_proxy_enabled, proxy_url);
+    let (model, base_url, api_key, proxy_url, proxy_mode);
     {
         let conn = state.db.get().unwrap();
         let config = deepseek::read_config(&conn);
         model = config.1;
         base_url = config.2;
         api_key = config.3;
-        deepseek_proxy_enabled = get_setting_bool(&conn, KEY_DEEPSEEK_PROXY, false)?;
-        proxy_url = if deepseek_proxy_enabled {
-            get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?
-        } else {
-            String::new()
-        };
+        proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
+        proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
     }
     let api_key = api_key.ok_or("请先设置 DeepSeek API Key")?;
-    let client = deepseek::build_client(&api_key, &proxy_url)?;
+    let client = deepseek::build_client(&api_key, &proxy_url, &proxy_mode)?;
     let body = serde_json::json!({
         "model": model,
         "messages": [
@@ -226,12 +228,12 @@ mod tests {
         let conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
+        let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
         let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL).unwrap();
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
-        let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
         let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
@@ -243,13 +245,13 @@ mod tests {
             &conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
+                (KEY_PROXY_MODE, &old_proxy_mode, "custom", ""),
                 (KEY_PROXY_URL, &old_proxy, "http://old", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
                 (KEY_LOG_RETENTION, &old_retention, "14", "setting.log_retention_days"),
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
-                (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
                 (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
@@ -281,12 +283,12 @@ mod tests {
         let conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
+        let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
         let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL).unwrap();
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
-        let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
         let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
@@ -297,13 +299,13 @@ mod tests {
             &conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
+                (KEY_PROXY_MODE, &old_proxy_mode, "custom", ""),
                 (KEY_PROXY_URL, &old_proxy, "http://proxy", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
                 (KEY_LOG_RETENTION, &old_retention, "0", ""),
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
-                (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
                 (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
@@ -328,12 +330,12 @@ mod tests {
         let conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
+        let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
         let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL).unwrap();
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
-        let old_ds_proxy = get_setting_str(&conn, KEY_DEEPSEEK_PROXY, "false").unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
         let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
@@ -344,13 +346,13 @@ mod tests {
             &conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "60", "setting.poll_interval"),
+                (KEY_PROXY_MODE, &old_proxy_mode, "none", ""),
                 (KEY_PROXY_URL, &old_proxy, "", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
                 (KEY_LOG_RETENTION, &old_retention, "0", ""),
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
-                (KEY_DEEPSEEK_PROXY, &old_ds_proxy, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
                 (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
@@ -375,13 +377,13 @@ mod tests {
         // 为所有可更新设置写入旧值
         let old_values = [
             (KEY_POLL_INTERVAL, "30"),
+            (KEY_PROXY_MODE, "custom"),
             (KEY_PROXY_URL, "http://old"),
             (KEY_MINIMIZE_TO_TRAY, "true"),
             (KEY_LOG_RETENTION, "7"),
             (KEY_DEEPSEEK_ENABLED, "false"),
             (KEY_DEEPSEEK_MODEL, "gpt-4"),
             (KEY_DEEPSEEK_BASE_URL, "https://old.api"),
-            (KEY_DEEPSEEK_PROXY, "false"),
             (KEY_CHECK_PRERELEASES, "false"),
             (KEY_FETCH_HISTORY, "false"),
             (KEY_FETCH_HISTORY_COUNT, "3"),
@@ -395,13 +397,13 @@ mod tests {
         // 全部改为新值 —— 这个列表必须与 update_settings 中的 apply_settings 列表一一对应
         let new_values = [
             (KEY_POLL_INTERVAL, "60"),
+            (KEY_PROXY_MODE, "custom"),
             (KEY_PROXY_URL, "http://new"),
             (KEY_MINIMIZE_TO_TRAY, "false"),
             (KEY_LOG_RETENTION, "14"),
             (KEY_DEEPSEEK_ENABLED, "true"),
             (KEY_DEEPSEEK_MODEL, "deepseek-v4"),
             (KEY_DEEPSEEK_BASE_URL, "https://new.api"),
-            (KEY_DEEPSEEK_PROXY, "true"),
             (KEY_CHECK_PRERELEASES, "true"),
             (KEY_FETCH_HISTORY, "true"),
             (KEY_FETCH_HISTORY_COUNT, "5"),
@@ -435,13 +437,14 @@ mod tests {
         const EXPECTED_SETTING_FIELDS: usize = 13;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
+            "proxyMode": "none",
             "proxyUrl": "",
             "minimizeToTray": true,
             "logRetentionDays": 0,
             "deepseekEnabled": false,
             "deepseekModel": "m",
             "deepseekBaseUrl": "u",
-            "deepseekProxyEnabled": false,
+
             "checkPrereleases": false,
             "fetchHistory": true,
             "fetchHistoryCount": 3,
@@ -459,7 +462,7 @@ mod tests {
         assert!(!payload.deepseek_enabled);
         assert_eq!(payload.deepseek_model, "m");
         assert_eq!(payload.deepseek_base_url, "u");
-        assert!(!payload.deepseek_proxy_enabled);
+
         assert!(!payload.check_prereleases);
         assert!(payload.fetch_history);
         assert_eq!(payload.fetch_history_count, 3);
