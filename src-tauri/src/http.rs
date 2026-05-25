@@ -37,7 +37,7 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
         .user_agent("RelWatch/0.4")
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .connect_timeout(std::time::Duration::from_secs(10));
-    if !config.bearer_token.is_some() && headers.is_empty() {
+    if config.bearer_token.is_none() && headers.is_empty() {
         // 无 headers 时不调用 default_headers（仅 user_agent）
     } else {
         builder = builder.default_headers(headers);
@@ -46,8 +46,13 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
         if let Ok(proxy) = reqwest::Proxy::all(config.proxy_url) {
             builder = builder.proxy(proxy);
         } else {
-            return Err(format!("Invalid proxy URL: {}", config.proxy_url));
+            return Err(format!(
+                "Invalid proxy URL: {} — 仅支持 http://、https:// 和 socks5:// 协议",
+                config.proxy_url
+            ));
         }
+    } else {
+        builder = builder.no_proxy();
     }
     builder.build().map_err(|e| e.to_string())
 }

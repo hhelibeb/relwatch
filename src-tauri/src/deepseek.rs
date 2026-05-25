@@ -117,7 +117,13 @@ async fn call_summary(
         call_summary_inner(client, model, base_url, &body_json).await
     })
     .await
-    .map_err(|(_, msg)| msg)
+    .map_err(|(status, msg)| {
+        if status > 0 {
+            format!("[{}] {}", status, msg)
+        } else {
+            msg
+        }
+    })
 }
 
 pub async fn generate_summaries_for_new(
@@ -214,6 +220,7 @@ pub async fn generate_summaries_for_new(
                     log::error!("生成摘要失败 id={}: {}", release_id, e);
                     let state = app.state::<AppState>();
                     if let Ok(conn) = state.db.get() {
+                        let _ = db::releases::increment_retry_count(&conn, release_id);
                         let rel = db::releases::get_release(&conn, release_id).ok().flatten();
                         match rel {
                             Some(r) => db::logs::write_log(
@@ -264,7 +271,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_ok());
         let (summary, importance) = result.unwrap();
@@ -287,7 +294,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_ok());
     }
@@ -301,10 +308,10 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("重试3次后仍然失败"));
+        assert!(result.unwrap_err().contains("429"));
     }
 
     #[tokio::test]
@@ -316,7 +323,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_err());
         // 非429不重试，错误不应包含"重试"

@@ -29,10 +29,6 @@ export async function getReleases(): Promise<ReleaseInfo[]> {
   return invokeI18n<ReleaseInfo[]>('get_releases')
 }
 
-export async function getPendingReleases(): Promise<ReleaseInfo[]> {
-  return invokeI18n<ReleaseInfo[]>('get_pending_releases')
-}
-
 export async function setNotificationState(
   releaseId: number,
   status: NotificationStatus,

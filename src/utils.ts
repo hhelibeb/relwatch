@@ -55,7 +55,13 @@ export function statusClass(status: string): string {
   return 'status-unknown'
 }
 
-export function isUnreadStatus(status: string): boolean {
+export function isUnreadStatus(status: string, snoozeUntil?: string | null): boolean {
+  if (status === 'snoozed' && snoozeUntil) {
+    const until = new Date(snoozeUntil).getTime()
+    if (!isNaN(until) && until > Date.now()) {
+      return false
+    }
+  }
   return status === 'pending' || status === 'snoozed'
 }
 

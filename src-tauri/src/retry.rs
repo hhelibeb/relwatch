@@ -1,5 +1,6 @@
 use std::future::Future;
 use std::time::Duration;
+use rand::Rng;
 
 /// 指数退避重试配置。
 pub struct RetryConfig {
@@ -49,7 +50,13 @@ where
                 let delay_secs = (config.base_delay_secs.saturating_mul(1 << (attempt - 1)))
                     .min(config.max_delay_secs)
                     .max(1);
-                tokio::time::sleep(Duration::from_secs(delay_secs as u64)).await;
+                let jitter = rand::thread_rng().gen_range(0.75..1.25);
+                let delay_ms = (delay_secs as f64 * jitter * 1000.0) as u64;
+                log::info!(
+                    "retry {}/{}: sleeping {}ms (base_delay={}s, jitter={:.2})",
+                    attempt, config.max_retries, delay_ms, config.base_delay_secs, jitter
+                );
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
             }
         }
     }

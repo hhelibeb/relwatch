@@ -12,7 +12,6 @@ export {
   type NotificationStatus,
   type PollResult,
   getReleases,
-  getPendingReleases,
   setNotificationState,
   triggerPoll,
   checkSingleSource,

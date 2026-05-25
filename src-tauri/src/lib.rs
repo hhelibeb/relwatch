@@ -40,7 +40,7 @@ pub fn run() {
             .unwrap_or(now);
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
-    let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(5));
+    let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(50));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {

@@ -156,7 +156,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     let (max_count, per_page) = if fetch_history && is_first_query {
         (fetch_history_count, std::cmp::max(10, fetch_history_count + 5))
     } else {
-        (1, 10)
+        (fetch_history_count, 10)
     };
 
     let client = match http::build_http_client(http::HttpClientConfig {
@@ -193,9 +193,23 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
         saved = save_for_source(&conn, &source_obj, &releases, max_count);
-        if saved.len() > 1 {
-            for (id, _) in saved.iter().skip(1) {
-                let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+        if !saved.is_empty() {
+            let latest_id = saved[0].0;
+            let has_newer = db::releases::get_release(&conn, latest_id)
+                .ok()
+                .flatten()
+                .and_then(|r| {
+                    db::releases::has_newer_release(&conn, source_obj.id, &r.published_at).ok()
+                })
+                .unwrap_or(false);
+            if has_newer {
+                for (id, _) in &saved {
+                    let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+                }
+            } else if saved.len() > 1 {
+                for (id, _) in saved.iter().skip(1) {
+                    let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+                }
             }
         }
         let _ = db::sources::record_check_success(&conn, source_obj.id, saved.len());
@@ -296,16 +310,6 @@ async fn do_poll_async(app: tauri::AppHandle) {
         deepseek::generate_summaries_for_new(&app, &all_saved).await;
     }
 
-    // 重试之前失败的 AI 摘要（ai_summary IS NULL）
-    let missing = {
-        let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
-        db::releases::get_releases_without_summary(&conn).unwrap_or_default()
-    };
-    if !missing.is_empty() {
-        deepseek::generate_summaries_for_new(&app, &missing).await;
-    }
-
     collect_pending_and_notify(&app, &all_new_ids, false);
 
     let _ = app.emit("poll-completed", ());
@@ -351,7 +355,7 @@ async fn poll_all_sources_async(
         let (max_count, per_page) = if fetch_history && is_first_query {
             (fetch_history_count, std::cmp::max(10, fetch_history_count + 5))
         } else {
-            (1, 10)
+            (fetch_history_count, 10)
         };
 
         handles.push(tokio::spawn(async move {
@@ -361,10 +365,26 @@ async fn poll_all_sources_async(
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
                     let saved = save_for_source(&conn, &source, &releases, max_count);
-                    // 标记历史版本（除最新一条外）为已读
-                    if saved.len() > 1 {
-                        for (id, _) in saved.iter().skip(1) {
-                            let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+                    if !saved.is_empty() {
+                        // 检查是否有比最新新版本更新的版本已存在库中
+                        let latest_id = saved[0].0;
+                        let has_newer = db::releases::get_release(&conn, latest_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|r| {
+                                db::releases::has_newer_release(&conn, source.id, &r.published_at).ok()
+                            })
+                            .unwrap_or(false);
+                        if has_newer {
+                            // 库中已有更新版本 → 全部是中间版本，全部标记已读
+                            for (id, _) in &saved {
+                                let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+                            }
+                        } else if saved.len() > 1 {
+                            // 库中无更新版本 → 最新一条通知，其余标记已读
+                            for (id, _) in saved.iter().skip(1) {
+                                let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
+                            }
                         }
                     }
                     let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
@@ -420,6 +440,13 @@ fn collect_pending_and_notify(
 
     // Pending here means unread and eligible now, including expired snoozes.
     for release in &pending {
+        // 标记该发布已通知
+        {
+            let state = app.state::<AppState>();
+            if let Ok(conn) = state.db.get() {
+                let _ = db::releases::set_last_notified_at(&conn, release.id);
+            }
+        }
         let app_clone = app.clone();
         let release_id = release.id;
         let html_url = release.html_url.clone();
