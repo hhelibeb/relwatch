@@ -48,6 +48,7 @@ export default {
   'source.tooltip_about': '描述：',
   'source.last_checked': '上次检查: {0}',
   'source.failure_count': '连续失败 {0} 次',
+  'source.view_releases': '查看版本列表',
 
   'settings.general': '常规设置',
   'settings.data': '数据设置',

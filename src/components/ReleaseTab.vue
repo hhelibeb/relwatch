@@ -9,8 +9,8 @@ import { formatDate, isReadStatus, isUnreadStatus, releaseMatchesSearch } from '
 import ReleaseItem from './ReleaseItem.vue'
 import ReleaseSearchBar from './ReleaseSearchBar.vue'
 
-const props = defineProps<{ releases: ReleaseInfo[]; search?: string }>()
-const emit = defineEmits<{ update: []; 'update:search': [value: string] }>()
+const props = defineProps<{ releases: ReleaseInfo[]; search?: string; statusFilter?: 'all' | 'unread' | 'read' }>()
+const emit = defineEmits<{ update: []; 'update:search': [value: string]; 'update:statusFilter': [value: 'all' | 'unread' | 'read'] }>()
 
 type ViewMode = 'simple' | 'aggregated' | 'calendar'
 const viewMode = ref<ViewMode>('simple')
@@ -24,7 +24,10 @@ const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth() + 1)
 const tooltip = ref<{ x: number; y: number; date: string; releases: ReleaseInfo[] } | null>(null)
 
-const statusFilter = ref<'all' | 'unread' | 'read'>('all')
+const statusFilter = computed({
+  get: () => props.statusFilter ?? 'all',
+  set: (value: 'all' | 'unread' | 'read') => emit('update:statusFilter', value),
+})
 const importanceFilter = ref<'all' | '大' | '中' | '小'>('all')
 
 // ========== 筛选 ==========

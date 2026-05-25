@@ -48,6 +48,7 @@ export default {
   'source.tooltip_about': 'About: ',
   'source.last_checked': 'Last checked: {0}',
   'source.failure_count': '{0} consecutive failure(s)',
+  'source.view_releases': 'View releases',
 
   'settings.general': 'General',
   'settings.data': 'Data',

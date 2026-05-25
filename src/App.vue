@@ -44,6 +44,7 @@ const settings = ref<AppSettings>({
 
 const countdown = ref('')
 const releaseSearch = ref('')
+const releaseStatusFilter = ref<'all' | 'unread' | 'read'>('all')
 const polling = ref(false)
 const sourceChecking = ref(false)
 let countdownTimer: ReturnType<typeof setInterval> | null = null
@@ -203,6 +204,13 @@ function handleSourceCheckResult(count: number) {
 
 function openSourceReleases(query: string) {
   releaseSearch.value = query
+  releaseStatusFilter.value = 'all'
+  activeTab.value = 'releases'
+}
+
+function openSourceUnreadReleases(query: string) {
+  releaseSearch.value = query
+  releaseStatusFilter.value = 'unread'
   activeTab.value = 'releases'
 }
 
@@ -282,8 +290,9 @@ onUnmounted(() => {
         @update="loadSources(); loadReleases(); loadLogs()"
         @check-result="handleSourceCheckResult"
         @check-busy="sourceChecking = $event"
-        @open-releases="openSourceReleases" />
-      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" :releases="releases" @update="loadReleases(); loadLogs()" />
+        @open-releases="openSourceReleases"
+        @open-unread-releases="openSourceUnreadReleases" />
+      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="loadReleases(); loadLogs()" />
       <LogTab v-show="activeTab === 'logs'" :logs="logs" @update="loadLogs()" />
       <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } loadLogs(); applyTheme(settings.theme) }" />
     </main>

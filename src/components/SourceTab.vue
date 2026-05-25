@@ -16,6 +16,7 @@ const emit = defineEmits<{
   checkResult: [count: number]
   checkBusy: [busy: boolean]
   openReleases: [query: string]
+  openUnreadReleases: [query: string]
 }>()
 
 const urlInput = ref('')
@@ -44,6 +45,10 @@ function unreadReleaseCount(source: Source): number {
 
 function openSourceReleases(source: Source) {
   emit('openReleases', sourceQuery(source))
+}
+
+function openSourceUnreadReleases(source: Source) {
+  emit('openUnreadReleases', sourceQuery(source))
 }
 
 function sourceExists(owner: string, repo: string): boolean {
@@ -210,6 +215,9 @@ function hideHealthTooltip() {
             <button class="btn-icon-link" @click="openSourceUrl(source.owner, source.repo)" @contextmenu.prevent.stop="handleContextMenu($event, `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
               <svg><use href="/icons.svg#link-icon"/></svg>
             </button>
+            <button class="btn-icon-link" @click="openSourceReleases(source)" :title="t('source.view_releases')">
+              <svg><use href="/icons.svg#search-icon"/></svg>
+            </button>
             <span v-if="source.enabled" class="badge badge-on">{{ t('source.enabled') }}</span>
             <span v-else class="badge badge-off">{{ t('source.paused') }}</span>
           </div>
@@ -219,7 +227,7 @@ function hideHealthTooltip() {
               <button
                 v-if="unreadReleaseCount(source) > 0"
                 class="source-pending-link"
-                @click="openSourceReleases(source)"
+                @click="openSourceUnreadReleases(source)"
               >
                 {{ t('source.pending_updates', String(unreadReleaseCount(source))) }}
               </button>
