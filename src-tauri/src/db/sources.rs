@@ -205,6 +205,46 @@ mod tests {
     use crate::db::init::init_memory_db;
 
     #[test]
+    fn test_remove_nonexistent_source() {
+        let conn = init_memory_db().unwrap();
+        // 删除不存在的 id 不应报错
+        let result = remove_source(&conn, 999);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_nonexistent_source() {
+        let conn = init_memory_db().unwrap();
+        let result = get_source(&conn, 999).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_update_nonexistent_source() {
+        let conn = init_memory_db().unwrap();
+        // 更新不存在的 id 不应报错（0 rows affected）
+        let result = update_source(&conn, 999, false, 60);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_record_check_failure_truncates_long_message() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
+
+        // 构造超过 500 字符的错误消息
+        let long_msg = "x".repeat(1000);
+        record_check_failure(&conn, id, &long_msg).unwrap();
+
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert_eq!(s.last_check_status, "error");
+        assert!(s.last_check_message.is_some());
+        // 应被截断到 500 字符
+        assert!(s.last_check_message.as_ref().unwrap().len() <= 500);
+        assert_eq!(s.consecutive_failures, 1);
+    }
+
+    #[test]
     fn test_source_add_and_list() {
         let conn = init_memory_db().unwrap();
         let id = add_source(&conn, "github", "microsoft", "vscode", "Code editor").unwrap();

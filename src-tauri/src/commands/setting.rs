@@ -7,11 +7,11 @@ use crate::deepseek;
 use crate::types::{AppSettings, AppState};
 use crate::db::settings::{
     self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
-    KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
+    KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY, KEY_DEEPSEEK_PROXY_BYPASS,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
-    DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
+    DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
 };
@@ -35,6 +35,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
             .chars()
             .next()
             .is_some(),
+        deepseek_proxy_bypass: get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false)?,
 
         check_prereleases: get_setting_bool(&conn, KEY_CHECK_PRERELEASES, false)?,
         fetch_history: get_setting_bool(&conn, KEY_FETCH_HISTORY, false)?,
@@ -60,6 +61,7 @@ pub struct UpdateSettingsPayload {
     deepseek_enabled: bool,
     deepseek_model: String,
     deepseek_base_url: String,
+    deepseek_proxy_bypass: bool,
 
     check_prereleases: bool,
     fetch_history: bool,
@@ -88,6 +90,7 @@ pub fn update_settings(
     let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_ENABLED)?;
     let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL)?;
     let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)?;
+    let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS)?;
 
     let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
     let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
@@ -106,6 +109,7 @@ pub fn update_settings(
             (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
             (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "setting.deepseek_model"),
             (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
+            (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, &payload.deepseek_proxy_bypass.to_string(), "setting.deepseek_proxy_bypass"),
 
             (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
             (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
@@ -171,8 +175,14 @@ pub async fn test_deepseek_connection(state: tauri::State<'_, AppState>) -> Resu
         model = config.1;
         base_url = config.2;
         api_key = config.3;
-        proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
-        proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
+        let bypass = get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false)?;
+        if bypass {
+            proxy_url = String::new();
+            proxy_mode = "none".to_string();
+        } else {
+            proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
+            proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
+        }
     }
     let api_key = api_key.ok_or("请先设置 DeepSeek API Key")?;
     let client = deepseek::build_client(&api_key, &proxy_url, &proxy_mode)?;
@@ -234,6 +244,7 @@ mod tests {
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
         let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL).unwrap();
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
+        let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
         let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
@@ -252,6 +263,7 @@ mod tests {
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
+                (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
                 (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
@@ -289,6 +301,7 @@ mod tests {
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
         let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL).unwrap();
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
+        let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
         let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
@@ -306,6 +319,7 @@ mod tests {
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
+                (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
                 (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
@@ -336,6 +350,7 @@ mod tests {
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
         let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL).unwrap();
         let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL).unwrap();
+        let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
         let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, "false").unwrap();
         let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false").unwrap();
         let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT).unwrap();
@@ -353,6 +368,7 @@ mod tests {
                 (KEY_DEEPSEEK_ENABLED, &old_deepseek, "false", ""),
                 (KEY_DEEPSEEK_MODEL, &old_model, DEFAULT_DEEPSEEK_MODEL, ""),
                 (KEY_DEEPSEEK_BASE_URL, &old_base_url, DEFAULT_DEEPSEEK_BASE_URL, ""),
+                (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, "false", ""),
                 (KEY_CHECK_PRERELEASES, &old_check_pre, "false", ""),
                 (KEY_FETCH_HISTORY, &old_fetch_history, "false", ""),
                 (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, DEFAULT_FETCH_HISTORY_COUNT, ""),
@@ -384,6 +400,7 @@ mod tests {
             (KEY_DEEPSEEK_ENABLED, "false"),
             (KEY_DEEPSEEK_MODEL, "gpt-4"),
             (KEY_DEEPSEEK_BASE_URL, "https://old.api"),
+            (KEY_DEEPSEEK_PROXY_BYPASS, "false"),
             (KEY_CHECK_PRERELEASES, "false"),
             (KEY_FETCH_HISTORY, "false"),
             (KEY_FETCH_HISTORY_COUNT, "3"),
@@ -404,6 +421,7 @@ mod tests {
             (KEY_DEEPSEEK_ENABLED, "true"),
             (KEY_DEEPSEEK_MODEL, "deepseek-v4"),
             (KEY_DEEPSEEK_BASE_URL, "https://new.api"),
+            (KEY_DEEPSEEK_PROXY_BYPASS, "true"),
             (KEY_CHECK_PRERELEASES, "true"),
             (KEY_FETCH_HISTORY, "true"),
             (KEY_FETCH_HISTORY_COUNT, "5"),
@@ -419,7 +437,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 13,
+        assert_eq!(items.len(), 14,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -434,7 +452,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 13;
+        const EXPECTED_SETTING_FIELDS: usize = 14;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyMode": "none",
@@ -444,6 +462,7 @@ mod tests {
             "deepseekEnabled": false,
             "deepseekModel": "m",
             "deepseekBaseUrl": "u",
+            "deepseekProxyBypass": false,
 
             "checkPrereleases": false,
             "fetchHistory": true,
@@ -462,6 +481,7 @@ mod tests {
         assert!(!payload.deepseek_enabled);
         assert_eq!(payload.deepseek_model, "m");
         assert_eq!(payload.deepseek_base_url, "u");
+        assert!(!payload.deepseek_proxy_bypass);
 
         assert!(!payload.check_prereleases);
         assert!(payload.fetch_history);
@@ -471,5 +491,40 @@ mod tests {
 
         // 常量标记，修改配置项时需同步改这里
         let _guard = EXPECTED_SETTING_FIELDS;
+    }
+
+    /// 验证 deepseek_proxy_bypass 通过 apply_settings 写入后能正确持久化。
+    #[test]
+    fn test_deepseek_proxy_bypass_apply_and_readback() {
+        let state = test_state();
+        let conn = state.db.get().unwrap();
+
+        // 初始默认值应为 false
+        assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
+
+        // 模拟 update_settings 流程：从 false 改为 true
+        let old = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
+        let (_, changes) = settings::apply_settings(
+            &conn,
+            &[
+                (KEY_DEEPSEEK_PROXY_BYPASS, &old, "true", "setting.deepseek_proxy_bypass"),
+            ],
+        ).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(changes[0].contains("setting.deepseek_proxy_bypass"));
+
+        // 验证已持久化为 true
+        assert!(get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
+
+        // 再次模拟 update_settings：改回 false
+        let old = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
+        let (_, changes) = settings::apply_settings(
+            &conn,
+            &[
+                (KEY_DEEPSEEK_PROXY_BYPASS, &old, "false", "setting.deepseek_proxy_bypass"),
+            ],
+        ).unwrap();
+        assert_eq!(changes.len(), 1);
+        assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, true).unwrap());
     }
 }

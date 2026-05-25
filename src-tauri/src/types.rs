@@ -26,6 +26,7 @@ pub struct AppSettings {
     pub deepseek_model: String,
     pub deepseek_base_url: String,
     pub deepseek_api_key_set: bool,
+    pub deepseek_proxy_bypass: bool,
 
     pub check_prereleases: bool,
     pub fetch_history: bool,

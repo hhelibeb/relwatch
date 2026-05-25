@@ -211,3 +211,68 @@ fn migrate(conn: &Connection) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 验证 migrate() 可重复调用（幂等性）
+    #[test]
+    fn test_migrate_idempotent() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_schema(&conn).unwrap();
+        migrate(&conn).unwrap();
+        // 第二次调用不应报错
+        migrate(&conn).unwrap();
+    }
+
+    /// 验证所有 migration 添加的列在初始化后均存在
+    #[test]
+    fn test_all_migration_columns_exist() {
+        let conn = init_memory_db().unwrap();
+
+        // Migration 1: releases.ai_summary, releases.ai_importance
+        assert!(has_column(&conn, "releases", "ai_summary"));
+        assert!(has_column(&conn, "releases", "ai_importance"));
+
+        // Migration 2: logs.message_key, logs.message_args
+        assert!(has_column(&conn, "logs", "message_key"));
+        assert!(has_column(&conn, "logs", "message_args"));
+
+        // Migration 3: sources.last_checked_at, last_check_status, etc.
+        assert!(has_column(&conn, "sources", "last_checked_at"));
+        assert!(has_column(&conn, "sources", "last_check_status"));
+        assert!(has_column(&conn, "sources", "last_check_message"));
+        assert!(has_column(&conn, "sources", "consecutive_failures"));
+        assert!(has_column(&conn, "sources", "last_new_count"));
+
+        // Migration 4: sources.description
+        assert!(has_column(&conn, "sources", "description"));
+
+        // Migration 5: releases.retry_count
+        assert!(has_column(&conn, "releases", "retry_count"));
+
+        // Migration 6: notification_state.last_notified_at
+        assert!(has_column(&conn, "notification_state", "last_notified_at"));
+    }
+
+    fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
+        conn
+            .prepare(&format!("SELECT 1 FROM pragma_table_info('{}') WHERE name='{}'", table, column))
+            .and_then(|mut s| s.exists([]))
+            .unwrap_or(false)
+    }
+
+    /// 验证 init_memory_pool 正常创建可用的连接池
+    #[test]
+    fn test_init_memory_pool_usable() {
+        let pool = init_memory_pool().unwrap();
+        let conn = pool.get().unwrap();
+        // 能在生成的连接上执行查询
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sources", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+}

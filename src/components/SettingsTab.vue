@@ -199,6 +199,7 @@ async function handleSave() {
       deepseekEnabled: s.deepseek_enabled,
       deepseekModel: s.deepseek_model.trim() || 'deepseek-v4-flash',
       deepseekBaseUrl: s.deepseek_base_url.trim() || 'https://api.deepseek.com',
+      deepseekProxyBypass: s.deepseek_proxy_bypass,
 
       checkPrereleases: s.check_prereleases,
       fetchHistory: s.fetch_history,
@@ -224,7 +225,7 @@ const trackedKeys = [
   'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'minimize_to_tray',
   'log_retention_days', 'check_prereleases', 'fetch_history',
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
-  'deepseek_base_url', 'language', 'theme',
+  'deepseek_base_url', 'deepseek_proxy_bypass', 'language', 'theme',
 ] as const
 
 const dirtyFields = computed(() => {
@@ -246,7 +247,7 @@ const dirtyByTab = computed(() => {
   return {
     general: ['poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
-    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url'].filter(k => f.has(k)).length,
+    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass'].filter(k => f.has(k)).length,
   }
 })
 
@@ -407,6 +408,10 @@ async function handleImportBackup() {
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.deepseek_enabled" />
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_enabled') || null">{{ t('settings.enable_ai') }}</span>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.deepseek_proxy_bypass" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_proxy_bypass') || null">{{ t('settings.deepseek_proxy_bypass') }}</span>
           </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_api_key') || null">{{ t('settings.api_key') }}</span>

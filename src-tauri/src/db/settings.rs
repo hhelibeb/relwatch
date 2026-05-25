@@ -10,6 +10,7 @@ pub const KEY_DEEPSEEK_ENABLED: &str = "deepseek_enabled";
 pub const KEY_DEEPSEEK_MODEL: &str = "deepseek_model";
 pub const KEY_DEEPSEEK_BASE_URL: &str = "deepseek_base_url";
 pub const KEY_DEEPSEEK_API_KEY: &str = "deepseek_api_key";
+pub const KEY_DEEPSEEK_PROXY_BYPASS: &str = "deepseek_proxy_bypass";
 
 pub const KEY_CHECK_PRERELEASES: &str = "check_prereleases";
 pub const KEY_FETCH_HISTORY: &str = "fetch_history";
@@ -27,6 +28,7 @@ pub const DEFAULT_LOG_RETENTION: &str = "0";
 pub const DEFAULT_DEEPSEEK_ENABLED: &str = "false";
 pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
+pub const DEFAULT_DEEPSEEK_PROXY_BYPASS: &str = "false";
 
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";
@@ -184,6 +186,75 @@ mod tests {
         assert_eq!(
             get_setting(&conn, KEY_NEXT_POLL_AT).unwrap().unwrap(),
             "1234567890"
+        );
+    }
+
+    #[test]
+    fn test_set_setting_empty_value() {
+        let conn = init_memory_db().unwrap();
+        set_setting(&conn, "key", "").unwrap();
+        assert_eq!(get_setting(&conn, "key").unwrap().unwrap(), "");
+    }
+
+    #[test]
+    fn test_get_setting_i64_non_numeric_fallback() {
+        let conn = init_memory_db().unwrap();
+        set_setting(&conn, "num", "not-a-number").unwrap();
+        // 非数字值应 fallback 到 default
+        assert_eq!(get_setting_i64(&conn, "num", 42).unwrap(), 42);
+    }
+
+    #[test]
+    fn test_apply_settings_no_changes() {
+        let conn = init_memory_db().unwrap();
+        set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+
+        let old = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+        let (changed, changes) = apply_settings(
+            &conn,
+            &[(KEY_POLL_INTERVAL, &old, "30", "setting.poll_interval")],
+        ).unwrap();
+
+        assert!(!changed, "值未变时 first_changed 应为 false");
+        assert!(changes.is_empty(), "值未变时不应有变更描述");
+    }
+
+    #[test]
+    fn test_apply_settings_first_item_triggers_flag() {
+        let conn = init_memory_db().unwrap();
+        set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+
+        let old = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+        let (changed, changes) = apply_settings(
+            &conn,
+            &[
+                (KEY_POLL_INTERVAL, &old, "60", "setting.poll_interval"),
+            ],
+        ).unwrap();
+
+        assert!(changed, "KEY_POLL_INTERVAL 变化时应返回 first_changed=true");
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
+    fn test_deepseek_proxy_bypass_defaults() {
+        let conn = init_memory_db().unwrap();
+        // 默认值应为 false
+        assert_eq!(
+            get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap(),
+            false
+        );
+        // 写入 true
+        set_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS, "true").unwrap();
+        assert_eq!(
+            get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap(),
+            true
+        );
+        // 写回 false
+        set_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS, "false").unwrap();
+        assert_eq!(
+            get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap(),
+            false
         );
     }
 }

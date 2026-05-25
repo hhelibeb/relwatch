@@ -26,6 +26,7 @@ const releases = ref<ReleaseInfo[]>([])
 const logs = ref<LogEntry[]>([])
 const settings = ref<AppSettings>({
   poll_interval_minutes: 30,
+  proxy_mode: 'none',
   proxy_url: '',
   minimize_to_tray: true,
   log_retention_days: 0,
@@ -33,7 +34,7 @@ const settings = ref<AppSettings>({
   deepseek_model: 'deepseek-v4-flash',
   deepseek_base_url: 'https://api.deepseek.com',
   deepseek_api_key_set: false,
-  deepseek_proxy_enabled: false,
+  deepseek_proxy_bypass: false,
   check_prereleases: false,
   fetch_history: false,
   fetch_history_count: 1,

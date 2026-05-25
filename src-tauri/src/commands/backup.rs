@@ -4,6 +4,15 @@ use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
+/// 验证指定路径的文件是有效的 SQLite 数据库（检查魔数前 16 字节）
+pub fn validate_sqlite_file(path: &str) -> Result<(), String> {
+    let header = std::fs::read(path).map_err(|e| format!("无法读取文件: {}", e))?;
+    if header.len() < 16 || &header[..16] != b"SQLite format 3\0" {
+        return Err("所选文件不是有效的 SQLite 数据库".to_string());
+    }
+    Ok(())
+}
+
 /// 将回调式 dialog 转换为 async
 async fn save_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog::FilePath> {
     let (tx, rx) = tokio::sync::oneshot::channel();
@@ -75,10 +84,7 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     let path_str = path.as_path().unwrap().to_string_lossy().to_string();
 
     // 验证文件是有效的 SQLite 数据库
-    let header = std::fs::read(&path_str).map_err(|e| format!("无法读取文件: {}", e))?;
-    if header.len() < 16 || &header[..16] != b"SQLite format 3\0" {
-        return Err("所选文件不是有效的 SQLite 数据库".to_string());
-    }
+    validate_sqlite_file(&path_str)?;
 
     // 打开备份文件作为源连接（source）
     let src_conn = rusqlite::Connection::open(&path_str)
@@ -116,4 +122,56 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn test_validate_sqlite_file_valid() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_valid_{}.db", std::process::id()));
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE t (x);").unwrap();
+        }
+        let result = validate_sqlite_file(path.to_str().unwrap());
+        assert!(result.is_ok(), "合法 SQLite 文件应通过验证: {:?}", result);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_validate_sqlite_file_invalid() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_invalid_{}.tmp", std::process::id()));
+        {
+            let mut f = std::fs::File::create(&path).unwrap();
+            f.write_all(b"not a sqlite database file").unwrap();
+        }
+        let result = validate_sqlite_file(path.to_str().unwrap());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("不是有效的 SQLite"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_validate_sqlite_file_empty() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("test_empty_{}.tmp", std::process::id()));
+        {
+            std::fs::File::create(&path).unwrap();
+        }
+        let result = validate_sqlite_file(path.to_str().unwrap());
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_validate_sqlite_file_nonexistent() {
+        let result = validate_sqlite_file("/tmp/nonexistent_file_that_does_not_exist.db");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("无法读取文件"));
+    }
 }

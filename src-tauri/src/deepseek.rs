@@ -5,7 +5,7 @@ use crate::crypto;
 use crate::db;
 use crate::db::settings::{
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_PROXY_URL,
+    KEY_DEEPSEEK_PROXY_BYPASS, KEY_PROXY_URL,
     DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
 };
 use crate::types::AppState;
@@ -141,16 +141,26 @@ pub async fn generate_summaries_for_new(
         model = cfg.1;
         base_url = cfg.2;
         api_key = cfg.3;
-        proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
+        let bypass = db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS)
             .ok()
             .flatten()
-            .unwrap_or_default();
-        proxy_mode = db::settings::get_setting(&conn, db::settings::KEY_PROXY_MODE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-            });
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        if bypass {
+            proxy_url = String::new();
+            proxy_mode = "none".to_string();
+        } else {
+            proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+            proxy_mode = db::settings::get_setting(&conn, db::settings::KEY_PROXY_MODE)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| {
+                    if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+                });
+        }
     }
 
     if !enabled {
