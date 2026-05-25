@@ -1,16 +1,12 @@
 <script setup lang="ts">
-import { computed, inject, ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { computed, inject, ref, nextTick } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message } from '@tauri-apps/plugin-dialog'
-import {
-  type Source,
-  parseGitHubUrl,
-  addSource,
-  removeSource,
-  updateSource,
-  checkSingleSource,
-  openReleaseUrl,
-} from '../api'
+import { type Source, parseGitHubUrl, addSource, removeSource, updateSource } from '../api/sources'
+import { checkSingleSource } from '../api/releases'
+import { openReleaseUrl } from '../api/client'
+import { useContextMenu } from '../composables/useContextMenu'
+import ContextMenu from './common/ContextMenu.vue'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
 
@@ -28,11 +24,7 @@ const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const showToast = inject(ShowToastKey, () => {})
 
-const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
-
-function closeContextMenu() { contextMenu.value = null }
-onMounted(() => document.addEventListener('click', closeContextMenu))
-onUnmounted(() => document.removeEventListener('click', closeContextMenu))
+const { contextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
 function openSourceUrl(owner: string, repo: string) {
   openReleaseUrl(`https://github.com/${owner}/${repo}`)
@@ -59,20 +51,6 @@ function sourceExists(owner: string, repo: string): boolean {
     source.owner.toLowerCase() === owner.toLowerCase() &&
     source.repo.toLowerCase() === repo.toLowerCase()
   )
-}
-
-function handleContextMenu(e: MouseEvent, url: string) {
-  contextMenu.value = { x: e.clientX, y: e.clientY, url }
-}
-
-async function handleCopyLink() {
-  try { await navigator.clipboard.writeText(contextMenu.value!.url) } catch { /* ignore */ }
-  closeContextMenu()
-}
-
-function handleOpenLink() {
-  openReleaseUrl(contextMenu.value!.url)
-  closeContextMenu()
 }
 
 async function handleAdd() {
@@ -268,10 +246,7 @@ function hideHealthTooltip() {
         </div>
       </div>
     </div>
-    <div v-if="contextMenu" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
-      <button @click="handleOpenLink">{{ t('context.open') }}</button>
-      <button @click="handleCopyLink">{{ t('context.copy_link') }}</button>
-    </div>
+    <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" />
     <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
       <div v-for="(line, i) in tooltip.lines" :key="i" class="tooltip-line" :class="{ 'tooltip-line-wrap': line.wrap }">{{ line.text }}</div>
     </div>

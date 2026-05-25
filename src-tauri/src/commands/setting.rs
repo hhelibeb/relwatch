@@ -209,7 +209,7 @@ mod tests {
         AppState {
             db: db::init::init_memory_pool().unwrap(),
             next_poll_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
-            deepseek_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(5)),
+            deepseek_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(50)),
         }
     }
 

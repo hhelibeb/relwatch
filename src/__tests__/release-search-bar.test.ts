@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
-import type { ReleaseInfo } from '../api'
+import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../api', () => ({
   openReleaseUrl: vi.fn(),

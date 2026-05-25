@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
-import { type LogEntry, clearLogs } from '../api'
+import { type LogEntry, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
 import { formatDate, logLevelClass } from '../utils'
 

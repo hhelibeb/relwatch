@@ -28,7 +28,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "deb", "appimage"],
+    "targets": ["nsis", "appimage"],
     "windows": {
         "nsis": {
             "template": "nsis/installer.nsi"

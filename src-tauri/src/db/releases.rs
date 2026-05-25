@@ -65,7 +65,7 @@ pub fn get_releases_without_summary(
 ) -> Result<Vec<(i64, Option<String>)>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, body FROM releases WHERE ai_summary IS NULL AND body IS NOT NULL AND body != ''",
+            "SELECT id, body FROM releases WHERE ai_summary IS NULL AND body IS NOT NULL AND body != '' AND (retry_count IS NULL OR retry_count < 5)",
         )
         .map_err(|e| e.to_string())?;
 
@@ -85,8 +85,17 @@ pub fn set_ai_summary(
     importance: &str,
 ) -> Result<(), String> {
     conn.execute(
-        "UPDATE releases SET ai_summary = ?1, ai_importance = ?2 WHERE id = ?3",
+        "UPDATE releases SET ai_summary = ?1, ai_importance = ?2, retry_count = 0 WHERE id = ?3",
         rusqlite::params![summary, importance, release_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn increment_retry_count(conn: &Connection, release_id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE releases SET retry_count = COALESCE(retry_count, 0) + 1 WHERE id = ?1",
+        rusqlite::params![release_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -98,6 +107,10 @@ pub fn set_notification_state(
     status: &str,
     snooze_until: Option<&str>,
 ) -> Result<(), String> {
+    match status {
+        "pending" | "snoozed" | "clicked" | "ignored" => {}
+        _ => return Err(format!("无效的通知状态值: {}", status)),
+    }
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO notification_state (release_id, status, snooze_until, created_at, updated_at)
@@ -107,6 +120,30 @@ pub fn set_notification_state(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn set_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE notification_state SET last_notified_at = ?1, updated_at = ?1 WHERE release_id = ?2",
+        rusqlite::params![now, release_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 检查某个 source 是否已有比指定 published_at 更新的版本。
+/// 用于判断新保存的版本是否真的是全局最新。
+pub fn has_newer_release(conn: &Connection, source_id: i64, published_at: &str) -> Result<bool, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT COUNT(*) FROM releases WHERE source_id = ?1 AND published_at > ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let count: i64 = stmt
+        .query_row(rusqlite::params![source_id, published_at], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    Ok(count > 0)
 }
 
 pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, String> {
@@ -210,6 +247,7 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
              WHERE COALESCE(ns.status, 'pending') IN ('pending', 'snoozed')
+               AND (ns.last_notified_at IS NULL OR ns.last_notified_at < r.detected_at)
              ORDER BY r.detected_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -268,13 +306,13 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::config;
+    use crate::db::sources;
     use crate::db::init::init_memory_db;
 
     #[test]
     fn test_release_insert() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid > 0);
         let releases = get_releases_with_state(&conn).unwrap();
@@ -285,7 +323,7 @@ mod tests {
     #[test]
     fn test_notification_state_ignored() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "t", "r", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "t", "r", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         set_notification_state(&conn, rid, "ignored", None).unwrap();
         assert_eq!(get_pending_releases(&conn).unwrap().len(), 0);
@@ -294,7 +332,7 @@ mod tests {
     #[test]
     fn test_insert_release_duplicate() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid1 = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid1 > 0);
         let rid2 = insert_release(&conn, sid, "v1.0", "R2", "https://y", "2024-02-02T00:00:00Z", false, None).unwrap();
@@ -307,7 +345,7 @@ mod tests {
     #[test]
     fn test_insert_release_prerelease_and_body() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", true, Some("release body")).unwrap();
         assert!(rid > 0);
         let releases = get_releases_with_state(&conn).unwrap();
@@ -319,7 +357,7 @@ mod tests {
     #[test]
     fn test_pending_releases_snooze_boundaries() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
 
         let rid1 = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid1 > 0);
@@ -355,7 +393,7 @@ mod tests {
     #[test]
     fn test_set_notification_state_upsert() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
 
         let releases = get_releases_with_state(&conn).unwrap();
@@ -380,7 +418,7 @@ mod tests {
     #[test]
     fn test_get_releases_coalesce_null() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
 
         conn.execute("DELETE FROM notification_state WHERE release_id = ?1", rusqlite::params![rid]).unwrap();
@@ -394,7 +432,7 @@ mod tests {
     #[test]
     fn test_ai_summary_store_and_retrieve() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, Some("body")).unwrap();
         assert!(rid > 0);
 
@@ -414,7 +452,7 @@ mod tests {
     #[test]
     fn test_ai_summary_null_by_default() {
         let conn = init_memory_db().unwrap();
-        let sid = config::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid > 0);
 

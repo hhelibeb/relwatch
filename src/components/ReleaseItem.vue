@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { ref, inject, onMounted, onUnmounted } from 'vue'
+import ContextMenu from './common/ContextMenu.vue'
 import { ShowToastKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, openReleaseUrl, setNotificationState } from '../api'
+import { type NotificationStatus, type ReleaseInfo, setNotificationState } from '../api/releases'
+import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 
@@ -60,7 +62,7 @@ function closeMenus() {
 onMounted(() => document.addEventListener('click', closeMenus))
 onUnmounted(() => document.removeEventListener('click', closeMenus))
 
-function handleContextMenu(e: MouseEvent, url: string) {
+function releaseContextMenu(e: MouseEvent, url: string) {
   contextMenu.value = { x: e.clientX, y: e.clientY, url }
 }
 
@@ -161,7 +163,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     </div>
     <div class="release-actions">
       <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-      <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="handleContextMenu($event, release.html_url)" :title="t('release.open_link')">
+      <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
         <svg><use href="/icons.svg#link-icon"/></svg>
       </button>
       <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
@@ -169,11 +171,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     </div>
   </div>
 
-  <!-- 右键菜单 -->
-  <div v-if="contextMenu" class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }" @click.stop>
-    <button @click="handleOpenLink">{{ t('context.open') }}</button>
-    <button @click="handleCopyLink">{{ t('context.copy_link') }}</button>
-  </div>
+  <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" />
 
   <!-- 摘要悬浮提示 -->
   <div

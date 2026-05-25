@@ -99,6 +99,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
             prerelease INTEGER NOT NULL DEFAULT 0,
             body TEXT,
             detected_at TEXT NOT NULL,
+            retry_count INTEGER NOT NULL DEFAULT 0,
             UNIQUE(source_id, tag_name),
             FOREIGN KEY (source_id) REFERENCES sources(id) ON DELETE CASCADE
         );
@@ -108,6 +109,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
             release_id INTEGER NOT NULL UNIQUE,
             status TEXT NOT NULL DEFAULT 'pending',
             snooze_until TEXT,
+            last_notified_at TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE CASCADE
@@ -184,5 +186,28 @@ fn migrate(conn: &Connection) -> Result<()> {
     if !has_desc {
         conn.execute_batch("ALTER TABLE sources ADD COLUMN description TEXT")?;
     }
+
+    // ── Migration 5: retry_count on releases ──
+    let has_retry_count: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='retry_count'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_retry_count {
+        conn.execute_batch(
+            "ALTER TABLE releases ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;"
+        )?;
+    }
+
+    // ── Migration 6: last_notified_at on notification_state ──
+    let has_last_notified: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('notification_state') WHERE name='last_notified_at'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_last_notified {
+        conn.execute_batch(
+            "ALTER TABLE notification_state ADD COLUMN last_notified_at TEXT;"
+        )?;
+    }
+
     Ok(())
 }

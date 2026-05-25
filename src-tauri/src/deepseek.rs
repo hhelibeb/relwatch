@@ -33,26 +33,50 @@ pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>) 
 }
 
 pub fn build_client(api_key: &str, proxy_url: &str) -> Result<reqwest::Client, String> {
-    let mut headers = reqwest::header::HeaderMap::new();
-    headers.insert(
-        reqwest::header::AUTHORIZATION,
-        reqwest::header::HeaderValue::from_str(&format!("Bearer {}", api_key))
-            .map_err(|e| e.to_string())?,
-    );
-    headers.insert(
-        reqwest::header::CONTENT_TYPE,
-        reqwest::header::HeaderValue::from_static("application/json"),
-    );
-    let mut builder = reqwest::Client::builder()
-        .default_headers(headers)
-        .timeout(std::time::Duration::from_secs(60))
-        .connect_timeout(std::time::Duration::from_secs(10));
-    if !proxy_url.is_empty() {
-        if let Ok(proxy) = reqwest::Proxy::all(proxy_url) {
-            builder = builder.proxy(proxy);
+    crate::http::build_http_client(crate::http::HttpClientConfig {
+        proxy_url,
+        bearer_token: Some(api_key),
+        timeout_secs: 60,
+        content_type_json: true,
+    })
+}
+
+async fn call_summary_inner(
+    client: &reqwest::Client,
+    _model: &str,
+    base_url: &str,
+    body_json: &serde_json::Value,
+) -> Result<(String, String), (u16, String)> {
+    let resp = client
+        .post(format!(
+            "{}/v1/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
+        .json(body_json)
+        .send()
+        .await
+        .map_err(|e| (0, format!("DeepSeek 请求失败: {}", e)))?;
+    if resp.status().is_success() {
+        let json: serde_json::Value = resp.json().await.map_err(|e| (0, format!("解析响应失败: {}", e)))?;
+        let content = json["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+        let parsed: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content)))?;
+        let summary = parsed["summary"].as_str().unwrap_or("").to_string();
+        let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
+        if summary.is_empty() {
+            return Err((0, "摘要为空".to_string()));
         }
+        return Ok((summary, importance));
     }
-    builder.build().map_err(|e| e.to_string())
+
+    let status = resp.status().as_u16();
+    let text = resp.text().await.unwrap_or_default();
+    let msg = format!("DeepSeek API 返回错误 {}: {}", status, text);
+    Err((status, msg))
 }
 
 async fn call_summary(
@@ -82,52 +106,24 @@ async fn call_summary(
         "response_format": {"type": "json_object"}
     });
 
-    let max_retries = 3;
-    let mut attempt = 0;
-    loop {
-        let resp = client
-            .post(format!(
-                "{}/v1/chat/completions",
-                base_url.trim_end_matches('/')
-            ))
-            .json(&body_json)
-            .send()
-            .await
-            .map_err(|e| format!("DeepSeek 请求失败: {}", e))?;
-        if resp.status().is_success() {
-            let json: serde_json::Value = resp.json().await.map_err(|e| format!("解析响应失败: {}", e))?;
-            let content = json["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            let parsed: serde_json::Value = serde_json::from_str(&content)
-                .map_err(|e| format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content))?;
-            let summary = parsed["summary"].as_str().unwrap_or("").to_string();
-            let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
-            if summary.is_empty() {
-                return Err("摘要为空".to_string());
-            }
-            return Ok((summary, importance));
+    let config = crate::retry::RetryConfig::default();
+    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
+        if e.0 == 429 {
+            log::warn!("DeepSeek 限流(429), 将重试");
+            return true;
         }
-
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        let msg = format!("DeepSeek API 返回错误 {}: {}", status, text);
-
-        // 429: 指数退避重试
-        if status == 429 {
-            attempt += 1;
-            if attempt > max_retries {
-                return Err(format!("重试{}次后仍然失败: {}", max_retries, msg));
-            }
-            let delay = std::time::Duration::from_secs(1 << attempt);
-            log::warn!("DeepSeek 限流(429), {}后重试({}/{}): {}", delay.as_secs(), attempt, max_retries, msg);
-            tokio::time::sleep(delay).await;
-            continue;
+        false
+    }, || async {
+        call_summary_inner(client, model, base_url, &body_json).await
+    })
+    .await
+    .map_err(|(status, msg)| {
+        if status > 0 {
+            format!("[{}] {}", status, msg)
+        } else {
+            msg
         }
-        return Err(msg);
-    }
+    })
 }
 
 pub async fn generate_summaries_for_new(
@@ -224,6 +220,7 @@ pub async fn generate_summaries_for_new(
                     log::error!("生成摘要失败 id={}: {}", release_id, e);
                     let state = app.state::<AppState>();
                     if let Ok(conn) = state.db.get() {
+                        let _ = db::releases::increment_retry_count(&conn, release_id);
                         let rel = db::releases::get_release(&conn, release_id).ok().flatten();
                         match rel {
                             Some(r) => db::logs::write_log(
@@ -274,7 +271,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_ok());
         let (summary, importance) = result.unwrap();
@@ -297,7 +294,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_ok());
     }
@@ -311,10 +308,10 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("重试3次后仍然失败"));
+        assert!(result.unwrap_err().contains("429"));
     }
 
     #[tokio::test]
@@ -326,7 +323,7 @@ mod tests {
             .mount(&mock)
             .await;
 
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
         assert!(result.is_err());
         // 非429不重试，错误不应包含"重试"

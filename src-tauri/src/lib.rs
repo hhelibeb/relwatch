@@ -8,12 +8,14 @@ mod http;
 mod github;
 mod deepseek;
 mod poll;
+mod retry;
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
 
 use types::AppState;
+use db::settings::{KEY_POLL_INTERVAL, KEY_NEXT_POLL_AT, KEY_MINIMIZE_TO_TRAY};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -22,15 +24,15 @@ pub fn run() {
     let next_poll_val;
     {
         let conn = pool.get().expect("Failed to get db connection");
-        if db::settings::get_setting(&conn, "poll_interval_minutes")
+        if db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
             .unwrap_or(None)
             .is_none()
         {
-            let _ = db::settings::set_setting(&conn, "poll_interval_minutes", "30");
+            let _ = db::settings::set_setting(&conn, KEY_POLL_INTERVAL, "30");
         }
 
         let now = chrono::Utc::now().timestamp();
-        next_poll_val = db::settings::get_setting(&conn, "next_poll_at")
+        next_poll_val = db::settings::get_setting(&conn, KEY_NEXT_POLL_AT)
             .ok()
             .flatten()
             .and_then(|v| v.parse::<i64>().ok())
@@ -38,7 +40,7 @@ pub fn run() {
             .unwrap_or(now);
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
-    let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(5));
+    let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(50));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -74,8 +76,8 @@ pub fn run() {
             commands::set_deepseek_api_key,
             commands::set_github_token,
             commands::test_deepseek_connection,
-            commands::backup::export_backup,
-            commands::backup::import_backup,
+            commands::export_backup,
+            commands::import_backup,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -97,13 +99,13 @@ pub fn run() {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         let state = app_clone.state::<AppState>();
                         let conn = state.db.get().unwrap_or_else(|e| panic!("DB pool error: {}", e));
-                        let minimize = db::settings::get_setting(&conn, "minimize_to_tray")
+                        let minimize = db::settings::get_setting(&conn, KEY_MINIMIZE_TO_TRAY)
                             .ok()
                             .flatten()
                             .map(|v| v == "true")
                             .unwrap_or(true);
                         let next = state.next_poll_at.load(Ordering::Relaxed);
-                        let _ = db::settings::set_setting(&conn, "next_poll_at", &next.to_string());
+                        let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
                         drop(conn);
                         if minimize {
                             api.prevent_close();

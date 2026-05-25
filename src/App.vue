@@ -2,18 +2,10 @@
 import { computed, ref, onMounted, onUnmounted, provide } from 'vue'
 import { ShowToastKey } from './injection-keys'
 import { listen } from '@tauri-apps/api/event'
-import {
-  type Source,
-  type ReleaseInfo,
-  type LogEntry,
-  type AppSettings,
-  listSources,
-  getReleases,
-  getLogs,
-  getSettings,
-  triggerPoll,
-  getPollCountdown,
-} from './api'
+import { type Source, listSources } from './api/sources'
+import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
+import { type LogEntry, getLogs } from './api/logs'
+import { type AppSettings, getSettings } from './api/settings'
 import { t, setLocale } from './i18n'
 import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'

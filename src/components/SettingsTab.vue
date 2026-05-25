@@ -11,8 +11,8 @@ import {
   testDeepseekConnection,
   exportBackup,
   importBackup,
-  openReleaseUrl,
-} from '../api'
+} from '../api/settings'
+import { openReleaseUrl } from '../api/client'
 import { t, setLocale, languages } from '../i18n'
 
 const props = defineProps<{ settings: AppSettings }>()
@@ -229,7 +229,7 @@ const trackedKeys = [
 const dirtyFields = computed(() => {
   const dirty = new Set<string>()
   for (const key of trackedKeys) {
-    if ((form as any)[key] !== (props.settings as any)[key]) {
+    if ((form as unknown as Record<string, unknown>)[key] !== (props.settings as unknown as Record<string, unknown>)[key]) {
       dirty.add(key)
     }
   }
