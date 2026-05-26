@@ -1,6 +1,8 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
+use crate::db::settings::{get_setting_str, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE};
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ReleaseInfo {
     pub id: i64,
@@ -235,6 +237,22 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
     Ok(releases)
 }
 
+/// 大→3, 中→2, 小→1. Returns true if `a` >= `b` in importance.
+/// Unknown/malformed values are treated as "小" (lowest).
+fn importance_ge(a: &str, b: &str) -> bool {
+    let a_val = match a {
+        "大" => 3,
+        "中" => 2,
+        _ => 1,
+    };
+    let b_val = match b {
+        "大" => 3,
+        "中" => 2,
+        _ => 1,
+    };
+    a_val >= b_val
+}
+
 pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
     let mut stmt = conn
         .prepare(
@@ -253,6 +271,8 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
         .map_err(|e| e.to_string())?;
 
     let now = chrono::Utc::now();
+    let min_importance = get_setting_str(conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)
+        .unwrap_or_else(|_| DEFAULT_DEEPSEEK_MIN_IMPORTANCE.to_string());
 
     let releases = stmt
         .query_map([], |row| {
@@ -294,6 +314,12 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
                             }
                         }
                     }
+                }
+            }
+            // `ai_importance IS NULL` 始终通知
+            if let Some(ref imp) = r.ai_importance {
+                if !importance_ge(imp, &min_importance) {
+                    return false;
                 }
             }
             true

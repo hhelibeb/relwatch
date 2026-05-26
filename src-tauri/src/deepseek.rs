@@ -5,12 +5,13 @@ use crate::crypto;
 use crate::db;
 use crate::db::settings::{
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY_BYPASS, KEY_PROXY_URL,
-    DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
+    KEY_DEEPSEEK_PROXY_BYPASS, KEY_DEEPSEEK_PROMPT, KEY_PROXY_URL,
+    DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROMPT_EDITABLE,
+    DEEPSEEK_PROMPT_FIXED_SUFFIX,
 };
 use crate::types::AppState;
 
-pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>) {
+pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>, String) {
     let enabled = db::settings::get_setting(conn, KEY_DEEPSEEK_ENABLED)
         .ok()
         .flatten()
@@ -29,7 +30,9 @@ pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>) 
         .flatten()
         .filter(|v| !v.is_empty());
     let api_key = encrypted_key.and_then(|v| crypto::decrypt(&v));
-    (enabled, model, base_url, api_key)
+    let prompt = db::settings::get_setting_str(conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)
+        .unwrap_or_else(|_| DEFAULT_DEEPSEEK_PROMPT_EDITABLE.to_string());
+    (enabled, model, base_url, api_key, prompt)
 }
 
 pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<reqwest::Client, String> {
@@ -84,19 +87,17 @@ async fn call_summary(
     client: &reqwest::Client,
     model: &str,
     base_url: &str,
+    prompt_template: &str,
     body_text: &str,
 ) -> Result<(String, String), String> {
-    let prompt = format!(
-        "你是一个软件版本发布摘要助手。请用中文总结下面 GitHub Release 更新内容，并评估重要度。\n\
-         重要度标准：\n\
-         - 大：breaking changes、重大架构变更、严重安全漏洞修复\n\
-         - 中：新功能、重要 bug 修复、性能优化\n\
-         - 小：小修复、文档更新、依赖升级、日常维护\n\n\
-         Release 内容：\n{}\n\n\
-         请严格按以下 JSON 格式返回（不要包含其他内容）：\n\
-         {{\"summary\":\"简短中文摘要，2-3句话\",\"importance\":\"大|中|小\"}}",
-        body_text
-    );
+    // 组装完整提示词：可编辑部分 + 固定 JSON 格式约束
+    let editable = if prompt_template.is_empty() {
+        DEFAULT_DEEPSEEK_PROMPT_EDITABLE.to_string()
+    } else {
+        prompt_template.to_string()
+    };
+    let full_prompt = format!("{}\n\n{}", editable, DEEPSEEK_PROMPT_FIXED_SUFFIX);
+    let prompt = full_prompt.replace("{}", body_text);
     let body_json = serde_json::json!({
         "model": model,
         "messages": [
@@ -131,7 +132,7 @@ pub async fn generate_summaries_for_new(
     app: &tauri::AppHandle,
     saved: &[(i64, Option<String>)],
 ) {
-    let (enabled, model, base_url, api_key, proxy_url, proxy_mode);
+    let (enabled, model, base_url, api_key, prompt, proxy_url, proxy_mode);
 
     {
         let state = app.state::<AppState>();
@@ -141,6 +142,7 @@ pub async fn generate_summaries_for_new(
         model = cfg.1;
         base_url = cfg.2;
         api_key = cfg.3;
+        prompt = cfg.4;
         let bypass = db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS)
             .ok()
             .flatten()
@@ -193,13 +195,14 @@ pub async fn generate_summaries_for_new(
         let client = client.clone();
         let model = model.clone();
         let base_url = base_url.clone();
+        let prompt = prompt.clone();
         let app = app.clone();
         let release_id = *release_id;
         let sem_clone = semaphore.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = sem_clone.acquire_owned().await.unwrap();
-            match call_summary(&client, &model, &base_url, &truncated).await {
+            match call_summary(&client, &model, &base_url, &prompt, &truncated).await {
                 Ok((summary, importance)) => {
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
@@ -279,7 +282,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_ok());
         let (summary, importance) = result.unwrap();
         assert_eq!(summary, "测试摘要内容");
@@ -302,7 +305,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_ok());
     }
 
@@ -316,7 +319,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("429"));
     }
@@ -331,7 +334,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = call_summary(&client, "test-model", &mock.uri(), "Some release body").await;
+        let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_err());
         // 非429不重试，错误不应包含"重试"
         assert!(!result.unwrap_err().contains("重试"));

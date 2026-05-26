@@ -11,6 +11,8 @@ pub const KEY_DEEPSEEK_MODEL: &str = "deepseek_model";
 pub const KEY_DEEPSEEK_BASE_URL: &str = "deepseek_base_url";
 pub const KEY_DEEPSEEK_API_KEY: &str = "deepseek_api_key";
 pub const KEY_DEEPSEEK_PROXY_BYPASS: &str = "deepseek_proxy_bypass";
+pub const KEY_DEEPSEEK_PROMPT: &str = "deepseek_prompt";
+pub const KEY_DEEPSEEK_MIN_IMPORTANCE: &str = "deepseek_min_importance";
 
 pub const KEY_CHECK_PRERELEASES: &str = "check_prereleases";
 pub const KEY_FETCH_HISTORY: &str = "fetch_history";
@@ -29,6 +31,41 @@ pub const DEFAULT_DEEPSEEK_ENABLED: &str = "false";
 pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEFAULT_DEEPSEEK_PROXY_BYPASS: &str = "false";
+pub const DEFAULT_DEEPSEEK_PROMPT_EDITABLE: &str = concat!(
+    "你是版本发布摘要助手。请用中文总结下面 GitHub Release 更新内容，并评估重要度。\n",
+    "\n",
+    "摘要长度：2-4句话\n",
+    "\n",
+    "重要度标准：\n",
+    "- 大：breaking changes、重大架构变更、严重安全漏洞修复\n",
+    "- 中：新功能、重要 bug 修复、性能优化\n",
+    "- 小：小修复、文档更新、依赖升级、日常维护\n",
+    "\n",
+    "Release 内容：\n",
+    "{}"
+);
+
+/// 固定追加在用户可编辑提示词后的 JSON 格式约束。
+/// 不可编辑——后端依赖此格式解析 AI 返回结果。
+pub const DEEPSEEK_PROMPT_FIXED_SUFFIX: &str = concat!(
+    "请严格按以下 JSON 格式返回（不要包含其他内容）：\n",
+    "{\"summary\":\"简短中文摘要\",\"importance\":\"大|中|小\"}"
+);
+
+/// 用于从已存储的提示词中剥离固定后缀的标记字符串。
+/// 兼容旧数据（旧版提示词也包含此行）。
+pub const PROMPT_STRUCTURAL_BOUNDARY: &str = "请严格按以下 JSON 格式返回";
+
+/// 从完整提示词中剥离固定后缀，仅返回可编辑部分。
+pub fn strip_prompt_suffix(prompt: &str) -> String {
+    if let Some(pos) = prompt.find(PROMPT_STRUCTURAL_BOUNDARY) {
+        prompt[..pos].trim_end().to_string()
+    } else {
+        prompt.to_string()
+    }
+}
+
+pub const DEFAULT_DEEPSEEK_MIN_IMPORTANCE: &str = "小";
 
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";

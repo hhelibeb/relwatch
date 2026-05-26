@@ -32,6 +32,9 @@ watch(() => props.settings, (s) => {
   Object.assign(form, s)
 }, { deep: true })
 
+// ── 固定提示词后缀（不可编辑）───────────────────────
+const DEEPSEEK_PROMPT_SUFFIX = '请严格按以下 JSON 格式返回（不要包含其他内容）：\n{"summary":"简短中文摘要","importance":"大|中|小"}'
+
 const themeDropdownOpen = ref(false)
 const previewTheme = ref<string | null>(null)
 const themeOptions = [
@@ -178,6 +181,12 @@ async function handleSave() {
   savingSettings.value = true
   try {
     const s = form
+    // 验证提示词
+    if (s.deepseek_prompt && !s.deepseek_prompt.includes('{}')) {
+      showToast(t('settings.deepseek_prompt_validate_failed'))
+      savingSettings.value = false
+      return
+    }
     // 先设置敏感凭据，最后持久化全部设置到 DB
     if (deepseekApiKey.value) {
       await setDeepseekApiKey(deepseekApiKey.value)
@@ -200,6 +209,8 @@ async function handleSave() {
       deepseekModel: s.deepseek_model.trim() || 'deepseek-v4-flash',
       deepseekBaseUrl: s.deepseek_base_url.trim() || 'https://api.deepseek.com',
       deepseekProxyBypass: s.deepseek_proxy_bypass,
+      deepseekPrompt: s.deepseek_prompt,
+      deepseekMinImportance: s.deepseek_min_importance,
 
       checkPrereleases: s.check_prereleases,
       fetchHistory: s.fetch_history,
@@ -225,7 +236,8 @@ const trackedKeys = [
   'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'minimize_to_tray',
   'log_retention_days', 'check_prereleases', 'fetch_history',
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
-  'deepseek_base_url', 'deepseek_proxy_bypass', 'language', 'theme',
+  'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt',
+  'deepseek_min_importance', 'language', 'theme',
 ] as const
 
 const dirtyFields = computed(() => {
@@ -247,7 +259,7 @@ const dirtyByTab = computed(() => {
   return {
     general: ['poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
-    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass'].filter(k => f.has(k)).length,
+    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance'].filter(k => f.has(k)).length,
   }
 })
 
@@ -409,6 +421,7 @@ async function handleImportBackup() {
             <input type="checkbox" v-model="form.deepseek_enabled" />
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_enabled') || null">{{ t('settings.enable_ai') }}</span>
           </label>
+          <template v-if="form.deepseek_enabled">
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.deepseek_proxy_bypass" />
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_proxy_bypass') || null">{{ t('settings.deepseek_proxy_bypass') }}</span>
@@ -440,12 +453,33 @@ async function handleImportBackup() {
               class="setting-input"
             />
           </label>
+          <label class="setting-row setting-row-textarea">
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_prompt') || null">{{ t('settings.deepseek_prompt') }}</span>
+            <textarea
+              v-model="form.deepseek_prompt"
+              :placeholder="t('settings.deepseek_prompt_placeholder')"
+              class="setting-input setting-textarea"
+              rows="10"
+            />
+            <div class="setting-prompt-fixed">
+              <code>{{ DEEPSEEK_PROMPT_SUFFIX }}</code>
+            </div>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_min_importance') || null">{{ t('settings.notify_threshold') }}</span>
+            <select v-model="form.deepseek_min_importance" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+              <option value="小">{{ t('settings.importance_any') }}</option>
+              <option value="中">{{ t('settings.importance_medium_or_above') }}</option>
+              <option value="大">{{ t('settings.importance_high_only') }}</option>
+            </select>
+          </label>
 
           <div class="setting-row">
             <button class="btn-secondary" :disabled="testingDeepseek" @click="handleTestDeepseek">
               {{ testingDeepseek ? t('settings.testing') : t('settings.test_connection') }}
             </button>
           </div>
+          </template>
         </div>
         <div v-if="settingsTab === 'appearance'" class="settings-form">
           <div class="setting-row">

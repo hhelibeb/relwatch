@@ -35,6 +35,8 @@ const settings = ref<AppSettings>({
   deepseek_base_url: 'https://api.deepseek.com',
   deepseek_api_key_set: false,
   deepseek_proxy_bypass: false,
+  deepseek_prompt: '',
+  deepseek_min_importance: '小',
   check_prereleases: false,
   fetch_history: false,
   fetch_history_count: 1,

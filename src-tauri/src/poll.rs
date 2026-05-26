@@ -111,6 +111,20 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 
     let (_pending, new_releases) = collect_pending_and_notify(&app, &all_new_ids, true);
 
+    // 重试之前失败的 AI 摘要生成（不影响本轮通知，成功后会由下轮 poll 处理通知）
+    let retry_releases = {
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db.get() {
+            db::releases::get_releases_without_summary(&conn).unwrap_or_default()
+        } else {
+            vec![]
+        }
+    };
+    if !retry_releases.is_empty() {
+        log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
+        deepseek::generate_summaries_for_new(&app, &retry_releases).await;
+    }
+
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -324,6 +338,20 @@ async fn do_poll_async(app: tauri::AppHandle) {
     }
 
     collect_pending_and_notify(&app, &all_new_ids, false);
+
+    // 重试之前失败的 AI 摘要生成（不影响本轮通知，成功后会由下轮 poll 处理通知）
+    let retry_releases = {
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db.get() {
+            db::releases::get_releases_without_summary(&conn).unwrap_or_default()
+        } else {
+            vec![]
+        }
+    };
+    if !retry_releases.is_empty() {
+        log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
+        deepseek::generate_summaries_for_new(&app, &retry_releases).await;
+    }
 
     let _ = app.emit("poll-completed", ());
 }
@@ -604,7 +632,7 @@ mod tests {
     #[test]
     fn test_read_deepseek_config_defaults() {
         let conn = init_memory_db().unwrap();
-        let (enabled, model, base_url, api_key) = deepseek::read_config(&conn);
+        let (enabled, model, base_url, api_key, _prompt) = deepseek::read_config(&conn);
         assert!(!enabled);
         assert_eq!(model, "deepseek-v4-flash");
         assert_eq!(base_url, "https://api.deepseek.com");
@@ -620,7 +648,7 @@ mod tests {
         let encrypted = crate::crypto::encrypt("sk-test");
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_API_KEY, &encrypted).unwrap();
 
-        let (enabled, model, base_url, api_key) = deepseek::read_config(&conn);
+        let (enabled, model, base_url, api_key, _prompt) = deepseek::read_config(&conn);
         assert!(enabled);
         assert_eq!(model, "deepseek-v4-pro");
         assert_eq!(base_url, "https://custom.api");

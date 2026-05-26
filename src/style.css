@@ -855,6 +855,48 @@ body {
   width: 14ch;
 }
 
+.setting-textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+}
+
+.setting-row-textarea {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.setting-row-textarea .setting-label {
+  margin-bottom: 2px;
+}
+
+.setting-prompt-fixed {
+  width: 100%;
+  padding: 8px 12px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 0.85em;
+  line-height: 1.5;
+  color: var(--text-muted);
+  user-select: none;
+  cursor: not-allowed;
+  white-space: pre-wrap;
+  opacity: 0.85;
+}
+
+.setting-prompt-fixed code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+}
+
 .setting-input:focus {
   border-color: var(--primary);
 }

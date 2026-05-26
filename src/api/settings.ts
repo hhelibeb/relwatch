@@ -11,6 +11,8 @@ export interface AppSettings {
   deepseek_base_url: string
   deepseek_api_key_set: boolean
   deepseek_proxy_bypass: boolean
+  deepseek_prompt: string
+  deepseek_min_importance: string
 
   check_prereleases: boolean
   fetch_history: boolean
@@ -30,6 +32,8 @@ export interface UpdateSettingsPayload {
   deepseekModel: string
   deepseekBaseUrl: string
   deepseekProxyBypass: boolean
+  deepseekPrompt: string
+  deepseekMinImportance: string
 
   checkPrereleases: boolean
   fetchHistory: boolean
