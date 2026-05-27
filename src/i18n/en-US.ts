@@ -154,6 +154,11 @@ export default {
   'log.no_match': 'No matching logs',
   'log.no_records': 'No log entries.',
   'log.clear_failed': 'Failed to clear: ',
+  'log.loading': 'Loading...',
+  'log.prev_page': 'Prev',
+  'log.next_page': 'Next',
+  'log.page_info': 'Page {0}/{1}',
+  'log.total_entries': 'Total {0} entries',
 
   'status.pending': 'Unread',
   'status.ignored': 'Ignored',

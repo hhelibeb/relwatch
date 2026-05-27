@@ -27,6 +27,67 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     );
 }
 
+pub fn search_logs(
+    conn: &Connection,
+    keyword: &str,
+    page: i64,
+    page_size: i64,
+) -> Result<(Vec<LogEntry>, i64), String> {
+    let offset = (page - 1) * page_size;
+    let has_keyword = !keyword.is_empty();
+
+    let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if has_keyword {
+        let pattern = format!("%{}%", keyword);
+        (
+            "SELECT id, level, message, message_key, message_args, created_at, COUNT(*) OVER() as total
+             FROM logs
+             WHERE message LIKE ?1 OR level LIKE ?1 OR message_key LIKE ?1
+             ORDER BY id DESC
+             LIMIT ?2 OFFSET ?3"
+                .to_string(),
+            vec![
+                Box::new(pattern) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(page_size),
+                Box::new(offset),
+            ],
+        )
+    } else {
+        (
+            "SELECT id, level, message, message_key, message_args, created_at, COUNT(*) OVER() as total
+             FROM logs
+             ORDER BY id DESC
+             LIMIT ?1 OFFSET ?2"
+                .to_string(),
+            vec![
+                Box::new(page_size) as Box<dyn rusqlite::types::ToSql>,
+                Box::new(offset),
+            ],
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+
+    let mut total: i64 = 0;
+    let logs = stmt
+        .query_map(params_refs.as_slice(), |row| {
+            total = row.get(6)?;
+            Ok(LogEntry {
+                id: row.get(0)?,
+                level: row.get(1)?,
+                message: row.get(2)?,
+                message_key: row.get(3)?,
+                message_args: row.get(4)?,
+                created_at: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    Ok((logs, total))
+}
+
 pub fn get_logs(conn: &Connection, limit: i64) -> Result<Vec<LogEntry>, String> {
     let mut stmt = conn
         .prepare(

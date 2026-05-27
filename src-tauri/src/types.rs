@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicI64;
 use tokio::sync::Semaphore;
 
+use crate::db::logs::LogEntry;
 use crate::db::releases::ReleaseInfo;
 
 pub struct AppState {
@@ -13,6 +14,14 @@ pub struct AppState {
 #[derive(Serialize)]
 pub struct PollResult {
     pub new_releases: Vec<ReleaseInfo>,
+}
+
+#[derive(Serialize)]
+pub struct LogSearchResult {
+    pub entries: Vec<LogEntry>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
 }
 
 #[derive(Serialize, Deserialize)]

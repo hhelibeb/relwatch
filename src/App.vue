@@ -4,7 +4,6 @@ import { ShowToastKey } from './injection-keys'
 import { listen } from '@tauri-apps/api/event'
 import { type Source, listSources } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
-import { type LogEntry, getLogs } from './api/logs'
 import { type AppSettings, getSettings } from './api/settings'
 import { t, setLocale } from './i18n'
 import { isUnreadStatus } from './utils'
@@ -23,7 +22,7 @@ function onMainScroll(e: Event) {
 
 const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
-const logs = ref<LogEntry[]>([])
+const logRefreshKey = ref(0)
 const settings = ref<AppSettings>({
   poll_interval_minutes: 30,
   proxy_mode: 'none',
@@ -83,6 +82,10 @@ function repoKey(owner: string, repo: string): string {
   return `${owner}/${repo}`.toLowerCase()
 }
 
+function refreshLogs() {
+  logRefreshKey.value++
+}
+
 const unreadReleaseCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
   for (const release of releases.value) {
@@ -110,7 +113,7 @@ function formatCountdown(secs: number) {
 }
 
 async function loadAll() {
-  await Promise.allSettled([loadSources(), loadReleases(), loadLogs(), loadSettings()])
+  await Promise.allSettled([loadSources(), loadReleases(), loadSettings()])
 }
 
 async function loadSources() {
@@ -118,9 +121,6 @@ async function loadSources() {
 }
 async function loadReleases() {
   releases.value = await getReleases()
-}
-async function loadLogs() {
-  logs.value = await getLogs(100)
 }
 async function loadSettings() {
   settings.value = await getSettings()
@@ -156,7 +156,7 @@ async function syncCountdown(refreshLogsOnJump = true) {
   countdownSeconds = secs
   countdown.value = formatCountdown(secs)
   if (refreshLogsOnJump && countdownReady && secs > prev + 30) {
-    await loadLogs()
+    refreshLogs()
   }
   countdownReady = true
 }
@@ -248,14 +248,14 @@ onMounted(async () => {
   const pollUnlisten = await listen('poll-completed', () => {
     loadSources()
     loadReleases()
-    loadLogs()
+    refreshLogs()
     syncCountdown(false)
   })
   unlisteners.push(pollUnlisten)
 
   const stateUnlisten = await listen('release-state-changed', () => {
     loadReleases()
-    loadLogs()
+    refreshLogs()
   })
   unlisteners.push(stateUnlisten)
 })
@@ -290,14 +290,14 @@ onUnmounted(() => {
 
     <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
       <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts"
-        @update="loadSources(); loadReleases(); loadLogs()"
+        @update="loadSources(); loadReleases(); refreshLogs()"
         @check-result="handleSourceCheckResult"
         @check-busy="sourceChecking = $event"
         @open-releases="openSourceReleases"
         @open-unread-releases="openSourceUnreadReleases" />
-      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="loadReleases(); loadLogs()" />
-      <LogTab v-show="activeTab === 'logs'" :logs="logs" @update="loadLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } loadLogs(); applyTheme(settings.theme) }" />
+      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="loadReleases(); refreshLogs()" />
+      <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
+      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }" />
     </main>
 
     <Transition name="toast">

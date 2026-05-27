@@ -701,6 +701,67 @@ body {
   white-space: nowrap;
 }
 
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px 0 4px;
+  flex-wrap: wrap;
+}
+
+.pagination-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.pagination-page-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagination-input {
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 24px;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.pagination-input:focus {
+  border-color: var(--primary);
+}
+
+.pagination-input::-webkit-outer-spin-button,
+.pagination-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.pagination-input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.pagination-info {
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  line-height: 26px;
+}
+
+.pagination-total {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
 /* 设置 */
 .settings-layout {
   display: flex;

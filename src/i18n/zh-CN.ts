@@ -154,6 +154,11 @@ export default {
   'log.no_match': '无匹配日志',
   'log.no_records': '暂无日志记录。',
   'log.clear_failed': '清空失败: ',
+  'log.loading': '加载中...',
+  'log.prev_page': '上一页',
+  'log.next_page': '下一页',
+  'log.page_info': '第 {0}/{1} 页',
+  'log.total_entries': '共 {0} 条',
 
   'status.pending': '未读',
   'status.ignored': '已忽略',

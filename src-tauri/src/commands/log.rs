@@ -1,10 +1,27 @@
 use crate::db;
-use crate::types::AppState;
+use crate::types::{AppState, LogSearchResult};
 
 #[tauri::command]
 pub fn get_logs(state: tauri::State<AppState>, limit: i64) -> Result<Vec<db::logs::LogEntry>, String> {
     let conn = state.db.get().unwrap();
     db::logs::get_logs(&conn, limit)
+}
+
+#[tauri::command]
+pub fn search_logs(
+    state: tauri::State<AppState>,
+    keyword: String,
+    page: i64,
+    page_size: i64,
+) -> Result<LogSearchResult, String> {
+    let conn = state.db.get().unwrap();
+    let (entries, total) = db::logs::search_logs(&conn, &keyword, page, page_size)?;
+    Ok(LogSearchResult {
+        entries,
+        total,
+        page,
+        page_size,
+    })
 }
 
 #[tauri::command]

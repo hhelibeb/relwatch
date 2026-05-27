@@ -76,6 +76,7 @@ pub fn run() {
             commands::set_deepseek_api_key,
             commands::set_github_token,
             commands::test_deepseek_connection,
+            commands::search_logs,
             commands::export_backup,
             commands::import_backup,
         ])

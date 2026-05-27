@@ -1,14 +1,69 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
-import { type LogEntry, clearLogs } from '../api/logs'
+import { type LogEntry, searchLogs, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
 import { formatDate, logLevelClass } from '../utils'
 
-const props = defineProps<{ logs: LogEntry[] }>()
+const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ update: [] }>()
 
-const logSearch = ref('')
+const logs = ref<LogEntry[]>([])
+const totalLogs = ref(0)
+const currentPage = ref(1)
+const pageSize = 50
+const loading = ref(false)
+const searchKeyword = ref('')
+const pageInput = ref('')
+const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+
+const totalPages = computed(() => Math.max(1, Math.ceil(totalLogs.value / pageSize)))
+
+const pageInputStyle = computed(() => ({
+  width: `${String(totalPages.value).length + 3}ch`
+}))
+
+async function loadData() {
+  loading.value = true
+  try {
+    const result = await searchLogs(searchKeyword.value, currentPage.value, pageSize)
+    logs.value = result.entries
+    totalLogs.value = result.total
+    pageInput.value = String(currentPage.value)
+  } finally {
+    loading.value = false
+  }
+}
+
+function goPage(page: number) {
+  if (page < 1 || page > totalPages.value || loading.value) return
+  currentPage.value = page
+  pageInput.value = String(page)
+  loadData()
+}
+
+function jumpToPage() {
+  const page = parseInt(pageInput.value, 10)
+  if (isNaN(page) || page < 1) {
+    pageInput.value = String(currentPage.value)
+    return
+  }
+  goPage(Math.min(page, totalPages.value))
+}
+
+function onSearchInput() {
+  if (debounceTimer.value) clearTimeout(debounceTimer.value)
+  debounceTimer.value = setTimeout(() => {
+    currentPage.value = 1
+    loadData()
+  }, 300)
+}
+
+function clearSearch() {
+  searchKeyword.value = ''
+  currentPage.value = 1
+  loadData()
+}
 
 function renderMessage(entry: LogEntry): string {
   if (entry.message_key && entry.message_args) {
@@ -22,23 +77,24 @@ function renderMessage(entry: LogEntry): string {
   return entry.message
 }
 
-const filteredLogs = computed(() => {
-  const q = logSearch.value.trim().toLowerCase()
-  if (!q) return props.logs
-  return props.logs.filter(l => {
-    const text = renderMessage(l).toLowerCase()
-    return text.includes(q) || l.level.toLowerCase().includes(q)
-  })
-})
-
 async function handleClearLogs() {
   try {
     await clearLogs()
+    currentPage.value = 1
+    await loadData()
     emit('update')
   } catch (e: unknown) {
     await message(t('log.clear_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
 }
+
+watch(() => props.refreshKey, () => {
+  loadData()
+})
+
+onMounted(() => {
+  loadData()
+})
 </script>
 
 <template>
@@ -46,23 +102,34 @@ async function handleClearLogs() {
     <div class="log-search">
       <div class="input-clear-wrap">
         <input
-          v-model="logSearch"
+          v-model="searchKeyword"
           :placeholder="t('log.search')"
           class="search-input"
+          @input="onSearchInput"
         />
-        <button v-if="logSearch" type="button" class="input-clear-btn" :title="t('input.clear')" @click="logSearch = ''">✕</button>
+        <button v-if="searchKeyword" type="button" class="input-clear-btn" :title="t('input.clear')" @click="clearSearch">✕</button>
       </div>
       <button class="btn-icon" :title="t('log.clear')" @click="handleClearLogs">
         <svg><use href="/icons.svg#trash-icon"/></svg>
       </button>
     </div>
     <div class="log-list">
-      <div v-if="filteredLogs.length === 0" class="empty">{{ logSearch ? t('log.no_match') : t('log.no_records') }}</div>
-      <div v-for="entry in filteredLogs" :key="entry.id" class="log-item">
+      <div v-if="loading" class="empty">{{ t('log.loading') }}</div>
+      <div v-else-if="logs.length === 0" class="empty">{{ searchKeyword ? t('log.no_match') : t('log.no_records') }}</div>
+      <div v-for="entry in logs" :key="entry.id" class="log-item">
         <span class="log-level" :class="logLevelClass(entry.level)">{{ entry.level }}</span>
         <span class="log-msg">{{ renderMessage(entry) }}</span>
         <span class="log-date">{{ formatDate(entry.created_at) }}</span>
       </div>
+    </div>
+    <div v-if="totalPages > 1" class="pagination">
+      <button class="btn-sm pagination-btn" :disabled="currentPage <= 1 || loading" @click="goPage(currentPage - 1)">{{ t('log.prev_page') }}</button>
+      <div class="pagination-page-group">
+        <input class="pagination-input" v-model="pageInput" type="number" min="1" :max="totalPages" :style="pageInputStyle" @keyup.enter="jumpToPage" @blur="jumpToPage" />
+        <span class="pagination-info">/ {{ totalPages }}</span>
+      </div>
+      <button class="btn-sm pagination-btn" :disabled="currentPage >= totalPages || loading" @click="goPage(currentPage + 1)">{{ t('log.next_page') }}</button>
+      <span class="pagination-total">{{ t('log.total_entries', String(totalLogs)) }}</span>
     </div>
   </section>
 </template>
