@@ -12,6 +12,7 @@ export interface Source {
   last_check_message: string | null
   consecutive_failures: number
   last_new_count: number
+  muted: boolean
   created_at: string
   updated_at: string
   description: string | null
@@ -35,8 +36,8 @@ export async function removeSource(id: number): Promise<void> {
   return invokeI18n('remove_source', { id })
 }
 
-export async function updateSource(id: number, enabled: boolean, pollIntervalMinutes: number): Promise<void> {
-  return invokeI18n('update_source', { id, enabled, pollIntervalMinutes })
+export async function updateSource(id: number, enabled: boolean, pollIntervalMinutes: number, muted?: boolean): Promise<void> {
+  return invokeI18n('update_source', { id, enabled, pollIntervalMinutes, muted })
 }
 
 export async function listSources(): Promise<Source[]> {

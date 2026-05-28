@@ -117,7 +117,9 @@ pub fn set_notification_state(
     conn.execute(
         "INSERT INTO notification_state (release_id, status, snooze_until, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?4)
-         ON CONFLICT(release_id) DO UPDATE SET status = ?2, snooze_until = ?3, updated_at = ?4",
+         ON CONFLICT(release_id) DO UPDATE SET status = ?2, snooze_until = ?3,
+           last_notified_at = CASE WHEN ?2 = 'snoozed' THEN NULL ELSE last_notified_at END,
+           updated_at = ?4",
         params![release_id, status, snooze_until, now],
     )
     .map_err(|e| e.to_string())?;
@@ -265,7 +267,7 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
              WHERE COALESCE(ns.status, 'pending') IN ('pending', 'snoozed')
-               AND (ns.last_notified_at IS NULL OR ns.last_notified_at < r.detected_at)
+               AND ns.last_notified_at IS NULL
              ORDER BY r.detected_at DESC",
         )
         .map_err(|e| e.to_string())?;

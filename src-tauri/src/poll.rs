@@ -475,10 +475,15 @@ fn collect_pending_and_notify(
     is_manual: bool,
 ) -> (Vec<db::releases::ReleaseInfo>, Vec<db::releases::ReleaseInfo>) {
     let pending;
+    let muted_source_ids;
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
         pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
+        muted_source_ids = db::sources::list_muted_source_ids(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .collect::<std::collections::HashSet<_>>();
     }
 
     // Pending here means unread and eligible now, including expired snoozes.
@@ -490,6 +495,12 @@ fn collect_pending_and_notify(
                 let _ = db::releases::set_last_notified_at(&conn, release.id);
             }
         }
+
+        // 静默的源：只标记已通知，不发送桌面通知
+        if muted_source_ids.contains(&release.source_id) {
+            continue;
+        }
+
         let app_clone = app.clone();
         let release_id = release.id;
         let html_url = release.html_url.clone();

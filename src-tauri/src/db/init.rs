@@ -84,6 +84,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
             last_check_message TEXT,
             consecutive_failures INTEGER NOT NULL DEFAULT 0,
             last_new_count INTEGER NOT NULL DEFAULT 0,
+            muted INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(source_type, owner, repo)
@@ -209,6 +210,17 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // ── Migration 7: muted on sources ──
+    let has_muted: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='muted'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_muted {
+        conn.execute_batch(
+            "ALTER TABLE sources ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;"
+        )?;
+    }
+
     Ok(())
 }
 
@@ -255,6 +267,9 @@ mod tests {
 
         // Migration 6: notification_state.last_notified_at
         assert!(has_column(&conn, "notification_state", "last_notified_at"));
+
+        // Migration 7: sources.muted
+        assert!(has_column(&conn, "sources", "muted"));
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> bool {

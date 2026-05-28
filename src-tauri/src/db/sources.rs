@@ -14,6 +14,7 @@ pub struct Source {
     pub last_check_message: Option<String>,
     pub consecutive_failures: i64,
     pub last_new_count: i64,
+    pub muted: bool,
     pub created_at: String,
     pub updated_at: String,
     pub description: Option<String>,
@@ -68,7 +69,7 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
         .prepare(
             "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
                     last_checked_at, last_check_status, last_check_message,
-                    consecutive_failures, last_new_count, created_at, updated_at,
+                    consecutive_failures, last_new_count, muted, created_at, updated_at,
                     description
              FROM sources WHERE id = ?1",
         )
@@ -88,9 +89,10 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
                 last_check_message: row.get(8)?,
                 consecutive_failures: row.get(9)?,
                 last_new_count: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
-                description: row.get(13)?,
+                muted: row.get::<_, i64>(11)? != 0,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+                description: row.get(14)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -115,6 +117,31 @@ pub fn update_source(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn set_source_muted(
+    conn: &Connection,
+    id: i64,
+    muted: bool,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sources SET muted = ?1, updated_at = ?2 WHERE id = ?3",
+        params![muted as i64, chrono::Utc::now().to_rfc3339(), id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn list_muted_source_ids(conn: &Connection) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM sources WHERE muted = 1")
+        .map_err(|e| e.to_string())?;
+    let ids = stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(ids)
 }
 
 pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Result<(), String> {
@@ -167,7 +194,7 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
         .prepare(
             "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
                     last_checked_at, last_check_status, last_check_message,
-                    consecutive_failures, last_new_count, created_at, updated_at,
+                    consecutive_failures, last_new_count, muted, created_at, updated_at,
                     description
              FROM sources ORDER BY id DESC",
         )
@@ -187,9 +214,10 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
                 last_check_message: row.get(8)?,
                 consecutive_failures: row.get(9)?,
                 last_new_count: row.get(10)?,
-                created_at: row.get(11)?,
-                updated_at: row.get(12)?,
-                description: row.get(13)?,
+                muted: row.get::<_, i64>(11)? != 0,
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+                description: row.get(14)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -294,6 +322,51 @@ mod tests {
         assert!(s.last_check_message.is_none());
         assert_eq!(s.consecutive_failures, 0);
         assert_eq!(s.last_new_count, 3);
+    }
+
+    #[test]
+    fn test_source_muted_default_false() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(!s.muted, "新建源的 muted 应默认为 false");
+    }
+
+    #[test]
+    fn test_source_set_muted_toggle() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "a", "b", "").unwrap();
+
+        // 切换为静默
+        set_source_muted(&conn, id, true).unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(s.muted);
+
+        // 取消静默
+        set_source_muted(&conn, id, false).unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(!s.muted);
+    }
+
+    #[test]
+    fn test_source_muted_independent_of_enabled() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
+
+        // 先设为静默
+        set_source_muted(&conn, id, true).unwrap();
+
+        // 暂停（enabled=false）
+        update_source(&conn, id, false, 30).unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(!s.enabled);
+        assert!(s.muted, "muted 应跨暂停保留");
+
+        // 恢复（enabled=true）后仍为静默
+        update_source(&conn, id, true, 30).unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(s.enabled);
+        assert!(s.muted, "muted 应在恢复后仍然保持");
     }
 
     #[test]

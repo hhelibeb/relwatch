@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, ref, nextTick } from 'vue'
+import { computed, inject, ref, nextTick, onMounted, onUnmounted } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message } from '@tauri-apps/plugin-dialog'
 import { type Source, parseGitHubUrl, addSource, removeSource, updateSource } from '../api/sources'
@@ -23,6 +23,7 @@ const urlInput = ref('')
 const loading = ref(false)
 const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
+const openMoreId = ref<number | null>(null)
 const showToast = inject(ShowToastKey, () => {})
 
 const { contextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
@@ -104,7 +105,30 @@ async function handleToggle(source: Source) {
   } catch (e: unknown) {
     await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
+  openMoreId.value = null
 }
+
+async function handleMuteToggle(source: Source) {
+  if (!source.enabled) return
+  try {
+    await updateSource(source.id, source.enabled, source.poll_interval_minutes, !source.muted)
+    emit('update')
+  } catch (e: unknown) {
+    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
+  }
+  openMoreId.value = null
+}
+
+function toggleMore(id: number) {
+  openMoreId.value = openMoreId.value === id ? null : id
+}
+
+function onDocumentClick() {
+  openMoreId.value = null
+}
+
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onUnmounted(() => document.removeEventListener('click', onDocumentClick))
 
 async function handleCheckSingle(id: number) {
   if (props.polling || checkingId.value !== null) return
@@ -131,6 +155,7 @@ function sourceHealthClass(source: Source): string {
 
 function sourceHealthLabel(source: Source): string {
   if (!source.enabled) return t('source.health_paused')
+  if (source.muted) return t('source.muted')
   if (source.last_check_status === 'ok') {
     return t('source.no_pending_updates')
   }
@@ -218,7 +243,8 @@ function hideHealthTooltip() {
             <button class="btn-icon-link" @click="openSourceReleases(source)" :title="t('source.view_releases')">
               <svg><use href="/icons.svg#search-icon"/></svg>
             </button>
-            <span v-if="source.enabled" class="badge badge-on">{{ t('source.enabled') }}</span>
+            <span v-if="source.enabled && source.muted" class="badge badge-muted">{{ t('source.muted') }}</span>
+            <span v-else-if="source.enabled" class="badge badge-on">{{ t('source.enabled') }}</span>
             <span v-else class="badge badge-off">{{ t('source.paused') }}</span>
           </div>
           <div class="source-health">
@@ -246,11 +272,27 @@ function hideHealthTooltip() {
           </div>
         </div>
         <div class="source-actions">
-          <button class="btn-sm btn-check" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)">{{ checkingId === source.id ? t('source.checking') : t('source.check') }}</button>
-          <button class="btn-sm" :class="source.enabled ? 'btn-yellow' : 'btn-green'" @click="handleToggle(source)">
-            {{ source.enabled ? t('source.pause') : t('source.resume') }}
+          <button class="btn-icon-action btn-check" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)" :title="checkingId === source.id ? t('source.checking') : t('source.check')">
+            <svg><use href="/icons.svg#refresh-icon"/></svg>
           </button>
-          <button class="btn-sm btn-danger" @click="handleRemove(source.id)">{{ t('source.delete') }}</button>
+          <button class="btn-icon-action" :class="source.enabled ? 'btn-pause' : 'btn-resume'" @click="handleToggle(source)" :title="source.enabled ? t('source.pause') : t('source.resume')">
+            <svg><use :href="source.enabled ? '/icons.svg#pause-icon' : '/icons.svg#play-icon'"/></svg>
+          </button>
+          <div class="dropdown-more">
+            <button class="btn-icon-action btn-more" @click.stop="toggleMore(source.id)" :title="t('source.more')">
+              <svg><use href="/icons.svg#more-icon"/></svg>
+            </button>
+            <div v-if="openMoreId === source.id" class="dropdown-more-panel" @click.stop>
+              <button class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
+                <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
+                {{ source.muted ? t('source.unmute') : t('source.mute') }}
+              </button>
+              <button class="dropdown-item dropdown-item-danger" @click="handleRemove(source.id)">
+                <span class="dropdown-icon"><svg><use href="/icons.svg#trash-icon"/></svg></span>
+                {{ t('source.delete') }}
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

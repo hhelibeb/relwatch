@@ -399,9 +399,88 @@ body {
 .source-actions {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   flex-shrink: 0;
+}
+
+/* 静默徽章 */
+.badge-muted {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+/* 更多按钮下拉容器 */
+.dropdown-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.btn-more {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.btn-more:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* 侧边弹出面板 */
+.dropdown-more-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+
+.dropdown-item:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.dropdown-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dropdown-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.dropdown-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.dropdown-item-danger {
+  color: var(--danger);
+}
+
+.dropdown-item-danger:hover:not(:disabled) {
+  background: #fef2f2;
 }
 
 /* 新增源高亮动画 */
@@ -474,6 +553,68 @@ body {
 .btn-yellow {
   border-color: #eab308;
   color: #eab308;
+}
+
+/* 图标操作按钮 */
+.btn-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-icon-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-icon-action:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.btn-icon-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-check {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.btn-check:hover:not(:disabled) {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-pause {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.btn-pause:hover:not(:disabled) {
+  background: var(--warning);
+  color: #fff;
+}
+
+.btn-resume {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.btn-resume:hover:not(:disabled) {
+  background: var(--success);
+  color: #fff;
 }
 
 /* 版本列表 */
@@ -1914,6 +2055,10 @@ select.setting-input {
   background: #334155;
   color: #e2e8f0;
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
+
+[data-theme="dark"] .dropdown-item-danger:hover:not(:disabled) {
+  background: rgba(248, 113, 113, 0.15);
 }
 
 /* ── 自定义主题下拉选择器 ───────────────────────── */

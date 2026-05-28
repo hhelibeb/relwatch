@@ -66,14 +66,63 @@ pub fn update_source(
     id: i64,
     enabled: bool,
     poll_interval_minutes: i64,
+    muted: Option<bool>,
 ) -> Result<(), String> {
-    let conn = state.db.get().unwrap();
+    let mut conn = state.db.get().unwrap();
     let source = db::sources::get_source(&conn, id)?;
-    db::sources::update_source(&conn, id, enabled, poll_interval_minutes)?;
-    match source {
-        Some(s) => db::logs::write_log_key(&conn, "INFO", "source.updated", &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string()),
-        None => db::logs::write_log_key(&conn, "INFO", "source.updated_unknown", &json!({"id": id}).to_string()),
+    let old_enabled = source.as_ref().map(|s| s.enabled);
+    let old_muted = source.as_ref().map(|s| s.muted);
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    db::sources::update_source(&tx, id, enabled, poll_interval_minutes)?;
+
+    if let Some(m) = muted {
+        db::sources::set_source_muted(&tx, id, m)?;
     }
+
+    match source {
+        Some(s) => {
+            let mut logged = false;
+
+            // enabled 变化 → 暂停/恢复
+            if old_enabled != Some(enabled) {
+                logged = true;
+                if enabled {
+                    db::logs::write_log_key(&tx, "INFO", "source.log_resumed",
+                        &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                } else {
+                    db::logs::write_log_key(&tx, "INFO", "source.log_paused",
+                        &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                }
+            }
+
+            // muted 变化 → 静默/取消静默
+            if let Some(m) = muted {
+                if old_muted != Some(m) {
+                    logged = true;
+                    if m {
+                        db::logs::write_log_key(&tx, "INFO", "source.log_muted",
+                            &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                    } else {
+                        db::logs::write_log_key(&tx, "INFO", "source.log_unmuted",
+                            &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                    }
+                }
+            }
+
+            // 没有具体变更被记录时，回退到通用 updated
+            if !logged {
+                db::logs::write_log_key(&tx, "INFO", "source.updated",
+                    &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+            }
+        }
+        None => {
+            db::logs::write_log_key(&tx, "INFO", "source.updated_unknown",
+                &json!({"id": id}).to_string());
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -126,13 +175,13 @@ mod tests {
         let conn = init_memory_db().unwrap();
         let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
 
-        // Simulate update_source's internal logic
+        // Simulate update_source's internal logic (enabled: true → false, 应该记录暂停)
         let source = db::sources::get_source(&conn, id).unwrap().unwrap();
         db::sources::update_source(&conn, id, false, 60).unwrap();
         db::logs::write_log_key(
             &conn,
             "INFO",
-            "source.updated",
+            "source.log_paused",
             &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": id}).to_string(),
         );
 
@@ -143,7 +192,7 @@ mod tests {
 
         // Log entry should exist
         let logs = db::logs::get_logs(&conn, 10).unwrap();
-        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.updated")));
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.log_paused")));
     }
 
     #[test]
@@ -167,5 +216,31 @@ mod tests {
         assert!(id1 > 0);
         let id2 = db::sources::add_source(&conn, "github", "o", "r", "d").unwrap();
         assert_eq!(id2, 0);
+    }
+
+    #[test]
+    fn test_update_source_with_muted() {
+        let conn = init_memory_db().unwrap();
+        let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
+
+        // 模拟 update_source 命令中传 muted=true 的逻辑（应该记录静默）
+        let source = db::sources::get_source(&conn, id).unwrap().unwrap();
+        db::sources::update_source(&conn, id, true, 30).unwrap();
+        db::sources::set_source_muted(&conn, id, true).unwrap();
+        db::logs::write_log_key(
+            &conn,
+            "INFO",
+            "source.log_muted",
+            &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": id}).to_string(),
+        );
+
+        // 验证静默生效
+        let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
+        assert!(updated.muted, "muted 应被设为 true");
+
+        // 切换回非静默
+        db::sources::set_source_muted(&conn, id, false).unwrap();
+        let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
+        assert!(!updated.muted);
     }
 }
