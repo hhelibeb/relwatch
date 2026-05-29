@@ -29,7 +29,7 @@ export default {
   'source.delete': 'Delete',
   'source.invalid_url': 'Please enter a valid GitHub repo URL or owner/repo, e.g. https://github.com/microsoft/vscode or microsoft/vscode',
   'source.input_invalid': 'Invalid Input',
-  'source.add_failed': 'Failed to add: ',
+  'source.add_failed': 'Failed to add source: {source_type} {owner}/{repo}, {error}',
   'source.exists': 'Source already exists',
   'source.delete_failed': 'Failed to delete: ',
   'source.more': 'More',
@@ -103,7 +103,7 @@ export default {
   'settings.theme_system': 'Follow System',
   'settings.theme_light': 'Light',
   'settings.theme_dark': 'Dark',
-  'settings.unsaved_banner': '{0} unsaved change(s)',
+  'settings.unsaved_banner': '{0} unsaved setting(s)',
   'settings.discard': 'Discard',
   'settings.hint': 'Hint',
   'settings.error': 'Error',
@@ -164,6 +164,8 @@ export default {
   'log.next_page': 'Next',
   'log.page_info': 'Page {0}/{1}',
   'log.total_entries': 'Total {0} entries',
+  'log.filter_all': 'All',
+  'log.level': 'Level',
 
   'status.pending': 'Unread',
   'status.ignored': 'Ignored',
@@ -224,7 +226,7 @@ export default {
 
   'log.cleared': 'All operation logs cleared',
 
-  'err.repo_not_found': 'Repo {0}/{1} not found on GitHub',
+  'err.repo_not_found': 'Repository not found',
   'err.repo_verify_failed': 'Failed to verify repo: {0}',
   'err.repo_api_error': 'GitHub API returned {0}',
   'err.poll_in_progress': 'Poll in progress, please try again later',

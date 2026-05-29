@@ -26,13 +26,31 @@ pub async fn add_source(
             .flatten()
             .filter(|s| !s.is_empty())
             .and_then(|s| crypto::decrypt(&s));
-        let client = http::build_http_client(http::HttpClientConfig {
+        let client = match http::build_http_client(http::HttpClientConfig {
             proxy_url: &proxy_url,
             proxy_mode: &proxy_mode,
             bearer_token: github_token.as_deref(),
             ..Default::default()
-        })?;
-        description = github::fetch_repo_info(&client, &owner, &repo).await?;
+        }) {
+            Ok(c) => c,
+            Err(e) => {
+                db::logs::write_log_key(
+                    &conn, "WARN", "source.add_failed",
+                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &e}).to_string(),
+                );
+                return Err(e);
+            }
+        };
+        description = match github::fetch_repo_info(&client, &owner, &repo).await {
+            Ok(d) => d,
+            Err(e) => {
+                db::logs::write_log_key(
+                    &conn, "WARN", "source.add_failed",
+                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &e}).to_string(),
+                );
+                return Err(e);
+            }
+        };
     }
     let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let id = db::sources::add_source(&conn, &source_type, &owner, &repo, &description)?;
@@ -242,5 +260,24 @@ mod tests {
         db::sources::set_source_muted(&conn, id, false).unwrap();
         let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
         assert!(!updated.muted);
+    }
+
+    #[test]
+    fn test_add_source_failure_writes_warn_log() {
+        let conn = init_memory_db().unwrap();
+
+        // 模拟 add_source 中 fetch_repo_info 失败时的 WARN 日志写入
+        db::logs::write_log_key(
+            &conn,
+            "WARN",
+            "source.add_failed",
+            &serde_json::json!({"source_type":"github","owner":"o","repo":"r","error":"404 Not Found"}).to_string(),
+        );
+
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0].level, "WARN");
+        assert_eq!(logs[0].message_key.as_deref(), Some("source.add_failed"));
+        assert!(logs[0].rendered_message.as_deref().unwrap().contains("404"));
     }
 }

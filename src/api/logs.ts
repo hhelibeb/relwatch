@@ -21,8 +21,8 @@ export async function getLogs(limit: number): Promise<LogEntry[]> {
   return invokeI18n<LogEntry[]>('get_logs', { limit })
 }
 
-export async function searchLogs(keyword: string, page: number, pageSize: number): Promise<LogSearchResult> {
-  return invokeI18n<LogSearchResult>('search_logs', { keyword, page, pageSize })
+export async function searchLogs(keyword: string, page: number, pageSize: number, level?: string): Promise<LogSearchResult> {
+  return invokeI18n<LogSearchResult>('search_logs', { keyword, page, pageSize, level })
 }
 
 export async function clearLogs(): Promise<void> {

@@ -29,7 +29,7 @@ export default {
   'source.delete': '删除',
   'source.invalid_url': '请输入有效的 GitHub 仓库 URL 或 owner/repo，如 https://github.com/microsoft/vscode 或 microsoft/vscode',
   'source.input_invalid': '输入无效',
-  'source.add_failed': '添加失败: ',
+  'source.add_failed': '添加监控源失败: {source_type} {owner}/{repo}, {error}',
   'source.exists': '监控源已存在',
   'source.delete_failed': '删除失败: ',
   'source.more': '更多',
@@ -164,6 +164,8 @@ export default {
   'log.next_page': '下一页',
   'log.page_info': '第 {0}/{1} 页',
   'log.total_entries': '共 {0} 条',
+  'log.filter_all': '全部',
+  'log.level': '级别',
 
   'status.pending': '未读',
   'status.ignored': '已忽略',
@@ -224,7 +226,7 @@ export default {
 
   'log.cleared': '已清空所有操作日志',
 
-  'err.repo_not_found': 'GitHub 上不存在仓库 {0}/{1}',
+  'err.repo_not_found': '不存在该仓库',
   'err.repo_verify_failed': '验证仓库失败: {0}',
   'err.repo_api_error': 'GitHub API 返回 {0}',
   'err.poll_in_progress': '轮询正在进行中，请稍后再试',

@@ -35,7 +35,7 @@ async fn fetch_releases_with_retry(
     repo: &str,
     api_base: &str,
     per_page: usize,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let config = crate::retry::RetryConfig::default();
     crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
         if e.0 == 403 {
@@ -47,7 +47,6 @@ async fn fetch_releases_with_retry(
         fetch_releases_inner(client, owner, repo, api_base, per_page).await
     })
     .await
-    .map_err(|(_, msg)| msg)
 }
 
 pub async fn fetch_releases(
@@ -55,7 +54,7 @@ pub async fn fetch_releases(
     owner: &str,
     repo: &str,
     per_page: usize,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<serde_json::Value>, (u16, String)> {
     fetch_releases_with_retry(client, owner, repo, "https://api.github.com", per_page).await
 }
 
@@ -227,7 +226,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("403"));
+        assert_eq!(result.unwrap_err().0, 403);
     }
 
     #[tokio::test]
@@ -242,7 +241,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("429"));
+        assert_eq!(result.unwrap_err().0, 429);
     }
 
     fn rel(tag: &str, date: &str, pre: bool, body: Option<&str>) -> serde_json::Value {

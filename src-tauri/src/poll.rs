@@ -57,10 +57,10 @@ async fn fetch_for_source_async(
     client: &reqwest::Client,
     source: &db::sources::Source,
     per_page: usize,
-) -> Result<Vec<serde_json::Value>, String> {
+) -> Result<Vec<serde_json::Value>, (u16, String)> {
     match source.source_type.as_str() {
         "github" => github::fetch_releases(client, &source.owner, &source.repo, per_page).await,
-        other => Err(format!("err.unsupported_source|{}", other)),
+        other => Err((0, format!("err.unsupported_source|{}", other))),
     }
 }
 
@@ -190,23 +190,30 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             let state = app.state::<AppState>();
             let conn = state.db.get().unwrap();
             let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
+            db::logs::write_log_key(
+                &conn,
+                "WARN",
+                "check.failed",
+                &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &e}).to_string(),
+            );
             return Err(e);
         }
     };
 
     let releases = match fetch_for_source_async(&client, &source_obj, per_page).await {
         Ok(releases) => releases,
-        Err(e) => {
+        Err((status, msg)) => {
             let state = app.state::<AppState>();
             let conn = state.db.get().unwrap();
-            let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
+            let _ = db::sources::record_check_failure(&conn, source_obj.id, &msg);
+            let level = if status == 403 { "WARN" } else { "ERROR" };
             db::logs::write_log_key(
                 &conn,
-                "ERROR",
+                level,
                 "check.failed",
-                &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &e}).to_string(),
+                &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &msg}).to_string(),
             );
-            return Err(e);
+            return Err(msg);
         }
     };
     let saved: Vec<(i64, Option<String>)>;
@@ -441,15 +448,16 @@ async fn poll_all_sources_async(
                     );
                     (ids, saved)
                 }
-                Err(e) => {
+                Err((status, msg)) => {
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
-                    let _ = db::sources::record_check_failure(&conn, source.id, &e);
+                    let _ = db::sources::record_check_failure(&conn, source.id, &msg);
+                    let level = if status == 403 { "WARN" } else { "ERROR" };
                     db::logs::write_log_key(
                         &conn,
-                        "ERROR",
+                        level,
                         "check.failed",
-                        &json!({"owner": &source.owner, "repo": &source.repo, "error": &e}).to_string(),
+                        &json!({"owner": &source.owner, "repo": &source.repo, "error": &msg}).to_string(),
                     );
                     (vec![], vec![])
                 }

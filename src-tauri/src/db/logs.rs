@@ -37,40 +37,36 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
 pub fn search_logs(
     conn: &Connection,
     keyword: &str,
+    level: Option<&str>,
     page: i64,
     page_size: i64,
 ) -> Result<(Vec<LogEntry>, i64), String> {
     let offset = (page - 1) * page_size;
     let has_keyword = !keyword.is_empty();
+    let has_level = level.is_some_and(|l| !l.is_empty() && l != "all");
 
-    let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if has_keyword {
+    let mut sql = String::from(
+        "SELECT id, level, message, message_key, message_args, rendered_message, created_at, COUNT(*) OVER() as total FROM logs WHERE 1=1"
+    );
+    let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+    if has_keyword {
         let pattern = format!("%{}%", keyword);
-        (
-            "SELECT id, level, message, message_key, message_args, rendered_message, created_at, COUNT(*) OVER() as total
-             FROM logs
-             WHERE message LIKE ?1 OR level LIKE ?1 OR message_key LIKE ?1 OR rendered_message LIKE ?1
-             ORDER BY id DESC
-             LIMIT ?2 OFFSET ?3"
-                .to_string(),
-            vec![
-                Box::new(pattern) as Box<dyn rusqlite::types::ToSql>,
-                Box::new(page_size),
-                Box::new(offset),
-            ],
-        )
-    } else {
-        (
-            "SELECT id, level, message, message_key, message_args, rendered_message, created_at, COUNT(*) OVER() as total
-             FROM logs
-             ORDER BY id DESC
-             LIMIT ?1 OFFSET ?2"
-                .to_string(),
-            vec![
-                Box::new(page_size) as Box<dyn rusqlite::types::ToSql>,
-                Box::new(offset),
-            ],
-        )
-    };
+        sql.push_str(" AND (message LIKE ? OR level LIKE ? OR message_key LIKE ? OR rendered_message LIKE ?)");
+        params_vec.push(Box::new(pattern.clone()));
+        params_vec.push(Box::new(pattern.clone()));
+        params_vec.push(Box::new(pattern.clone()));
+        params_vec.push(Box::new(pattern));
+    }
+
+    if has_level {
+        sql.push_str(" AND level = ?");
+        params_vec.push(Box::new(level.unwrap().to_string()));
+    }
+
+    sql.push_str(" ORDER BY id DESC LIMIT ? OFFSET ?");
+    params_vec.push(Box::new(page_size));
+    params_vec.push(Box::new(offset));
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
@@ -255,7 +251,7 @@ mod tests {
             r#"{"owner":"user","repo":"repo","count":3}"#);
 
         // 搜索渲染文本中的关键词
-        let (entries, total) = search_logs(&conn, "3 个新版本", 1, 10).unwrap();
+        let (entries, total) = search_logs(&conn, "3 个新版本", None, 1, 10).unwrap();
         assert_eq!(total, 1, "应通过 rendered_message 匹配");
         assert_eq!(entries[0].rendered_message.as_deref(), Some("检查 user/repo: 3 个新版本"));
     }
@@ -269,7 +265,7 @@ mod tests {
         write_log_key(&conn, "INFO", "check.auto",
             r#"{"owner":"githubuser","repo":"somerepo","count":0}"#);
 
-        let (entries, total) = search_logs(&conn, "0 个新版本", 1, 10).unwrap();
+        let (entries, total) = search_logs(&conn, "0 个新版本", None, 1, 10).unwrap();
         assert_eq!(total, 1, "rendered_message 应匹配 0 个新版本");
         assert_eq!(
             entries[0].rendered_message.as_deref(),
@@ -284,7 +280,53 @@ mod tests {
             r#"{"owner":"user","repo":"repo","count":1}"#);
 
         // 原来的 key 搜索仍然有效
-        let (_entries, total) = search_logs(&conn, "check.auto", 1, 10).unwrap();
+        let (_entries, total) = search_logs(&conn, "check.auto", None, 1, 10).unwrap();
         assert_eq!(total, 1, "message key 搜索仍然有效");
+    }
+
+    #[test]
+    fn test_search_logs_filters_by_level() {
+        let conn = init_memory_db().unwrap();
+        write_log(&conn, "INFO", "info msg");
+        write_log(&conn, "WARN", "warn msg");
+        write_log(&conn, "ERROR", "error msg");
+
+        let (entries, total) = search_logs(&conn, "", Some("ERROR"), 1, 10).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(entries[0].level, "ERROR");
+        assert_eq!(entries[0].message, "error msg");
+
+        let (entries, total) = search_logs(&conn, "", Some("INFO"), 1, 10).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(entries[0].level, "INFO");
+
+        // "all" 不过滤
+        let (entries, total) = search_logs(&conn, "", Some("all"), 1, 10).unwrap();
+        assert_eq!(total, 3);
+
+        // None 不过滤
+        let (entries, total) = search_logs(&conn, "", None, 1, 10).unwrap();
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_check_failed_warn_and_error() {
+        let conn = init_memory_db().unwrap();
+
+        // 模拟 poll.rs 中的两种失败场景
+        write_log_key(&conn, "WARN", "check.failed",
+            r#"{"owner":"o","repo":"r","error":"rate limited"}"#);
+        write_log_key(&conn, "ERROR", "check.failed",
+            r#"{"owner":"o","repo":"r","error":"timeout after retry"}"#);
+
+        let (warns, _) = search_logs(&conn, "", Some("WARN"), 1, 10).unwrap();
+        assert_eq!(warns.len(), 1);
+        assert_eq!(warns[0].level, "WARN");
+        assert!(warns[0].rendered_message.as_deref().unwrap().contains("rate limited"));
+
+        let (errors, _) = search_logs(&conn, "", Some("ERROR"), 1, 10).unwrap();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].level, "ERROR");
+        assert!(errors[0].rendered_message.as_deref().unwrap().contains("timeout"));
     }
 }

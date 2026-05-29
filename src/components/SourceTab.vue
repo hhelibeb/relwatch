@@ -7,7 +7,7 @@ import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import ContextMenu from './common/ContextMenu.vue'
-import { t } from '../i18n'
+import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 
 const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number> }>()
@@ -83,7 +83,9 @@ async function handleAdd() {
     setTimeout(() => { highlightedId.value = null }, 2200)
     emit('update')
   } catch (e: unknown) {
-    await message(t('source.add_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
+    const errMsg = e instanceof Error ? e.message : String(e)
+    await message(tm('source.add_failed', { source_type: 'github', owner: parsed.owner, repo: parsed.repo, error: errMsg }), { title: t('settings.error'), kind: 'error' })
+    emit('update')
   } finally {
     loading.value = false
   }

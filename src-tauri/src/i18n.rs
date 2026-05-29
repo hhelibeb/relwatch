@@ -7,6 +7,7 @@ fn zh_cn() -> HashMap<&'static str, &'static str> {
     let mut m = HashMap::new();
     // source
     m.insert("source.added",               "添加监控源: {source_type} {owner}/{repo}");
+    m.insert("source.add_failed",          "添加监控源失败: {source_type} {owner}/{repo}, {error}");
     m.insert("source.removed",             "移除监控源 {owner}/{repo} id={id}");
     m.insert("source.removed_unknown",     "移除监控源 id={id}");
     m.insert("source.log_paused",          "暂停监控源 {owner}/{repo} id={id}");
@@ -70,6 +71,7 @@ fn en_us() -> HashMap<&'static str, &'static str> {
     let mut m = HashMap::new();
     // source
     m.insert("source.added",               "Source added: {source_type} {owner}/{repo}");
+    m.insert("source.add_failed",          "Failed to add source: {source_type} {owner}/{repo}, {error}");
     m.insert("source.removed",             "Source removed: {owner}/{repo} id={id}");
     m.insert("source.removed_unknown",     "Source removed: id={id}");
     m.insert("source.log_paused",          "Source paused: {owner}/{repo} id={id}");
@@ -288,6 +290,22 @@ mod tests {
             r#"{"source_type":"github","owner":"user","repo":"myapp"}"#,
             "zh-CN");
         assert_eq!(r, "添加监控源: github user/myapp");
+    }
+
+    #[test]
+    fn test_render_source_add_failed() {
+        let r = render("source.add_failed",
+            r#"{"source_type":"github","owner":"user","repo":"myapp","error":"404 Not Found"}"#,
+            "zh-CN");
+        assert_eq!(r, "添加监控源失败: github user/myapp, 404 Not Found");
+    }
+
+    #[test]
+    fn test_render_source_add_failed_en() {
+        let r = render("source.add_failed",
+            r#"{"source_type":"github","owner":"user","repo":"myapp","error":"404 Not Found"}"#,
+            "en-US");
+        assert_eq!(r, "Failed to add source: github user/myapp, 404 Not Found");
     }
 
     #[test]

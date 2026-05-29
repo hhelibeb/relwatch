@@ -13,9 +13,10 @@ pub fn search_logs(
     keyword: String,
     page: i64,
     page_size: i64,
+    level: Option<String>,
 ) -> Result<LogSearchResult, String> {
     let conn = state.db.get().unwrap();
-    let (entries, total) = db::logs::search_logs(&conn, &keyword, page, page_size)?;
+    let (entries, total) = db::logs::search_logs(&conn, &keyword, level.as_deref(), page, page_size)?;
     Ok(LogSearchResult {
         entries,
         total,

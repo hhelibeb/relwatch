@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from 'vue'
 import { message } from '@tauri-apps/plugin-dialog'
 import { type LogEntry, searchLogs, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
+import { translateError } from '../api/client'
 import { formatDate, logLevelClass } from '../utils'
 
 const props = defineProps<{ refreshKey: number }>()
@@ -14,8 +15,26 @@ const currentPage = ref(1)
 const pageSize = 50
 const loading = ref(false)
 const searchKeyword = ref('')
+const levelFilter = ref('all')
 const pageInput = ref('')
 const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+
+// 级别过滤下拉
+const openFilter = ref(false)
+let hoverFilterTimer: ReturnType<typeof setTimeout> | null = null
+
+function hoverFilterEnter() {
+  if (hoverFilterTimer) {
+    clearTimeout(hoverFilterTimer)
+    hoverFilterTimer = null
+  }
+}
+
+function hoverFilterLeave() {
+  hoverFilterTimer = setTimeout(() => {
+    openFilter.value = false
+  }, 120)
+}
 
 const totalPages = computed(() => Math.max(1, Math.ceil(totalLogs.value / pageSize)))
 
@@ -26,7 +45,7 @@ const pageInputStyle = computed(() => ({
 async function loadData() {
   loading.value = true
   try {
-    const result = await searchLogs(searchKeyword.value, currentPage.value, pageSize)
+    const result = await searchLogs(searchKeyword.value, currentPage.value, pageSize, levelFilter.value === 'all' ? undefined : levelFilter.value)
     logs.value = result.entries
     totalLogs.value = result.total
     pageInput.value = String(currentPage.value)
@@ -65,10 +84,21 @@ function clearSearch() {
   loadData()
 }
 
+function setLevelFilter(level: string) {
+  levelFilter.value = level
+  openFilter.value = false
+  currentPage.value = 1
+  loadData()
+}
+
 function renderMessage(entry: LogEntry): string {
   if (entry.message_key && entry.message_args) {
     try {
-      const args = JSON.parse(entry.message_args)
+      const args: Record<string, string> = JSON.parse(entry.message_args)
+      // 翻译 Rust 后端传入的 err.* 格式错误文本
+      if (args.error && args.error.startsWith('err.')) {
+        args.error = translateError(args.error)
+      }
       return tm(entry.message_key, args)
     } catch {
       return entry.message
@@ -99,7 +129,7 @@ onMounted(() => {
 
 <template>
   <section class="tab-content">
-    <div class="log-search">
+    <div class="log-search-row">
       <div class="input-clear-wrap">
         <input
           v-model="searchKeyword"
@@ -108,6 +138,21 @@ onMounted(() => {
           @input="onSearchInput"
         />
         <button v-if="searchKeyword" type="button" class="input-clear-btn" :title="t('input.clear')" @click="clearSearch">✕</button>
+      </div>
+      <div class="filter-group" @mouseleave="hoverFilterLeave()">
+        <div class="filter-field" @mouseenter="openFilter = true; hoverFilterEnter()">
+          <button class="filter-trigger">
+            <span class="filter-label">{{ t('log.level') }}</span>
+            <span class="filter-value" :style="{ color: levelFilter === 'all' ? 'var(--text-muted)' : levelFilter === 'ERROR' ? 'var(--danger)' : levelFilter === 'WARN' ? 'var(--warning)' : 'var(--text-muted)' }">{{ levelFilter === 'all' ? t('log.filter_all') : levelFilter }}</span>
+            <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+          </button>
+          <div v-if="openFilter" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
+            <button :class="{ selected: levelFilter === 'all' }" @click="setLevelFilter('all')">{{ t('log.filter_all') }}</button>
+            <button :class="{ selected: levelFilter === 'INFO' }" @click="setLevelFilter('INFO')" style="color:var(--text-muted)">INFO</button>
+            <button :class="{ selected: levelFilter === 'WARN' }" @click="setLevelFilter('WARN')" style="color:var(--warning)">WARN</button>
+            <button :class="{ selected: levelFilter === 'ERROR' }" @click="setLevelFilter('ERROR')" style="color:var(--danger)">ERROR</button>
+          </div>
+        </div>
       </div>
       <button class="btn-icon" :title="t('log.clear')" @click="handleClearLogs">
         <svg><use href="/icons.svg#trash-icon"/></svg>
