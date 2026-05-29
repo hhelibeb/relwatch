@@ -7,6 +7,7 @@ export interface LogEntry {
   created_at: string
   message_key: string | null
   message_args: string | null
+  rendered_message: string | null
 }
 
 export interface LogSearchResult {

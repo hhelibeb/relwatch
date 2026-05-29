@@ -1,5 +1,6 @@
 pub mod crypto;
 pub mod db;
+pub mod i18n;
 mod commands;
 mod notify;
 mod tray;

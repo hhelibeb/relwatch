@@ -1,0 +1,440 @@
+use std::collections::HashMap;
+use serde_json::Value;
+
+// ── 日志相关的 i18n key 翻译表 ──────────────────────
+
+fn zh_cn() -> HashMap<&'static str, &'static str> {
+    let mut m = HashMap::new();
+    // source
+    m.insert("source.added",               "添加监控源: {source_type} {owner}/{repo}");
+    m.insert("source.removed",             "移除监控源 {owner}/{repo} id={id}");
+    m.insert("source.removed_unknown",     "移除监控源 id={id}");
+    m.insert("source.log_paused",          "暂停监控源 {owner}/{repo} id={id}");
+    m.insert("source.log_resumed",         "恢复监控源 {owner}/{repo} id={id}");
+    m.insert("source.log_muted",           "静默监控源 {owner}/{repo} id={id}");
+    m.insert("source.log_unmuted",         "取消静默监控源 {owner}/{repo} id={id}");
+    m.insert("source.updated",             "更新监控源 {owner}/{repo} id={id}");
+    m.insert("source.updated_unknown",     "更新监控源 id={id}");
+    // check
+    m.insert("check.manual",              "[手动] 检查 {owner}/{repo}: {count} 个新版本");
+    m.insert("check.auto",                "检查 {owner}/{repo}: {count} 个新版本");
+    m.insert("check.skipped",             "[自动] 无启用监控源，跳过检查");
+    m.insert("check.http_client_error",   "创建 HTTP 客户端失败: {error}");
+    m.insert("check.failed",              "检查 {owner}/{repo} 失败: {error}");
+    m.insert("check.manual_all_done",     "[手动] 全局检查完成, {count} 个新版本");
+    // release
+    m.insert("release.go",                "前往版本 {owner}/{repo} {tag} id={id}");
+    m.insert("release.go_unknown",        "前往版本 id={id}");
+    m.insert("release.ignored",           "忽略版本 {owner}/{repo} {tag} id={id}");
+    m.insert("release.ignored_unknown",   "忽略版本 id={id}");
+    m.insert("release.snoozed",           "推迟版本 {owner}/{repo} {tag} id={id}");
+    m.insert("release.snoozed_unknown",   "推迟版本 id={id}");
+    m.insert("release.status_changed",    "{owner}/{repo} {tag} {action}(id={id})");
+    m.insert("release.status_changed_unknown", "版本 id={id} 状态: {action}");
+    // setting
+    m.insert("setting.updated",           "更新设置: {changes}");
+    m.insert("setting.deepseek_key_updated", "已更新 DeepSeek API Key");
+    m.insert("setting.github_token_updated", "已更新 GitHub Token");
+    // backup
+    m.insert("backup.exported",           "导出备份到 {path}");
+    m.insert("backup.imported",           "从 {path} 恢复备份");
+    // log
+    m.insert("log.cleared",               "已清空所有操作日志");
+    // setting labels (用于 setting.updated 中的 setting.\w+ 替换)
+    m.insert("setting.poll_interval",      "轮询间隔");
+    m.insert("setting.proxy_url",          "代理地址");
+    m.insert("setting.proxy_mode",         "代理模式");
+    m.insert("setting.minimize_to_tray",   "最小化到托盘");
+    m.insert("setting.log_retention_days", "日志保留天数");
+    m.insert("setting.deepseek_enabled",   "AI 摘要");
+    m.insert("setting.deepseek_model",     "AI 模型");
+    m.insert("setting.deepseek_base_url",  "AI 地址");
+    m.insert("setting.deepseek_proxy_bypass", "AI 代理绕过");
+    m.insert("setting.deepseek_prompt",    "自定义提示词");
+    m.insert("setting.deepseek_min_importance", "按重要度通知");
+    m.insert("setting.deepseek_proxy",     "AI 代理");
+    m.insert("setting.check_prereleases",  "检查预发布版本");
+    m.insert("setting.fetch_history",      "拉取历史版本");
+    m.insert("setting.fetch_history_count","历史版本数量");
+    m.insert("setting.language",           "界面语言");
+    m.insert("setting.theme",              "主题");
+    // action key 映射 (用于 release.status_changed)
+    m.insert("status.pending",  "未读");
+    m.insert("status.ignored",  "已忽略");
+    m.insert("status.snoozed",  "稍后提醒");
+    m.insert("status.viewed",   "已读");
+    m
+}
+
+fn en_us() -> HashMap<&'static str, &'static str> {
+    let mut m = HashMap::new();
+    // source
+    m.insert("source.added",               "Source added: {source_type} {owner}/{repo}");
+    m.insert("source.removed",             "Source removed: {owner}/{repo} id={id}");
+    m.insert("source.removed_unknown",     "Source removed: id={id}");
+    m.insert("source.log_paused",          "Source paused: {owner}/{repo} id={id}");
+    m.insert("source.log_resumed",         "Source resumed: {owner}/{repo} id={id}");
+    m.insert("source.log_muted",           "Source muted: {owner}/{repo} id={id}");
+    m.insert("source.log_unmuted",         "Source unmuted: {owner}/{repo} id={id}");
+    m.insert("source.updated",             "Source updated: {owner}/{repo} id={id}");
+    m.insert("source.updated_unknown",     "Source updated: id={id}");
+    // check
+    m.insert("check.manual",              "[Manual] Check {owner}/{repo}: {count} new release(s)");
+    m.insert("check.auto",                "Check {owner}/{repo}: {count} new release(s)");
+    m.insert("check.skipped",             "[Auto] No enabled sources, skipping check");
+    m.insert("check.http_client_error",   "Failed to create HTTP client: {error}");
+    m.insert("check.failed",              "Check {owner}/{repo} failed: {error}");
+    m.insert("check.manual_all_done",     "[Manual] Global check done, {count} new release(s)");
+    // release
+    m.insert("release.go",                "Go to release {owner}/{repo} {tag} id={id}");
+    m.insert("release.go_unknown",        "Go to release id={id}");
+    m.insert("release.ignored",           "Ignore release {owner}/{repo} {tag} id={id}");
+    m.insert("release.ignored_unknown",   "Ignore release id={id}");
+    m.insert("release.snoozed",           "Snooze release {owner}/{repo} {tag} id={id}");
+    m.insert("release.snoozed_unknown",   "Snooze release id={id}");
+    m.insert("release.status_changed",    "{owner}/{repo} {tag} - {action} (id={id})");
+    m.insert("release.status_changed_unknown", "Release id={id} status: {action}");
+    // setting
+    m.insert("setting.updated",           "Setting updated: {changes}");
+    m.insert("setting.deepseek_key_updated", "DeepSeek API Key updated");
+    m.insert("setting.github_token_updated", "GitHub Token updated");
+    // backup
+    m.insert("backup.exported",           "Exported backup to {path}");
+    m.insert("backup.imported",           "Restored backup from {path}");
+    // log
+    m.insert("log.cleared",               "All operation logs cleared");
+    // setting labels
+    m.insert("setting.poll_interval",      "Poll Interval");
+    m.insert("setting.proxy_url",          "Proxy URL");
+    m.insert("setting.proxy_mode",         "Proxy Mode");
+    m.insert("setting.minimize_to_tray",   "Minimize to Tray");
+    m.insert("setting.log_retention_days", "Log Retention Days");
+    m.insert("setting.deepseek_enabled",   "AI Summary");
+    m.insert("setting.deepseek_model",     "AI Model");
+    m.insert("setting.deepseek_base_url",  "AI API URL");
+    m.insert("setting.deepseek_proxy_bypass", "AI Proxy Bypass");
+    m.insert("setting.deepseek_prompt",    "Custom Prompt");
+    m.insert("setting.deepseek_min_importance", "Notify by Importance");
+    m.insert("setting.deepseek_proxy",     "AI Proxy");
+    m.insert("setting.check_prereleases",  "Check Pre-releases");
+    m.insert("setting.fetch_history",      "Fetch History");
+    m.insert("setting.fetch_history_count","History Version Count");
+    m.insert("setting.language",           "Language");
+    m.insert("setting.theme",              "Theme");
+    // action key 映射
+    m.insert("status.pending",  "Unread");
+    m.insert("status.ignored",  "Ignored");
+    m.insert("status.snoozed",  "Reminder");
+    m.insert("status.viewed",   "Read");
+    m
+}
+
+/// action 状态值 → i18n key 的映射
+fn action_key(action: &str) -> &'static str {
+    match action {
+        "pending" => "status.pending",
+        "ignored" => "status.ignored",
+        "snoozed" => "status.snoozed",
+        "clicked" => "status.viewed",
+        _ => "status.viewed", // fallback, 不应到达
+    }
+}
+
+/// 根据 key + JSON args 渲染翻译文本
+///
+/// 模拟前端 `tm()` 的行为:
+/// 1. 取当前 locale 的翻译模板
+/// 2. 如果 args 包含 action，先将其翻译为本地化文本
+/// 3. 依次替换 {key} 占位符
+/// 4. 替换结果中残余的 setting.\w+ 引用
+pub fn render(key: &str, args_json: &str, locale: &str) -> String {
+    let dict = match locale {
+        "zh-CN" => zh_cn(),
+        _ => en_us(),
+    };
+
+    // 1. 获取翻译模板
+    let template = match dict.get(key) {
+        Some(t) => *t,
+        None => return key.to_string(),
+    };
+
+    // 2. 解析 args (使用 Value 以支持整数/布尔等非字符串类型)
+    let raw_args: Value = match serde_json::from_str(args_json) {
+        Ok(v) => v,
+        Err(_) => return template.to_string(),
+    };
+    let Some(raw_map) = raw_args.as_object() else {
+        return template.to_string();
+    };
+
+    // 3. 如果有关键字 action，先翻译 action 值
+    let mut text = template.to_string();
+    if let Some(action_val) = raw_map.get("action").and_then(|v| v.as_str()) {
+        let ak = action_key(action_val);
+        let translated_action = dict.get(ak).unwrap_or(&action_val).to_string();
+        text = text.replace("{action}", &translated_action);
+    }
+
+    // 4. 替换其他占位符（所有值类型都转成字符串）
+    for (k, v) in raw_map.iter() {
+        if k == "action" {
+            continue; // 已在上面处理
+        }
+        let val_str = match v {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            other => other.to_string(),
+        };
+        text = text.replace(&format!("{{{}}}", k), &val_str);
+    }
+
+    // 5. 处理残余的 setting.\w+ 引用
+    //    使用简单的前缀匹配查找
+    let mut result = String::new();
+    let mut remaining = text.as_str();
+    while let Some(pos) = remaining.find("setting.") {
+        // 追加 setting. 之前的内容
+        result.push_str(&remaining[..pos]);
+        // 提取 setting.\w+ token
+        let rest = &remaining[pos..];
+        let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+            .unwrap_or(rest.len());
+        let token = &rest[..end];
+        // 查找翻译，找不到则保留原始 token
+        match dict.get(token) {
+            Some(translated) => result.push_str(translated),
+            None => result.push_str(token),
+        }
+        remaining = &rest[end..];
+    }
+    result.push_str(remaining);
+
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_render_check_auto() {
+        let r = render("check.auto", r#"{"owner":"user","repo":"repo","count":"1"}"#, "zh-CN");
+        assert_eq!(r, "检查 user/repo: 1 个新版本");
+    }
+
+    #[test]
+    fn test_render_check_auto_en() {
+        let r = render("check.auto", r#"{"owner":"user","repo":"repo","count":"1"}"#, "en-US");
+        assert_eq!(r, "Check user/repo: 1 new release(s)");
+    }
+
+    #[test]
+    fn test_render_check_manual() {
+        let r = render("check.manual", r#"{"owner":"a","repo":"b","count":"3"}"#, "zh-CN");
+        assert_eq!(r, "[手动] 检查 a/b: 3 个新版本");
+    }
+
+    #[test]
+    fn test_render_check_manual_all_done() {
+        let r = render("check.manual_all_done", r#"{"count":"5"}"#, "zh-CN");
+        assert_eq!(r, "[手动] 全局检查完成, 5 个新版本");
+    }
+
+    #[test]
+    fn test_render_release_status_changed() {
+        let r = render("release.status_changed",
+            r#"{"owner":"user","repo":"repo","tag":"v1.0","id":"123","action":"pending"}"#,
+            "zh-CN");
+        assert_eq!(r, "user/repo v1.0 未读(id=123)");
+    }
+
+    #[test]
+    fn test_render_release_status_changed_en() {
+        let r = render("release.status_changed",
+            r#"{"owner":"user","repo":"repo","tag":"v1.0","id":"123","action":"ignored"}"#,
+            "en-US");
+        assert_eq!(r, "user/repo v1.0 - Ignored (id=123)");
+    }
+
+    #[test]
+    fn test_render_release_status_changed_unknown() {
+        let r = render("release.status_changed_unknown",
+            r#"{"id":"42","action":"snoozed"}"#,
+            "zh-CN");
+        assert_eq!(r, "版本 id=42 状态: 稍后提醒");
+    }
+
+    #[test]
+    fn test_render_setting_updated() {
+        let r = render("setting.updated",
+            r#"{"changes":"setting.poll_interval→60, setting.language→en-US"}"#,
+            "zh-CN");
+        assert_eq!(r, "更新设置: 轮询间隔→60, 界面语言→en-US");
+    }
+
+    #[test]
+    fn test_render_setting_updated_en() {
+        let r = render("setting.updated",
+            r#"{"changes":"setting.poll_interval→60"}"#,
+            "en-US");
+        assert_eq!(r, "Setting updated: Poll Interval→60");
+    }
+
+    #[test]
+    fn test_render_source_added() {
+        let r = render("source.added",
+            r#"{"source_type":"github","owner":"user","repo":"myapp"}"#,
+            "zh-CN");
+        assert_eq!(r, "添加监控源: github user/myapp");
+    }
+
+    #[test]
+    fn test_render_source_removed() {
+        let r = render("source.removed",
+            r#"{"owner":"user","repo":"repo","id":"5"}"#,
+            "zh-CN");
+        assert_eq!(r, "移除监控源 user/repo id=5");
+    }
+
+    #[test]
+    fn test_render_source_log_paused() {
+        let r = render("source.log_paused",
+            r#"{"owner":"user","repo":"repo","id":"3"}"#,
+            "zh-CN");
+        assert_eq!(r, "暂停监控源 user/repo id=3");
+    }
+
+    #[test]
+    fn test_render_backup_exported() {
+        let r = render("backup.exported", r#"{"path":"/tmp/backup.json"}"#, "zh-CN");
+        assert_eq!(r, "导出备份到 /tmp/backup.json");
+    }
+
+    #[test]
+    fn test_render_log_cleared() {
+        let r = render("log.cleared", "{}", "zh-CN");
+        assert_eq!(r, "已清空所有操作日志");
+    }
+
+    #[test]
+    fn test_render_log_cleared_en() {
+        let r = render("log.cleared", "{}", "en-US");
+        assert_eq!(r, "All operation logs cleared");
+    }
+
+    #[test]
+    fn test_render_deepseek_key_updated() {
+        let r = render("setting.deepseek_key_updated", "{}", "zh-CN");
+        assert_eq!(r, "已更新 DeepSeek API Key");
+    }
+
+    #[test]
+    fn test_render_github_token_updated() {
+        let r = render("setting.github_token_updated", "{}", "en-US");
+        assert_eq!(r, "GitHub Token updated");
+    }
+
+    #[test]
+    fn test_render_release_go() {
+        let r = render("release.go",
+            r#"{"owner":"user","repo":"repo","tag":"v2.0","id":"10"}"#,
+            "zh-CN");
+        assert_eq!(r, "前往版本 user/repo v2.0 id=10");
+    }
+
+    #[test]
+    fn test_render_release_ignored() {
+        let r = render("release.ignored",
+            r#"{"owner":"user","repo":"repo","tag":"v1.5","id":"7"}"#,
+            "zh-CN");
+        assert_eq!(r, "忽略版本 user/repo v1.5 id=7");
+    }
+
+    #[test]
+    fn test_render_release_snoozed() {
+        let r = render("release.snoozed",
+            r#"{"owner":"user","repo":"repo","tag":"v3.0","id":"15"}"#,
+            "zh-CN");
+        assert_eq!(r, "推迟版本 user/repo v3.0 id=15");
+    }
+
+    #[test]
+    fn test_render_unknown_key() {
+        // 不存在的 key 应返回 key 本身
+        let r = render("some.unknown.key", "{}", "zh-CN");
+        assert_eq!(r, "some.unknown.key");
+    }
+
+    #[test]
+    fn test_render_invalid_json_args() {
+        // 无效 JSON 应返回原始模板（不含占位符替换）
+        let r = render("check.auto", "not-json", "zh-CN");
+        assert_eq!(r, "检查 {owner}/{repo}: {count} 个新版本");
+    }
+
+    #[test]
+    fn test_render_setting_updated_with_unknown_setting_key() {
+        // setting.xxx 如果在字典中没有对应翻译，保留原始
+        let r = render("setting.updated",
+            r#"{"changes":"setting.unknown_key→value"}"#,
+            "zh-CN");
+        assert_eq!(r, "更新设置: setting.unknown_key→value");
+    }
+
+    // ── 整数类型值的测试（与 Rust json!() 宏行为一致）──
+
+    #[test]
+    fn test_render_with_integer_count() {
+        // Rust 中 json!({"count": 0}) 生成 "count":0（整数）
+        let r = render("check.auto",
+            r#"{"owner":"user","repo":"repo","count":0}"#,
+            "zh-CN");
+        assert_eq!(r, "检查 user/repo: 0 个新版本");
+    }
+
+    #[test]
+    fn test_render_with_integer_count_nonzero() {
+        let r = render("check.auto",
+            r#"{"owner":"user","repo":"repo","count":3}"#,
+            "zh-CN");
+        assert_eq!(r, "检查 user/repo: 3 个新版本");
+    }
+
+    #[test]
+    fn test_render_with_integer_id() {
+        // release.go 中 id 是 i64 整数
+        let r = render("release.go",
+            r#"{"owner":"user","repo":"repo","tag":"v1.0","id":123}"#,
+            "zh-CN");
+        assert_eq!(r, "前往版本 user/repo v1.0 id=123");
+    }
+
+    #[test]
+    fn test_render_with_mixed_types() {
+        // release.status_changed 中 id 是整数、action 是字符串
+        let r = render("release.status_changed",
+            r#"{"owner":"user","repo":"repo","tag":"v2.0","id":456,"action":"pending"}"#,
+            "zh-CN");
+        assert_eq!(r, "user/repo v2.0 未读(id=456)");
+    }
+
+    #[test]
+    fn test_render_check_auto_integer_from_db() {
+        // 真实的数据库数据：count 是整数 0
+        let r = render("check.auto",
+            r#"{"count":0,"owner":"Scighost","repo":"Starward"}"#,
+            "zh-CN");
+        assert_eq!(r, "检查 Scighost/Starward: 0 个新版本");
+    }
+
+    #[test]
+    fn test_render_check_manual_integer_from_db() {
+        // 真实的数据库数据：count 是整数 1
+        let r = render("check.manual",
+            r#"{"count":1,"owner":"hhelibeb","repo":"relwatch"}"#,
+            "zh-CN");
+        assert_eq!(r, "[手动] 检查 hhelibeb/relwatch: 1 个新版本");
+    }
+}

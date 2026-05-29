@@ -9,6 +9,7 @@ pub struct LogEntry {
     pub created_at: String,
     pub message_key: Option<String>,
     pub message_args: Option<String>,
+    pub rendered_message: Option<String>,
 }
 
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
@@ -21,9 +22,15 @@ pub fn write_log(conn: &Connection, level: &str, message: &str) {
 
 pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     let now = chrono::Utc::now().to_rfc3339();
+
+    // 读取用户语言设置，渲染翻译文本用于搜索
+    let locale = crate::db::settings::get_setting_str(conn, crate::db::settings::KEY_LANGUAGE, "zh-CN")
+        .unwrap_or_else(|_| "zh-CN".to_string());
+    let rendered = crate::i18n::render(key, args, &locale);
+
     let _ = conn.execute(
-        "INSERT INTO logs (level, message, message_key, message_args, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![level, key, key, args, now],
+        "INSERT INTO logs (level, message, message_key, message_args, rendered_message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![level, key, key, args, rendered, now],
     );
 }
 
@@ -39,9 +46,9 @@ pub fn search_logs(
     let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if has_keyword {
         let pattern = format!("%{}%", keyword);
         (
-            "SELECT id, level, message, message_key, message_args, created_at, COUNT(*) OVER() as total
+            "SELECT id, level, message, message_key, message_args, rendered_message, created_at, COUNT(*) OVER() as total
              FROM logs
-             WHERE message LIKE ?1 OR level LIKE ?1 OR message_key LIKE ?1
+             WHERE message LIKE ?1 OR level LIKE ?1 OR message_key LIKE ?1 OR rendered_message LIKE ?1
              ORDER BY id DESC
              LIMIT ?2 OFFSET ?3"
                 .to_string(),
@@ -53,7 +60,7 @@ pub fn search_logs(
         )
     } else {
         (
-            "SELECT id, level, message, message_key, message_args, created_at, COUNT(*) OVER() as total
+            "SELECT id, level, message, message_key, message_args, rendered_message, created_at, COUNT(*) OVER() as total
              FROM logs
              ORDER BY id DESC
              LIMIT ?1 OFFSET ?2"
@@ -71,14 +78,15 @@ pub fn search_logs(
     let mut total: i64 = 0;
     let logs = stmt
         .query_map(params_refs.as_slice(), |row| {
-            total = row.get(6)?;
+            total = row.get(7)?;
             Ok(LogEntry {
                 id: row.get(0)?,
                 level: row.get(1)?,
                 message: row.get(2)?,
                 message_key: row.get(3)?,
                 message_args: row.get(4)?,
-                created_at: row.get(5)?,
+                rendered_message: row.get(5)?,
+                created_at: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -91,7 +99,7 @@ pub fn search_logs(
 pub fn get_logs(conn: &Connection, limit: i64) -> Result<Vec<LogEntry>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, level, message, message_key, message_args, created_at FROM logs ORDER BY id DESC LIMIT ?1",
+            "SELECT id, level, message, message_key, message_args, rendered_message, created_at FROM logs ORDER BY id DESC LIMIT ?1",
         )
         .map_err(|e| e.to_string())?;
 
@@ -103,7 +111,8 @@ pub fn get_logs(conn: &Connection, limit: i64) -> Result<Vec<LogEntry>, String> 
                 message: row.get(2)?,
                 message_key: row.get(3)?,
                 message_args: row.get(4)?,
-                created_at: row.get(5)?,
+                rendered_message: row.get(5)?,
+                created_at: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -127,6 +136,47 @@ pub fn clear_logs(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
+/// 回填所有已有日志的 rendered_message（一次性迁移辅助）
+pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
+    let locale = crate::db::settings::get_setting_str(conn, crate::db::settings::KEY_LANGUAGE, "zh-CN")
+        .unwrap_or_else(|_| "zh-CN".to_string());
+
+    // 找出所有需要回填的行：有 message_key 但 rendered_message 为 NULL
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, message_key, message_args FROM logs WHERE message_key IS NOT NULL AND rendered_message IS NULL"
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let count = rows.len();
+    if count == 0 {
+        return Ok(0);
+    }
+
+    for (id, key, args_opt) in &rows {
+        let args = args_opt.as_deref().unwrap_or("{}");
+        let rendered = crate::i18n::render(key, args, &locale);
+        let _ = conn.execute(
+            "UPDATE logs SET rendered_message = ?1 WHERE id = ?2",
+            params![rendered, id],
+        );
+    }
+
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,6 +193,10 @@ mod tests {
         assert_eq!(logs[0].message, "test.key");
         assert_eq!(logs[0].message_key.as_deref(), Some("test.key"));
         assert_eq!(logs[0].message_args.as_deref(), Some(r#"{"a":"1"}"#));
+        // write_log 的 rendered_message 为 None
+        assert!(logs[2].rendered_message.is_none());
+        // write_log_key 的 unknown key 回退到 key 本身
+        assert_eq!(logs[0].rendered_message.as_deref(), Some("test.key"));
     }
 
     #[test]
@@ -156,5 +210,81 @@ mod tests {
 
         let logs = get_logs(&conn, 100).unwrap();
         assert_eq!(logs.len(), 2);
+    }
+
+    #[test]
+    fn test_write_log_key_renders_rendered_message() {
+        let conn = init_memory_db().unwrap();
+        // 预设语言为 zh-CN
+        crate::db::settings::set_setting(&conn, crate::db::settings::KEY_LANGUAGE, "zh-CN").unwrap();
+
+        // 使用整数 count（与 Rust json!() 行为一致）
+        write_log_key(&conn, "INFO", "check.auto",
+            r#"{"owner":"user","repo":"repo","count":3}"#);
+        let logs = get_logs(&conn, 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].rendered_message.as_deref(),
+            Some("检查 user/repo: 3 个新版本")
+        );
+    }
+
+    #[test]
+    fn test_write_log_key_renders_with_language_setting() {
+        let conn = init_memory_db().unwrap();
+        // 预设语言为 en-US
+        crate::db::settings::set_setting(&conn, crate::db::settings::KEY_LANGUAGE, "en-US").unwrap();
+
+        // 使用整数 count
+        write_log_key(&conn, "INFO", "check.auto",
+            r#"{"owner":"user","repo":"repo","count":1}"#);
+        let logs = get_logs(&conn, 10).unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0].rendered_message.as_deref(),
+            Some("Check user/repo: 1 new release(s)")
+        );
+    }
+
+    #[test]
+    fn test_search_logs_matches_rendered_message() {
+        let conn = init_memory_db().unwrap();
+        crate::db::settings::set_setting(&conn, crate::db::settings::KEY_LANGUAGE, "zh-CN").unwrap();
+
+        write_log_key(&conn, "INFO", "check.auto",
+            r#"{"owner":"user","repo":"repo","count":3}"#);
+
+        // 搜索渲染文本中的关键词
+        let (entries, total) = search_logs(&conn, "3 个新版本", 1, 10).unwrap();
+        assert_eq!(total, 1, "应通过 rendered_message 匹配");
+        assert_eq!(entries[0].rendered_message.as_deref(), Some("检查 user/repo: 3 个新版本"));
+    }
+
+    #[test]
+    fn test_search_logs_matches_rendered_message_zero() {
+        let conn = init_memory_db().unwrap();
+        crate::db::settings::set_setting(&conn, crate::db::settings::KEY_LANGUAGE, "zh-CN").unwrap();
+
+        // count 为 0 的场景
+        write_log_key(&conn, "INFO", "check.auto",
+            r#"{"owner":"githubuser","repo":"somerepo","count":0}"#);
+
+        let (entries, total) = search_logs(&conn, "0 个新版本", 1, 10).unwrap();
+        assert_eq!(total, 1, "rendered_message 应匹配 0 个新版本");
+        assert_eq!(
+            entries[0].rendered_message.as_deref(),
+            Some("检查 githubuser/somerepo: 0 个新版本")
+        );
+    }
+
+    #[test]
+    fn test_search_logs_still_matches_message_key() {
+        let conn = init_memory_db().unwrap();
+        write_log_key(&conn, "INFO", "check.auto",
+            r#"{"owner":"user","repo":"repo","count":1}"#);
+
+        // 原来的 key 搜索仍然有效
+        let (_entries, total) = search_logs(&conn, "check.auto", 1, 10).unwrap();
+        assert_eq!(total, 1, "message key 搜索仍然有效");
     }
 }

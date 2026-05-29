@@ -221,6 +221,34 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // ── Migration 8: rendered_message on logs ──
+    let has_rendered: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('logs') WHERE name='rendered_message'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_rendered {
+        conn.execute_batch(
+            "ALTER TABLE logs ADD COLUMN rendered_message TEXT;"
+        )?;
+    }
+
+    // 清理之前错误写入的 raw template（含未替换的占位符）
+    let _ = conn.execute(
+        "UPDATE logs SET rendered_message = NULL WHERE rendered_message LIKE '%{%}%'",
+        [],
+    );
+
+    // 回填已有日志的 rendered_message（一次性操作）
+    match super::logs::backfill_rendered_messages(conn) {
+        Ok(n) if n > 0 => {
+            log::info!("已回填 {} 条日志的 rendered_message", n);
+        }
+        Ok(_) => {}
+        Err(e) => {
+            log::error!("回填 rendered_message 失败: {}", e);
+        }
+    }
+
     Ok(())
 }
 
@@ -270,6 +298,9 @@ mod tests {
 
         // Migration 7: sources.muted
         assert!(has_column(&conn, "sources", "muted"));
+
+        // Migration 8: logs.rendered_message
+        assert!(has_column(&conn, "logs", "rendered_message"));
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> bool {
