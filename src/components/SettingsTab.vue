@@ -265,6 +265,8 @@ const dirtyByTab = computed(() => {
 
 function discardChanges() {
   Object.assign(form, props.settings)
+  setLocale(form.language)
+  setThemePreview(form.theme)
   deepseekApiKey.value = ''
   githubToken.value = ''
 }
