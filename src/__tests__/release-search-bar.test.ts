@@ -95,23 +95,23 @@ describe('ReleaseTab — ReleaseSearchBar showSearch', () => {
     const bar = () => wrapper.findComponent(ReleaseSearchBar)
 
     // 简单视图
-    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
+    expect((bar().props() as unknown as Record<string, unknown>).showSearch).toBe(true)
 
     // 聚合视图
     bar().vm.$emit('update:viewMode', 'aggregated')
     await wrapper.vm.$nextTick()
-    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
+    expect((bar().props() as unknown as Record<string, unknown>).showSearch).toBe(true)
 
     // 日历主视图
     bar().vm.$emit('update:viewMode', 'calendar')
     await wrapper.vm.$nextTick()
-    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
+    expect((bar().props() as unknown as Record<string, unknown>).showSearch).toBe(true)
 
     // 日历钻取视图
     const cell = wrapper.find('.calendar-cell.current-month.today')
     await cell.trigger('click')
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.date-detail-title').exists()).toBe(true)
-    expect((bar().props() as Record<string, unknown>).showSearch).toBe(true)
+    expect((bar().props() as unknown as Record<string, unknown>).showSearch).toBe(true)
   })
 })
