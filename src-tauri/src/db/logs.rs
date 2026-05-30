@@ -161,16 +161,22 @@ pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
         return Ok(0);
     }
 
+    let mut updated = 0usize;
     for (id, key, args_opt) in &rows {
         let args = args_opt.as_deref().unwrap_or("{}");
         let rendered = crate::i18n::render(key, args, &locale);
-        let _ = conn.execute(
+        match conn.execute(
             "UPDATE logs SET rendered_message = ?1 WHERE id = ?2",
             params![rendered, id],
-        );
+        ) {
+            Ok(n) => updated += n,
+            Err(e) => {
+                eprintln!("[migration] backfill row {id} failed: {e}");
+            }
+        }
     }
 
-    Ok(count)
+    Ok(updated)
 }
 
 #[cfg(test)]

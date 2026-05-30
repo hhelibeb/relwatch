@@ -64,6 +64,13 @@ fn zh_cn() -> HashMap<&'static str, &'static str> {
     m.insert("status.ignored",  "已忽略");
     m.insert("status.snoozed",  "稍后提醒");
     m.insert("status.viewed",   "已读");
+    // err.* 错误码翻译 (用于 rendered_message)
+    m.insert("err.repo_not_found",     "不存在该仓库");
+    m.insert("err.repo_verify_failed", "验证仓库失败: {0}");
+    m.insert("err.repo_api_error",     "GitHub API 返回 {0}");
+    m.insert("err.poll_in_progress",   "轮询正在进行中，请稍后再试");
+    m.insert("err.unsupported_source", "不支持的监控源类型: {0}");
+    m.insert("err.source_not_found",   "监控源不存在");
     m
 }
 
@@ -128,6 +135,13 @@ fn en_us() -> HashMap<&'static str, &'static str> {
     m.insert("status.ignored",  "Ignored");
     m.insert("status.snoozed",  "Reminder");
     m.insert("status.viewed",   "Read");
+    // err.* 错误码翻译 (用于 rendered_message)
+    m.insert("err.repo_not_found",     "Repository not found");
+    m.insert("err.repo_verify_failed", "Failed to verify repo: {0}");
+    m.insert("err.repo_api_error",     "GitHub API returned {0}");
+    m.insert("err.poll_in_progress",   "Poll in progress, please try again later");
+    m.insert("err.unsupported_source", "Unsupported source type: {0}");
+    m.insert("err.source_not_found",   "Source not found");
     m
 }
 
@@ -139,6 +153,30 @@ fn action_key(action: &str) -> &'static str {
         "snoozed" => "status.snoozed",
         "clicked" => "status.viewed",
         _ => "status.viewed", // fallback, 不应到达
+    }
+}
+
+/// 翻译 err.* 格式的错误文本（与前端 translateError 保持一致）
+fn translate_error_str(raw: &str, dict: &HashMap<&'static str, &'static str>) -> String {
+    let msg = raw.trim_start_matches("Error: ");
+    if !msg.starts_with("err.") {
+        return raw.to_string();
+    }
+    let parts: Vec<&str> = msg.split('|').collect();
+    if parts.is_empty() {
+        return raw.to_string();
+    }
+    let key = parts[0];
+    let args = &parts[1..];
+    match dict.get(key) {
+        Some(template) => {
+            let mut text = template.to_string();
+            for (i, arg) in args.iter().enumerate() {
+                text = text.replace(&format!("{{{}}}", i), arg);
+            }
+            text
+        }
+        None => raw.to_string(),
     }
 }
 
@@ -184,7 +222,14 @@ pub fn render(key: &str, args_json: &str, locale: &str) -> String {
             continue; // 已在上面处理
         }
         let val_str = match v {
-            Value::String(s) => s.clone(),
+            Value::String(s) => {
+                // 翻译 err.* 格式的错误文本，使 rendered_message 包含用户可读文本
+                if s.starts_with("err.") || s.starts_with("Error: err.") {
+                    translate_error_str(s, &dict)
+                } else {
+                    s.clone()
+                }
+            }
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             other => other.to_string(),

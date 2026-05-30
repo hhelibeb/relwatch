@@ -176,6 +176,10 @@ export default {
   'context.open': 'Open',
   'context.copy_link': 'Copy Link',
   'context.copy': 'Copy',
+  'context.cut': 'Cut',
+  'context.paste': 'Paste',
+  'context.select_all': 'Select All',
+  'context.copy_summary': 'Copy Summary',
 
   'source.added': 'Source added: {source_type} {owner}/{repo}',
   'source.removed': 'Source removed: {owner}/{repo} id={id}',

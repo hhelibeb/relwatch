@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide } from 'vue'
 import { ShowToastKey } from './injection-keys'
+import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
+import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { listen } from '@tauri-apps/api/event'
 import { type Source, listSources } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
@@ -60,11 +62,44 @@ const toastVisible = ref(false)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
 
 const selectionMenu = ref<{ x: number; y: number } | null>(null)
-function closeSelectionMenu() { selectionMenu.value = null }
+const inputContextMenu = ref<{ x: number; y: number; target: HTMLElement } | null>(null)
+const inputMenuItems: ContextMenuItem[] = [
+  { id: 'cut', label: t('context.cut') },
+  { id: 'copy', label: t('context.copy') },
+  { id: 'paste', label: t('context.paste') },
+  { id: 'selectAll', label: t('context.select_all') },
+]
+
+function closeAllMenus() {
+  selectionMenu.value = null
+  inputContextMenu.value = null
+}
+
 async function handleCopySelection() {
   const text = window.getSelection()?.toString().trim()
   if (text) { try { await navigator.clipboard.writeText(text) } catch { /* ignore */ } }
-  closeSelectionMenu()
+  closeAllMenus()
+}
+
+async function execInputAction(actionId: string) {
+  const el = inputContextMenu.value?.target
+  if (!el) return
+  inputContextMenu.value = null
+  el.focus()
+  if (actionId === 'cut') {
+    document.execCommand('cut')
+  } else if (actionId === 'copy') {
+    document.execCommand('copy')
+  } else if (actionId === 'paste') {
+    try {
+      const text = await readText()
+      document.execCommand('insertText', false, text)
+    } catch {
+      // 静默失败
+    }
+  } else if (actionId === 'selectAll') {
+    document.execCommand('selectAll')
+  }
 }
 
 function showToast(msg: string) {
@@ -223,6 +258,14 @@ onMounted(async () => {
   startCountdown()
 
   const handleContextMenu = (e: MouseEvent) => {
+    const target = e.target as HTMLElement
+    const tag = target.tagName
+    // 输入元素：显示自定义剪切/复制/粘贴/全选菜单
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
+      e.preventDefault()
+      inputContextMenu.value = { x: e.clientX, y: e.clientY, target }
+      return
+    }
     const selection = window.getSelection()
     const selected = selection && selection.toString().trim()
     if (selected) {
@@ -235,8 +278,8 @@ onMounted(async () => {
   document.addEventListener('contextmenu', handleContextMenu)
   unlisteners.push(() => document.removeEventListener('contextmenu', handleContextMenu))
 
-  document.addEventListener('click', closeSelectionMenu)
-  unlisteners.push(() => document.removeEventListener('click', closeSelectionMenu))
+  document.addEventListener('click', closeAllMenus)
+  unlisteners.push(() => document.removeEventListener('click', closeAllMenus))
 
   const navigateUnlisten = await listen<string>('navigate', (event) => {
     if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {
@@ -307,6 +350,7 @@ onUnmounted(() => {
     <div v-if="selectionMenu" class="context-menu" :style="{ left: selectionMenu.x + 'px', top: selectionMenu.y + 'px' }" @click.stop>
       <button @click="handleCopySelection">{{ t('context.copy') }}</button>
     </div>
+    <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" />
   </div>
 </template>
 

@@ -176,6 +176,10 @@ export default {
   'context.open': '打开',
   'context.copy_link': '复制链接',
   'context.copy': '复制',
+  'context.cut': '剪切',
+  'context.paste': '粘贴',
+  'context.select_all': '全选',
+  'context.copy_summary': '复制摘要',
 
   'source.added': '添加监控源: {source_type} {owner}/{repo}',
   'source.removed': '移除监控源 {owner}/{repo} id={id}',

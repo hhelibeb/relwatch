@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, inject, onMounted, onUnmounted } from 'vue'
-import ContextMenu from './common/ContextMenu.vue'
+import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { ShowToastKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
@@ -57,7 +57,30 @@ const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
 
 function closeMenus() {
   contextMenu.value = null
+  summaryContextMenu.value = null
   summaryTooltip.value = null
+}
+
+const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
+const summaryMenuItems: ContextMenuItem[] = [
+  { id: 'copySummary', label: t('context.copy_summary') },
+]
+
+function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
+  if (!text) return
+  summaryContextMenu.value = { x: e.clientX, y: e.clientY, text }
+}
+
+async function handleCopySummary() {
+  if (!summaryContextMenu.value?.text) return
+  try { await navigator.clipboard.writeText(summaryContextMenu.value.text) } catch { /* ignore */ }
+  summaryContextMenu.value = null
+}
+
+function handleSummaryMenuAction(actionId: string) {
+  if (actionId === 'copySummary') {
+    handleCopySummary()
+  }
 }
 onMounted(() => document.addEventListener('click', closeMenus))
 onUnmounted(() => document.removeEventListener('click', closeMenus))
@@ -159,6 +182,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         @mouseleave="hideSummaryTooltip"
         @focus="handleSummaryFocus($event, release.ai_summary)"
         @blur="hideSummaryTooltip"
+        @contextmenu.prevent.stop="handleSummaryContextMenu($event, release.ai_summary)"
       >{{ release.ai_summary }}</span>
     </div>
     <div class="release-actions">
@@ -172,6 +196,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   </div>
 
   <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" />
+  <ContextMenu v-if="summaryContextMenu" :x="summaryContextMenu.x" :y="summaryContextMenu.y" :items="summaryMenuItems" @action="handleSummaryMenuAction" />
 
   <!-- 摘要悬浮提示 -->
   <div
