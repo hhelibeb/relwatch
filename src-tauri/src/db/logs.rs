@@ -301,11 +301,11 @@ mod tests {
         assert_eq!(entries[0].level, "INFO");
 
         // "all" 不过滤
-        let (entries, total) = search_logs(&conn, "", Some("all"), 1, 10).unwrap();
+        let (_entries, total) = search_logs(&conn, "", Some("all"), 1, 10).unwrap();
         assert_eq!(total, 3);
 
         // None 不过滤
-        let (entries, total) = search_logs(&conn, "", None, 1, 10).unwrap();
+        let (_entries, total) = search_logs(&conn, "", None, 1, 10).unwrap();
         assert_eq!(total, 3);
     }
 
