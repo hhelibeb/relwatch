@@ -55,6 +55,18 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin({
+            use tauri_plugin_prevent_default::Flags;
+            let keep = if cfg!(debug_assertions) {
+                Flags::FIND | Flags::FOCUS_MOVE | Flags::CONTEXT_MENU
+                    | Flags::DEV_TOOLS | Flags::RELOAD
+            } else {
+                Flags::FIND | Flags::FOCUS_MOVE | Flags::CONTEXT_MENU
+            };
+            tauri_plugin_prevent_default::Builder::new()
+                .with_flags(Flags::all().difference(keep))
+                .build()
+        })
         .manage(AppState {
             db: pool,
             next_poll_at: next_poll.clone(),
