@@ -156,6 +156,7 @@ export default {
 
   'log.search': 'Search logs...',
   'log.clear': 'Clear logs',
+  'log.clear_confirm': 'Are you sure you want to clear all logs? This action cannot be undone.',
   'log.no_match': 'No matching logs',
   'log.no_records': 'No log entries.',
   'log.clear_failed': 'Failed to clear: ',

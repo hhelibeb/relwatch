@@ -156,6 +156,7 @@ export default {
 
   'log.search': '搜索日志...',
   'log.clear': '清空日志',
+  'log.clear_confirm': '确定要清空所有操作日志吗？此操作不可撤销。',
   'log.no_match': '无匹配日志',
   'log.no_records': '暂无日志记录。',
   'log.clear_failed': '清空失败: ',

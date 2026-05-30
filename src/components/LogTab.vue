@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue'
-import { message } from '@tauri-apps/plugin-dialog'
+import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { type LogEntry, searchLogs, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
 import { translateError } from '../api/client'
@@ -108,6 +108,8 @@ function renderMessage(entry: LogEntry): string {
 }
 
 async function handleClearLogs() {
+  const confirmed = await confirm(t('log.clear_confirm'), { title: t('log.clear'), kind: 'warning' })
+  if (!confirmed) return
   try {
     await clearLogs()
     currentPage.value = 1
