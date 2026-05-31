@@ -109,10 +109,10 @@ describe('translateError', () => {
     expect(translateError('Error: err.source.not_found')).toBe('err.source.not_found')
   })
 
-  it('不以 "err." 开头时返回原始字符串（含 Error: 前缀），不调用 t()', async () => {
+  it('不以 "err." 开头时返回去除 Error: 前缀后的消息，不调用 t()', async () => {
     const { t } = await import('../i18n')
-    // translateError 在非 err. 前缀时返回 raw（含 Error:），而非 msg
-    expect(translateError('Error: something went wrong')).toBe('Error: something went wrong')
+    // translateError 移除 Error: 前缀后，非 err. 前缀返回 msg
+    expect(translateError('Error: something went wrong')).toBe('something went wrong')
     expect(t).not.toHaveBeenCalled()
   })
 
@@ -122,9 +122,9 @@ describe('translateError', () => {
     expect(t).not.toHaveBeenCalled()
   })
 
-  it('仅 "Error: " 前缀无内容返回原字符串', () => {
-    // 同上：非 err. 前缀返回 raw
-    expect(translateError('Error: ')).toBe('Error: ')
+  it('仅 "Error: " 前缀无内容返回空字符串', () => {
+    // 移除 Error: 前缀后为空，非 err. 前缀返回 ""
+    expect(translateError('Error: ')).toBe('')
   })
 
   it('带 pipe 分隔的参数传递给 t()', async () => {

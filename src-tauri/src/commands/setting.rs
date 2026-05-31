@@ -126,6 +126,9 @@ pub fn update_settings(
             (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
             (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, &fetch_history_count.to_string(), "setting.fetch_history_count"),
             (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
+            // 不在此处触发 rendered_message 回填：这是有意为之的 locale-frozen 设计。
+            // 切换语言后日志搜索仅对新写入的行生效，旧行以原 locale 的 rendered_message 存在。
+            // 参见 write_log_key 中的注释了解设计取舍。
             (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
         ],
     )?;

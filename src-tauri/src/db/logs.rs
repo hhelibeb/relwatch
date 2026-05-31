@@ -24,6 +24,10 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     let now = chrono::Utc::now().to_rfc3339();
 
     // 读取用户语言设置，渲染翻译文本用于搜索
+    // 注意：rendered_message 在写入时固定了当前 locale。切换语言后已有日志行
+    // 的 rendered_message 不会自动重新渲染，导致关键词搜索只能命中当前语言的行。
+    // 这是有意为之的设计决策（locale-frozen），避免每次语言切换都触发全表回填。
+    // 远期方案：改为惰性渲染，搜索时从 message_key + message_args 实时计算展示文本。
     let locale = crate::db::settings::get_setting_str(conn, crate::db::settings::KEY_LANGUAGE, "zh-CN")
         .unwrap_or_else(|_| "zh-CN".to_string());
     let rendered = crate::i18n::render(key, args, &locale);
@@ -172,6 +176,7 @@ pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
             Ok(n) => updated += n,
             Err(e) => {
                 eprintln!("[migration] backfill row {id} failed: {e}");
+                return Err(format!("backfill row {id} failed: {e}"));
             }
         }
     }

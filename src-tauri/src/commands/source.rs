@@ -35,7 +35,7 @@ pub async fn add_source(
             Ok(c) => c,
             Err(e) => {
                 db::logs::write_log_key(
-                    &conn, "WARN", "source.add_failed",
+                    &conn, "ERROR", "source.add_failed",
                     &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &e}).to_string(),
                 );
                 return Err(e);
@@ -43,12 +43,13 @@ pub async fn add_source(
         };
         description = match github::fetch_repo_info(&client, &owner, &repo).await {
             Ok(d) => d,
-            Err(e) => {
+            Err((status, msg)) => {
+                let level = if status == 403 { "WARN" } else { "ERROR" };
                 db::logs::write_log_key(
-                    &conn, "WARN", "source.add_failed",
-                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &e}).to_string(),
+                    &conn, level, "source.add_failed",
+                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
                 );
-                return Err(e);
+                return Err(msg);
             }
         };
     }
@@ -263,20 +264,20 @@ mod tests {
     }
 
     #[test]
-    fn test_add_source_failure_writes_warn_log() {
+    fn test_add_source_failure_writes_log() {
         let conn = init_memory_db().unwrap();
 
-        // 模拟 add_source 中 fetch_repo_info 失败时的 WARN 日志写入
+        // 模拟 add_source 中 fetch_repo_info 失败时的日志写入（404 → ERROR）
         db::logs::write_log_key(
             &conn,
-            "WARN",
+            "ERROR",
             "source.add_failed",
             &serde_json::json!({"source_type":"github","owner":"o","repo":"r","error":"404 Not Found"}).to_string(),
         );
 
         let logs = db::logs::get_logs(&conn, 10).unwrap();
         assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].level, "WARN");
+        assert_eq!(logs[0].level, "ERROR");
         assert_eq!(logs[0].message_key.as_deref(), Some("source.add_failed"));
         assert!(logs[0].rendered_message.as_deref().unwrap().contains("404"));
     }

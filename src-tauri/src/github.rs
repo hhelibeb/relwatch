@@ -62,23 +62,24 @@ pub async fn fetch_repo_info(
     client: &reqwest::Client,
     owner: &str,
     repo: &str,
-) -> Result<String, String> {
+) -> Result<String, (u16, String)> {
     let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
     let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("err.repo_verify_failed|{}", e))?;
+        .map_err(|e| (0, format!("err.repo_verify_failed|{}", e)))?;
     if resp.status() == 404 {
-        return Err(format!("err.repo_not_found|{}|{}", owner, repo));
+        return Err((404, format!("err.repo_not_found|{}|{}", owner, repo)));
     }
     if !resp.status().is_success() {
-        return Err(format!("err.repo_api_error|{}", resp.status().as_u16()));
+        let code = resp.status().as_u16();
+        return Err((code, format!("err.repo_api_error|{}", code)));
     }
     let info: serde_json::Value = resp
         .json()
         .await
-        .map_err(|_| "Failed to parse repo info".to_string())?;
+        .map_err(|_| (0, "Failed to parse repo info".to_string()))?;
     Ok(info["description"].as_str().unwrap_or("").to_string())
 }
 

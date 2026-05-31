@@ -3,6 +3,9 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri::Emitter;
 
+/// 连续失败超过此次数后自动禁用监控源，防止无限重试
+const MAX_CONSECUTIVE_FAILURES: i64 = 3;
+
 use crate::db;
 use crate::db::settings::{
     KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
@@ -326,6 +329,31 @@ async fn do_poll_async(app: tauri::AppHandle) {
         github_token = get_github_token(&conn);
         fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
         fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
+    }
+
+    // 自动禁用连续失败过多的监控源（断路器）
+    {
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db.get() {
+            for source in &sources {
+                if source.enabled && source.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    let _ = db::sources::update_source(&conn, source.id, false, source.poll_interval_minutes);
+                    db::logs::write_log_key(
+                        &conn,
+                        "WARN",
+                        "source.log_paused",
+                        &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": source.id}).to_string(),
+                    );
+                    log::warn!(
+                        "自动禁用 {}/{} (id={})：连续失败 {} 次",
+                        source.owner,
+                        source.repo,
+                        source.id,
+                        source.consecutive_failures
+                    );
+                }
+            }
+        }
     }
 
     let enabled: Vec<db::sources::Source> =

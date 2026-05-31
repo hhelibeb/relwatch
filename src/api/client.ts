@@ -4,7 +4,7 @@ import { t } from '../i18n'
 
 export function translateError(raw: string): string {
   const msg = raw.replace(/^Error:\s*/, '')
-  if (!msg.startsWith('err.')) return raw
+  if (!msg.startsWith('err.')) return msg
   const parts = msg.split('|')
   const key = parts[0]
   const args = parts.slice(1)

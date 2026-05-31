@@ -227,25 +227,27 @@ fn migrate(conn: &Connection) -> Result<()> {
         .and_then(|mut s| s.exists([]))
         .unwrap_or(false);
     if !has_rendered {
+        // 创建新列
         conn.execute_batch(
             "ALTER TABLE logs ADD COLUMN rendered_message TEXT;"
         )?;
-    }
 
-    // 清理之前错误写入的 raw template（含未替换的占位符）
-    let _ = conn.execute(
-        "UPDATE logs SET rendered_message = NULL WHERE rendered_message LIKE '%{%}%'",
-        [],
-    );
+        // 一次性清理：之前错误写入的 raw template（含未替换的 {key} 占位符）
+        // 仅在首次添加列时执行，避免重复 NULL → backfill → 再次 NULL 的循环
+        let _ = conn.execute(
+            "UPDATE logs SET rendered_message = NULL WHERE rendered_message LIKE '%{%}%'",
+            [],
+        );
 
-    // 回填已有日志的 rendered_message（一次性操作）
-    match super::logs::backfill_rendered_messages(conn) {
-        Ok(n) if n > 0 => {
-            log::info!("已回填 {} 条日志的 rendered_message", n);
-        }
-        Ok(_) => {}
-        Err(e) => {
-            log::error!("回填 rendered_message 失败: {}", e);
+        // 一次性回填已有日志的 rendered_message
+        match super::logs::backfill_rendered_messages(conn) {
+            Ok(n) if n > 0 => {
+                log::info!("已回填 {} 条日志的 rendered_message", n);
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("回填 rendered_message 失败: {}", e);
+            }
         }
     }
 
