@@ -7,14 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-- Log tab keyword search with pagination (50 entries per page).
-- Customizable AI prompt for release summary generation.
-- Configurable notification threshold to control alert frequency.
-- `deepseek_proxy_bypass` setting to route AI API calls directly, bypassing the system proxy.
+## [1.3.0] - 2026-05-31
 
-### Changed
-- AI settings UI now shows conditionally based on enabled features.
+### Added
+- Log entry search with i18n-rendered message field for keyword matching.
+- Log level filtering (INFO / WARN / ERROR) with enhanced error level classification for different failure scenarios.
+- Confirmation dialog before clearing all logs.
+- Right-click context menus for input fields (cut/copy/paste/select all) and AI summary text (copy).
+- Automatic source disabling after 3 consecutive fetch failures (circuit breaker); HTTP status codes are propagated into error logs for better diagnostics.
+
+### Fixed
+- Discard button now correctly restores the language and theme live preview.
+- Discard changes only resets preview when language or theme has unsaved changes.
+- Release search bar TypeScript type error.
+- Browser keyboard shortcuts (Ctrl+S, F5, F12, etc.) no longer interfere with the application.
 
 ## [1.2.4] - 2026-04-27
 
@@ -108,7 +114,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/hhelibeb/relwatch/compare/v1.2.6...v1.3.0
 [1.2.4]: https://github.com/hhelibeb/relwatch/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/hhelibeb/relwatch/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/hhelibeb/relwatch/compare/v1.2.1...v1.2.2
