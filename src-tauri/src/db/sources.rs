@@ -111,11 +111,20 @@ pub fn update_source(
     poll_interval_minutes: i64,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
-        "UPDATE sources SET enabled = ?1, poll_interval_minutes = ?2, updated_at = ?3 WHERE id = ?4",
-        params![enabled as i64, poll_interval_minutes, now, id],
-    )
-    .map_err(|e| e.to_string())?;
+    if enabled {
+        // 手动重新启用时重置连续失败计数，避免一次失败即再次被断路器禁用
+        conn.execute(
+            "UPDATE sources SET enabled = 1, poll_interval_minutes = ?1, consecutive_failures = 0, updated_at = ?2 WHERE id = ?3",
+            params![poll_interval_minutes, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE sources SET enabled = 0, poll_interval_minutes = ?1, updated_at = ?2 WHERE id = ?3",
+            params![poll_interval_minutes, now, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     Ok(())
 }
 
@@ -301,6 +310,28 @@ mod tests {
         let s = &list_sources(&conn).unwrap()[0];
         assert!(!s.enabled);
         assert_eq!(s.poll_interval_minutes, 60);
+    }
+
+    #[test]
+    fn test_re_enable_resets_consecutive_failures() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
+
+        // 模拟连续失败累积
+        for _ in 0..3 {
+            record_check_failure(&conn, id, "fail").unwrap();
+        }
+        let s = &list_sources(&conn).unwrap()[0];
+        assert_eq!(s.consecutive_failures, 3);
+
+        // 断路器禁用
+        update_source(&conn, id, false, 60).unwrap();
+
+        // 用户手动重新启用 — 应重置连续失败计数
+        update_source(&conn, id, true, 60).unwrap();
+        let s = &list_sources(&conn).unwrap()[0];
+        assert!(s.enabled);
+        assert_eq!(s.consecutive_failures, 0, "re-enable 后 consecutive_failures 应重置为 0");
     }
 
     #[test]

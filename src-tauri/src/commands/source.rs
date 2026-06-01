@@ -44,7 +44,7 @@ pub async fn add_source(
         description = match github::fetch_repo_info(&client, &owner, &repo).await {
             Ok(d) => d,
             Err((status, msg)) => {
-                let level = if status == 403 { "WARN" } else { "ERROR" };
+                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
                 db::logs::write_log_key(
                     &conn, level, "source.add_failed",
                     &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),

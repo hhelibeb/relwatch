@@ -11,6 +11,7 @@ fn zh_cn() -> HashMap<&'static str, &'static str> {
     m.insert("source.removed",             "移除监控源 {owner}/{repo} id={id}");
     m.insert("source.removed_unknown",     "移除监控源 id={id}");
     m.insert("source.log_paused",          "暂停监控源 {owner}/{repo} id={id}");
+    m.insert("source.log_auto_disabled",   "自动禁用监控源 {owner}/{repo} id={id}（连续失败）");
     m.insert("source.log_resumed",         "恢复监控源 {owner}/{repo} id={id}");
     m.insert("source.log_muted",           "静默监控源 {owner}/{repo} id={id}");
     m.insert("source.log_unmuted",         "取消静默监控源 {owner}/{repo} id={id}");
@@ -68,6 +69,9 @@ fn zh_cn() -> HashMap<&'static str, &'static str> {
     m.insert("err.repo_not_found",     "不存在该仓库");
     m.insert("err.repo_verify_failed", "验证仓库失败: {0}");
     m.insert("err.repo_api_error",     "GitHub API 返回 {0}");
+    m.insert("err.request_failed",     "网络请求失败: {0}");
+    m.insert("err.api_error",          "GitHub API 返回 {0} {1}");
+    m.insert("err.parse_failed",       "解析响应失败: {0}");
     m.insert("err.poll_in_progress",   "轮询正在进行中，请稍后再试");
     m.insert("err.unsupported_source", "不支持的监控源类型: {0}");
     m.insert("err.source_not_found",   "监控源不存在");
@@ -82,6 +86,7 @@ fn en_us() -> HashMap<&'static str, &'static str> {
     m.insert("source.removed",             "Source removed: {owner}/{repo} id={id}");
     m.insert("source.removed_unknown",     "Source removed: id={id}");
     m.insert("source.log_paused",          "Source paused: {owner}/{repo} id={id}");
+    m.insert("source.log_auto_disabled",   "Source auto-disabled: {owner}/{repo} id={id} (consecutive failures)");
     m.insert("source.log_resumed",         "Source resumed: {owner}/{repo} id={id}");
     m.insert("source.log_muted",           "Source muted: {owner}/{repo} id={id}");
     m.insert("source.log_unmuted",         "Source unmuted: {owner}/{repo} id={id}");
@@ -139,6 +144,9 @@ fn en_us() -> HashMap<&'static str, &'static str> {
     m.insert("err.repo_not_found",     "Repository not found");
     m.insert("err.repo_verify_failed", "Failed to verify repo: {0}");
     m.insert("err.repo_api_error",     "GitHub API returned {0}");
+    m.insert("err.request_failed",     "Request failed: {0}");
+    m.insert("err.api_error",          "GitHub API returned {0} {1}");
+    m.insert("err.parse_failed",       "Failed to parse response: {0}");
     m.insert("err.poll_in_progress",   "Poll in progress, please try again later");
     m.insert("err.unsupported_source", "Unsupported source type: {0}");
     m.insert("err.source_not_found",   "Source not found");
@@ -367,6 +375,14 @@ mod tests {
             r#"{"owner":"user","repo":"repo","id":"3"}"#,
             "zh-CN");
         assert_eq!(r, "暂停监控源 user/repo id=3");
+    }
+
+    #[test]
+    fn test_render_source_log_auto_disabled() {
+        let r = render("source.log_auto_disabled",
+            r#"{"owner":"user","repo":"repo","id":"3"}"#,
+            "zh-CN");
+        assert_eq!(r, "自动禁用监控源 user/repo id=3（连续失败）");
     }
 
     #[test]

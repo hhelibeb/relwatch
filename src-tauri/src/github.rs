@@ -20,13 +20,13 @@ async fn fetch_releases_inner(
         .get(&url)
         .send()
         .await
-        .map_err(|e| (0, format!("请求失败: {}", e)))?;
+        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("GitHub API 返回 {} {}", status, reason)));
+        return Err((status, format!("err.api_error|{}|{}", status, reason)));
     }
-    resp.json().await.map_err(|e| (status, format!("解析失败: {}", e)))
+    resp.json().await.map_err(|e| (status, format!("err.parse_failed|{}", e)))
 }
 
 async fn fetch_releases_with_retry(
@@ -79,7 +79,7 @@ pub async fn fetch_repo_info(
     let info: serde_json::Value = resp
         .json()
         .await
-        .map_err(|_| (0, "Failed to parse repo info".to_string()))?;
+        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
     Ok(info["description"].as_str().unwrap_or("").to_string())
 }
 

@@ -4,7 +4,7 @@ import { ShowToastKey } from '../injection-keys'
 import { message } from '@tauri-apps/plugin-dialog'
 import { type Source, parseGitHubUrl, addSource, removeSource, updateSource } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
-import { openReleaseUrl } from '../api/client'
+import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import ContextMenu from './common/ContextMenu.vue'
 import { t, tm } from '../i18n'
@@ -269,8 +269,8 @@ function hideHealthTooltip() {
               </span>
             </template>
           </div>
-          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error" :title="source.last_check_message">
-            {{ source.last_check_message }}
+          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error" :title="translateError(source.last_check_message)">
+            {{ translateError(source.last_check_message) }}
           </div>
         </div>
         <div class="source-actions">

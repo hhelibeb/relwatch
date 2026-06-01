@@ -209,7 +209,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             let state = app.state::<AppState>();
             let conn = state.db.get().unwrap();
             let _ = db::sources::record_check_failure(&conn, source_obj.id, &msg);
-            let level = if status == 403 { "WARN" } else { "ERROR" };
+            // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
+            let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
             db::logs::write_log_key(
                 &conn,
                 level,
@@ -341,7 +342,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
                     db::logs::write_log_key(
                         &conn,
                         "WARN",
-                        "source.log_paused",
+                        "source.log_auto_disabled",
                         &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": source.id}).to_string(),
                     );
                     log::warn!(
@@ -351,6 +352,12 @@ async fn do_poll_async(app: tauri::AppHandle) {
                         source.id,
                         source.consecutive_failures
                     );
+                    let _ = app.emit("source-auto-disabled", serde_json::json!({
+                        "owner": &source.owner,
+                        "repo": &source.repo,
+                        "id": source.id,
+                        "failures": source.consecutive_failures,
+                    }));
                 }
             }
         }
@@ -480,7 +487,7 @@ async fn poll_all_sources_async(
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
                     let _ = db::sources::record_check_failure(&conn, source.id, &msg);
-                    let level = if status == 403 { "WARN" } else { "ERROR" };
+                    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
                     db::logs::write_log_key(
                         &conn,
                         level,

@@ -63,12 +63,12 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
 
 const selectionMenu = ref<{ x: number; y: number } | null>(null)
 const inputContextMenu = ref<{ x: number; y: number; target: HTMLElement } | null>(null)
-const inputMenuItems: ContextMenuItem[] = [
+const inputMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'cut', label: t('context.cut') },
   { id: 'copy', label: t('context.copy') },
   { id: 'paste', label: t('context.paste') },
   { id: 'selectAll', label: t('context.select_all') },
-]
+])
 
 function closeAllMenus() {
   selectionMenu.value = null
@@ -301,6 +301,13 @@ onMounted(async () => {
     refreshLogs()
   })
   unlisteners.push(stateUnlisten)
+
+  const autoDisabledUnlisten = await listen<{ owner: string; repo: string; failures: number }>('source-auto-disabled', (event) => {
+    showToast(t('app.source_auto_disabled', event.payload.owner, event.payload.repo, String(event.payload.failures)))
+    loadSources()
+    refreshLogs()
+  })
+  unlisteners.push(autoDisabledUnlisten)
 })
 
 onUnmounted(() => {
