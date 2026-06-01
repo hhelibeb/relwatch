@@ -6,6 +6,7 @@ import { type NotificationStatus, type ReleaseInfo, setNotificationState } from 
 import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
+import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 
 defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: [] }>()
@@ -68,6 +69,7 @@ const summaryMenuItems: ContextMenuItem[] = [
 
 function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
   if (!text) return
+  closeAllContextMenus()
   summaryContextMenu.value = { x: e.clientX, y: e.clientY, text }
 }
 
@@ -82,10 +84,17 @@ function handleSummaryMenuAction(actionId: string) {
     handleCopySummary()
   }
 }
-onMounted(() => document.addEventListener('click', closeMenus))
-onUnmounted(() => document.removeEventListener('click', closeMenus))
+onMounted(() => {
+  registerCloser(closeMenus)
+  document.addEventListener('click', closeMenus)
+})
+onUnmounted(() => {
+  unregisterCloser(closeMenus)
+  document.removeEventListener('click', closeMenus)
+})
 
 function releaseContextMenu(e: MouseEvent, url: string) {
+  closeAllContextMenus()
   contextMenu.value = { x: e.clientX, y: e.clientY, url }
 }
 

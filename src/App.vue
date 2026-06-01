@@ -8,6 +8,7 @@ import { type Source, listSources } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
 import { type AppSettings, getSettings } from './api/settings'
 import { t, setLocale } from './i18n'
+import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
 import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
@@ -263,6 +264,7 @@ onMounted(async () => {
     // 输入元素：显示自定义剪切/复制/粘贴/全选菜单
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
       e.preventDefault()
+      closeAllContextMenus()
       inputContextMenu.value = { x: e.clientX, y: e.clientY, target }
       return
     }
@@ -270,6 +272,7 @@ onMounted(async () => {
     const selected = selection && selection.toString().trim()
     if (selected) {
       e.preventDefault()
+      closeAllContextMenus()
       selectionMenu.value = { x: e.clientX, y: e.clientY }
       return
     }
@@ -278,8 +281,12 @@ onMounted(async () => {
   document.addEventListener('contextmenu', handleContextMenu)
   unlisteners.push(() => document.removeEventListener('contextmenu', handleContextMenu))
 
+  registerCloser(closeAllMenus)
   document.addEventListener('click', closeAllMenus)
-  unlisteners.push(() => document.removeEventListener('click', closeAllMenus))
+  unlisteners.push(() => {
+    unregisterCloser(closeAllMenus)
+    document.removeEventListener('click', closeAllMenus)
+  })
 
   const navigateUnlisten = await listen<string>('navigate', (event) => {
     if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {

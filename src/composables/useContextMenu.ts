@@ -1,5 +1,6 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { openReleaseUrl } from '../api/client'
+import { registerCloser, unregisterCloser, closeAllContextMenus } from './contextMenuBus'
 
 export function useContextMenu() {
   const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
@@ -9,6 +10,7 @@ export function useContextMenu() {
   }
 
   function handleContextMenu(e: MouseEvent, url: string) {
+    closeAllContextMenus()
     contextMenu.value = { x: e.clientX, y: e.clientY, url }
   }
 
@@ -28,8 +30,14 @@ export function useContextMenu() {
     closeContextMenu()
   }
 
-  onMounted(() => document.addEventListener('click', closeContextMenu))
-  onUnmounted(() => document.removeEventListener('click', closeContextMenu))
+  onMounted(() => {
+    registerCloser(closeContextMenu)
+    document.addEventListener('click', closeContextMenu)
+  })
+  onUnmounted(() => {
+    unregisterCloser(closeContextMenu)
+    document.removeEventListener('click', closeContextMenu)
+  })
 
   return {
     contextMenu,
