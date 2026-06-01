@@ -31,14 +31,14 @@ pub fn stop_poll() {
     POLL_RUNNING.store(false, Ordering::SeqCst);
 }
 
-struct PollGuard;
+pub(crate) struct PollGuard;
 impl Drop for PollGuard {
     fn drop(&mut self) {
         POLL_LOCK.store(false, Ordering::Release);
     }
 }
 
-fn acquire_lock() -> Result<PollGuard, String> {
+pub(crate) fn acquire_lock() -> Result<PollGuard, String> {
     if POLL_LOCK
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
         .is_err()
@@ -813,6 +813,33 @@ mod tests {
         db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &(now - 10 * 60).to_string()).unwrap();
         let result = calc_next_poll(&conn);
         assert_eq!(result, now);
+    }
+
+    #[test]
+    fn test_acquire_lock_succeeds_and_fails() {
+        // Bug #2 相关：验证 pub(crate) acquire_lock API
+        POLL_LOCK.store(false, Ordering::Release);
+
+        // 第一次获取应成功
+        let guard1 = acquire_lock();
+        assert!(guard1.is_ok(), "first acquire should succeed");
+        assert!(POLL_LOCK.load(Ordering::Relaxed));
+
+        // 第二次获取应失败（锁已被持有）
+        let guard2 = acquire_lock();
+        assert!(guard2.is_err(), "second acquire should fail while locked");
+
+        // 释放第一个 guard
+        drop(guard1);
+        assert!(!POLL_LOCK.load(Ordering::Relaxed));
+
+        // 再次获取应成功
+        let guard3 = acquire_lock();
+        assert!(guard3.is_ok(), "acquire should succeed after release");
+
+        // 清理
+        drop(guard3);
+        POLL_LOCK.store(false, Ordering::Release);
     }
 
     #[test]

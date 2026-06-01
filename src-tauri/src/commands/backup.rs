@@ -83,6 +83,10 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
 
     let path_str = path.as_path().unwrap().to_string_lossy().to_string();
 
+    // 持有 poll 锁，防止导入期间轮询线程并发修改数据库
+    let _poll_guard = crate::poll::acquire_lock()
+        .map_err(|_| "导入失败：后台轮询正在进行中，请稍后重试".to_string())?;
+
     // 验证文件是有效的 SQLite 数据库
     validate_sqlite_file(&path_str)?;
 

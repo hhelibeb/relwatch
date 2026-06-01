@@ -118,7 +118,7 @@ pub fn set_notification_state(
         "INSERT INTO notification_state (release_id, status, snooze_until, created_at, updated_at)
          VALUES (?1, ?2, ?3, ?4, ?4)
          ON CONFLICT(release_id) DO UPDATE SET status = ?2, snooze_until = ?3,
-           last_notified_at = CASE WHEN ?2 = 'snoozed' THEN NULL ELSE last_notified_at END,
+           last_notified_at = CASE WHEN ?2 IN ('snoozed', 'pending') THEN NULL ELSE last_notified_at END,
            updated_at = ?4",
         params![release_id, status, snooze_until, now],
     )
@@ -475,6 +475,59 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].ai_summary.as_deref(), Some("该版本新增了重要功能"));
         assert_eq!(pending[0].ai_importance.as_deref(), Some("大"));
+    }
+
+    #[test]
+    fn test_pending_after_notified_then_reset() {
+        // Bug #3 修复验证：将已通知的 release 从 clicked 改回 pending，
+        // last_notified_at 应被清空，release 应重新出现在 pending 列表中
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(
+            &conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None,
+        ).unwrap();
+
+        // 初始状态：pending，应在列表中
+        assert_eq!(get_pending_releases(&conn).unwrap().len(), 1);
+
+        // 模拟通知发送：设置 last_notified_at
+        set_last_notified_at(&conn, rid).unwrap();
+
+        // 用户点击通知：标记为 clicked
+        set_notification_state(&conn, rid, "clicked", None).unwrap();
+        assert_eq!(get_pending_releases(&conn).unwrap().len(), 0);
+
+        // 用户重新标记为 pending：应清空 last_notified_at 并重新出现在列表中
+        set_notification_state(&conn, rid, "pending", None).unwrap();
+        assert_eq!(
+            get_pending_releases(&conn).unwrap().len(),
+            1,
+            "reset to pending should clear last_notified_at and re-include in pending"
+        );
+    }
+
+    #[test]
+    fn test_pending_after_ignored_then_reset() {
+        // Bug #3 修复验证：将已忽略的 release 改回 pending，
+        // last_notified_at 应被清空
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(
+            &conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None,
+        ).unwrap();
+
+        // 模拟通知发送 + 忽略
+        set_last_notified_at(&conn, rid).unwrap();
+        set_notification_state(&conn, rid, "ignored", None).unwrap();
+        assert_eq!(get_pending_releases(&conn).unwrap().len(), 0);
+
+        // 重新标记为 pending：应可重新通知
+        set_notification_state(&conn, rid, "pending", None).unwrap();
+        assert_eq!(
+            get_pending_releases(&conn).unwrap().len(),
+            1,
+            "reset from ignored to pending should clear last_notified_at"
+        );
     }
 
     #[test]

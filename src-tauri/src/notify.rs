@@ -85,86 +85,88 @@ mod inner {
                     if let Some(action) = action {
                         let app = app_handle.clone();
                         let state = app.state::<crate::types::AppState>();
-                        let conn = state.db.get().unwrap();
-
-                        if let Some(rest) = action.strip_prefix("go:") {
-                            let rid: i64 = rest.parse().unwrap_or(0);
-                            let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
-                            let _ = crate::db::releases::set_notification_state(
-                                &conn, rid, "clicked", None,
-                            );
-                            match rel {
-                                Some(r) => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.go",
-                                    &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                ),
-                                None => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.go_unknown",
-                                    &json!({"id": rid}).to_string(),
-                                ),
-                            }
-                            let _ = app.emit("release-state-changed", rid);
-                            drop(conn);
-                            if !go_url.is_empty() {
-                                if let Err(e) = app.opener().open_url(&go_url, None::<&str>) {
-                                    log::error!("打开浏览器失败: {}", e);
-                                } else {
-                                    log::info!("打开浏览器: {}", go_url);
+                        if let Ok(conn) = state.db.get() {
+                            if let Some(rest) = action.strip_prefix("go:") {
+                                let rid: i64 = rest.parse().unwrap_or(0);
+                                let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
+                                let _ = crate::db::releases::set_notification_state(
+                                    &conn, rid, "clicked", None,
+                                );
+                                match rel {
+                                    Some(r) => crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.go",
+                                        &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+                                    ),
+                                    None => crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.go_unknown",
+                                        &json!({"id": rid}).to_string(),
+                                    ),
                                 }
+                                let _ = app.emit("release-state-changed", rid);
+                                drop(conn);
+                                if !go_url.is_empty() {
+                                    if let Err(e) = app.opener().open_url(&go_url, None::<&str>) {
+                                        log::error!("打开浏览器失败: {}", e);
+                                    } else {
+                                        log::info!("打开浏览器: {}", go_url);
+                                    }
+                                }
+                            } else if let Some(rest) = action.strip_prefix("ignore:") {
+                                let rid: i64 = rest.parse().unwrap_or(0);
+                                let rel =
+                                    crate::db::releases::get_release(&conn, rid).ok().flatten();
+                                let _ = crate::db::releases::set_notification_state(
+                                    &conn, rid, "ignored", None,
+                                );
+                                match rel {
+                                    Some(r) => crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.ignored",
+                                        &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+                                    ),
+                                    None => crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.ignored_unknown",
+                                        &json!({"id": rid}).to_string(),
+                                    ),
+                                }
+                                let _ = app.emit("release-state-changed", rid);
+                            } else if let Some(rest) = action.strip_prefix("snooze:") {
+                                let rid: i64 = rest.parse().unwrap_or(0);
+                                let rel =
+                                    crate::db::releases::get_release(&conn, rid).ok().flatten();
+                                let until =
+                                    chrono::Utc::now() + chrono::Duration::hours(24);
+                                let _ = crate::db::releases::set_notification_state(
+                                    &conn,
+                                    rid,
+                                    "snoozed",
+                                    Some(&until.to_rfc3339()),
+                                );
+                                match rel {
+                                    Some(r) => crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.snoozed",
+                                        &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+                                    ),
+                                    None => crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.snoozed_unknown",
+                                        &json!({"id": rid}).to_string(),
+                                    ),
+                                }
+                                let _ = app.emit("release-state-changed", rid);
                             }
-                        } else if let Some(rest) = action.strip_prefix("ignore:") {
-                            let rid: i64 = rest.parse().unwrap_or(0);
-                            let rel =
-                                crate::db::releases::get_release(&conn, rid).ok().flatten();
-                            let _ = crate::db::releases::set_notification_state(
-                                &conn, rid, "ignored", None,
-                            );
-                            match rel {
-                                Some(r) => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.ignored",
-                                    &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                ),
-                                None => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.ignored_unknown",
-                                    &json!({"id": rid}).to_string(),
-                                ),
-                            }
-                            let _ = app.emit("release-state-changed", rid);
-                        } else if let Some(rest) = action.strip_prefix("snooze:") {
-                            let rid: i64 = rest.parse().unwrap_or(0);
-                            let rel =
-                                crate::db::releases::get_release(&conn, rid).ok().flatten();
-                            let until =
-                                chrono::Utc::now() + chrono::Duration::hours(24);
-                            let _ = crate::db::releases::set_notification_state(
-                                &conn,
-                                rid,
-                                "snoozed",
-                                Some(&until.to_rfc3339()),
-                            );
-                            match rel {
-                                Some(r) => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.snoozed",
-                                    &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                ),
-                                None => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.snoozed_unknown",
-                                    &json!({"id": rid}).to_string(),
-                                ),
-                            }
-                            let _ = app.emit("release-state-changed", rid);
+                        } else {
+                            log::error!("通知回调无法获取数据库连接");
                         }
                     }
                     Ok(())
@@ -247,28 +249,31 @@ mod inner {
                 match action {
                     "go" => {
                         let state = app.state::<crate::types::AppState>();
-                        let conn = state.db.get().unwrap();
-                        let rel =
-                            crate::db::releases::get_release(&conn, rid).ok().flatten();
-                        let _ = crate::db::releases::set_notification_state(
-                            &conn, rid, "clicked", None,
-                        );
-                        match rel {
-                            Some(r) => crate::db::logs::write_log_key(
-                                &conn,
-                                "INFO",
-                                "release.go",
-                                &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                            ),
-                            None => crate::db::logs::write_log_key(
-                                &conn,
-                                "INFO",
-                                "release.go_unknown",
-                                &serde_json::json!({"id": rid}).to_string(),
-                            ),
+                        if let Ok(conn) = state.db.get() {
+                            let rel =
+                                crate::db::releases::get_release(&conn, rid).ok().flatten();
+                            let _ = crate::db::releases::set_notification_state(
+                                &conn, rid, "clicked", None,
+                            );
+                            match rel {
+                                Some(r) => crate::db::logs::write_log_key(
+                                    &conn,
+                                    "INFO",
+                                    "release.go",
+                                    &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+                                ),
+                                None => crate::db::logs::write_log_key(
+                                    &conn,
+                                    "INFO",
+                                    "release.go_unknown",
+                                    &serde_json::json!({"id": rid}).to_string(),
+                                ),
+                            }
+                            let _ = app.emit("release-state-changed", rid);
+                            drop(conn);
+                        } else {
+                            log::error!("通知回调无法获取数据库连接");
                         }
-                        let _ = app.emit("release-state-changed", rid);
-                        drop(conn);
                         if !go_url.is_empty() {
                             if let Err(e) = app.opener().open_url(&go_url, None::<&str>) {
                                 log::error!("打开浏览器失败: {}", e);
@@ -279,56 +284,62 @@ mod inner {
                     }
                     "ignore" => {
                         let state = app.state::<crate::types::AppState>();
-                        let conn = state.db.get().unwrap();
-                        let rel =
-                            crate::db::releases::get_release(&conn, rid).ok().flatten();
-                        let _ = crate::db::releases::set_notification_state(
-                            &conn, rid, "ignored", None,
-                        );
-                        match rel {
-                            Some(r) => crate::db::logs::write_log_key(
-                                &conn,
-                                "INFO",
-                                "release.ignored",
-                                &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                            ),
-                            None => crate::db::logs::write_log_key(
-                                &conn,
-                                "INFO",
-                                "release.ignored_unknown",
-                                &serde_json::json!({"id": rid}).to_string(),
-                            ),
+                        if let Ok(conn) = state.db.get() {
+                            let rel =
+                                crate::db::releases::get_release(&conn, rid).ok().flatten();
+                            let _ = crate::db::releases::set_notification_state(
+                                &conn, rid, "ignored", None,
+                            );
+                            match rel {
+                                Some(r) => crate::db::logs::write_log_key(
+                                    &conn,
+                                    "INFO",
+                                    "release.ignored",
+                                    &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+                                ),
+                                None => crate::db::logs::write_log_key(
+                                    &conn,
+                                    "INFO",
+                                    "release.ignored_unknown",
+                                    &serde_json::json!({"id": rid}).to_string(),
+                                ),
+                            }
+                            let _ = app.emit("release-state-changed", rid);
+                        } else {
+                            log::error!("通知回调无法获取数据库连接");
                         }
-                        let _ = app.emit("release-state-changed", rid);
                     }
                     "snooze" => {
                         let state = app.state::<crate::types::AppState>();
-                        let conn = state.db.get().unwrap();
-                        let rel =
-                            crate::db::releases::get_release(&conn, rid).ok().flatten();
-                        let until =
-                            chrono::Utc::now() + chrono::Duration::hours(24);
-                        let _ = crate::db::releases::set_notification_state(
-                            &conn,
-                            rid,
-                            "snoozed",
-                            Some(&until.to_rfc3339()),
-                        );
-                        match rel {
-                            Some(r) => crate::db::logs::write_log_key(
+                        if let Ok(conn) = state.db.get() {
+                            let rel =
+                                crate::db::releases::get_release(&conn, rid).ok().flatten();
+                            let until =
+                                chrono::Utc::now() + chrono::Duration::hours(24);
+                            let _ = crate::db::releases::set_notification_state(
                                 &conn,
-                                "INFO",
-                                "release.snoozed",
-                                &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                            ),
-                            None => crate::db::logs::write_log_key(
-                                &conn,
-                                "INFO",
-                                "release.snoozed_unknown",
-                                &serde_json::json!({"id": rid}).to_string(),
-                            ),
+                                rid,
+                                "snoozed",
+                                Some(&until.to_rfc3339()),
+                            );
+                            match rel {
+                                Some(r) => crate::db::logs::write_log_key(
+                                    &conn,
+                                    "INFO",
+                                    "release.snoozed",
+                                    &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+                                ),
+                                None => crate::db::logs::write_log_key(
+                                    &conn,
+                                    "INFO",
+                                    "release.snoozed_unknown",
+                                    &serde_json::json!({"id": rid}).to_string(),
+                                ),
+                            }
+                            let _ = app.emit("release-state-changed", rid);
+                        } else {
+                            log::error!("通知回调无法获取数据库连接");
                         }
-                        let _ = app.emit("release-state-changed", rid);
                     }
                     "__closed" => {
                         // 通知被关闭，无需操作
