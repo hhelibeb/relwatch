@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-06-01
+
+### Fixed
+- 重新启用被自动禁用的监控源后不再因累积的失败计数而被立即再次禁用。
+- 5xx 服务器错误、网络错误、401 认证错误和 429 限流错误统一归为 WARN 级别，避免 ERROR 告警泛滥。
+- 断路器自动禁用监控源的日志文案与手动暂停区分，避免用户混淆。
+- 监控源因连续失败被自动禁用时发送桌面通知。
+- GitHub API 错误提示统一使用国际化键格式，支持多语言翻译。
+- 切换语言后输入框右键菜单标签即时更新。
+
 ## [1.3.0] - 2026-05-31
 
 ### Added
@@ -114,7 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/hhelibeb/relwatch/compare/v1.2.6...v1.3.0
 [1.2.4]: https://github.com/hhelibeb/relwatch/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/hhelibeb/relwatch/compare/v1.2.2...v1.2.3
