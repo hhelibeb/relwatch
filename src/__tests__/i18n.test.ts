@@ -125,6 +125,71 @@ describe('i18n 核心函数', () => {
     })
   })
 
+  // ── translateError（与 Rust translate_error_str 保持一致）─────
+
+  describe('translateError', () => {
+    it('err.repo_not_found — zh-CN', () => {
+      expect(i18n.t('err.repo_not_found')).toBe('不存在该仓库')
+    })
+
+    it('err.repo_not_found — en-US', () => {
+      i18n.setLocale('en-US')
+      expect(i18n.t('err.repo_not_found')).toBe('Repository not found')
+    })
+
+    it('err.repo_verify_failed 带参数', () => {
+      expect(i18n.t('err.repo_verify_failed', 'API token invalid')).toBe('验证仓库失败: API token invalid')
+    })
+
+    it('err.repo_verify_failed 带参数 — en-US', () => {
+      i18n.setLocale('en-US')
+      expect(i18n.t('err.repo_verify_failed', 'API token invalid')).toBe('Failed to verify repo: API token invalid')
+    })
+
+    it('err.repo_api_error 带参数', () => {
+      expect(i18n.t('err.repo_api_error', '404')).toBe('GitHub API 返回 404')
+    })
+
+    it('err.request_failed 带参数', () => {
+      expect(i18n.t('err.request_failed', 'timeout')).toBe('网络请求失败: timeout')
+    })
+
+    it('err.api_error 多参数', () => {
+      expect(i18n.t('err.api_error', '403', 'rate limit')).toBe('GitHub API 返回 403 rate limit')
+    })
+
+    it('err.api_error 多参数 — en-US', () => {
+      i18n.setLocale('en-US')
+      expect(i18n.t('err.api_error', '403', 'rate limit')).toBe('GitHub API returned 403 rate limit')
+    })
+
+    it('err.parse_failed 带参数', () => {
+      expect(i18n.t('err.parse_failed', 'unexpected token')).toBe('解析响应失败: unexpected token')
+    })
+
+    it('err.poll_in_progress — zh-CN', () => {
+      expect(i18n.t('err.poll_in_progress')).toBe('轮询正在进行中，请稍后再试')
+    })
+
+    it('err.poll_in_progress — en-US', () => {
+      i18n.setLocale('en-US')
+      expect(i18n.t('err.poll_in_progress')).toBe('Poll in progress, please try again later')
+    })
+
+    it('err.unsupported_source 带参数', () => {
+      expect(i18n.t('err.unsupported_source', 'gitlab')).toBe('不支持的监控源类型: gitlab')
+    })
+
+    it('err.source_not_found — zh-CN', () => {
+      expect(i18n.t('err.source_not_found')).toBe('监控源不存在')
+    })
+
+    it('err.source_not_found — en-US', () => {
+      i18n.setLocale('en-US')
+      expect(i18n.t('err.source_not_found')).toBe('Source not found')
+    })
+  })
+
   // ── languages ─────────────────────────────────────────────────
 
   describe('languages', () => {

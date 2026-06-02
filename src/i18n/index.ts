@@ -42,6 +42,11 @@ const actionKeys: Record<string, string> = {
   clicked: 'status.viewed',
 }
 
+/** 将字符串中的 setting.\w+ 引用替换为对应的翻译文本 */
+function resolveSettingKeys(text: string): string {
+  return text.replace(/setting\.\w+/g, (match) => t(match))
+}
+
 /** 使用命名参数 {key} 翻译指定 key，支持 action 特殊处理和嵌套 setting.\w+ 解析 */
 export function tm(key: string, args: Record<string, string>): string {
   const msg = messages[locale.value]
@@ -55,7 +60,7 @@ export function tm(key: string, args: Record<string, string>): string {
   Object.entries(args).forEach(([k, v]) => {
     text = text!.replace(`{${k}}`, v)
   })
-  return text.replace(/setting\.\w+/g, (match) => t(match))
+  return resolveSettingKeys(text)
 }
 
 export const languages = [
