@@ -154,7 +154,7 @@ fn en_us() -> HashMap<&'static str, &'static str> {
 }
 
 /// action 状态值 → i18n key 的映射
-fn action_key(action: &str) -> &'static str {
+fn action_to_key(action: &str) -> &'static str {
     match action {
         "pending" => "status.pending",
         "ignored" => "status.ignored",
@@ -219,7 +219,7 @@ pub fn render(key: &str, args_json: &str, locale: &str) -> String {
     // 3. 如果有关键字 action，先翻译 action 值
     let mut text = template.to_string();
     if let Some(action_val) = raw_map.get("action").and_then(|v| v.as_str()) {
-        let ak = action_key(action_val);
+        let ak = action_to_key(action_val);
         let translated_action = dict.get(ak).unwrap_or(&action_val).to_string();
         text = text.replace("{action}", &translated_action);
     }

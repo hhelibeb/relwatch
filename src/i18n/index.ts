@@ -12,6 +12,8 @@ const locale = ref('zh-CN')
 export function setLocale(lang: string) {
   if (messages[lang]) {
     locale.value = lang
+  } else {
+    console.warn(`[i18n] unsupported locale: ${lang}`)
   }
 }
 
@@ -19,6 +21,7 @@ export function getLocale(): string {
   return locale.value
 }
 
+/** 使用位置参数 {0} {1} ... 翻译指定 key */
 export function t(key: string, ...args: string[]): string {
   const msg = messages[locale.value]
   if (!msg) return key
@@ -39,6 +42,7 @@ const actionKeys: Record<string, string> = {
   clicked: 'status.viewed',
 }
 
+/** 使用命名参数 {key} 翻译指定 key，支持 action 特殊处理和嵌套 setting.\w+ 解析 */
 export function tm(key: string, args: Record<string, string>): string {
   const msg = messages[locale.value]
   if (!msg) return key
@@ -57,4 +61,4 @@ export function tm(key: string, args: Record<string, string>): string {
 export const languages = [
   { value: 'zh-CN', label: '中文' },
   { value: 'en-US', label: 'English' },
-]
+] as const

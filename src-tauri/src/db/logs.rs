@@ -28,8 +28,11 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     // 的 rendered_message 不会自动重新渲染，导致关键词搜索只能命中当前语言的行。
     // 这是有意为之的设计决策（locale-frozen），避免每次语言切换都触发全表回填。
     // 远期方案：改为惰性渲染，搜索时从 message_key + message_args 实时计算展示文本。
-    let locale = crate::db::settings::get_setting_str(conn, crate::db::settings::KEY_LANGUAGE, "zh-CN")
-        .unwrap_or_else(|_| "zh-CN".to_string());
+    let locale = crate::db::settings::get_setting_str(
+        conn,
+        crate::db::settings::KEY_LANGUAGE,
+        &crate::db::settings::get_default_language(),
+    ).unwrap_or_else(|_| crate::db::settings::get_default_language());
     let rendered = crate::i18n::render(key, args, &locale);
 
     let _ = conn.execute(
