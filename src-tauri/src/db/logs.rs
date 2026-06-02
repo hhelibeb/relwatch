@@ -33,7 +33,8 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
         crate::db::settings::KEY_LANGUAGE,
         &crate::db::settings::get_default_language(),
     ).unwrap_or_else(|_| crate::db::settings::get_default_language());
-    let rendered = crate::i18n::render(key, args, &locale);
+    let args_value: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
+    let rendered = crate::i18n::render(key, &args_value, &locale);
 
     let _ = conn.execute(
         "INSERT INTO logs (level, message, message_key, message_args, rendered_message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -170,8 +171,9 @@ pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
 
     let mut updated = 0usize;
     for (id, key, args_opt) in &rows {
-        let args = args_opt.as_deref().unwrap_or("{}");
-        let rendered = crate::i18n::render(key, args, &locale);
+        let args_str = args_opt.as_deref().unwrap_or("{}");
+        let args_value: serde_json::Value = serde_json::from_str(args_str).unwrap_or_default();
+        let rendered = crate::i18n::render(key, &args_value, &locale);
         match conn.execute(
             "UPDATE logs SET rendered_message = ?1 WHERE id = ?2",
             params![rendered, id],
