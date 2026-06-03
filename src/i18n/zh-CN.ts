@@ -78,6 +78,7 @@ export default {
   'settings.check_prereleases': '检查预发布版本',
   'settings.fetch_history': '首次查询时拉取历史版本',
   'settings.fetch_history_count': '拉取数量',
+  'settings.fetch_history_count_hint': '设为 0 时拉取全部版本',
   'settings.enable_ai': '启用 AI 版本摘要',
   'settings.api_key': 'API Key',
   'settings.api_key_set': '已设置（留空不修改）',

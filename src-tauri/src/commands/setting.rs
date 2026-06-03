@@ -44,7 +44,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
 
         check_prereleases: get_setting_bool(&conn, KEY_CHECK_PRERELEASES, false)?,
         fetch_history: get_setting_bool(&conn, KEY_FETCH_HISTORY, false)?,
-        fetch_history_count: get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1)?.max(1),
+        fetch_history_count: get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1)?.max(0),
         language: get_setting_str(&conn, KEY_LANGUAGE, &get_default_language())?,
         theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
@@ -84,7 +84,7 @@ pub fn update_settings(
 ) -> Result<(), String> {
     let poll_interval_minutes = payload.poll_interval_minutes.clamp(5, 1440);
     let log_retention_days = payload.log_retention_days.clamp(0, 3650);
-    let fetch_history_count = payload.fetch_history_count.max(1);
+    let fetch_history_count = payload.fetch_history_count.max(0);
 
     let state = app.state::<AppState>();
     let conn = state.db.get().map_err(|e| e.to_string())?;

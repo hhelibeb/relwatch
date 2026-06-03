@@ -25,11 +25,27 @@ pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>, 
         .ok()
         .flatten()
         .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_string());
-    let encrypted_key = db::settings::get_setting(conn, KEY_DEEPSEEK_API_KEY)
-        .ok()
-        .flatten()
-        .filter(|v| !v.is_empty());
-    let api_key = encrypted_key.and_then(|v| crypto::decrypt(&v));
+    let api_key = {
+        let encrypted = db::settings::get_setting(conn, KEY_DEEPSEEK_API_KEY)
+            .ok()
+            .flatten()
+            .filter(|v| !v.is_empty());
+        match encrypted {
+            Some(enc) => {
+                if let Some((plain, new_v2)) = crypto::decrypt_with_migration(&enc) {
+                    if let Some(new_val) = &new_v2 {
+                        if let Err(e) = db::settings::set_setting(conn, KEY_DEEPSEEK_API_KEY, new_val) {
+                            log::warn!("迁移 v1→v2 DeepSeek API Key 回写失败: {}", e);
+                        }
+                    }
+                    Some(plain)
+                } else {
+                    None
+                }
+            }
+            None => None,
+        }
+    };
     let prompt = db::settings::get_setting_str(conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)
         .unwrap_or_else(|_| DEFAULT_DEEPSEEK_PROMPT_EDITABLE.to_string());
     (enabled, model, base_url, api_key, prompt)

@@ -58,6 +58,129 @@ pub async fn fetch_releases(
     fetch_releases_with_retry(client, owner, repo, "https://api.github.com", per_page).await
 }
 
+// ── 分页拉取 ────────────────────────────────────────
+
+/// 从 GitHub API Link header 中提取 `rel="next"` 的 URL。
+///
+/// Link header 格式:
+/// `<https://api.github.com/repos/.../releases?per_page=100&page=2>; rel="next", ...`
+fn parse_next_link(link_header: &str) -> Option<String> {
+    for part in link_header.split(',') {
+        let trimmed = part.trim();
+        if trimmed.contains("rel=\"next\"") {
+            // 提取 <...> 中的 URL
+            let start = trimmed.find('<')?;
+            let end = trimmed.find('>')?;
+            return Some(trimmed[start + 1..end].to_string());
+        }
+    }
+    None
+}
+
+/// 获取单页 releases，返回 (releases, 下一页 URL)。
+async fn fetch_releases_page(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
+    let status = resp.status().as_u16();
+    if !resp.status().is_success() {
+        let reason = resp.status().canonical_reason().unwrap_or("").to_string();
+        return Err((status, format!("err.api_error|{}|{}", status, reason)));
+    }
+
+    let next_url = resp
+        .headers()
+        .get("link")
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_next_link);
+
+    let releases: Vec<serde_json::Value> = resp
+        .json()
+        .await
+        .map_err(|e| (status, format!("err.parse_failed|{}", e)))?;
+
+    Ok((releases, next_url))
+}
+
+/// 单页 + 重试
+async fn fetch_releases_page_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
+    let config = crate::retry::RetryConfig::default();
+    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
+        if e.0 == 403 {
+            return false;
+        }
+        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
+        true
+    }, || async {
+        fetch_releases_page(client, url).await
+    })
+    .await
+}
+
+/// 拉取 releases 直到满足 max_count，自动翻页。
+/// - `None` = 不设上限（拉取全部）
+/// - `Some(n)` = 拉取至少 n 条后停止
+pub async fn fetch_all_releases_with_limit(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    max_count: Option<usize>,
+) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    fetch_all_releases_inner(client, owner, repo, "https://api.github.com", max_count).await
+}
+
+async fn fetch_all_releases_inner(
+    client: &reqwest::Client,
+    owner: &str,
+    repo: &str,
+    api_base: &str,
+    max_count: Option<usize>,
+) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    let first_url = format!(
+        "{}/repos/{}/{}/releases?per_page=100",
+        api_base.trim_end_matches('/'),
+        owner, repo,
+    );
+
+    let mut all_releases = Vec::new();
+    let mut url = first_url;
+
+    loop {
+        let (releases, next_url) = fetch_releases_page_with_retry(client, &url).await?;
+        let count = releases.len();
+        all_releases.extend(releases);
+        log::info!(
+            "分页拉取 {}: 获取 {} 条{}",
+            url,
+            count,
+            next_url.as_ref().map(|_| "，还有下一页").unwrap_or("，已完成"),
+        );
+
+        // 已达到需要的数量上限，提前停止
+        if let Some(limit) = max_count {
+            if all_releases.len() >= limit {
+                log::info!("已获取 {} 条，达到上限 {}，停止翻页", all_releases.len(), limit);
+                break;
+            }
+        }
+
+        match next_url {
+            Some(next) => url = next,
+            None => break,
+        }
+    }
+
+    Ok(all_releases)
+}
+
 pub async fn fetch_repo_info(
     client: &reqwest::Client,
     owner: &str,
@@ -142,7 +265,7 @@ mod tests {
     use super::*;
     use crate::db;
     use wiremock::{MockServer, Mock, ResponseTemplate};
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
 
     fn sample_releases() -> serde_json::Value {
         serde_json::json!([{
@@ -243,6 +366,213 @@ mod tests {
         let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, 429);
+    }
+
+    // ── parse_next_link 测试 ──
+
+    #[test]
+    fn test_parse_next_link_found() {
+        let header = "<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel=\"next\", \
+                       <https://api.github.com/repos/o/r/releases?per_page=100&page=4>; rel=\"last\"";
+        assert_eq!(
+            parse_next_link(header).as_deref(),
+            Some("https://api.github.com/repos/o/r/releases?per_page=100&page=2")
+        );
+    }
+
+    #[test]
+    fn test_parse_next_link_not_found() {
+        let header = "<https://api.github.com/repos/o/r/releases?per_page=100&page=1>; rel=\"last\"";
+        assert!(parse_next_link(header).is_none());
+    }
+
+    #[test]
+    fn test_parse_next_link_empty() {
+        assert!(parse_next_link("").is_none());
+    }
+
+    #[test]
+    fn test_parse_next_link_no_brackets() {
+        let header = "rel=\"next\"";
+        assert!(parse_next_link(header).is_none());
+    }
+
+    // ── fetch_all_releases 分页测试 ──
+
+    fn releases_page(start: u32, count: u32) -> serde_json::Value {
+        let items: Vec<serde_json::Value> = (start..start + count)
+            .map(|i| {
+                serde_json::json!({
+                    "tag_name": format!("v{}", i),
+                    "name": format!("Version {}", i),
+                    "html_url": format!("https://github.com/o/r/releases/tag/v{}", i),
+                    "published_at": format!("2024-01-{:02}T00:00:00Z", i),
+                    "prerelease": false,
+                    "body": format!("Release notes for v{}", i),
+                })
+            })
+            .collect();
+        serde_json::json!(items)
+    }
+
+    fn build_next_link(next_url: &str) -> String {
+        format!("<{}>; rel=\"next\"", next_url)
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_releases_single_page() {
+        let mock = MockServer::start().await;
+        // Single page, no Link header
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param_is_missing("page"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(releases_page(1, 3)))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        assert!(result.is_ok());
+        let releases = result.unwrap();
+        assert_eq!(releases.len(), 3);
+        assert_eq!(releases[0]["tag_name"], "v1");
+        assert_eq!(releases[2]["tag_name"], "v3");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_releases_with_limit() {
+        let mock = MockServer::start().await;
+
+        let page2_url = format!("{}/repos/o/r/releases?per_page=100&page=2", mock.uri());
+
+        // Page 1: 3 items, Link: next=page2
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases"))
+            .and(query_param("per_page", "100"))
+            .and(query_param_is_missing("page"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(releases_page(1, 3))
+                .insert_header("link", build_next_link(&page2_url)))
+            .mount(&mock)
+            .await;
+
+        // Page 2: 3 items, no Link
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases"))
+            .and(query_param("per_page", "100"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(releases_page(4, 3)))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        // max_count=4: page 1 = 3 items (< 4), fetch page 2; total = 6 (>= 4), stop
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), Some(4)).await;
+        assert!(result.is_ok());
+        let releases = result.unwrap();
+        // 应至少获取 4 条；实际拿到 6 条（翻了一整页后检查到 >=4 才停）
+        assert!(releases.len() >= 4, "应至少获取 4 条，实际 {}", releases.len());
+        assert_eq!(releases[0]["tag_name"], "v1");
+        assert_eq!(releases[3]["tag_name"], "v4");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_releases_multi_page() {
+        let mock = MockServer::start().await;
+
+        let page2_url = format!("{}/repos/o/r/releases?per_page=100&page=2", mock.uri());
+
+        // Page 1: items 1-2, Link: next=page2
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param_is_missing("page"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(releases_page(1, 2))
+                .insert_header("link", build_next_link(&page2_url)))
+            .mount(&mock)
+            .await;
+
+        // Page 2: items 3-4, no Link (last page)
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(releases_page(3, 2)))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        assert!(result.is_ok());
+        let releases = result.unwrap();
+        assert_eq!(releases.len(), 4);
+        assert_eq!(releases[0]["tag_name"], "v1");
+        assert_eq!(releases[3]["tag_name"], "v4");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_releases_three_pages() {
+        let mock = MockServer::start().await;
+
+        let page2_url = format!("{}/repos/o/r/releases?per_page=100&page=2", mock.uri());
+        let page3_url = format!("{}/repos/o/r/releases?per_page=100&page=3", mock.uri());
+
+        // Page 1: items 1-2, Link: next=page2
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param_is_missing("page"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(releases_page(1, 2))
+                .insert_header("link", build_next_link(&page2_url)))
+            .mount(&mock)
+            .await;
+
+        // Page 2: items 3-4, Link: next=page3
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(releases_page(3, 2))
+                .insert_header("link", build_next_link(&page3_url)))
+            .mount(&mock)
+            .await;
+
+        // Page 3: items 5-6, no Link
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param("page", "3"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(releases_page(5, 2)))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        assert!(result.is_ok());
+        let releases = result.unwrap();
+        assert_eq!(releases.len(), 6);
+        assert_eq!(releases[0]["tag_name"], "v1");
+        assert_eq!(releases[5]["tag_name"], "v6");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_all_releases_api_error_stops() {
+        let mock = MockServer::start().await;
+
+        let page2_url = format!("{}/repos/o/r/releases?per_page=100&page=2", mock.uri());
+
+        // Page 1: ok, Link: next=page2
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param_is_missing("page"))
+            .respond_with(ResponseTemplate::new(200)
+                .set_body_json(releases_page(1, 2))
+                .insert_header("link", build_next_link(&page2_url)))
+            .mount(&mock)
+            .await;
+
+        // Page 2: 403 error
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases")).and(query_param("per_page", "100")).and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().0, 403);
     }
 
     fn rel(tag: &str, date: &str, pre: bool, body: Option<&str>) -> serde_json::Value {

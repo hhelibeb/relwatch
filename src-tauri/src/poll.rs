@@ -53,7 +53,13 @@ fn get_github_token(conn: &rusqlite::Connection) -> Option<String> {
     if encrypted.is_empty() {
         return None;
     }
-    crypto::decrypt(&encrypted)
+    let (plain, new_v2) = crypto::decrypt_with_migration(&encrypted)?;
+    if let Some(new_val) = new_v2 {
+        if let Err(e) = db::settings::set_setting(conn, KEY_GITHUB_TOKEN, &new_val) {
+            log::warn!("迁移 v1→v2 GitHub Token 回写失败: {}", e);
+        }
+    }
+    Some(plain)
 }
 
 async fn fetch_for_source_async(
@@ -63,6 +69,18 @@ async fn fetch_for_source_async(
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     match source.source_type.as_str() {
         "github" => github::fetch_releases(client, &source.owner, &source.repo, per_page).await,
+        other => Err((0, format!("err.unsupported_source|{}", other))),
+    }
+}
+
+/// 使用分页拉取全部 releases（仅首次全量查询时使用）。
+async fn fetch_all_for_source_async(
+    client: &reqwest::Client,
+    source: &db::sources::Source,
+    max_count: Option<usize>,
+) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    match source.source_type.as_str() {
+        "github" => github::fetch_all_releases_with_limit(client, &source.owner, &source.repo, max_count).await,
         other => Err((0, format!("err.unsupported_source|{}", other))),
     }
 }
@@ -79,6 +97,29 @@ fn save_for_source(
             log::error!("不支持的监控源类型: {}", other);
             vec![]
         }
+    }
+}
+
+/// 根据 fetch_history 配置计算分页参数。
+///
+/// 返回 `(max_count, per_page, needs_pagination)`：
+/// - `max_count`: `None` 表示不设上限（全量分页），`Some(n)` 表示最多拉取 n 条
+/// - `per_page`: 每次 API 调用的页面大小
+/// - `needs_pagination`: 是否需要翻页（true = 多次 API 调用）
+fn compute_fetch_plan(
+    fetch_history: bool,
+    is_first_query: bool,
+    fetch_history_count: usize,
+) -> (Option<usize>, usize, bool) {
+    if fetch_history && is_first_query && (fetch_history_count == 0 || fetch_history_count > 100) {
+        // 0 = 全量分页（None），>100 = 受限分页（前端限制 max=100，此分支作为安全兜底）
+        let max_count = if fetch_history_count == 0 { None } else { Some(fetch_history_count) };
+        (max_count, 100, true)
+    } else if fetch_history && is_first_query {
+        // 小数量，单次 API 调用即可
+        (Some(fetch_history_count), (fetch_history_count + 5).clamp(10, 100), false)
+    } else {
+        (Some(fetch_history_count), 10, false)
     }
 }
 
@@ -103,7 +144,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         });
         github_token = get_github_token(&conn);
         fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
-        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
+        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
     }
 
     let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, &proxy_mode, github_token.as_deref(), fetch_history, fetch_history_count).await;
@@ -170,17 +211,13 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         });
         github_token = get_github_token(&conn);
         fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
-        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
+        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
         source_obj = source;
     }
 
     let is_first_query = source_obj.last_checked_at.is_none()
         || source_obj.last_checked_at.as_deref() == Some("");
-    let (max_count, per_page) = if fetch_history && is_first_query {
-        (fetch_history_count, std::cmp::max(10, fetch_history_count + 5))
-    } else {
-        (fetch_history_count, 10)
-    };
+    let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, is_first_query, fetch_history_count);
 
     let client = match http::build_http_client(http::HttpClientConfig {
         proxy_url: &proxy_url,
@@ -203,7 +240,12 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     };
 
-    let releases = match fetch_for_source_async(&client, &source_obj, per_page).await {
+    let releases = match if needs_pagination {
+        let limit = max_count;
+        fetch_all_for_source_async(&client, &source_obj, limit).await
+    } else {
+        fetch_for_source_async(&client, &source_obj, per_page).await
+    } {
         Ok(releases) => releases,
         Err((status, msg)) => {
             let state = app.state::<AppState>();
@@ -224,7 +266,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
-        saved = save_for_source(&conn, &source_obj, &releases, max_count);
+        saved = save_for_source(&conn, &source_obj, &releases, max_count.unwrap_or(usize::MAX));
         if !saved.is_empty() {
             let latest_id = saved[0].0;
             let has_newer = db::releases::get_release(&conn, latest_id)
@@ -329,7 +371,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         }
         github_token = get_github_token(&conn);
         fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
-        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(1) as usize;
+        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
     }
 
     // 自动禁用连续失败过多的监控源（断路器）
@@ -437,19 +479,21 @@ async fn poll_all_sources_async(
 
         let is_first_query = source.last_checked_at.is_none()
             || source.last_checked_at.as_deref() == Some("");
-        let (max_count, per_page) = if fetch_history && is_first_query {
-            (fetch_history_count, std::cmp::max(10, fetch_history_count + 5))
-        } else {
-            (fetch_history_count, 10)
-        };
+        let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, is_first_query, fetch_history_count);
 
         handles.push(tokio::spawn(async move {
             let _permit = sem.acquire_owned().await.expect("semaphore closed");
-            match fetch_for_source_async(&client, &source, per_page).await {
+            let fetch_result = if needs_pagination {
+                let limit = max_count;
+                fetch_all_for_source_async(&client, &source, limit).await
+            } else {
+                fetch_for_source_async(&client, &source, per_page).await
+            };
+            match fetch_result {
                 Ok(releases) => {
                     let state = app.state::<AppState>();
                     let conn = state.db.get().unwrap();
-                    let saved = save_for_source(&conn, &source, &releases, max_count);
+                    let saved = save_for_source(&conn, &source, &releases, max_count.unwrap_or(usize::MAX));
                     if !saved.is_empty() {
                         // 检查是否有比最新新版本更新的版本已存在库中
                         let latest_id = saved[0].0;
@@ -695,6 +739,7 @@ mod tests {
 
     #[test]
     fn test_read_deepseek_config_configured() {
+        crate::crypto::set_test_master_key();
         let conn = init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_ENABLED, "true").unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_MODEL, "deepseek-v4-pro").unwrap();
@@ -850,5 +895,83 @@ mod tests {
         // No saved value → fallback to now → immediate check
         let result = calc_next_poll(&conn);
         assert_eq!(result, now);
+    }
+
+    // --- compute_fetch_plan tests ---
+
+    #[test]
+    fn test_compute_plan_no_history() {
+        // fetch_history=false → third branch (Some(count), 10, false)
+        let (max, per_page, paginate) = compute_fetch_plan(false, true, 50);
+        assert_eq!(max, Some(50));
+        assert_eq!(per_page, 10);
+        assert!(!paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_not_first_query() {
+        // !is_first_query → third branch
+        let (max, per_page, paginate) = compute_fetch_plan(true, false, 50);
+        assert_eq!(max, Some(50));
+        assert_eq!(per_page, 10);
+        assert!(!paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_count_0() {
+        // count=0 → first branch: None = no limit, paginate = true
+        let (max, per_page, paginate) = compute_fetch_plan(true, true, 0);
+        assert_eq!(max, None);
+        assert_eq!(per_page, 100);
+        assert!(paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_count_1() {
+        // count=1 → second branch: small single-page fetch
+        let (max, per_page, paginate) = compute_fetch_plan(true, true, 1);
+        assert_eq!(max, Some(1));
+        // per_page = clamp(1+5, 10, 100) = 10
+        assert_eq!(per_page, 10);
+        assert!(!paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_count_50() {
+        // count=50 → second branch
+        let (max, per_page, paginate) = compute_fetch_plan(true, true, 50);
+        assert_eq!(max, Some(50));
+        // per_page = clamp(50+5, 10, 100) = 55
+        assert_eq!(per_page, 55);
+        assert!(!paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_count_95() {
+        // count=95 → second branch, per_page capped at 100
+        let (max, per_page, paginate) = compute_fetch_plan(true, true, 95);
+        assert_eq!(max, Some(95));
+        // per_page = clamp(95+5, 10, 100) = 100
+        assert_eq!(per_page, 100);
+        assert!(!paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_count_100() {
+        // count=100 → second branch (since 100 > 100 is false)
+        let (max, per_page, paginate) = compute_fetch_plan(true, true, 100);
+        assert_eq!(max, Some(100));
+        // per_page = clamp(100+5, 10, 100) = 100
+        assert_eq!(per_page, 100);
+        assert!(!paginate);
+    }
+
+    #[test]
+    fn test_compute_plan_count_101() {
+        // count=101 → first branch, paginated with limit (safety net)
+        let (max, per_page, paginate) = compute_fetch_plan(true, true, 101);
+        assert_eq!(max, Some(101));
+        assert_eq!(per_page, 100);
+        assert!(paginate);
     }
 }

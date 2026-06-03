@@ -20,6 +20,14 @@ use db::settings::{KEY_POLL_INTERVAL, KEY_NEXT_POLL_AT, KEY_MINIMIZE_TO_TRAY};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if let Err(e) = crypto::initialize_master_key() {
+        eprintln!(
+            "FATAL: 无法初始化加密密钥: {}\n请确保 OS keyring 可用（Linux 需安装并运行 dbus 和密钥环守护进程）。\nLinux: sudo apt install gnome-keyring 或 secret-service-dbus\nmacOS / Windows: 通常无需额外操作",
+            e
+        );
+        std::process::exit(1);
+    }
+
     let pool = db::init::init_pool().expect("Failed to initialize database");
 
     let next_poll_val;

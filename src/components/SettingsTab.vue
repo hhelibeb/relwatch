@@ -404,10 +404,11 @@ async function handleImportBackup() {
             <input
               type="number"
               v-model.number="form.fetch_history_count"
-              min="1"
-              max="50"
+              min="0"
+              max="100"
               class="setting-input setting-input-narrow"
             />
+            <span class="setting-note">{{ t('settings.fetch_history_count_hint') }}</span>
           </label>
         </div>
         <div v-if="settingsTab === 'data'" class="settings-form" style="gap:13px">

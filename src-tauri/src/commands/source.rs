@@ -25,7 +25,15 @@ pub async fn add_source(
             .ok()
             .flatten()
             .filter(|s| !s.is_empty())
-            .and_then(|s| crypto::decrypt(&s));
+            .and_then(|s| {
+                let (plain, new_v2) = crypto::decrypt_with_migration(&s)?;
+                if let Some(new_val) = &new_v2 {
+                    if let Err(e) = db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, new_val) {
+                        log::warn!("迁移 v1→v2 GitHub Token 回写失败: {}", e);
+                    }
+                }
+                Some(plain)
+            });
         let client = match http::build_http_client(http::HttpClientConfig {
             proxy_url: &proxy_url,
             proxy_mode: &proxy_mode,

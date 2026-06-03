@@ -78,6 +78,7 @@ export default {
   'settings.check_prereleases': 'Check prereleases',
   'settings.fetch_history': 'Fetch history on first query',
   'settings.fetch_history_count': 'History count',
+  'settings.fetch_history_count_hint': 'Set to 0 to fetch all versions',
   'settings.enable_ai': 'Enable AI summaries',
   'settings.api_key': 'API Key',
   'settings.api_key_set': 'Already set (leave empty to keep)',
