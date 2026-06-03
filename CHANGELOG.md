@@ -7,19 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.3.2] - 2026-06-03
+## [1.3.3] - 2026-06-03
+
+### Added
+- Release 右键菜单支持删除功能。
 
 ### Changed
-- Release fetching now supports full pagination — set count to 0 to pull all
-  historical versions; maximum limit increased from 50 to 100.
-- Log rendering now respects the selected locale instead of falling back to a
-  hardcoded language.
+- 加密系统升级：OS keyring 托管 master key，支持 v1→v2 密文自动迁移，避免无限重试。
+- Release 获取支持完整分页拉取：fetch_history_count=0 获取全部历史版本，上限从 50 提升到 100。
+- i18n 渲染引擎重构为 OnceLock 惰性静态初始化，提取辅助函数。
+- i18n 系统基础打磨：添加 JSDoc、类型保护、语言回退修复。
+- 日志渲染现在使用所选语言而非硬编码的 zh-CN。
 
 ### Fixed
-- Right-click context menu now closes the previously opened menu before showing
-  a new one, preventing multiple overlapping menus.
-- Fixed database concurrency panics and notification callback failures during
-  polling.
+- Windows 凭据管理器持久化修复：使用 CRED_PERSIST_LOCAL_MACHINE 解决非域环境重启后凭据丢失问题。
+- 右键菜单打开新菜单时关闭之前已打开的菜单，防止多个菜单重叠。
+- 修复数据库并发操作及通知回调中的 panic 问题。
 
 ## [1.3.1] - 2026-06-01
 
@@ -138,8 +141,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.2...HEAD
-[1.3.2]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...v1.3.2
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.3...HEAD
+[1.3.3]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...v1.3.3
 [1.3.1]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/hhelibeb/relwatch/compare/v1.2.6...v1.3.0
 [1.2.4]: https://github.com/hhelibeb/relwatch/compare/v1.2.3...v1.2.4
