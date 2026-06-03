@@ -17,15 +17,16 @@ static MASTER_KEY: OnceLock<[u8; 32]> = OnceLock::new();
 /// 回写失败的密文被记录在此，后续调用跳过迁移，重启后重置。
 static MIGRATION_ATTEMPTED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 
-/// 从 OS keyring 加载 master key，首次运行则随机生成并存储。
-///
-/// **必须**在 Tauri 启动前（`lib.rs::run()` 中）调用一次。
-/// 之后所有 `encrypt`/`decrypt` 操作都使用此缓存的密钥。
-pub fn initialize_master_key() -> Result<(), String> {
-    let entry = keyring::Entry::new("relwatch", "master-key")
-        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+// ── 跨平台 keyring 交互 ────────────────────────────────
 
-    let key = match entry.get_password() {
+/// 从 `keyring::Entry` 加载 master key，首次运行则随机生成并存储。
+///
+/// **注意**：此函数不设置 `MASTER_KEY` 全局缓存，仅处理 keyring 交互。
+/// 提取为独立函数以便测试（可用 keyring mock 注入）。
+/// Windows 上生产代码不使用 keyring 但测试仍需要。
+#[cfg_attr(windows, allow(dead_code))]
+fn load_or_generate_master_key(entry: &keyring::Entry) -> Result<[u8; 32], String> {
+    match entry.get_password() {
         Ok(pw) => {
             let bytes = BASE64
                 .decode(pw.as_bytes())
@@ -45,7 +46,7 @@ pub fn initialize_master_key() -> Result<(), String> {
             }
             let mut key = [0u8; 32];
             key.copy_from_slice(&bytes);
-            key
+            Ok(key)
         }
         Err(keyring::Error::NoEntry) => {
             // 首次运行：生成随机 32B 密钥并写入 OS keyring
@@ -54,21 +55,253 @@ pub fn initialize_master_key() -> Result<(), String> {
             entry
                 .set_password(&encoded)
                 .map_err(|e| format!("Failed to write master key to OS keyring: {}", e))?;
-            key
+            Ok(key)
         }
         Err(e) => {
-            return Err(format!(
+            Err(format!(
                 "Failed to read master key from OS keyring: {}. \
                  The application cannot start without OS keyring access.",
                 e
-            ));
+            ))
         }
-    };
+    }
+}
 
+// ── 平台相关的密钥加载 ──────────────────────────────
+
+/// 非 Windows 平台：使用 keyring crate
+#[cfg(not(windows))]
+fn platform_load_or_generate_master_key() -> Result<[u8; 32], String> {
+    let entry = keyring::Entry::new("relwatch", "master-key")
+        .map_err(|e| format!("Failed to create keyring entry: {}", e))?;
+    load_or_generate_master_key(&entry)
+}
+
+/// Windows 平台：直接调用 Win32 API，使用 `CRED_PERSIST_LOCAL_MACHINE`
+/// 解决 keyring crate 默认使用 `CRED_PERSIST_ENTERPRISE`
+/// 在非域环境中等同于仅当前会话的问题。
+#[cfg(windows)]
+fn platform_load_or_generate_master_key() -> Result<[u8; 32], String> {
+    platform::load_or_generate()
+}
+
+#[cfg(windows)]
+#[allow(clippy::upper_case_acronyms)]
+mod platform {
+    use base64::Engine;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    const CRED_TYPE_GENERIC: u32 = 1;
+    /// `CRED_PERSIST_LOCAL_MACHINE` = 2，凭证持久化到本地机器，重启后仍有效。
+    /// 相比 keyring crate 默认使用的 `CRED_PERSIST_ENTERPRISE` = 3（非域机器上等同于仅当前会话），
+    /// 这是修复凭证重启丢失问题的关键。
+    const CRED_PERSIST_LOCAL_MACHINE: u32 = 2;
+    const ERROR_NOT_FOUND: u32 = 1168;
+
+    #[repr(C)]
+    struct FILETIME {
+        dw_low_date_time: u32,
+        dw_high_date_time: u32,
+    }
+
+    #[repr(C)]
+    struct CREDENTIALW {
+        flags: u32,
+        typ: u32,
+        target_name: *mut u16,
+        comment: *mut u16,
+        last_written: FILETIME,
+        credential_blob_size: u32,
+        credential_blob: *mut u8,
+        persist: u32,
+        attribute_count: u32,
+        attributes: *mut core::ffi::c_void,
+        target_alias: *mut u16,
+        user_name: *mut u16,
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn CredReadW(
+            target_name: *const u16,
+            credential_type: u32,
+            flags: u32,
+            credential: *mut *mut CREDENTIALW,
+        ) -> i32;
+
+        fn CredWriteW(credential: *const CREDENTIALW, flags: u32) -> i32;
+
+        fn CredFree(buffer: *mut core::ffi::c_void) -> i32;
+
+        fn GetLastError() -> u32;
+    }
+
+    /// 生成目标名称：使用统一前缀，与 keyring crate 的服务名一致
+    const TARGET_NAME: &str = "RelWatch_MasterKey";
+
+    pub fn load_or_generate() -> Result<[u8; 32], String> {
+        match read_credential(TARGET_NAME) {
+            Ok(Some(encoded)) => {
+                let bytes = super::BASE64
+                    .decode(encoded.as_bytes())
+                    .map_err(|_| {
+                        "Stored master key in Windows Credential Manager is corrupted \
+                         (invalid base64). Please delete the 'RelWatch_MasterKey' entry \
+                         from your Windows Credential Manager and restart."
+                            .to_string()
+                    })?;
+                if bytes.len() != 32 {
+                    return Err(
+                        "Stored master key in Windows Credential Manager has wrong length. \
+                         Please delete the 'RelWatch_MasterKey' entry from your \
+                         Windows Credential Manager and restart."
+                            .to_string(),
+                    );
+                }
+                let mut key = [0u8; 32];
+                key.copy_from_slice(&bytes);
+                Ok(key)
+            }
+            Ok(None) => {
+                // 首次运行：生成随机 32B 密钥，使用 CRED_PERSIST_LOCAL_MACHINE 写入
+                let key: [u8; 32] = rand::Rng::gen(&mut rand::thread_rng());
+                let encoded = super::BASE64.encode(key);
+                write_credential(TARGET_NAME, encoded.as_bytes())?;
+                Ok(key)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn to_wide(s: &str) -> Vec<u16> {
+        OsStr::new(s).encode_wide().chain(Some(0)).collect()
+    }
+
+    fn read_credential(target: &str) -> Result<Option<String>, String> {
+        let target_wide = to_wide(target);
+        unsafe {
+            let mut p_cred: *mut CREDENTIALW = ptr::null_mut();
+            let ret = CredReadW(
+                target_wide.as_ptr(),
+                CRED_TYPE_GENERIC,
+                0,
+                &mut p_cred,
+            );
+            if ret != 0 {
+                // 成功读取
+                let blob = std::slice::from_raw_parts(
+                    (*p_cred).credential_blob,
+                    (*p_cred).credential_blob_size as usize,
+                );
+                let value =
+                    String::from_utf8(blob.to_vec()).map_err(|_| {
+                        "Windows credential data is not valid UTF-8".to_string()
+                    })?;
+                CredFree(p_cred as *mut core::ffi::c_void);
+                Ok(Some(value))
+            } else {
+                let err = GetLastError();
+                if err == ERROR_NOT_FOUND {
+                    Ok(None)
+                } else {
+                    Err(format!(
+                        "Failed to read Windows credential (error code: {})",
+                        err
+                    ))
+                }
+            }
+        }
+    }
+
+    fn write_credential(target: &str, data: &[u8]) -> Result<(), String> {
+        let target_wide = to_wide(target);
+        let comment_wide = to_wide("RelWatch master key");
+
+        let credential = CREDENTIALW {
+            flags: 0,
+            typ: CRED_TYPE_GENERIC,
+            target_name: target_wide.as_ptr() as *mut u16,
+            comment: comment_wide.as_ptr() as *mut u16,
+            last_written: FILETIME {
+                dw_low_date_time: 0,
+                dw_high_date_time: 0,
+            },
+            credential_blob_size: data.len() as u32,
+            credential_blob: data.as_ptr() as *mut u8,
+            persist: CRED_PERSIST_LOCAL_MACHINE, // ← 关键修复
+            attribute_count: 0,
+            attributes: ptr::null_mut(),
+            target_alias: ptr::null_mut(),
+            user_name: ptr::null_mut(),
+        };
+
+        unsafe {
+            let ret = CredWriteW(&credential, 0);
+            if ret == 0 {
+                let err = GetLastError();
+                Err(format!(
+                    "Failed to write master key to Windows Credential Manager (error code: {})",
+                    err
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+}
+
+/// 从 OS keyring 加载 master key，首次运行则随机生成并存储。
+///
+/// **必须**在 Tauri 启动前（`lib.rs::run()` 中）调用一次。
+/// 之后所有 `encrypt`/`decrypt` 操作都使用此缓存的密钥。
+pub fn initialize_master_key() -> Result<(), String> {
+    let key = platform_load_or_generate_master_key()?;
     MASTER_KEY
         .set(key)
         .map_err(|_| "Master key already initialized".to_string())?;
     Ok(())
+}
+
+/// 验证 master key 能否解密 DB 中已有的 v2 密文。
+///
+/// 应在 DB 初始化后、应用正常启动前调用。
+/// 如果 DB 中有 `v2:` 格式的密文但无法用当前 master key 解密，
+/// 说明 master key 已丢失（如 Windows 上 keyring 凭据重启后丢失），
+/// 此时会自动清空对应的设置项，避免程序无法启动。
+/// 返回被清空的 key 名称列表（如 `deepseek_api_key`、`github_token`）。
+pub fn verify_master_key_consistency(conn: &rusqlite::Connection) -> Vec<&'static str> {
+    let keys_to_check = [
+        crate::db::settings::KEY_DEEPSEEK_API_KEY,
+        crate::db::settings::KEY_GITHUB_TOKEN,
+    ];
+    let mut cleared = Vec::new();
+    for &key_name in &keys_to_check {
+        if let Ok(Some(val)) = crate::db::settings::get_setting(conn, key_name) {
+            if val.starts_with(V2_PREFIX) && decrypt_inner(&val).is_none() {
+                // 无法解密，清空该设置项
+                let _ = crate::db::settings::set_setting(conn, key_name, "");
+                cleared.push(key_name);
+                eprintln!(
+                    "WARNING: '{}' 使用 v2 加密但无法解密（master key 不匹配），已自动清空。\
+                     请重新在设置中配置该值。",
+                    key_name
+                );
+            }
+        }
+    }
+    cleared
+}
+
+/// decrypt 内部实现（不依赖 MASTER_KEY static）。
+/// 供 verify_master_key_consistency 及公开 decrypt 共用。
+fn decrypt_inner(encoded: &str) -> Option<String> {
+    if let Some(stripped) = encoded.strip_prefix(V2_PREFIX) {
+        return decrypt_with_key(stripped, get_master_key());
+    }
+    let v1_key = v1_derive_key();
+    decrypt_with_key(encoded, &v1_key)
 }
 
 /// 设置测试用 master key（跳过 keyring）。仅测试用。
@@ -133,13 +366,7 @@ pub fn encrypt(plaintext: &str) -> String {
 
 /// 解密，自动兼容 v2（master key）和 v1（hostname 派生密钥）。
 pub fn decrypt(encoded: &str) -> Option<String> {
-    if let Some(stripped) = encoded.strip_prefix(V2_PREFIX) {
-        // v2：用 master key
-        return decrypt_with_key(stripped, get_master_key());
-    }
-    // v1 fallback：用 hostname 派生密钥
-    let v1_key = v1_derive_key();
-    decrypt_with_key(encoded, &v1_key)
+    decrypt_inner(encoded)
 }
 
 /// 解密并支持 v1→v2 自动迁移。
@@ -308,5 +535,185 @@ mod tests {
         let (decrypted2, migration2) = decrypt_with_migration(&v1_encrypted).unwrap();
         assert_eq!(decrypted2, plain);
         assert!(migration2.is_none(), "second call should skip migration due to cache");
+    }
+
+    // ── Keyring 交互测试（使用 keyring mock） ────────────────
+    //
+    // 这些测试依赖 keyring 全局 state（set_default_credential_builder），
+    // 必须串行执行，通过 KEYRING_MUTEX 保证。
+
+    use std::sync::Mutex as StdMutex;
+    static KEYRING_MUTEX: StdMutex<()> = StdMutex::new(());
+
+    /// 在测试中用 keyring mock 初始化一片干净的测试环境。
+    /// 返回新创建的 keyring::Entry（用独立的 service 名避免干扰）。
+    fn mock_entry(name: &str) -> keyring::Entry {
+        keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+        keyring::Entry::new("crypto_test", name).expect("mock entry should succeed")
+    }
+
+    #[test]
+    fn test_load_or_generate_first_run() {
+        // 模拟首次运行：keyring 中无条目 → 生成新 key
+        let _lock = KEYRING_MUTEX.lock().unwrap();
+
+        let entry = mock_entry("first_run");
+        let key = load_or_generate_master_key(&entry).expect("should generate key on first run");
+
+        assert_eq!(key.len(), 32, "generated key should be 32 bytes");
+        // 验证 key 已写入 keyring
+        let stored = entry.get_password().expect("should have stored password");
+        let decoded = BASE64.decode(stored.as_bytes()).expect("stored value should be valid base64");
+        assert_eq!(decoded.len(), 32, "stored key should be 32 bytes");
+        assert_eq!(decoded.as_slice(), &key[..], "stored key should match returned key");
+    }
+
+    #[test]
+    fn test_load_or_generate_existing_key() {
+        // 模拟已有 key：keyring 中有有效密钥 → 正确加载
+        let _lock = KEYRING_MUTEX.lock().unwrap();
+
+        let entry = mock_entry("existing_key");
+        let expected = [0xABu8; 32];
+        entry
+            .set_password(&BASE64.encode(expected))
+            .expect("should set password");
+
+        let key = load_or_generate_master_key(&entry).expect("should load existing key");
+        assert_eq!(key, expected, "should return the stored key");
+    }
+
+    #[test]
+    fn test_load_or_generate_corrupted_base64() {
+        // 模拟 keyring 中数据损坏（无效 base64）→ 报错
+        let _lock = KEYRING_MUTEX.lock().unwrap();
+
+        let entry = mock_entry("corrupted_b64");
+        entry
+            .set_password("!!!invalid-base64!!!")
+            .expect("should set password");
+
+        let result = load_or_generate_master_key(&entry);
+        assert!(result.is_err(), "corrupted base64 should error");
+        assert!(
+            result.unwrap_err().contains("corrupted"),
+            "error should mention corruption"
+        );
+    }
+
+    #[test]
+    fn test_load_or_generate_wrong_length() {
+        // 模拟 keyring 中 key 长度错误 → 报错
+        let _lock = KEYRING_MUTEX.lock().unwrap();
+
+        let entry = mock_entry("wrong_len");
+        let short_key = [0x42u8; 16]; // 16 bytes != 32
+        entry
+            .set_password(&BASE64.encode(short_key))
+            .expect("should set password");
+
+        let result = load_or_generate_master_key(&entry);
+        assert!(result.is_err(), "wrong length should error");
+        assert!(
+            result.unwrap_err().contains("wrong length"),
+            "error should mention wrong length"
+        );
+    }
+
+    #[test]
+    fn test_load_or_generate_keyring_error() {
+        // 模拟 keyring API 错误 → 传播错误
+        let _lock = KEYRING_MUTEX.lock().unwrap();
+
+        let entry = mock_entry("api_error");
+        // 通过 mock 设置一个错误
+        let mock: &keyring::mock::MockCredential = entry
+            .get_credential()
+            .downcast_ref()
+            .expect("should downcast to MockCredential");
+        mock.set_error(keyring::Error::NoStorageAccess(
+            "simulated storage error".into(),
+        ));
+
+        let result = load_or_generate_master_key(&entry);
+        assert!(result.is_err(), "keyring error should propagate");
+    }
+
+    // ── 密钥一致性检查测试 ────────────────────────────────
+
+    #[test]
+    fn test_verify_master_key_consistency_no_v2_data() {
+        // DB 中没有 v2 密文 → 返回空
+        init();
+        let conn = crate::db::init::init_memory_db().expect("in-memory db");
+
+        let cleared = verify_master_key_consistency(&conn);
+        assert!(cleared.is_empty(), "no v2 data should return empty");
+    }
+
+    #[test]
+    fn test_verify_master_key_consistency_with_v2_matching() {
+        // DB 中有 v2 密文且 master key 匹配 → 返回空
+        init();
+        let conn = crate::db::init::init_memory_db().expect("in-memory db");
+
+        let plain = "sk-my-deepseek-key";
+        let encrypted = encrypt(plain); // 用当前 master key 加密
+        assert!(encrypted.starts_with(V2_PREFIX));
+
+        crate::db::settings::set_setting(
+            &conn,
+            crate::db::settings::KEY_DEEPSEEK_API_KEY,
+            &encrypted,
+        )
+        .expect("should set setting");
+
+        let cleared = verify_master_key_consistency(&conn);
+        assert!(cleared.is_empty(), "matching key should return empty");
+
+        // 验证数据未被清空且能解密
+        let stored =
+            crate::db::settings::get_setting(&conn, crate::db::settings::KEY_DEEPSEEK_API_KEY)
+                .expect("should read")
+                .expect("should have value");
+        let decrypted = decrypt(&stored).expect("should decrypt");
+        assert_eq!(decrypted, plain);
+    }
+
+    #[test]
+    fn test_verify_master_key_consistency_mismatch_clears() {
+        // DB 中有 v2 密文但 master key 不匹配 → 自动清空
+        init();
+        let conn = crate::db::init::init_memory_db().expect("in-memory db");
+
+        // 用不同的 key 加密数据
+        let wrong_key = [0x99u8; 32];
+        let plain = "some-secret-value";
+        let encrypted = encrypt_with_key(plain, &wrong_key);
+        assert!(encrypted.starts_with(V2_PREFIX));
+
+        crate::db::settings::set_setting(
+            &conn,
+            crate::db::settings::KEY_DEEPSEEK_API_KEY,
+            &encrypted,
+        )
+        .expect("should set setting");
+
+        // 调用一致性检查 → 应清空数据
+        let cleared = verify_master_key_consistency(&conn);
+        assert!(!cleared.is_empty(), "should clear mismatched key");
+        assert!(
+            cleared.contains(&crate::db::settings::KEY_DEEPSEEK_API_KEY),
+            "should report deepseek_api_key as cleared"
+        );
+
+        // 验证 DB 中已被清空
+        let stored = crate::db::settings::get_setting(
+            &conn,
+            crate::db::settings::KEY_DEEPSEEK_API_KEY,
+        )
+        .expect("should read")
+        .unwrap_or_default();
+        assert_eq!(stored, "", "mismatched data should be cleared");
     }
 }

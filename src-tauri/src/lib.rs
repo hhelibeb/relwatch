@@ -30,6 +30,19 @@ pub fn run() {
 
     let pool = db::init::init_pool().expect("Failed to initialize database");
 
+    // 一致性检查：确保 master key 能解密 DB 中已有的 v2 密文
+    // 如果出现不匹配，自动清空对应设置项并打印警告（不阻塞启动）
+    {
+        let conn = pool.get().expect("Failed to get db connection");
+        let cleared = crypto::verify_master_key_consistency(&conn);
+        if !cleared.is_empty() {
+            eprintln!(
+                "WARNING: master key 无法解密以下数据，已自动清空，请重新设置：{}",
+                cleared.join(", ")
+            );
+        }
+    }
+
     let next_poll_val;
     {
         let conn = pool.get().expect("Failed to get db connection");
