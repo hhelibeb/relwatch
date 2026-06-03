@@ -154,6 +154,8 @@ export default {
   'release.snooze_until': 'Reminder: {0}',
   'release.snooze_scheduled': 'Notification planned for 1 day later',
   'release.notification_cancelled': 'Notification canceled',
+  'release.deleted_toast': 'Version deleted',
+  'release.delete_failed': 'Failed to delete version: ',
   'release.status_failed': 'Failed to update status: ',
 
   'log.search': 'Search logs...',
@@ -182,6 +184,7 @@ export default {
   'context.paste': 'Paste',
   'context.select_all': 'Select All',
   'context.copy_summary': 'Copy Summary',
+  'context.delete_release': 'Delete Version',
 
   'source.added': 'Source added: {source_type} {owner}/{repo}',
   'source.removed': 'Source removed: {owner}/{repo} id={id}',
@@ -207,6 +210,8 @@ export default {
   'release.ignored_unknown': 'Ignore release id={id}',
   'release.snoozed': 'Snooze release {owner}/{repo} {tag} id={id}',
   'release.snoozed_unknown': 'Snooze release id={id}',
+  'release.deleted': 'Delete release {owner}/{repo} {tag} id={id}',
+  'release.deleted_unknown': 'Delete release id={id}',
   'release.status_changed': '{owner}/{repo} {tag} - {action} (id={id})',
   'release.status_changed_unknown': 'Release id={id} status: {action}',
 

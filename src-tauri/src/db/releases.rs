@@ -103,6 +103,12 @@ pub fn increment_retry_count(conn: &Connection, release_id: i64) -> Result<(), S
     Ok(())
 }
 
+pub fn delete_release(conn: &Connection, release_id: i64) -> Result<(), String> {
+    conn.execute("DELETE FROM releases WHERE id = ?1", params![release_id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn set_notification_state(
     conn: &Connection,
     release_id: i64,

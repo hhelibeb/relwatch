@@ -50,6 +50,37 @@ pub fn set_notification_state(
 }
 
 #[tauri::command]
+pub fn delete_release(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    release_id: i64,
+) -> Result<(), String> {
+    let conn = state.db.get().unwrap();
+
+    let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+    match rel {
+        Some(r) => db::logs::write_log_key(
+            &conn,
+            "INFO",
+            "release.deleted",
+            &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": release_id}).to_string(),
+        ),
+        None => db::logs::write_log_key(
+            &conn,
+            "INFO",
+            "release.deleted_unknown",
+            &json!({"id": release_id}).to_string(),
+        ),
+    }
+
+    db::releases::delete_release(&conn, release_id)?;
+
+    let _ = app.emit("release-state-changed", release_id);
+
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     poll::check_single_source(app, id).await
 }

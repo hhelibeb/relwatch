@@ -39,6 +39,10 @@ export async function setNotificationState(
   return invokeI18n('set_notification_state', args)
 }
 
+export async function deleteRelease(releaseId: number): Promise<void> {
+  return invokeI18n('delete_release', { releaseId })
+}
+
 export async function triggerPoll(): Promise<PollResult> {
   return invokeI18n<PollResult>('trigger_poll')
 }

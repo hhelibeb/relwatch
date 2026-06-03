@@ -2,13 +2,13 @@
 import { ref, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { ShowToastKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, setNotificationState } from '../api/releases'
+import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 
-defineProps<{ release: ReleaseInfo }>()
+const props = defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: [] }>()
 const showToast = inject(ShowToastKey, () => {})
 
@@ -54,7 +54,7 @@ function hideSummaryTooltip() {
 }
 
 // ========== 右键菜单 ==========
-const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
+const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number } | null>(null)
 
 function closeMenus() {
   contextMenu.value = null
@@ -65,6 +65,12 @@ function closeMenus() {
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
 const summaryMenuItems: ContextMenuItem[] = [
   { id: 'copySummary', label: t('context.copy_summary') },
+]
+
+const releaseMenuItems: ContextMenuItem[] = [
+  { id: 'openLink', label: t('context.open') },
+  { id: 'copyLink', label: t('context.copy_link') },
+  { id: 'deleteRelease', label: t('context.delete_release') },
 ]
 
 function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
@@ -84,6 +90,32 @@ function handleSummaryMenuAction(actionId: string) {
     handleCopySummary()
   }
 }
+
+async function handleDeleteRelease() {
+  const releaseId = contextMenu.value?.releaseId
+  if (releaseId === undefined) return
+  closeMenus()
+  isUpdating.value = true
+  try {
+    await deleteRelease(releaseId)
+    showToast?.(t('release.deleted_toast'))
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('release.delete_failed') + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    isUpdating.value = false
+  }
+}
+
+function handleReleaseMenuAction(actionId: string) {
+  if (actionId === 'openLink') {
+    handleOpenLink()
+  } else if (actionId === 'copyLink') {
+    handleCopyLink()
+  } else if (actionId === 'deleteRelease') {
+    handleDeleteRelease()
+  }
+}
 onMounted(() => {
   registerCloser(closeMenus)
   document.addEventListener('click', closeMenus)
@@ -95,7 +127,8 @@ onUnmounted(() => {
 
 function releaseContextMenu(e: MouseEvent, url: string) {
   closeAllContextMenus()
-  contextMenu.value = { x: e.clientX, y: e.clientY, url }
+  const releaseId = props.release.id
+  contextMenu.value = { x: e.clientX, y: e.clientY, url, releaseId }
 }
 
 async function handleCopyLink() {
@@ -204,7 +237,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     </div>
   </div>
 
-  <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" />
+  <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="releaseMenuItems" @action="handleReleaseMenuAction" />
   <ContextMenu v-if="summaryContextMenu" :x="summaryContextMenu.x" :y="summaryContextMenu.y" :items="summaryMenuItems" @action="handleSummaryMenuAction" />
 
   <!-- 摘要悬浮提示 -->

@@ -154,6 +154,8 @@ export default {
   'release.snooze_until': '提醒时间: {0}',
   'release.snooze_scheduled': '已计划1天后通知',
   'release.notification_cancelled': '已取消通知',
+  'release.deleted_toast': '版本已删除',
+  'release.delete_failed': '删除版本失败: ',
   'release.status_failed': '更新状态失败: ',
 
   'log.search': '搜索日志...',
@@ -182,6 +184,7 @@ export default {
   'context.paste': '粘贴',
   'context.select_all': '全选',
   'context.copy_summary': '复制摘要',
+  'context.delete_release': '删除版本',
 
   'source.added': '添加监控源: {source_type} {owner}/{repo}',
   'source.removed': '移除监控源 {owner}/{repo} id={id}',
@@ -207,6 +210,8 @@ export default {
   'release.ignored_unknown': '忽略版本 id={id}',
   'release.snoozed': '推迟版本 {owner}/{repo} {tag} id={id}',
   'release.snoozed_unknown': '推迟版本 id={id}',
+  'release.deleted': '删除版本 {owner}/{repo} {tag} id={id}',
+  'release.deleted_unknown': '删除版本 id={id}',
   'release.status_changed': '{owner}/{repo} {tag} {action}(id={id})',
   'release.status_changed_unknown': '版本 id={id} 状态: {action}',
 
