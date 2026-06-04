@@ -4,10 +4,6 @@ import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
 import type { ReleaseInfo } from '../api/releases'
 
-vi.mock('../api', () => ({
-  openReleaseUrl: vi.fn(),
-}))
-
 vi.mock('../i18n', () => ({
   t: vi.fn((key: string) => key),
   getLocale: vi.fn(() => 'en'),
