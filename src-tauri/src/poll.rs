@@ -128,6 +128,46 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     do_trigger_poll_async(app).await
 }
 
+/// 两个 do_*_poll_async 函数的公共核心：拉取所有源 → AI 摘要 → 通知 → 重试失败摘要
+#[allow(clippy::too_many_arguments)]
+async fn do_poll_core(
+    app: &tauri::AppHandle,
+    sources: &[db::sources::Source],
+    proxy_url: &str,
+    proxy_mode: &str,
+    github_token: Option<&str>,
+    fetch_history: bool,
+    fetch_history_count: usize,
+    is_manual: bool,
+) -> (Vec<i64>, Vec<db::releases::ReleaseInfo>) {
+    let (all_new_ids, all_saved) = poll_all_sources_async(
+        app, sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count,
+    )
+    .await;
+
+    if !all_saved.is_empty() {
+        deepseek::generate_summaries_for_new(app, &all_saved).await;
+    }
+
+    let (_, new_releases) = collect_pending_and_notify(app, &all_new_ids, is_manual);
+
+    // 重试之前失败的 AI 摘要生成
+    let retry_releases = {
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db.get() {
+            db::releases::get_releases_without_summary(&conn).unwrap_or_default()
+        } else {
+            vec![]
+        }
+    };
+    if !retry_releases.is_empty() {
+        log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
+        deepseek::generate_summaries_for_new(app, &retry_releases).await;
+    }
+
+    (all_new_ids, new_releases)
+}
+
 async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
     let (sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count);
 
@@ -147,28 +187,12 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &sources, &proxy_url, &proxy_mode, github_token.as_deref(), fetch_history, fetch_history_count).await;
+    let (_, new_releases) = do_poll_core(
+        &app, &sources, &proxy_url, &proxy_mode, github_token.as_deref(),
+        fetch_history, fetch_history_count, true,
+    ).await;
 
-    if !all_saved.is_empty() {
-        deepseek::generate_summaries_for_new(&app, &all_saved).await;
-    }
-
-    let (_pending, new_releases) = collect_pending_and_notify(&app, &all_new_ids, true);
-
-    // 重试之前失败的 AI 摘要生成（不影响本轮通知，成功后会由下轮 poll 处理通知）
-    let retry_releases = {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            db::releases::get_releases_without_summary(&conn).unwrap_or_default()
-        } else {
-            vec![]
-        }
-    };
-    if !retry_releases.is_empty() {
-        log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
-        deepseek::generate_summaries_for_new(&app, &retry_releases).await;
-    }
-
+    // 手动触发特有逻辑：更新 next_poll_at
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().unwrap();
@@ -415,27 +439,10 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (all_new_ids, all_saved) = poll_all_sources_async(&app, &enabled, &proxy_url, &proxy_mode, github_token.as_deref(), fetch_history, fetch_history_count).await;
-
-    if !all_saved.is_empty() {
-        deepseek::generate_summaries_for_new(&app, &all_saved).await;
-    }
-
-    collect_pending_and_notify(&app, &all_new_ids, false);
-
-    // 重试之前失败的 AI 摘要生成（不影响本轮通知，成功后会由下轮 poll 处理通知）
-    let retry_releases = {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            db::releases::get_releases_without_summary(&conn).unwrap_or_default()
-        } else {
-            vec![]
-        }
-    };
-    if !retry_releases.is_empty() {
-        log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
-        deepseek::generate_summaries_for_new(&app, &retry_releases).await;
-    }
+    do_poll_core(
+        &app, &enabled, &proxy_url, &proxy_mode, github_token.as_deref(),
+        fetch_history, fetch_history_count, false,
+    ).await;
 
     let _ = app.emit("poll-completed", ());
 }

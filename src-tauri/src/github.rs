@@ -16,17 +16,25 @@ async fn fetch_releases_inner(
         repo,
         per_page,
     );
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-    let status = resp.status().as_u16();
-    if !resp.status().is_success() {
-        let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("err.api_error|{}|{}", status, reason)));
-    }
-    resp.json().await.map_err(|e| (status, format!("err.parse_failed|{}", e)))
+    // 复用 fetch_releases_page 消除 HTTP 请求逻辑重复，忽略分页信息
+    fetch_releases_page(client, &url).await.map(|(releases, _)| releases)
+}
+
+/// 重试包装：403 不重试，其他可重试错误最多重试 3 次
+async fn with_retry<T, F, Fut>(f: F) -> Result<T, (u16, String)>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, (u16, String)>>,
+{
+    let config = crate::retry::RetryConfig::default();
+    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
+        if e.0 == 403 {
+            return false;
+        }
+        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
+        true
+    }, f)
+    .await
 }
 
 async fn fetch_releases_with_retry(
@@ -36,14 +44,7 @@ async fn fetch_releases_with_retry(
     api_base: &str,
     per_page: usize,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 403 {
-            return false;
-        }
-        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
-        true
-    }, || async {
+    with_retry(|| async {
         fetch_releases_inner(client, owner, repo, api_base, per_page).await
     })
     .await
@@ -112,14 +113,7 @@ async fn fetch_releases_page_with_retry(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 403 {
-            return false;
-        }
-        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
-        true
-    }, || async {
+    with_retry(|| async {
         fetch_releases_page(client, url).await
     })
     .await

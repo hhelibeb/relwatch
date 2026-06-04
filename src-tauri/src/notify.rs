@@ -1,5 +1,3 @@
-use tauri::AppHandle;
-
 // ═══════════════════════════════════════════════════════════════
 // Windows 实现 (WinRT Toast 通知)
 // ═══════════════════════════════════════════════════════════════
@@ -383,7 +381,7 @@ mod inner {
 pub use inner::{send_release_notification, uninit_com, ensure_com};
 
 // ── 权限请求（跨平台空操作）─────────────────────────
-pub fn request_permission(_app: &AppHandle) {}
+pub fn request_permission(_app: &tauri::AppHandle) {}
 
 // ── 测试 ────────────────────────────────────────────
 #[cfg(test)]

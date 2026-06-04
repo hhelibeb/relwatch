@@ -94,10 +94,12 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     let src_conn = rusqlite::Connection::open(&path_str)
         .map_err(|e| format!("无法打开备份文件: {}", e))?;
 
-    // 打开目标数据库的独立连接作为恢复目标（Backup API 需要 &mut Connection）
-    let db_path = crate::db::init::db_path();
-    let mut dst_conn = rusqlite::Connection::open(&db_path)
-        .map_err(|e| format!("无法打开目标数据库: {}", e))?;
+    // 从连接池获取目标连接（避免使用独立连接绕过连接池导致并发冲突）
+    let state = app.state::<crate::types::AppState>();
+    let mut dst_conn = state
+        .db
+        .get()
+        .map_err(|e| format!("无法获取数据库连接: {}", e))?;
 
     // 先清空现有数据（按外键依赖顺序：子表 → 父表）
     dst_conn
@@ -113,12 +115,14 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
         .map_err(|e| format!("清空数据失败: {}", e))?;
 
     // 使用 rusqlite backup API 将备份文件内容复制到运行中的数据库
-    let backup = Backup::new(&src_conn, &mut dst_conn)
-        .map_err(|e| format!("创建备份会话失败: {}", e))?;
-
-    backup
-        .run_to_completion(100, Duration::from_millis(250), None)
-        .map_err(|e| format!("恢复数据失败: {}", e))?;
+    // 通过池连接写入，SQLite 自身的 WAL 锁机制保证并发一致性
+    {
+        let backup = Backup::new(&src_conn, &mut dst_conn)
+            .map_err(|e| format!("创建备份会话失败: {}", e))?;
+        backup
+            .run_to_completion(100, Duration::from_millis(250), None)
+            .map_err(|e| format!("恢复数据失败: {}", e))?;
+    } // backup 在此处释放，dst_conn 不再被借用
 
     let state = app.state::<crate::types::AppState>();
     if let Ok(conn) = state.db.get() {
