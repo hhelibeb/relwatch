@@ -327,10 +327,15 @@ cat /tmp/changelog-raw.md
 3. 使用**中文**
 4. 如果某项分类没有对应内容，可以省略
 
-**Fix 范围规则：**
+**Fix 和 改进 范围规则：**
 
-- 如果某个 fix 是为了解决**本次 release 内**其他 feat 引入的新问题（即该 bug 在上一版本中不存在），则不在 release note 中展示
-- 如果 fix 修复的是**上个版本遗留的 bug**，需要正常列出
+- 如果某个 fix 或 改进 是为了解决**本次 release 内**其他 feat 引入的新问题（即该 bug 在上一版本中不存在），则不作为独立条目展示，**但其 commit hash 应附加到所从属的 feature 条目末尾**（因为它是该功能完整交付的一部分）
+- 如果 fix 或 改进 修复的是**上个版本遗留的 bug**，需要正常列出
+
+**同类合并规则：**
+
+- 同一 feature 的多个 commits（例如：一个 feat commit + 后续的修复/调整）合并到同一条目下，hash 全部附在末尾：`独立查看源。 (`feat123`, `fix456`)`
+- 仅 housekeeping commits（chore bump、test-only、ci 配置）不出现
 
 **⚠️ 常见陷阱：**
 
