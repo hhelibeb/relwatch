@@ -304,3 +304,405 @@ function hideHealthTooltip() {
     </div>
   </section>
 </template>
+<style scoped>
+/* 添加监控源 */
+.add-source {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  transition: top 0.15s ease;
+}
+
+:global(.app-main.is-scrolled .add-source) {
+  top: calc(-1 * var(--app-padding-y, 16px));
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+}
+
+.add-source .input-clear-wrap {
+  flex: 1;
+}
+
+.add-source .input-clear-wrap input {
+  flex: 1;
+  padding: 8px 12px;
+  padding-right: 34px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+
+.add-source .input-clear-wrap input:focus {
+  border-color: var(--primary);
+}
+
+.add-source button {
+  padding: 8px 18px;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.add-source button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 监控源列表 */
+.source-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.source-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+}
+
+.source-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.source-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.source-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-health {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.source-health-label {
+  color: var(--text);
+}
+
+.source-pending-link {
+  padding: 1px 7px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: var(--primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.source-pending-link:hover {
+  border-color: var(--primary);
+  background: #dbeafe;
+}
+
+.source-pending-link:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline-offset: 2px;
+}
+
+.source-health-meta {
+  color: var(--text-muted);
+}
+
+.source-health-tooltip {
+  position: fixed;
+  z-index: 10002;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.14);
+  font-size: 12px;
+  line-height: 1.6;
+  pointer-events: none;
+  max-width: 360px;
+  overflow-wrap: break-word;
+}
+
+.tooltip-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tooltip-line-wrap {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.health-dot {
+  position: relative;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background: var(--text-muted);
+}
+
+.health-dot::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: -5px;
+  right: -5px;
+  bottom: -5px;
+  border-radius: 999px;
+}
+
+.health-ok {
+  background: var(--success);
+}
+
+.health-error {
+  background: var(--danger);
+}
+
+.health-paused,
+.health-unknown {
+  background: var(--text-muted);
+}
+
+.source-error {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  background: var(--bg);
+  border-radius: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.badge-on {
+  background: #dcfce7;
+  color: var(--success);
+}
+
+.badge-off {
+  background: #fef3c7;
+  color: var(--warning);
+}
+
+.source-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+/* 静默徽章 */
+.badge-muted {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+/* 更多按钮下拉容器 */
+.dropdown-more {
+  position: relative;
+  display: inline-flex;
+}
+
+.btn-more {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.btn-more:hover {
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* 侧边弹出面板 */
+.dropdown-more-panel {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  overflow: hidden;
+}
+
+.dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+  white-space: nowrap;
+}
+
+.dropdown-item:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.dropdown-item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.dropdown-icon {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.dropdown-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.dropdown-item-danger {
+  color: var(--danger);
+}
+
+.dropdown-item-danger:hover:not(:disabled) {
+  background: #fef2f2;
+}
+
+/* 新增源高亮动画 */
+.source-highlight {
+  animation: highlight-pulse 2s ease-out;
+}
+
+@keyframes highlight-pulse {
+  0% {
+    background-color: rgba(37, 99, 235, 0.12);
+    border-color: rgba(37, 99, 235, 0.3);
+  }
+  100% {
+    background-color: transparent;
+    border-color: var(--border);
+  }
+}
+
+.btn-check {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+/* 图标操作按钮 */
+.btn-icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-icon-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.btn-icon-action:hover:not(:disabled) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+.btn-icon-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-check {
+  color: var(--primary);
+  border-color: var(--primary);
+}
+
+.btn-check:hover:not(:disabled) {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-pause {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.btn-pause:hover:not(:disabled) {
+  background: var(--warning);
+  color: #fff;
+}
+
+.btn-resume {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+.btn-resume:hover:not(:disabled) {
+  background: var(--success);
+  color: #fff;
+}
+
+:global([data-theme="dark"] .source-health-tooltip) {
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+
+:global([data-theme="dark"] .dropdown-item-danger:hover:not(:disabled)) {
+  background: rgba(248, 113, 113, 0.15);
+}
+</style>

@@ -31,3 +31,34 @@ defineEmits<{
     </template>
   </div>
 </template>
+<style scoped>
+.context-menu {
+  position: fixed;
+  z-index: 10000;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+}
+.context-menu button {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+.context-menu button:hover {
+  background: var(--bg);
+}
+
+:global([data-theme="dark"] .context-menu) {
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+</style>

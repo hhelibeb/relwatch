@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
-import { shallowMount } from '@vue/test-utils'
+import { shallowMount, type VueWrapper } from '@vue/test-utils'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
+import ReleaseItem from '../components/ReleaseItem.vue'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../i18n', () => ({
@@ -11,9 +12,18 @@ vi.mock('../i18n', () => ({
 
 vi.mock('../utils', () => ({
   formatDate: vi.fn(() => '2024-01-01'),
-  isReadStatus: vi.fn(() => false),
-  isUnreadStatus: vi.fn(() => false),
-  releaseMatchesSearch: vi.fn(() => true),
+  isReadStatus: vi.fn((status: string) => status === 'clicked' || status === 'ignored'),
+  isUnreadStatus: vi.fn((status: string) => status === 'pending' || status === 'snoozed'),
+  releaseMatchesSearch: vi.fn((release: ReleaseInfo, query: string) => {
+    const q = query.trim().toLowerCase()
+    if (!q) return true
+    return `${release.owner}/${release.repo}`.toLowerCase().includes(q) ||
+      release.owner.toLowerCase().includes(q) ||
+      release.repo.toLowerCase().includes(q) ||
+      release.tag_name.toLowerCase().includes(q) ||
+      release.release_name.toLowerCase().includes(q) ||
+      (release.body || '').toLowerCase().includes(q)
+  }),
 }))
 
 function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
@@ -39,10 +49,73 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
   }
 }
 
-function createWrapper(releases: ReleaseInfo[] = []) {
+type ReleaseTabTestProps = {
+  releases: ReleaseInfo[]
+  search?: string
+  statusFilter?: 'all' | 'unread' | 'read'
+}
+
+function releaseProp(item: VueWrapper): ReleaseInfo {
+  return (item.props() as { release: ReleaseInfo }).release
+}
+
+async function setReleaseTabProps(wrapper: ReturnType<typeof createWrapper>, props: Partial<ReleaseTabTestProps>) {
+  await wrapper.setProps(props as Parameters<typeof wrapper.setProps>[0])
+}
+
+function createWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTestProps> = {}) {
   return shallowMount(ReleaseTab, {
-    props: { releases },
+    props: { releases, ...props },
   })
+}
+
+function createProtectiveReleases(): ReleaseInfo[] {
+  return [
+    createRelease({
+      id: 1,
+      owner: 'tauri-apps',
+      repo: 'tauri',
+      tag_name: 'v2.0.0',
+      release_name: 'Tauri stable',
+      published_at: '2025-05-03T00:00:00Z',
+      notification_status: 'pending',
+      ai_importance: '大',
+      body: 'desktop framework',
+    }),
+    createRelease({
+      id: 2,
+      owner: 'vuejs',
+      repo: 'core',
+      tag_name: 'v3.5.0',
+      release_name: 'Vue minor',
+      published_at: '2025-05-02T00:00:00Z',
+      notification_status: 'clicked',
+      ai_importance: '中',
+      body: 'reactivity improvements',
+    }),
+    createRelease({
+      id: 3,
+      owner: 'hhelibeb',
+      repo: 'relwatch',
+      tag_name: 'v1.3.0',
+      release_name: 'RelWatch patch',
+      published_at: '2025-05-01T00:00:00Z',
+      notification_status: 'ignored',
+      ai_importance: '小',
+      body: 'settings polish',
+    }),
+    createRelease({
+      id: 4,
+      owner: 'tauri-apps',
+      repo: 'tauri',
+      tag_name: 'v2.1.0',
+      release_name: 'Tauri patch',
+      published_at: '2025-05-04T00:00:00Z',
+      notification_status: 'snoozed',
+      ai_importance: '中',
+      body: 'security fixes',
+    }),
+  ]
 }
 
 describe('ReleaseTab — ReleaseSearchBar 单实例', () => {
@@ -109,5 +182,122 @@ describe('ReleaseTab — ReleaseSearchBar showSearch', () => {
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.date-detail-title').exists()).toBe(true)
     expect((bar().props() as unknown as Record<string, unknown>).showSearch).toBe(true)
+  })
+})
+
+describe('ReleaseTab — 保护性行为测试', () => {
+  it('搜索过滤后列表变化，并向外同步搜索词', async () => {
+    const wrapper = createWrapper(createProtectiveReleases(), { search: 'tauri' })
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(2)
+
+    wrapper.findComponent(ReleaseSearchBar).vm.$emit('update:modelValue', 'vue')
+    expect(wrapper.emitted('update:search')?.[0]).toEqual(['vue'])
+
+    await setReleaseTabProps(wrapper, { search: 'vue' })
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(1)
+    expect(releaseProp(wrapper.findComponent(ReleaseItem))).toMatchObject({ id: 2 })
+  })
+
+  it('状态过滤覆盖全部 / 未读 / 已读', async () => {
+    const wrapper = createWrapper(createProtectiveReleases())
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(4)
+
+    await setReleaseTabProps(wrapper, { statusFilter: 'unread' })
+    expect(wrapper.findAllComponents(ReleaseItem).map(item => releaseProp(item).id)).toEqual([4, 1])
+
+    await setReleaseTabProps(wrapper, { statusFilter: 'read' })
+    expect(wrapper.findAllComponents(ReleaseItem).map(item => releaseProp(item).id)).toEqual([2, 3])
+
+    await setReleaseTabProps(wrapper, { statusFilter: 'all' })
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(4)
+
+    wrapper.findComponent(ReleaseSearchBar).vm.$emit('update:statusFilter', 'unread')
+    expect(wrapper.emitted('update:statusFilter')?.[0]).toEqual(['unread'])
+  })
+
+  it('重要度过滤覆盖全部 / 大 / 中 / 小', async () => {
+    const wrapper = createWrapper(createProtectiveReleases())
+    const bar = wrapper.findComponent(ReleaseSearchBar)
+
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(4)
+
+    bar.vm.$emit('update:importanceFilter', '大')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAllComponents(ReleaseItem).map(item => releaseProp(item).id)).toEqual([1])
+
+    bar.vm.$emit('update:importanceFilter', '中')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAllComponents(ReleaseItem).map(item => releaseProp(item).id)).toEqual([4, 2])
+
+    bar.vm.$emit('update:importanceFilter', '小')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAllComponents(ReleaseItem).map(item => releaseProp(item).id)).toEqual([3])
+
+    bar.vm.$emit('update:importanceFilter', 'all')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(4)
+  })
+
+  it('可以在简单 / 聚合 / 日历三种视图间切换', async () => {
+    const wrapper = createWrapper(createProtectiveReleases())
+    const bar = wrapper.findComponent(ReleaseSearchBar)
+
+    expect(wrapper.find('.release-list').exists()).toBe(true)
+    expect(wrapper.find('.repo-group').exists()).toBe(false)
+    expect(wrapper.find('.calendar-grid').exists()).toBe(false)
+
+    bar.vm.$emit('update:viewMode', 'aggregated')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.repo-group').exists()).toBe(true)
+    expect(wrapper.find('.calendar-grid').exists()).toBe(false)
+
+    bar.vm.$emit('update:viewMode', 'calendar')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.calendar-grid').exists()).toBe(true)
+    expect(wrapper.find('.repo-group').exists()).toBe(false)
+
+    bar.vm.$emit('update:viewMode', 'simple')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.release-list').exists()).toBe(true)
+  })
+
+  it('聚合视图支持展开 / 收起 repo 分组', async () => {
+    const wrapper = createWrapper(createProtectiveReleases())
+    wrapper.findComponent(ReleaseSearchBar).vm.$emit('update:viewMode', 'aggregated')
+    await wrapper.vm.$nextTick()
+
+    const header = wrapper.find('.repo-group-header')
+    expect(header.exists()).toBe(true)
+    expect(wrapper.find('.repo-group-body').exists()).toBe(false)
+
+    await header.trigger('click')
+    expect(wrapper.find('.repo-group-body').exists()).toBe(true)
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(2)
+
+    await header.trigger('click')
+    expect(wrapper.find('.repo-group-body').exists()).toBe(false)
+  })
+
+  it('日历点击某天进入详情列表', async () => {
+    const today = new Date()
+    const wrapper = createWrapper([
+      createRelease({ id: 10, published_at: today.toISOString(), tag_name: 'v-today' }),
+    ])
+    wrapper.findComponent(ReleaseSearchBar).vm.$emit('update:viewMode', 'calendar')
+    await wrapper.vm.$nextTick()
+
+    await wrapper.get('.calendar-cell.current-month.today').trigger('click')
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.date-detail-title').exists()).toBe(true)
+    expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(1)
+    expect(releaseProp(wrapper.findComponent(ReleaseItem))).toMatchObject({ id: 10 })
+  })
+
+  it('ReleaseItem 触发 update 后，ReleaseTab 正确向外 emit update', async () => {
+    const wrapper = createWrapper(createProtectiveReleases())
+    wrapper.findComponent(ReleaseItem).vm.$emit('update')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.emitted('update')).toEqual([[]])
   })
 })

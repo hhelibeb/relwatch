@@ -70,6 +70,9 @@ const inputMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'paste', label: t('context.paste') },
   { id: 'selectAll', label: t('context.select_all') },
 ])
+const selectionMenuItems = computed<ContextMenuItem[]>(() => [
+  { id: 'copySelection', label: t('context.copy') },
+])
 
 function closeAllMenus() {
   selectionMenu.value = null
@@ -80,6 +83,12 @@ async function handleCopySelection() {
   const text = window.getSelection()?.toString().trim()
   if (text) { try { await navigator.clipboard.writeText(text) } catch { /* ignore */ } }
   closeAllMenus()
+}
+
+function handleSelectionMenuAction(actionId: string) {
+  if (actionId === 'copySelection') {
+    handleCopySelection()
+  }
 }
 
 async function execInputAction(actionId: string) {
@@ -361,12 +370,48 @@ onUnmounted(() => {
       <div v-if="toastVisible" class="toast">{{ toastMessage }}</div>
     </Transition>
 
-    <div v-if="selectionMenu" class="context-menu" :style="{ left: selectionMenu.x + 'px', top: selectionMenu.y + 'px' }" @click.stop>
-      <button @click="handleCopySelection">{{ t('context.copy') }}</button>
-    </div>
+    <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" />
     <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" />
   </div>
 </template>
 
 <style scoped>
+/* Toast */
+.toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 9999;
+  padding: 10px 24px;
+  background: var(--text);
+  color: #fff;
+  border-radius: var(--radius);
+  font-size: 13px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+}
+
+.toast-enter-active {
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.toast-leave-active {
+  transition: all 0.3s ease-in;
+}
+
+.toast-enter-from {
+  opacity: 0;
+  transform: translateX(60px);
+}
+
+.toast-leave-to {
+  opacity: 0;
+  transform: translateX(60px);
+}
+
+:global([data-theme="dark"] .toast) {
+  background: #334155;
+  color: #e2e8f0;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+}
 </style>

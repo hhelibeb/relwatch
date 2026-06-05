@@ -434,3 +434,322 @@ function handleOpenUrl(url: string) {
     <ContextMenu v-if="repoContextMenu" :x="repoContextMenu.x" :y="repoContextMenu.y" @open="handleRepoOpenLink" @copy="handleRepoCopyLink" />
   </section>
 </template>
+<style scoped>
+/* 版本列表 */
+.release-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* 聚合视图 */
+.repo-group {
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  margin-bottom: 8px;
+  overflow: hidden;
+}
+
+.repo-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+}
+
+.repo-group-header:hover {
+  background: var(--bg);
+}
+
+.repo-group-header .repo-name {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+}
+
+.repo-group-header .repo-latest-tag {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--primary);
+}
+
+.repo-group-header .repo-latest-date {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.repo-group-header .repo-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.repo-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: transform 0.2s;
+}
+
+.repo-group-toggle svg {
+  width: 14px;
+  height: 14px;
+}
+
+.repo-group-toggle.expanded {
+  transform: rotate(180deg);
+}
+
+.repo-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+
+.repo-toolbar .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toggle-all-icon {
+  width: 12px;
+  height: 12px;
+  transition: transform 0.2s;
+}
+
+.icon-collapse {
+  transform: rotate(180deg);
+}
+
+.repo-group-body {
+  border-top: 1px solid var(--border);
+  padding: 6px 14px 10px;
+}
+
+.repo-group-body .release-item {
+  border: none;
+  border-left: 4px solid var(--primary);
+  margin-bottom: 6px;
+  padding: 9px 12px;
+  background: var(--bg);
+}
+
+.repo-group-body .release-item.release-importance-high {
+  border-left-color: var(--danger);
+}
+
+.repo-group-body .release-item.release-importance-medium {
+  border-left-color: #eab308;
+}
+
+.repo-group-body .release-item.release-importance-low {
+  border-left-color: var(--success);
+}
+
+.repo-group-body .release-item:last-child {
+  margin-bottom: 0;
+}
+
+/* 日历视图 */
+.calendar-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.calendar-nav button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.calendar-nav button:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.calendar-nav button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.calendar-nav button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.calendar-nav .calendar-month-label {
+  font-size: 15px;
+  font-weight: 600;
+  min-width: 120px;
+  text-align: center;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  background: var(--surface);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  padding: 8px;
+}
+
+.calendar-day-header {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 4px 0;
+}
+
+.calendar-cell {
+  aspect-ratio: 17 / 14;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  cursor: default;
+  font-size: 13px;
+  position: relative;
+  transition: background 0.1s;
+  color: var(--text);
+}
+
+.calendar-cell.current-month {
+  cursor: pointer;
+}
+
+.calendar-cell.current-month:hover {
+  background: var(--bg);
+}
+
+.calendar-cell.other-month {
+  color: var(--text-muted);
+  opacity: 0.4;
+}
+
+.calendar-cell.today {
+  font-weight: 700;
+  box-shadow: inset 0 0 0 2px var(--primary);
+}
+
+.calendar-cell .cell-date {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.calendar-cell-count-1 {
+  background: #dbeafe;
+}
+
+.calendar-cell-count-2 {
+  background: #fef3c7;
+}
+
+.calendar-cell-count-3 {
+  background: #fed7aa;
+}
+
+.calendar-cell-count-4 {
+  background: #fecaca;
+}
+
+.calendar-cell-count-1:hover,
+.calendar-cell-count-2:hover,
+.calendar-cell-count-3:hover,
+.calendar-cell-count-4:hover {
+  filter: brightness(0.95);
+}
+
+/* 日历悬浮提示 */
+.calendar-tooltip {
+  position: fixed;
+  z-index: 10001;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  font-size: 12px;
+  max-width: 260px;
+  pointer-events: none;
+}
+
+.calendar-tooltip .tooltip-item {
+  padding: 2px 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calendar-tooltip .tooltip-repo {
+  color: var(--text-muted);
+  margin-right: 6px;
+}
+
+.calendar-tooltip .tooltip-tag {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* 日历钻取返回 */
+.calendar-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: none;
+  background: var(--bg);
+  color: var(--text);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  margin-bottom: 12px;
+  transition: background 0.1s;
+}
+
+.calendar-back:hover {
+  background: var(--border);
+}
+
+.calendar-back svg {
+  width: 14px;
+  height: 14px;
+}
+
+.date-detail-title {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 12px;
+  padding-left: 4px;
+}
+
+:global([data-theme="dark"] .calendar-tooltip) {
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+</style>
