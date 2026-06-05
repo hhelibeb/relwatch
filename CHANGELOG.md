@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.4] - 2026-06-05
+
+### Added
+- 应用图标更新为高分辨率雷达主题，新增托盘角标图标。
+
+### Changed
+- 轮询模块 DB 锁获取从 panic 改为优雅错误处理，提升稳定性。
+
+### Fixed
+- 空值和无效日期字符串不再导致渲染异常。
+
 ## [1.3.3] - 2026-06-03
 
 ### Added
@@ -141,7 +152,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.3...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.4...HEAD
+[1.3.4]: https://github.com/hhelibeb/relwatch/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...v1.3.3
 [1.3.1]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/hhelibeb/relwatch/compare/v1.2.6...v1.3.0
