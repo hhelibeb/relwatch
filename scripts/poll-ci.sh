@@ -9,7 +9,7 @@ NAMES=("CI" "Lint" "Secret Scan")
 
 echo "===== CI 轮询开始 ====="
 echo "Branch: main${TAG:+ | Tag: $TAG}"
-echo "Poll: ${POLL}s | 上限 30 分钟"
+echo "Poll: ${POLL}s | 上限 15 分钟"
 echo "======================"
 
 check_workflows() {
@@ -69,7 +69,7 @@ check_tag_release() {
   esac
 }
 
-for i in $(seq 1 60); do
+for i in $(seq 1 30); do
   echo "[$i/60]  $(date '+%H:%M:%S')"
 
   main_ok=false
@@ -88,5 +88,5 @@ for i in $(seq 1 60); do
   [ "$i" -lt 60 ] && sleep "$POLL"
 done
 
-echo "===== ❌ 超时：CI 未在 30 分钟内完成 ====="
+echo "===== ❌ 超时：CI 未在 15 分钟内完成 ====="
 exit 1
