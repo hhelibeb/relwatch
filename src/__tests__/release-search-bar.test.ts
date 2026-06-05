@@ -3,6 +3,11 @@ import { shallowMount, type VueWrapper } from '@vue/test-utils'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
+import ReleaseToolbar from '../components/ReleaseToolbar.vue'
+import ReleaseSimpleList from '../components/ReleaseSimpleList.vue'
+import ReleaseAggregatedList from '../components/ReleaseAggregatedList.vue'
+import ReleaseCalendar from '../components/ReleaseCalendar.vue'
+import ReleaseDateDetail from '../components/ReleaseDateDetail.vue'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../i18n', () => ({
@@ -66,6 +71,15 @@ async function setReleaseTabProps(wrapper: ReturnType<typeof createWrapper>, pro
 function createWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTestProps> = {}) {
   return shallowMount(ReleaseTab, {
     props: { releases, ...props },
+    global: {
+      stubs: {
+        ReleaseToolbar: false,
+        ReleaseSimpleList: false,
+        ReleaseAggregatedList: false,
+        ReleaseCalendar: false,
+        ReleaseDateDetail: false,
+      },
+    },
   })
 }
 
