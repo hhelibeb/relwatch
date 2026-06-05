@@ -232,7 +232,10 @@ pub fn save_releases(
         let tag = rel["tag_name"].as_str().unwrap_or("");
         let name = rel["name"].as_str().unwrap_or("");
         let html_url = rel["html_url"].as_str().unwrap_or("");
-        let published = rel["published_at"].as_str().unwrap_or("");
+        let published = match rel["published_at"].as_str() {
+            Some(s) if !s.is_empty() => s,
+            _ => continue,
+        };
         let body = rel["body"].as_str();
         if let Ok(id) =
             releases::insert_release(conn, source_id, tag, name, html_url, published, pre, body)

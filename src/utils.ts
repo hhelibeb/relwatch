@@ -19,7 +19,10 @@ export function importanceLabel(imp: string | null): string {
 }
 
 export function formatDate(dateStr: string): string {
-  return new Date(dateStr).toLocaleString(getLocale())
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString(getLocale())
 }
 
 export function releaseMatchesSearch(release: SearchableRelease, query: string): boolean {

@@ -128,6 +128,15 @@ describe('formatDate', () => {
     expect(typeof result2).toBe('string')
     expect(result1).not.toBe(result2)
   })
+
+  it('空字符串返回空字符串', () => {
+    expect(formatDate('')).toBe('')
+  })
+
+  it('无效日期字符串返回空字符串', () => {
+    expect(formatDate('not-a-date')).toBe('')
+    expect(formatDate('2024-13-01T00:00:00Z')).toBe('')
+  })
 })
 
 // ── logLevelClass ─────────────────────────────────────────────────
