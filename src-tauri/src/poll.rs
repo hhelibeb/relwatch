@@ -123,6 +123,80 @@ fn compute_fetch_plan(
     }
 }
 
+// ---- 轮询设置 ----------------
+
+/// 轮询操作所需的所有设置项，一次性从 DB 读取。
+struct PollSettings {
+    proxy_url: String,
+    proxy_mode: String,
+    github_token: Option<String>,
+    fetch_history: bool,
+    fetch_history_count: usize,
+}
+
+impl Default for PollSettings {
+    fn default() -> Self {
+        Self {
+            proxy_url: String::new(),
+            proxy_mode: "none".to_string(),
+            github_token: None,
+            fetch_history: false,
+            fetch_history_count: 1,
+        }
+    }
+}
+
+/// 从 DB 加载轮询设置，返回 Result（在 ? 可用的上下文中使用）。
+fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, String> {
+    let proxy_url = db::settings::get_setting(conn, KEY_PROXY_URL)?.unwrap_or_default();
+    let proxy_mode = db::settings::get_setting(conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
+        if proxy_url.is_empty() {
+            "none".to_string()
+        } else {
+            "custom".to_string()
+        }
+    });
+    let github_token = get_github_token(conn);
+    let fetch_history =
+        db::settings::get_setting_bool(conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
+    let fetch_history_count =
+        db::settings::get_setting_i64(conn, KEY_FETCH_HISTORY_COUNT, 1)
+            .unwrap_or(1)
+            .max(0) as usize;
+    Ok(PollSettings {
+        proxy_url,
+        proxy_mode,
+        github_token,
+        fetch_history,
+        fetch_history_count,
+    })
+}
+
+/// 将新保存的 releases 中非最新版本标记为"已读"。
+///
+/// - 如果库中已有比最新 release 更新的版本 → 全部标记已读
+/// - 否则跳过最新一条，其余标记已读
+fn mark_older_as_read(conn: &rusqlite::Connection, source_id: i64, saved: &[(i64, Option<String>)]) {
+    if saved.is_empty() {
+        return;
+    }
+    let latest_id = saved[0].0;
+    let has_newer = db::releases::get_release(conn, latest_id)
+        .ok()
+        .flatten()
+        .and_then(|r| db::releases::has_newer_release(conn, source_id, &r.published_at).ok())
+        .unwrap_or(false);
+    if has_newer {
+        for (id, _) in saved {
+            let _ = db::releases::set_notification_state(conn, *id, "clicked", None);
+        }
+    } else if saved.len() > 1 {
+        for (id, _) in saved.iter().skip(1) {
+            let _ = db::releases::set_notification_state(conn, *id, "clicked", None);
+        }
+    }
+}
+
 pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
     do_trigger_poll_async(app).await
@@ -173,18 +247,17 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
+        let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
         sources = db::sources::list_sources(&conn)?
             .into_iter()
             .filter(|s| s.enabled)
             .collect::<Vec<_>>();
-        proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
-        proxy_mode = db::settings::get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
-            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-        });
-        github_token = get_github_token(&conn);
-        fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
-        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
+        let settings = load_poll_settings(&conn)?;
+        proxy_url = settings.proxy_url;
+        proxy_mode = settings.proxy_mode;
+        github_token = settings.github_token;
+        fetch_history = settings.fetch_history;
+        fetch_history_count = settings.fetch_history_count;
     }
 
     let (_, new_releases) = do_poll_core(
@@ -195,7 +268,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
     // 手动触发特有逻辑：更新 next_poll_at
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
+        let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
         let now = chrono::Utc::now().timestamp();
         let interval = db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
             .ok()
@@ -223,19 +296,18 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     let (source_obj, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
+        let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
         let sources = db::sources::list_sources(&conn)?;
         let source = sources
             .into_iter()
             .find(|s| s.id == id)
             .ok_or("err.source_not_found")?;
-        proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
-        proxy_mode = db::settings::get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
-            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-        });
-        github_token = get_github_token(&conn);
-        fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
-        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
+        let settings = load_poll_settings(&conn)?;
+        proxy_url = settings.proxy_url;
+        proxy_mode = settings.proxy_mode;
+        github_token = settings.github_token;
+        fetch_history = settings.fetch_history;
+        fetch_history_count = settings.fetch_history_count;
         source_obj = source;
     }
 
@@ -252,14 +324,15 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         Ok(client) => client,
         Err(e) => {
             let state = app.state::<AppState>();
-            let conn = state.db.get().unwrap();
-            let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
-            db::logs::write_log_key(
-                &conn,
-                "WARN",
-                "check.failed",
-                &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &e}).to_string(),
-            );
+            if let Ok(conn) = state.db.get() {
+                let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
+                db::logs::write_log_key(
+                    &conn,
+                    "WARN",
+                    "check.failed",
+                    &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &e}).to_string(),
+                );
+            }
             return Err(e);
         }
     };
@@ -273,42 +346,33 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         Ok(releases) => releases,
         Err((status, msg)) => {
             let state = app.state::<AppState>();
-            let conn = state.db.get().unwrap();
-            let _ = db::sources::record_check_failure(&conn, source_obj.id, &msg);
-            // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
-            let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-            db::logs::write_log_key(
-                &conn,
-                level,
-                "check.failed",
-                &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &msg}).to_string(),
-            );
+            if let Ok(conn) = state.db.get() {
+                let _ = db::sources::record_check_failure(&conn, source_obj.id, &msg);
+                // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
+                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                db::logs::write_log_key(
+                    &conn,
+                    level,
+                    "check.failed",
+                    &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &msg}).to_string(),
+                );
+            }
             return Err(msg);
         }
     };
     let saved: Vec<(i64, Option<String>)>;
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
+        let conn = match state.db.get() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return Err(e.to_string());
+            }
+        };
         saved = save_for_source(&conn, &source_obj, &releases, max_count.unwrap_or(usize::MAX));
         if !saved.is_empty() {
-            let latest_id = saved[0].0;
-            let has_newer = db::releases::get_release(&conn, latest_id)
-                .ok()
-                .flatten()
-                .and_then(|r| {
-                    db::releases::has_newer_release(&conn, source_obj.id, &r.published_at).ok()
-                })
-                .unwrap_or(false);
-            if has_newer {
-                for (id, _) in &saved {
-                    let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
-                }
-            } else if saved.len() > 1 {
-                for (id, _) in saved.iter().skip(1) {
-                    let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
-                }
-            }
+            mark_older_as_read(&conn, source_obj.id, &saved);
         }
         let _ = db::sources::record_check_success(&conn, source_obj.id, saved.len());
         db::logs::write_log_key(
@@ -373,18 +437,20 @@ async fn do_poll_async(app: tauri::AppHandle) {
     let (sources, proxy_url, proxy_mode, retention_days, github_token, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
+        let conn = match state.db.get() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return;
+            }
+        };
         sources = db::sources::list_sources(&conn).unwrap_or_default();
-        proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        proxy_mode = db::settings::get_setting(&conn, KEY_PROXY_MODE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-            });
+        let settings = load_poll_settings(&conn).unwrap_or_default();
+        proxy_url = settings.proxy_url;
+        proxy_mode = settings.proxy_mode;
+        github_token = settings.github_token;
+        fetch_history = settings.fetch_history;
+        fetch_history_count = settings.fetch_history_count;
         retention_days = db::settings::get_setting(&conn, KEY_LOG_RETENTION)
             .ok()
             .flatten()
@@ -393,14 +459,12 @@ async fn do_poll_async(app: tauri::AppHandle) {
         if retention_days > 0 {
             db::logs::delete_old_logs(&conn, retention_days);
         }
-        github_token = get_github_token(&conn);
-        fetch_history = db::settings::get_setting_bool(&conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
-        fetch_history_count = db::settings::get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1).unwrap_or(1).max(0) as usize;
     }
 
     // 自动禁用连续失败过多的监控源（断路器）
-    {
+    let disabled_ids: Vec<i64> = {
         let state = app.state::<AppState>();
+        let mut ids = Vec::new();
         if let Ok(conn) = state.db.get() {
             for source in &sources {
                 if source.enabled && source.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
@@ -424,13 +488,15 @@ async fn do_poll_async(app: tauri::AppHandle) {
                         "id": source.id,
                         "failures": source.consecutive_failures,
                     }));
+                    ids.push(source.id);
                 }
             }
         }
-    }
+        ids
+    };
 
     let enabled: Vec<db::sources::Source> =
-        sources.into_iter().filter(|s| s.enabled).collect();
+        sources.into_iter().filter(|s| s.enabled && !disabled_ids.contains(&s.id)).collect();
     if enabled.is_empty() {
         let state = app.state::<AppState>();
         if let Ok(conn) = state.db.get() {
@@ -499,29 +565,16 @@ async fn poll_all_sources_async(
             match fetch_result {
                 Ok(releases) => {
                     let state = app.state::<AppState>();
-                    let conn = state.db.get().unwrap();
+                    let conn = match state.db.get() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::error!("err.db_lock|{}", e);
+                            return (vec![], vec![]);
+                        }
+                    };
                     let saved = save_for_source(&conn, &source, &releases, max_count.unwrap_or(usize::MAX));
                     if !saved.is_empty() {
-                        // 检查是否有比最新新版本更新的版本已存在库中
-                        let latest_id = saved[0].0;
-                        let has_newer = db::releases::get_release(&conn, latest_id)
-                            .ok()
-                            .flatten()
-                            .and_then(|r| {
-                                db::releases::has_newer_release(&conn, source.id, &r.published_at).ok()
-                            })
-                            .unwrap_or(false);
-                        if has_newer {
-                            // 库中已有更新版本 → 全部是中间版本，全部标记已读
-                            for (id, _) in &saved {
-                                let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
-                            }
-                        } else if saved.len() > 1 {
-                            // 库中无更新版本 → 最新一条通知，其余标记已读
-                            for (id, _) in saved.iter().skip(1) {
-                                let _ = db::releases::set_notification_state(&conn, *id, "clicked", None);
-                            }
-                        }
+                        mark_older_as_read(&conn, source.id, &saved);
                     }
                     let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
                     let new_count = ids.len();
@@ -536,15 +589,16 @@ async fn poll_all_sources_async(
                 }
                 Err((status, msg)) => {
                     let state = app.state::<AppState>();
-                    let conn = state.db.get().unwrap();
-                    let _ = db::sources::record_check_failure(&conn, source.id, &msg);
-                    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-                    db::logs::write_log_key(
-                        &conn,
-                        level,
-                        "check.failed",
-                        &json!({"owner": &source.owner, "repo": &source.repo, "error": &msg}).to_string(),
-                    );
+                    if let Ok(conn) = state.db.get() {
+                        let _ = db::sources::record_check_failure(&conn, source.id, &msg);
+                        let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                        db::logs::write_log_key(
+                            &conn,
+                            level,
+                            "check.failed",
+                            &json!({"owner": &source.owner, "repo": &source.repo, "error": &msg}).to_string(),
+                        );
+                    }
                     (vec![], vec![])
                 }
             }
@@ -572,12 +626,16 @@ fn collect_pending_and_notify(
     let muted_source_ids;
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
-        pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
-        muted_source_ids = db::sources::list_muted_source_ids(&conn)
-            .unwrap_or_default()
-            .into_iter()
-            .collect::<std::collections::HashSet<_>>();
+        if let Ok(conn) = state.db.get() {
+            pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
+            muted_source_ids = db::sources::list_muted_source_ids(&conn)
+                .unwrap_or_default()
+                .into_iter()
+                .collect::<std::collections::HashSet<_>>();
+        } else {
+            pending = Vec::new();
+            muted_source_ids = std::collections::HashSet::new();
+        }
     }
 
     // Pending here means unread and eligible now, including expired snoozes.
@@ -624,19 +682,23 @@ fn collect_pending_and_notify(
 
     if is_manual {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
-        db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "check.manual_all_done",
-            &json!({"count": new_ids.len()}).to_string(),
-        );
+        if let Ok(conn) = state.db.get() {
+            db::logs::write_log_key(
+                &conn,
+                "INFO",
+                "check.manual_all_done",
+                &json!({"count": new_ids.len()}).to_string(),
+            );
+        }
     }
 
     let all_pending = {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
-        db::releases::get_pending_releases(&conn).unwrap_or_default()
+        if let Ok(conn) = state.db.get() {
+            db::releases::get_pending_releases(&conn).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     };
 
     (all_pending, new_releases)
@@ -670,12 +732,15 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
             let now = chrono::Utc::now().timestamp();
             let interval = {
                 let state = app_handle.state::<AppState>();
-                let conn = state.db.get().unwrap();
-                db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
-                    .ok()
-                    .flatten()
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .unwrap_or(30)
+                if let Ok(conn) = state.db.get() {
+                    db::settings::get_setting(&conn, KEY_POLL_INTERVAL)
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .unwrap_or(30)
+                } else {
+                    30
+                }
             };
             let next = now + (interval as i64) * 60;
             next_poll.store(next, Ordering::Relaxed);
