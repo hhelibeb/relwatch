@@ -126,4 +126,11 @@
     <line x1="9.5" y1="11.5" x2="9.5" y2="12.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
     <line x1="2.5" y1="2.5" x2="13.5" y2="13.5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
   </symbol>
+  <symbol id="checkbox-icon" viewBox="0 0 16 16">
+    <rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
+  <symbol id="checkbox-checked-icon" viewBox="0 0 16 16">
+    <rect x="2" y="2" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+    <polyline points="4.5,8 7,10.5 11.5,5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+  </symbol>
 </svg>

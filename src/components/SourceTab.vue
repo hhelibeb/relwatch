@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, inject, ref, nextTick, onMounted, onUnmounted } from 'vue'
+import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ShowToastKey } from '../injection-keys'
-import { message } from '@tauri-apps/plugin-dialog'
+import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { type Source, parseGitHubUrl, addSource, removeSource, updateSource } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
@@ -25,6 +25,155 @@ const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const openMoreId = ref<number | null>(null)
 const showToast = inject(ShowToastKey, () => {})
+
+const sourceSearch = ref('')
+
+const SOURCE_SORT_FIELD_STORAGE_KEY = 'relwatch.source.sort.field'
+const SOURCE_SORT_DIRECTION_STORAGE_KEY = 'relwatch.source.sort.direction'
+
+type SourceSortField = 'default' | 'name' | 'status' | 'created'
+type SortDirection = 'asc' | 'desc'
+
+function isSourceSortField(value: string | null): value is SourceSortField {
+  return value === 'default' || value === 'name' || value === 'status' || value === 'created'
+}
+
+function isSortDirection(value: string | null): value is SortDirection {
+  return value === 'asc' || value === 'desc'
+}
+
+function readStoredSourceSortField(): SourceSortField {
+  try {
+    const value = window.localStorage.getItem(SOURCE_SORT_FIELD_STORAGE_KEY)
+    return isSourceSortField(value) ? value : 'default'
+  } catch {
+    return 'default'
+  }
+}
+
+function readStoredSourceSortDirection(): SortDirection {
+  try {
+    const value = window.localStorage.getItem(SOURCE_SORT_DIRECTION_STORAGE_KEY)
+    return isSortDirection(value) ? value : 'desc'
+  } catch {
+    return 'desc'
+  }
+}
+
+type HeaderMode = 'add' | 'search'
+const sourceSortField = ref<SourceSortField>(readStoredSourceSortField())
+const sourceSortDirection = ref<SortDirection>(readStoredSourceSortDirection())
+const openSort = ref(false)
+const headerMode = ref<HeaderMode>('add')
+
+const selectionMode = ref(false)
+const selectedSourceIds = ref<Set<number>>(new Set())
+const bulkBusy = ref(false)
+
+function toggleSelection(sourceId: number) {
+  const next = new Set(selectedSourceIds.value)
+  if (next.has(sourceId)) next.delete(sourceId)
+  else next.add(sourceId)
+  selectedSourceIds.value = next
+}
+
+function selectAllVisible() {
+  selectedSourceIds.value = new Set(sortedSources.value.map(s => s.id))
+}
+
+function clearSelectedSources() {
+  selectedSourceIds.value = new Set()
+}
+
+function clearSelection() {
+  selectedSourceIds.value = new Set()
+  selectionMode.value = false
+}
+
+const selectedCount = computed(() => selectedSourceIds.value.size)
+
+async function handleBulkToggle(enabled: boolean) {
+  const ids = [...selectedSourceIds.value]
+  if (ids.length === 0) return
+  bulkBusy.value = true
+  let success = 0, failed = 0
+  for (const id of ids) {
+    try {
+      const source = props.sources.find(s => s.id === id)
+      if (!source) continue
+      await updateSource(id, enabled, source.poll_interval_minutes)
+      success++
+    } catch { failed++ }
+  }
+  bulkBusy.value = false
+  if (failed > 0) showToast?.(t('source.bulk_result', String(success), String(failed)))
+  emit('update')
+}
+
+async function handleBulkMuteToggle(muted: boolean) {
+  const ids = [...selectedSourceIds.value]
+  if (ids.length === 0) return
+  bulkBusy.value = true
+  let success = 0, failed = 0
+  for (const id of ids) {
+    try {
+      const source = props.sources.find(s => s.id === id)
+      if (!source) continue
+      await updateSource(id, source.enabled, source.poll_interval_minutes, muted)
+      success++
+    } catch { failed++ }
+  }
+  bulkBusy.value = false
+  if (failed > 0) showToast?.(t('source.bulk_result', String(success), String(failed)))
+  emit('update')
+}
+
+async function handleBulkRemove() {
+  const ids = [...selectedSourceIds.value]
+  if (ids.length === 0) return
+  const confirmed = await confirm(t('source.bulk_delete_confirm', String(ids.length)), { title: t('source.delete'), kind: 'warning' })
+  if (!confirmed) return
+  bulkBusy.value = true
+  let success = 0, failed = 0
+  for (const id of ids) {
+    try {
+      await removeSource(id)
+      success++
+    } catch { failed++ }
+  }
+  bulkBusy.value = false
+  if (failed > 0) showToast?.(t('source.bulk_result', String(success), String(failed)))
+  clearSelectedSources()
+  emit('update')
+}
+
+function sourceMatchesSearch(source: Source, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  const name = `${source.owner}/${source.repo}`.toLowerCase()
+  return name.includes(q) ||
+    source.owner.toLowerCase().includes(q) ||
+    source.repo.toLowerCase().includes(q) ||
+    (source.description ?? '').toLowerCase().includes(q)
+}
+
+const filteredSources = computed(() => {
+  const q = sourceSearch.value
+  if (!q.trim()) return props.sources
+  return props.sources.filter(s => sourceMatchesSearch(s, q))
+})
+
+const sortFieldOptions = computed(() => [
+  { value: 'default' as const, label: t('source.sort_default') },
+  { value: 'name' as const, label: t('source.sort_name') },
+  { value: 'status' as const, label: t('source.sort_status') },
+  { value: 'created' as const, label: t('source.sort_created') },
+])
+
+const sortDirectionOptions = computed(() => [
+  { value: 'asc' as const, label: t('source.sort_asc') },
+  { value: 'desc' as const, label: t('source.sort_desc') },
+])
 
 const { contextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
@@ -127,10 +276,23 @@ function toggleMore(id: number) {
 
 function onDocumentClick() {
   openMoreId.value = null
+  openSort.value = false
 }
 
 onMounted(() => document.addEventListener('click', onDocumentClick))
 onUnmounted(() => document.removeEventListener('click', onDocumentClick))
+
+watch(sourceSortField, value => {
+  try {
+    window.localStorage.setItem(SOURCE_SORT_FIELD_STORAGE_KEY, value)
+  } catch { /* ignore unavailable storage */ }
+})
+
+watch(sourceSortDirection, value => {
+  try {
+    window.localStorage.setItem(SOURCE_SORT_DIRECTION_STORAGE_KEY, value)
+  } catch { /* ignore unavailable storage */ }
+})
 
 async function handleCheckSingle(id: number) {
   if (props.polling || checkingId.value !== null) return
@@ -166,11 +328,33 @@ function sourceHealthLabel(source: Source): string {
 }
 
 const sortedSources = computed(() => {
-  return [...props.sources].sort((a, b) => {
-    const aPending = props.unreadReleaseCounts[sourceKey(a)] || 0
-    const bPending = props.unreadReleaseCounts[sourceKey(b)] || 0
-    return bPending - aPending || b.id - a.id
+  const direction = sourceSortDirection.value === 'asc' ? 1 : -1
+  return [...filteredSources.value].sort((a, b) => {
+    let result: number
+    if (sourceSortField.value === 'default') {
+      const aPending = props.unreadReleaseCounts[sourceKey(a)] || 0
+      const bPending = props.unreadReleaseCounts[sourceKey(b)] || 0
+      result = aPending - bPending || a.id - b.id
+    } else if (sourceSortField.value === 'name') {
+      result = `${a.owner}/${a.repo}`.localeCompare(`${b.owner}/${b.repo}`)
+    } else if (sourceSortField.value === 'status') {
+      if (a.enabled !== b.enabled) result = a.enabled ? -1 : 1
+      else result = b.id - a.id
+    } else {
+      result = a.created_at.localeCompare(b.created_at) || a.id - b.id
+    }
+    return result * direction
   })
+})
+
+const sortLabelText = computed(() => {
+  const labels: Record<SourceSortField, string> = {
+    'default': t('source.sort_default'),
+    'name': t('source.sort_name'),
+    'status': t('source.sort_status'),
+    'created': t('source.sort_created'),
+  }
+  return labels[sourceSortField.value]
 })
 
 function sourceCheckedText(source: Source): string {
@@ -222,20 +406,111 @@ function hideHealthTooltip() {
 
 <template>
   <section class="tab-content">
-    <div class="add-source">
-      <div class="input-clear-wrap">
-        <input
-          v-model="urlInput"
-          :placeholder="t('source.placeholder')"
-          @keyup.enter="handleAdd"
-        />
-        <button v-if="urlInput" type="button" class="input-clear-btn" :title="t('input.clear')" @click="urlInput = ''">✕</button>
+    <div class="source-sticky-panel" :class="{ 'has-bulk-bar': selectionMode }">
+      <div class="source-header">
+        <div class="input-clear-wrap">
+          <input
+            v-if="headerMode === 'add'"
+            v-model="urlInput"
+            :placeholder="t('source.placeholder')"
+            @keyup.enter="handleAdd"
+          />
+          <input
+            v-else
+            v-model="sourceSearch"
+            :placeholder="t('source.search')"
+            class="search-input"
+          />
+          <button
+            v-if="headerMode === 'add' && urlInput"
+            type="button"
+            class="input-clear-btn"
+            :title="t('input.clear')"
+            @click="urlInput = ''"
+          >✕</button>
+          <button
+            v-else-if="headerMode === 'search' && sourceSearch"
+            type="button"
+            class="input-clear-btn"
+            :title="t('input.clear')"
+            @click="sourceSearch = ''"
+          >✕</button>
+        </div>
+        <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
+        <div class="sort-group">
+          <button class="sort-trigger" @click.stop="openSort = !openSort">
+            <span class="sort-direction-icon" aria-hidden="true">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
+            <span>{{ sortLabelText }}</span>
+            <svg class="sort-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+          </button>
+          <div v-if="openSort" class="sort-dropdown" @click.stop>
+            <button
+              v-for="opt in sortFieldOptions"
+              :key="opt.value"
+              :class="{ selected: sourceSortField === opt.value }"
+              @click="sourceSortField = opt.value; openSort = false"
+            >{{ opt.label }}</button>
+            <div class="sort-dropdown-divider"></div>
+            <button
+              v-for="opt in sortDirectionOptions"
+              :key="opt.value"
+              :class="{ selected: sourceSortDirection === opt.value }"
+              @click="sourceSortDirection = opt.value; openSort = false"
+            >{{ opt.label }}</button>
+          </div>
+        </div>
+        <button class="btn-select" @click="selectionMode = !selectionMode; if (!selectionMode) clearSelection()">
+          <svg class="btn-select-icon" width="13" height="13" aria-hidden="true"><use :href="selectionMode ? '/icons.svg#checkbox-checked-icon' : '/icons.svg#checkbox-icon'"/></svg>
+          {{ selectionMode ? t('source.select_cancel') : t('source.select') }}
+        </button>
+        <button
+          type="button"
+          class="btn-mode-toggle"
+          :title="headerMode === 'add' ? t('source.switch_search') : t('source.switch_add')"
+          @click="headerMode = headerMode === 'add' ? 'search' : 'add'"
+        >
+          <svg v-if="headerMode === 'add'" width="16" height="16"><use href="/icons.svg#search-icon"/></svg>
+          <span v-else class="mode-toggle-plus" aria-hidden="true">+</span>
+        </button>
       </div>
-      <button :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
+      <div v-if="selectionMode" class="bulk-bar">
+        <span class="bulk-count">{{ t('source.bulk_count', String(selectedCount)) }}</span>
+        <button class="btn-sm" @click="selectAllVisible()">
+          <span class="bulk-btn-icon bulk-select-all-icon" aria-hidden="true">✓</span>
+          <span>{{ t('source.bulk_select_all') }}</span>
+        </button>
+        <button class="btn-sm" :disabled="selectedCount === 0" @click="clearSelectedSources()">
+          <span class="bulk-btn-icon bulk-clear-icon" aria-hidden="true">✕</span>
+          <span>{{ t('source.bulk_clear_selection') }}</span>
+        </button>
+        <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkToggle(true)">
+          <svg class="bulk-btn-icon"><use href="/icons.svg#play-icon"/></svg>
+          <span>{{ t('source.bulk_resume') }}</span>
+        </button>
+        <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkToggle(false)">
+          <svg class="bulk-btn-icon"><use href="/icons.svg#pause-icon"/></svg>
+          <span>{{ t('source.bulk_pause') }}</span>
+        </button>
+        <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkMuteToggle(true)">
+          <svg class="bulk-btn-icon"><use href="/icons.svg#bell-off-icon"/></svg>
+          <span>{{ t('source.bulk_mute') }}</span>
+        </button>
+        <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkMuteToggle(false)">
+          <svg class="bulk-btn-icon"><use href="/icons.svg#bell-icon"/></svg>
+          <span>{{ t('source.bulk_unmute') }}</span>
+        </button>
+        <button class="btn-sm btn-danger" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkRemove">
+          <svg class="bulk-btn-icon"><use href="/icons.svg#trash-icon"/></svg>
+          <span>{{ t('source.bulk_delete') }}</span>
+        </button>
+      </div>
     </div>
     <div class="source-list">
       <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
       <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }">
+      <div v-if="selectionMode" class="source-checkbox">
+        <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @change="toggleSelection(source.id)" />
+      </div>
         <div class="source-main">
           <div class="source-info">
             <span class="source-name">{{ source.owner }}/{{ source.repo }}</span>
@@ -305,32 +580,43 @@ function hideHealthTooltip() {
   </section>
 </template>
 <style scoped>
-/* 添加监控源 */
-.add-source {
+/* 顶部单行工具区：选择模式下批量栏与主栏作为整体固定 */
+.source-sticky-panel {
   position: sticky;
   top: 0;
   z-index: 10;
+  margin-bottom: 12px;
+  transition: top 0.15s ease;
+}
+
+:global(.app-main.is-scrolled .source-sticky-panel) {
+  top: calc(-1 * var(--app-padding-y, 16px));
+  border-radius: var(--radius);
+  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+}
+
+.source-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
   padding: 12px;
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  transition: top 0.15s ease;
 }
 
-:global(.app-main.is-scrolled .add-source) {
-  top: calc(-1 * var(--app-padding-y, 16px));
-  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+.source-sticky-panel.has-bulk-bar .source-header {
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-color: var(--primary);
 }
 
-.add-source .input-clear-wrap {
+.source-header .input-clear-wrap {
   flex: 1;
+  min-width: 160px;
 }
 
-.add-source .input-clear-wrap input {
+.source-header .input-clear-wrap input {
   flex: 1;
   padding: 8px 12px;
   padding-right: 34px;
@@ -342,12 +628,16 @@ function hideHealthTooltip() {
   outline: none;
 }
 
-.add-source .input-clear-wrap input:focus {
+.source-header .input-clear-wrap input:focus {
   border-color: var(--primary);
 }
 
-.add-source button {
-  padding: 8px 18px;
+.source-header .input-clear-wrap .search-input {
+  max-width: none;
+}
+
+.btn-add-source {
+  padding: 8px 14px;
   background: var(--primary);
   color: #fff;
   border: none;
@@ -358,9 +648,42 @@ function hideHealthTooltip() {
   white-space: nowrap;
 }
 
-.add-source button:disabled {
+.btn-add-source:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.btn-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.12s;
+}
+
+.btn-mode-toggle:hover {
+  background: var(--bg);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.btn-mode-toggle svg {
+  width: 16px;
+  height: 16px;
+}
+
+.mode-toggle-plus {
+  font-size: 20px;
+  line-height: 1;
+  font-weight: 500;
 }
 
 /* 监控源列表 */
@@ -704,5 +1027,200 @@ function hideHealthTooltip() {
 
 :global([data-theme="dark"] .dropdown-item-danger:hover:not(:disabled)) {
   background: rgba(248, 113, 113, 0.15);
+}
+.sort-group {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.sort-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+}
+
+.sort-trigger:hover {
+  background: var(--bg);
+}
+
+.sort-direction-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  color: var(--primary);
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.sort-arrow {
+  color: var(--text-muted);
+}
+
+.sort-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  min-width: 140px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  padding: 4px;
+}
+
+.sort-dropdown button {
+  display: block;
+  width: 100%;
+  padding: 5px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.sort-dropdown button:hover {
+  background: var(--bg);
+}
+
+.sort-dropdown button.selected {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.sort-dropdown-divider {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+.btn-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+
+.btn-select:hover {
+  background: var(--bg);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+:global([data-theme="dark"] .sort-dropdown) {
+  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+}
+
+/* 选择模式复选框 */
+.source-checkbox {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 4px;
+}
+
+.source-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+/* 批量操作栏 */
+.bulk-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--primary);
+  border-top: none;
+  border-radius: 0 0 var(--radius) var(--radius);
+  font-size: 12px;
+}
+
+.bulk-count {
+  font-weight: 600;
+  color: var(--text);
+  margin-right: 4px;
+}
+
+.bulk-bar .btn-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.12s;
+}
+
+.bulk-btn-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+}
+
+.bulk-select-all-icon,
+.bulk-clear-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  line-height: 1;
+  font-weight: 700;
+}
+
+.bulk-bar .btn-sm:hover:not(:disabled) {
+  background: var(--bg);
+}
+
+.bulk-bar .btn-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  color: var(--danger) !important;
+  border-color: var(--danger) !important;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #fef2f2 !important;
+}
+
+:global([data-theme="dark"] .btn-danger:hover:not(:disabled)) {
+  background: rgba(248, 113, 113, 0.15) !important;
 }
 </style>

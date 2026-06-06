@@ -15,7 +15,7 @@
         "title": "RelWatch",
         "width": 750,
         "height": 750,
-        "minWidth": 700,
+        "minWidth": 710,
         "minHeight": 450,
         "resizable": true,
         "fullscreen": false,
