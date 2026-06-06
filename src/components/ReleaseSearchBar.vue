@@ -35,6 +35,64 @@ function hoverFilterLeave() {
   }, 120)
 }
 
+function toggleFilter(filter: 'status' | 'importance') {
+  if (openFilter.value === filter) {
+    openFilter.value = null
+  } else {
+    openFilter.value = filter
+    focusFirstDropdownOption(filter)
+  }
+}
+
+function handleFilterKeydown(e: KeyboardEvent, filter: 'status' | 'importance') {
+  if (e.key === 'Escape') {
+    if (openFilter.value !== null) {
+      openFilter.value = null
+    }
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    if (openFilter.value !== filter) {
+      openFilter.value = filter
+      focusFirstDropdownOption(filter)
+    }
+  }
+}
+
+function handleDropdownKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement
+  if (!target || target.tagName !== 'BUTTON') return
+  const dropdown = target.closest('.filter-dropdown') as HTMLElement | null
+  if (!dropdown) return
+  const buttons = Array.from(dropdown.querySelectorAll('button')) as HTMLButtonElement[]
+  const index = buttons.indexOf(target as HTMLButtonElement)
+  if (index < 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const next = (index + 1) % buttons.length
+    buttons[next].focus()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const prev = (index - 1 + buttons.length) % buttons.length
+    buttons[prev].focus()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    openFilter.value = null
+  }
+}
+
+function focusFirstDropdownOption(filter: 'status' | 'importance') {
+  requestAnimationFrame(() => {
+    // status 是第 1 个 filter-field，importance 是第 3 个（中间有 divider）
+    const selector = filter === 'status' ? '.filter-field:nth-child(1)' : '.filter-field:nth-child(3)'
+    const dropdown = document.querySelector(selector + ' .filter-dropdown') as HTMLElement | null
+    if (!dropdown) return
+    const btn = dropdown.querySelector('button') as HTMLButtonElement | null
+    if (btn) btn.focus()
+  })
+}
+
 const importanceDisplayText = computed(() => {
   if (props.importanceFilter === '大') return '🔴 ' + t('release.importance_high')
   if (props.importanceFilter === '中') return '🟡 ' + t('release.importance_medium')
@@ -61,29 +119,29 @@ function onSearchEnter() {
     </div>
     <div class="filter-group" @mouseleave="hoverFilterLeave()">
       <div class="filter-field" @mouseenter="openFilter = 'status'; hoverFilterEnter()">
-        <button class="filter-trigger">
+        <button type="button" class="filter-trigger" :aria-expanded="openFilter === 'status'" aria-haspopup="menu" @click="toggleFilter('status')" @keydown="handleFilterKeydown($event, 'status')">
           <span class="filter-label">{{ t('tab.status') }}</span>
           <span class="filter-value" :style="{ color: props.statusFilter === 'unread' ? 'var(--primary)' : props.statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ props.statusFilter === 'all' ? t('release.filter_all') : (props.statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
-        <div v-if="openFilter === 'status'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-          <button :class="{ selected: props.statusFilter === 'all' }" @click="emit('update:statusFilter', 'all'); openFilter = null">{{ t('release.filter_all') }}</button>
-          <button :class="{ selected: props.statusFilter === 'unread' }" @click="emit('update:statusFilter', 'unread'); openFilter = null">{{ t('release.filter_unread') }}</button>
-          <button :class="{ selected: props.statusFilter === 'read' }" @click="emit('update:statusFilter', 'read'); openFilter = null">{{ t('release.filter_read') }}</button>
+        <div v-if="openFilter === 'status'" class="filter-dropdown" role="menu" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()" @keydown="handleDropdownKeydown">
+          <button type="button" role="menuitem" :aria-selected="props.statusFilter === 'all'" :class="{ selected: props.statusFilter === 'all' }" @click="emit('update:statusFilter', 'all'); openFilter = null">{{ t('release.filter_all') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.statusFilter === 'unread'" :class="{ selected: props.statusFilter === 'unread' }" @click="emit('update:statusFilter', 'unread'); openFilter = null">{{ t('release.filter_unread') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.statusFilter === 'read'" :class="{ selected: props.statusFilter === 'read' }" @click="emit('update:statusFilter', 'read'); openFilter = null">{{ t('release.filter_read') }}</button>
         </div>
       </div>
       <div class="filter-divider"></div>
       <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
-        <button class="filter-trigger">
+        <button type="button" class="filter-trigger" :aria-expanded="openFilter === 'importance'" aria-haspopup="menu" @click="toggleFilter('importance')" @keydown="handleFilterKeydown($event, 'importance')">
           <span class="filter-label">{{ t('tab.importance') }}</span>
           <span class="filter-value" :style="{ color: props.importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
-        <div v-if="openFilter === 'importance'" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-          <button :class="{ selected: props.importanceFilter === 'all' }" @click="emit('update:importanceFilter', 'all'); openFilter = null">{{ t('release.filter_all') }}</button>
-          <button :class="{ selected: props.importanceFilter === '大' }" @click="emit('update:importanceFilter', '大'); openFilter = null">🔴 {{ t('release.importance_high') }}</button>
-          <button :class="{ selected: props.importanceFilter === '中' }" @click="emit('update:importanceFilter', '中'); openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
-          <button :class="{ selected: props.importanceFilter === '小' }" @click="emit('update:importanceFilter', '小'); openFilter = null">🟢 {{ t('release.importance_low') }}</button>
+        <div v-if="openFilter === 'importance'" class="filter-dropdown" role="menu" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()" @keydown="handleDropdownKeydown">
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === 'all'" :class="{ selected: props.importanceFilter === 'all' }" @click="emit('update:importanceFilter', 'all'); openFilter = null">{{ t('release.filter_all') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '大'" :class="{ selected: props.importanceFilter === '大' }" @click="emit('update:importanceFilter', '大'); openFilter = null">🔴 {{ t('release.importance_high') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '中'" :class="{ selected: props.importanceFilter === '中' }" @click="emit('update:importanceFilter', '中'); openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '小'" :class="{ selected: props.importanceFilter === '小' }" @click="emit('update:importanceFilter', '小'); openFilter = null">🟢 {{ t('release.importance_low') }}</button>
         </div>
       </div>
     </div>

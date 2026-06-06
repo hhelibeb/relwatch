@@ -36,6 +36,62 @@ function hoverFilterLeave() {
   }, 120)
 }
 
+function toggleFilter() {
+  if (openFilter.value) {
+    openFilter.value = false
+  } else {
+    openFilter.value = true
+    focusFirstDropdownOption()
+  }
+}
+
+function handleFilterKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    if (openFilter.value) {
+      openFilter.value = false
+    }
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    if (!openFilter.value) {
+      openFilter.value = true
+      focusFirstDropdownOption()
+    }
+  }
+}
+
+function handleDropdownKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement
+  if (!target || target.tagName !== 'BUTTON') return
+  const dropdown = target.closest('.filter-dropdown') as HTMLElement | null
+  if (!dropdown) return
+  const buttons = Array.from(dropdown.querySelectorAll('button')) as HTMLButtonElement[]
+  const index = buttons.indexOf(target as HTMLButtonElement)
+  if (index < 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const next = (index + 1) % buttons.length
+    buttons[next].focus()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const prev = (index - 1 + buttons.length) % buttons.length
+    buttons[prev].focus()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    openFilter.value = false
+  }
+}
+
+function focusFirstDropdownOption() {
+  requestAnimationFrame(() => {
+    const dropdown = document.querySelector('.filter-dropdown') as HTMLElement | null
+    if (!dropdown) return
+    const btn = dropdown.querySelector('button') as HTMLButtonElement | null
+    if (btn) btn.focus()
+  })
+}
+
 const totalPages = computed(() => Math.max(1, Math.ceil(totalLogs.value / pageSize)))
 
 const pageInputStyle = computed(() => ({
@@ -143,16 +199,16 @@ onMounted(() => {
       </div>
       <div class="filter-group" @mouseleave="hoverFilterLeave()">
         <div class="filter-field" @mouseenter="openFilter = true; hoverFilterEnter()">
-          <button class="filter-trigger">
+          <button type="button" class="filter-trigger" :aria-expanded="openFilter" aria-haspopup="menu" @click="toggleFilter()" @keydown="handleFilterKeydown">
             <span class="filter-label">{{ t('log.level') }}</span>
             <span class="filter-value" :style="{ color: levelFilter === 'all' ? 'var(--text-muted)' : levelFilter === 'ERROR' ? 'var(--danger)' : levelFilter === 'WARN' ? 'var(--warning)' : 'var(--text-muted)' }">{{ levelFilter === 'all' ? t('log.filter_all') : levelFilter }}</span>
             <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
-          <div v-if="openFilter" class="filter-dropdown" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()">
-            <button :class="{ selected: levelFilter === 'all' }" @click="setLevelFilter('all')">{{ t('log.filter_all') }}</button>
-            <button :class="{ selected: levelFilter === 'INFO' }" @click="setLevelFilter('INFO')" style="color:var(--text-muted)">INFO</button>
-            <button :class="{ selected: levelFilter === 'WARN' }" @click="setLevelFilter('WARN')" style="color:var(--warning)">WARN</button>
-            <button :class="{ selected: levelFilter === 'ERROR' }" @click="setLevelFilter('ERROR')" style="color:var(--danger)">ERROR</button>
+          <div v-if="openFilter" class="filter-dropdown" role="menu" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()" @keydown="handleDropdownKeydown">
+            <button type="button" role="menuitem" :aria-selected="levelFilter === 'all'" :class="{ selected: levelFilter === 'all' }" @click="setLevelFilter('all')">{{ t('log.filter_all') }}</button>
+            <button type="button" role="menuitem" :aria-selected="levelFilter === 'INFO'" :class="{ selected: levelFilter === 'INFO' }" @click="setLevelFilter('INFO')" style="color:var(--text-muted)">INFO</button>
+            <button type="button" role="menuitem" :aria-selected="levelFilter === 'WARN'" :class="{ selected: levelFilter === 'WARN' }" @click="setLevelFilter('WARN')" style="color:var(--warning)">WARN</button>
+            <button type="button" role="menuitem" :aria-selected="levelFilter === 'ERROR'" :class="{ selected: levelFilter === 'ERROR' }" @click="setLevelFilter('ERROR')" style="color:var(--danger)">ERROR</button>
           </div>
         </div>
       </div>

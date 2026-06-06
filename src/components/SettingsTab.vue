@@ -143,6 +143,80 @@ function toggleLangDropdown() {
   langDropdownOpen.value = !langDropdownOpen.value
   if (!langDropdownOpen.value) {
     clearLangPreview()
+  } else {
+    // 打开时聚焦第一个选项
+    nextTick(() => {
+      const dropdown = langSelectRef.value?.querySelector('.theme-select-dropdown')
+      const firstOption = dropdown?.querySelector('.theme-select-option') as HTMLElement | null
+      firstOption?.focus()
+    })
+  }
+}
+
+function handleLangDropdownKeydown(e: KeyboardEvent) {
+  // 当下拉关闭时，只处理打开操作
+  if (!langDropdownOpen.value) {
+    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      toggleLangDropdown()
+    }
+    return
+  }
+  
+  const dropdown = langSelectRef.value?.querySelector('.theme-select-dropdown') as HTMLElement | null
+  if (!dropdown) return
+  
+  const options = Array.from(dropdown.querySelectorAll('.theme-select-option')) as HTMLElement[]
+  const currentIndex = options.findIndex(opt => opt === document.activeElement)
+  
+  switch (e.key) {
+    case 'ArrowDown': {
+      e.preventDefault()
+      const nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0
+      options[nextIndex]?.focus()
+      const nextVal = options[nextIndex]?.getAttribute('data-value')
+      if (nextVal) setLangPreview(nextVal)
+      break
+    }
+    case 'ArrowUp': {
+      e.preventDefault()
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1
+      options[prevIndex]?.focus()
+      const prevVal = options[prevIndex]?.getAttribute('data-value')
+      if (prevVal) setLangPreview(prevVal)
+      break
+    }
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      if (currentIndex >= 0) {
+        const option = options[currentIndex] as HTMLElement
+        const value = option.getAttribute('data-value')
+        if (value) selectLang(value)
+      }
+      break
+    case 'Escape': {
+      e.preventDefault()
+      langDropdownOpen.value = false
+      clearLangPreview()
+      const langTrigger = langSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
+      langTrigger?.focus()
+      break
+    }
+    case 'Home': {
+      e.preventDefault()
+      options[0]?.focus()
+      const firstVal = options[0]?.getAttribute('data-value')
+      if (firstVal) setLangPreview(firstVal)
+      break
+    }
+    case 'End': {
+      e.preventDefault()
+      options[options.length - 1]?.focus()
+      const lastVal = options[options.length - 1]?.getAttribute('data-value')
+      if (lastVal) setLangPreview(lastVal)
+      break
+    }
   }
 }
 
@@ -174,6 +248,80 @@ function toggleDropdown() {
   themeDropdownOpen.value = !themeDropdownOpen.value
   if (!themeDropdownOpen.value) {
     clearThemePreview()
+  } else {
+    // 打开时聚焦第一个选项
+    nextTick(() => {
+      const dropdown = themeSelectRef.value?.querySelector('.theme-select-dropdown')
+      const firstOption = dropdown?.querySelector('.theme-select-option') as HTMLElement | null
+      firstOption?.focus()
+    })
+  }
+}
+
+function handleThemeDropdownKeydown(e: KeyboardEvent) {
+  // 当下拉关闭时，只处理打开操作
+  if (!themeDropdownOpen.value) {
+    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault()
+      toggleDropdown()
+    }
+    return
+  }
+  
+  const dropdown = themeSelectRef.value?.querySelector('.theme-select-dropdown') as HTMLElement | null
+  if (!dropdown) return
+  
+  const options = Array.from(dropdown.querySelectorAll('.theme-select-option')) as HTMLElement[]
+  const currentIndex = options.findIndex(opt => opt === document.activeElement)
+  
+  switch (e.key) {
+    case 'ArrowDown': {
+      e.preventDefault()
+      const nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0
+      options[nextIndex]?.focus()
+      const nextVal = options[nextIndex]?.getAttribute('data-value')
+      if (nextVal) setThemePreview(nextVal)
+      break
+    }
+    case 'ArrowUp': {
+      e.preventDefault()
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1
+      options[prevIndex]?.focus()
+      const prevVal = options[prevIndex]?.getAttribute('data-value')
+      if (prevVal) setThemePreview(prevVal)
+      break
+    }
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      if (currentIndex >= 0) {
+        const option = options[currentIndex] as HTMLElement
+        const value = option.getAttribute('data-value')
+        if (value) selectTheme(value)
+      }
+      break
+    case 'Escape': {
+      e.preventDefault()
+      themeDropdownOpen.value = false
+      clearThemePreview()
+      const themeTrigger = themeSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
+      themeTrigger?.focus()
+      break
+    }
+    case 'Home': {
+      e.preventDefault()
+      options[0]?.focus()
+      const firstVal = options[0]?.getAttribute('data-value')
+      if (firstVal) setThemePreview(firstVal)
+      break
+    }
+    case 'End': {
+      e.preventDefault()
+      options[options.length - 1]?.focus()
+      const lastVal = options[options.length - 1]?.getAttribute('data-value')
+      if (lastVal) setThemePreview(lastVal)
+      break
+    }
   }
 }
 
@@ -490,16 +638,20 @@ async function handleImportBackup() {
           <div class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('language') || null">{{ t('settings.language') }}<svg class="label-icon"><use href="/icons.svg#language-icon"/></svg></span>
             <div ref="langSelectRef" class="theme-select" @mouseleave="clearLangPreview">
-              <button type="button" class="theme-select-trigger setting-input" @click="toggleLangDropdown">
+              <button type="button" class="theme-select-trigger setting-input" @click="toggleLangDropdown" @keydown="handleLangDropdownKeydown" :aria-expanded="langDropdownOpen" aria-haspopup="listbox">
                 <span>{{ previewLang ? languages.find(l => l.value === previewLang)?.label : languages.find(l => l.value === form.language)?.label }}</span>
                 <svg class="theme-select-arrow" viewBox="0 0 12 12" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M3 5l3 3 3-3"/></svg>
               </button>
-              <div v-if="langDropdownOpen" class="theme-select-dropdown">
+              <div v-if="langDropdownOpen" class="theme-select-dropdown" role="listbox" @keydown="handleLangDropdownKeydown">
                 <div
                   v-for="lang in languages"
                   :key="lang.value"
                   class="theme-select-option"
                   :class="{ selected: form.language === lang.value && !previewLang, previewed: previewLang === lang.value }"
+                  :data-value="lang.value"
+                  tabindex="-1"
+                  role="option"
+                  :aria-selected="form.language === lang.value"
                   @click.stop="selectLang(lang.value)"
                   @mouseenter="setLangPreview(lang.value)"
                 >
@@ -511,16 +663,20 @@ async function handleImportBackup() {
           <div class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('theme') || null">{{ t('settings.theme') }}</span>
             <div ref="themeSelectRef" class="theme-select" @mouseleave="clearThemePreview">
-              <button type="button" class="theme-select-trigger setting-input" @click="toggleDropdown">
+              <button type="button" class="theme-select-trigger setting-input" @click="toggleDropdown" @keydown="handleThemeDropdownKeydown" :aria-expanded="themeDropdownOpen" aria-haspopup="listbox">
                 <span>{{ previewTheme ? t('settings.theme_' + previewTheme) : t('settings.theme_' + form.theme) }}</span>
                 <svg class="theme-select-arrow" viewBox="0 0 12 12" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M3 5l3 3 3-3"/></svg>
               </button>
-              <div v-if="themeDropdownOpen" class="theme-select-dropdown">
+              <div v-if="themeDropdownOpen" class="theme-select-dropdown" role="listbox" @keydown="handleThemeDropdownKeydown">
                 <div
                   v-for="opt in themeOptions"
                   :key="opt.value"
                   class="theme-select-option"
                   :class="{ selected: form.theme === opt.value && !previewTheme, previewed: previewTheme === opt.value }"
+                  :data-value="opt.value"
+                  tabindex="-1"
+                  role="option"
+                  :aria-selected="form.theme === opt.value"
                   @click.stop="selectTheme(opt.value)"
                   @mouseenter="setThemePreview(opt.value)"
                 >

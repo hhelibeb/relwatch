@@ -9,6 +9,7 @@ import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './
 import { type AppSettings, getSettings } from './api/settings'
 import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
+import { useEscapeToTray } from './composables/useEscapeToTray'
 import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
@@ -262,6 +263,8 @@ function openSourceUnreadReleases(query: string) {
   activeTab.value = 'releases'
 }
 
+useEscapeToTray(computed(() => settings.value.minimize_to_tray))
+
 onMounted(async () => {
   await loadAll()
   watchSystemTheme()
@@ -370,8 +373,8 @@ onUnmounted(() => {
       <div v-if="toastVisible" class="toast">{{ toastMessage }}</div>
     </Transition>
 
-    <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" />
-    <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" />
+    <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" @close="selectionMenu = null" />
+    <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" @close="inputContextMenu = null" />
   </div>
 </template>
 

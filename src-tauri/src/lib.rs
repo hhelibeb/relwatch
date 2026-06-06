@@ -115,6 +115,7 @@ pub fn run() {
             commands::search_logs,
             commands::export_backup,
             commands::import_backup,
+            commands::hide_to_tray,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

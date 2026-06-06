@@ -64,6 +64,7 @@ defineExpose({ expandAll })
 
 const {
   contextMenu: repoContextMenu,
+  closeContextMenu: closeRepoContextMenu,
   handleContextMenu: handleRepoContextMenu,
   handleCopyLink: handleRepoCopyLink,
   handleOpenLink: handleRepoOpenLink,
@@ -107,7 +108,7 @@ function handleOpenUrl(url: string) {
     </div>
   </div>
 
-  <ContextMenu v-if="repoContextMenu" :x="repoContextMenu.x" :y="repoContextMenu.y" @open="handleRepoOpenLink" @copy="handleRepoCopyLink" />
+  <ContextMenu v-if="repoContextMenu" :x="repoContextMenu.x" :y="repoContextMenu.y" @open="handleRepoOpenLink" @copy="handleRepoCopyLink" @close="closeRepoContextMenu" />
 </template>
 
 <style scoped>

@@ -175,7 +175,7 @@ const sortDirectionOptions = computed(() => [
   { value: 'desc' as const, label: t('source.sort_desc') },
 ])
 
-const { contextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
+const { contextMenu, closeContextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
 function openSourceUrl(owner: string, repo: string) {
   openReleaseUrl(`https://github.com/${owner}/${repo}`)
@@ -272,6 +272,110 @@ async function handleMuteToggle(source: Source) {
 
 function toggleMore(id: number) {
   openMoreId.value = openMoreId.value === id ? null : id
+  if (openMoreId.value === id) {
+    focusMorePanel()
+  }
+}
+
+function handleSortTriggerKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    if (openSort.value) {
+      openSort.value = false
+    }
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    if (!openSort.value) {
+      openSort.value = true
+      focusSortDropdown()
+    }
+  }
+}
+
+function handleSortDropdownKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement
+  if (!target || target.tagName !== 'BUTTON') return
+  const dropdown = target.closest('.sort-dropdown') as HTMLElement | null
+  if (!dropdown) return
+  const buttons = Array.from(dropdown.querySelectorAll('button')) as HTMLButtonElement[]
+  const index = buttons.indexOf(target as HTMLButtonElement)
+  if (index < 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const next = (index + 1) % buttons.length
+    buttons[next].focus()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const prev = (index - 1 + buttons.length) % buttons.length
+    buttons[prev].focus()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    openSort.value = false
+  }
+}
+
+function focusSortDropdown() {
+  requestAnimationFrame(() => {
+    const dropdown = document.querySelector('.sort-dropdown') as HTMLElement | null
+    if (!dropdown) return
+    const btn = dropdown.querySelector('button') as HTMLButtonElement | null
+    if (btn) btn.focus()
+  })
+}
+
+function handleMoreKeydown(e: KeyboardEvent, sourceId: number) {
+  if (e.key === 'Escape') {
+    if (openMoreId.value === sourceId) {
+      openMoreId.value = null
+    }
+    return
+  }
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
+    e.preventDefault()
+    if (openMoreId.value !== sourceId) {
+      openMoreId.value = sourceId
+      focusMorePanel()
+    }
+  }
+}
+
+function handleMorePanelKeydown(e: KeyboardEvent) {
+  const target = e.target as HTMLElement
+  if (!target || target.tagName !== 'BUTTON') return
+  const panel = target.closest('.dropdown-more-panel') as HTMLElement | null
+  if (!panel) return
+  const buttons = Array.from(panel.querySelectorAll('button')) as HTMLButtonElement[]
+  const index = buttons.indexOf(target as HTMLButtonElement)
+  if (index < 0) return
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    const next = (index + 1) % buttons.length
+    buttons[next].focus()
+  } else if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    const prev = (index - 1 + buttons.length) % buttons.length
+    buttons[prev].focus()
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    openMoreId.value = null
+  }
+}
+
+function focusMorePanel() {
+  requestAnimationFrame(() => {
+    const sourceItems = document.querySelectorAll('.source-item')
+    for (const item of sourceItems) {
+      const panel = item.querySelector(`.dropdown-more-panel`) as HTMLElement | null
+      if (panel) {
+        const btn = panel.querySelector('button:not(:disabled)') as HTMLButtonElement | null
+        if (btn) {
+          btn.focus()
+          return
+        }
+      }
+    }
+  })
 }
 
 function onDocumentClick() {
@@ -438,25 +542,15 @@ function hideHealthTooltip() {
         </div>
         <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
         <div class="sort-group">
-          <button class="sort-trigger" @click.stop="openSort = !openSort">
+          <button type="button" class="sort-trigger" :aria-expanded="openSort" aria-haspopup="menu" @click.stop="openSort = !openSort; if (openSort) focusSortDropdown()" @keydown="handleSortTriggerKeydown">
             <span class="sort-direction-icon" aria-hidden="true">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
             <span>{{ sortLabelText }}</span>
             <svg class="sort-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
-          <div v-if="openSort" class="sort-dropdown" @click.stop>
-            <button
-              v-for="opt in sortFieldOptions"
-              :key="opt.value"
-              :class="{ selected: sourceSortField === opt.value }"
-              @click="sourceSortField = opt.value; openSort = false"
-            >{{ opt.label }}</button>
+          <div v-if="openSort" class="sort-dropdown" role="menu" @click.stop @keydown="handleSortDropdownKeydown">
+            <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="sourceSortField = opt.value; openSort = false">{{ opt.label }}</button>
             <div class="sort-dropdown-divider"></div>
-            <button
-              v-for="opt in sortDirectionOptions"
-              :key="opt.value"
-              :class="{ selected: sourceSortDirection === opt.value }"
-              @click="sourceSortDirection = opt.value; openSort = false"
-            >{{ opt.label }}</button>
+            <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="sourceSortDirection = opt.value; openSort = false">{{ opt.label }}</button>
           </div>
         </div>
         <button class="btn-select" @click="selectionMode = !selectionMode; if (!selectionMode) clearSelection()">
@@ -556,15 +650,15 @@ function hideHealthTooltip() {
             <svg><use :href="source.enabled ? '/icons.svg#pause-icon' : '/icons.svg#play-icon'"/></svg>
           </button>
           <div class="dropdown-more">
-            <button class="btn-icon-action btn-more" @click.stop="toggleMore(source.id)" :title="t('source.more')">
+            <button type="button" class="btn-icon-action btn-more" :aria-expanded="openMoreId === source.id" aria-haspopup="menu" @click.stop="toggleMore(source.id)" @keydown="handleMoreKeydown($event, source.id)" :title="t('source.more')">
               <svg><use href="/icons.svg#more-icon"/></svg>
             </button>
-            <div v-if="openMoreId === source.id" class="dropdown-more-panel" @click.stop>
-              <button class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
+            <div v-if="openMoreId === source.id" class="dropdown-more-panel" role="menu" @click.stop @keydown="handleMorePanelKeydown">
+              <button type="button" role="menuitem" class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
                 <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
                 {{ source.muted ? t('source.unmute') : t('source.mute') }}
               </button>
-              <button class="dropdown-item dropdown-item-danger" @click="handleRemove(source.id)">
+              <button type="button" role="menuitem" class="dropdown-item dropdown-item-danger" @click="handleRemove(source.id)">
                 <span class="dropdown-icon"><svg><use href="/icons.svg#trash-icon"/></svg></span>
                 {{ t('source.delete') }}
               </button>
@@ -573,7 +667,7 @@ function hideHealthTooltip() {
         </div>
       </div>
     </div>
-    <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" />
+    <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" @close="closeContextMenu" />
     <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
       <div v-for="(line, i) in tooltip.lines" :key="i" class="tooltip-line" :class="{ 'tooltip-line-wrap': line.wrap }">{{ line.text }}</div>
     </div>
