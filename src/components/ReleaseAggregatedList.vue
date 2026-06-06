@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import ContextMenu from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
 import type { RepoGroup } from './releaseTypes'
@@ -59,10 +59,6 @@ function toggleAllRepos() {
     expandAll()
   }
 }
-
-watch(repoGroups, () => {
-  expandedRepos.value = new Set()
-}, { immediate: true })
 
 defineExpose({ expandAll })
 
