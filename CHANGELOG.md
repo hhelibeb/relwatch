@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-06-06
+
+### Added
+- 监控源列表支持搜索、排序与批量操作。输入框可在添加与搜索双模式间切换；支持按名称、状态、添加时间排序及升降序切换，排序偏好持久化到 localStorage；新增选择模式，支持全选、批量暂停/恢复/静默/取消静默/删除。
+
+### Changed
+- 提取 ContextMenu 为公共组件，优化选择菜单体验。
+
 ## [1.3.4] - 2026-06-05
 
 ### Added
@@ -152,7 +160,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.3.4...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/hhelibeb/relwatch/compare/v1.3.4...v1.4.0
 [1.3.4]: https://github.com/hhelibeb/relwatch/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...v1.3.3
 [1.3.1]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...v1.3.1
