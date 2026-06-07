@@ -54,7 +54,6 @@ body {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
-  overflow: hidden;
   scrollbar-gutter: stable;
 }
 
@@ -71,6 +70,7 @@ body {
   display: flex;
   align-items: center;
   gap: 16px;
+  flex-wrap: wrap;
   max-width: 900px;
   margin: 0 auto;
   width: 100%;

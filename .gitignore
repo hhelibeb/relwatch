@@ -20,6 +20,7 @@ src-tauri/WebView2Loader.dll
 # OS
 .DS_Store
 Thumbs.db
+nul
 
 # Environment
 .env
