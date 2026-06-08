@@ -46,14 +46,16 @@ export function logLevelClass(level: string): string {
   }
 }
 
-export function statusLabel(status: string): string {
-  if (isUnreadStatus(status)) return t('status.pending')
+export function statusLabel(status: string, snoozeUntil?: string | null): string {
+  if (isUnreadStatus(status, snoozeUntil)) return t('status.pending')
+  if (status === 'snoozed') return t('status.snoozed')
   if (isReadStatus(status)) return t('status.viewed')
   return status
 }
 
-export function statusClass(status: string): string {
-  if (isUnreadStatus(status)) return 'status-unread'
+export function statusClass(status: string, snoozeUntil?: string | null): string {
+  if (isUnreadStatus(status, snoozeUntil)) return 'status-unread'
+  if (status === 'snoozed') return 'status-snoozed'
   if (isReadStatus(status)) return 'status-read'
   return 'status-unknown'
 }

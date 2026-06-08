@@ -85,8 +85,8 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// 根据未处理版本数量更新托盘图标
-/// 有 pending release 时显示带小红点的图标，否则显示原始图标
+/// 根据未读版本数量更新托盘图标
+/// 有 unread release 时显示带小红点的图标，否则显示原始图标
 pub fn update_tray_badge(app: &tauri::AppHandle) {
     if let Some(tray) = app.tray_by_id("main-tray") {
         let state = app.state::<AppState>();
@@ -94,9 +94,9 @@ pub fn update_tray_badge(app: &tauri::AppHandle) {
             Ok(c) => c,
             Err(_) => return,
         };
-        let pending = crate::db::releases::get_pending_releases(&conn).unwrap_or_default();
+        let unread = crate::db::releases::get_unread_releases(&conn).unwrap_or_default();
 
-        let icon = if pending.is_empty() {
+        let icon = if unread.is_empty() {
             tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).ok()
         } else {
             tauri::image::Image::from_bytes(include_bytes!("../icons/icon-badge.png")).ok()

@@ -261,26 +261,38 @@ fn importance_ge(a: &str, b: &str) -> bool {
     a_val >= b_val
 }
 
-pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
-                    r.tag_name, r.release_name, r.html_url, r.published_at,
-                    r.prerelease, r.body, r.detected_at,
-                    COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance
-             FROM releases r
-             JOIN sources s ON r.source_id = s.id
-             LEFT JOIN notification_state ns ON r.id = ns.release_id
-             WHERE COALESCE(ns.status, 'pending') IN ('pending', 'snoozed')
-               AND ns.last_notified_at IS NULL
-             ORDER BY r.detected_at DESC",
-        )
-        .map_err(|e| e.to_string())?;
+fn is_release_due(status: &str, snooze_until: Option<&str>) -> bool {
+    if status == "snoozed" {
+        if let Some(until) = snooze_until {
+            if !until.is_empty() {
+                if let Ok(until_time) = chrono::DateTime::parse_from_rfc3339(until) {
+                    if until_time >= chrono::Utc::now() {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    true
+}
 
-    let now = chrono::Utc::now();
-    let min_importance = get_setting_str(conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)
-        .unwrap_or_else(|_| DEFAULT_DEEPSEEK_MIN_IMPORTANCE.to_string());
+fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Result<Vec<ReleaseInfo>, String> {
+    let notified_filter = if only_notified_missing { " AND ns.last_notified_at IS NULL" } else { "" };
+    let sql = format!(
+        "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
+                r.tag_name, r.release_name, r.html_url, r.published_at,
+                r.prerelease, r.body, r.detected_at,
+                COALESCE(ns.status, 'pending'), ns.snooze_until,
+                r.ai_summary, r.ai_importance
+         FROM releases r
+         JOIN sources s ON r.source_id = s.id
+         LEFT JOIN notification_state ns ON r.id = ns.release_id
+         WHERE COALESCE(ns.status, 'pending') IN ('pending', 'snoozed'){}
+         ORDER BY r.detected_at DESC",
+        notified_filter,
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let releases = stmt
         .query_map([], |row| {
@@ -307,23 +319,27 @@ pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, Strin
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
 
-    let pending: Vec<ReleaseInfo> = releases
+    Ok(releases
+        .into_iter()
+        .filter(|r| is_release_due(&r.notification_status, r.snooze_until.as_deref()))
+        .collect())
+}
+
+/// 返回当前仍处于未读状态的版本。
+///
+/// 该查询用于 UI/托盘红点等“未读”语义：只看通知状态是否仍为 pending，
+/// 或 snoozed 且已到提醒时间；不会因为已经发送过系统通知而排除。
+pub fn get_unread_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
+    query_unread_releases(conn, false)
+}
+
+pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
+    let min_importance = get_setting_str(conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)
+        .unwrap_or_else(|_| DEFAULT_DEEPSEEK_MIN_IMPORTANCE.to_string());
+
+    let pending: Vec<ReleaseInfo> = query_unread_releases(conn, true)?
         .into_iter()
         .filter(|r| {
-            if r.notification_status == "ignored" {
-                return false;
-            }
-            if r.notification_status == "snoozed" {
-                if let Some(ref until) = r.snooze_until {
-                    if !until.is_empty() {
-                        if let Ok(until_time) = chrono::DateTime::parse_from_rfc3339(until) {
-                            if until_time >= now {
-                                return false;
-                            }
-                        }
-                    }
-                }
-            }
             // `ai_importance IS NULL` 始终通知
             if let Some(ref imp) = r.ai_importance {
                 if !importance_ge(imp, &min_importance) {
@@ -481,6 +497,45 @@ mod tests {
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].ai_summary.as_deref(), Some("该版本新增了重要功能"));
         assert_eq!(pending[0].ai_importance.as_deref(), Some("大"));
+    }
+
+    #[test]
+    fn test_unread_releases_include_notified_pending() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+
+        set_last_notified_at(&conn, rid).unwrap();
+
+        assert_eq!(
+            get_pending_releases(&conn).unwrap().len(),
+            0,
+            "notified release should not be selected for another notification"
+        );
+        assert_eq!(
+            get_unread_releases(&conn).unwrap().len(),
+            1,
+            "notified but unclicked release should still count as unread for badge"
+        );
+    }
+
+    #[test]
+    fn test_unread_releases_respect_snooze_until() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+
+        let expired_id = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let past = chrono::Utc::now() - chrono::Duration::hours(1);
+        set_notification_state(&conn, expired_id, "snoozed", Some(&past.to_rfc3339())).unwrap();
+
+        let future_id = insert_release(&conn, sid, "v2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, None).unwrap();
+        let future = chrono::Utc::now() + chrono::Duration::hours(1);
+        set_notification_state(&conn, future_id, "snoozed", Some(&future.to_rfc3339())).unwrap();
+
+        let unread_ids: Vec<i64> = get_unread_releases(&conn).unwrap().into_iter().map(|r| r.id).collect();
+
+        assert!(unread_ids.contains(&expired_id), "expired snooze should count as unread");
+        assert!(!unread_ids.contains(&future_id), "future snooze should not count as unread yet");
     }
 
     #[test]

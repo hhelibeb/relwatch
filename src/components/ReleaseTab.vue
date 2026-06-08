@@ -53,7 +53,7 @@ const filteredReleases = computed(() => {
   if (q) list = list.filter(release => releaseMatchesSearch(release, q))
 
   if (statusFilter.value === 'unread') {
-    list = list.filter(release => isUnreadStatus(release.notification_status))
+    list = list.filter(release => isUnreadStatus(release.notification_status, release.snooze_until))
   } else if (statusFilter.value === 'read') {
     list = list.filter(release => isReadStatus(release.notification_status))
   }

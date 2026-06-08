@@ -15,6 +15,7 @@ interface MockRelease {
   body: string | null
   published_at: string
   notification_status: string
+  snooze_until: string | null
   ai_importance: string | null
 }
 
@@ -28,6 +29,7 @@ function makeRelease(id: number, overrides: Partial<MockRelease> = {}): MockRele
     body: null,
     published_at: `2025-01-${String(id).padStart(2, '0')}T00:00:00Z`,
     notification_status: 'pending',
+    snooze_until: null,
     ai_importance: null,
     ...overrides,
   }
@@ -53,7 +55,7 @@ const FilterTester = defineComponent({
       if (q) list = list.filter(r => releaseMatchesSearch(r, q))
 
       if (statusFilter.value === 'unread') {
-        list = list.filter(r => isUnreadStatus(r.notification_status))
+        list = list.filter(r => isUnreadStatus(r.notification_status, r.snooze_until))
       } else if (statusFilter.value === 'read') {
         list = list.filter(r => isReadStatus(r.notification_status))
       }
@@ -130,7 +132,22 @@ describe('ReleaseTab — 筛选/排序逻辑', () => {
     const wrapper = mount(FilterTester, { props: { releases, statusFilter: 'unread' } })
     const result = wrapper.emitted('result')![0][0] as MockRelease[]
     expect(result).toHaveLength(3) // pending(1,5) + snoozed(3)
-    expect(result.every(r => isUnreadStatus(r.notification_status))).toBe(true)
+    expect(result.every(r => isUnreadStatus(r.notification_status, r.snooze_until))).toBe(true)
+  })
+
+  it('statusFilter=unread 排除未到提醒时间的 snoozed', () => {
+    const future = new Date(Date.now() + 60_000).toISOString()
+    const wrapper = mount(FilterTester, {
+      props: {
+        releases: [
+          makeRelease(1, { notification_status: 'pending' }),
+          makeRelease(2, { notification_status: 'snoozed', snooze_until: future }),
+        ],
+        statusFilter: 'unread',
+      },
+    })
+    const result = wrapper.emitted('result')![0][0] as MockRelease[]
+    expect(result.map(r => r.id)).toEqual([1])
   })
 
   it('statusFilter=read 过滤未读状态', () => {

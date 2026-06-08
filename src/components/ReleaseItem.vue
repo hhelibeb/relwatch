@@ -208,7 +208,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
         <span class="release-tag">{{ release.tag_name }}</span>
         <span class="release-dot">·</span>
-        <span class="status-inline" :class="statusClass(release.notification_status)">{{ statusLabel(release.notification_status) }}</span>
+        <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
         <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
       </div>
       <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
@@ -233,7 +233,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         <svg><use href="/icons.svg#link-icon"/></svg>
       </button>
       <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
-      <button v-if="isUnreadStatus(release.notification_status)" class="btn-sm btn-danger-soft" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
+      <button v-if="isUnreadStatus(release.notification_status, release.snooze_until)" class="btn-sm btn-danger-soft" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
     </div>
   </div>
 

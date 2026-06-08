@@ -135,7 +135,7 @@ function refreshLogs() {
 const unreadReleaseCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
   for (const release of releases.value) {
-    if (!isUnreadStatus(release.notification_status)) continue
+    if (!isUnreadStatus(release.notification_status, release.snooze_until)) continue
     const key = repoKey(release.owner, release.repo)
     counts[key] = (counts[key] || 0) + 1
   }

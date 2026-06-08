@@ -171,6 +171,14 @@ describe('isUnreadStatus', () => {
   it('clicked → false', () => { expect(isUnreadStatus('clicked')).toBe(false) })
   it('ignored → false', () => { expect(isUnreadStatus('ignored')).toBe(false) })
   it('unknown → false', () => { expect(isUnreadStatus('unknown')).toBe(false) })
+  it('snoozed + future snooze_until → false', () => {
+    const future = new Date(Date.now() + 60_000).toISOString()
+    expect(isUnreadStatus('snoozed', future)).toBe(false)
+  })
+  it('snoozed + expired snooze_until → true', () => {
+    const past = new Date(Date.now() - 60_000).toISOString()
+    expect(isUnreadStatus('snoozed', past)).toBe(true)
+  })
 })
 
 describe('isReadStatus', () => {
@@ -220,6 +228,10 @@ describe('statusLabel', () => {
 describe('statusClass', () => {
   it('pending → status-unread', () => { expect(statusClass('pending')).toBe('status-unread') })
   it('snoozed → status-unread', () => { expect(statusClass('snoozed')).toBe('status-unread') })
+  it('snoozed + future snooze_until → status-snoozed', () => {
+    const future = new Date(Date.now() + 60_000).toISOString()
+    expect(statusClass('snoozed', future)).toBe('status-snoozed')
+  })
   it('clicked → status-read', () => { expect(statusClass('clicked')).toBe('status-read') })
   it('ignored → status-read', () => { expect(statusClass('ignored')).toBe('status-read') })
   it('unknown → status-unknown', () => { expect(statusClass('unknown')).toBe('status-unknown') })
