@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-06-08
+
+### Added
+- Escape 键逐层退出到系统托盘 — 右键菜单、搜索框、设置页统一退出链，长按或顶层退出系统托盘。
+
+### Fixed
+- 托盘红点改为基于未读计数(而非待通知计数)，已通知未点击的 release 不再导致红点消失。
+- 前端未读状态函数增加 `snooze_until` 参数，未到提醒时间的已 snooze 条目不再计入未读。
+
+### Changed
+- 忽略 Windows 保留设备名 `nul`，优化筛选栏响应式布局。
+- AGENTS.md 补充 Commit 工作流说明。
+
 ## [Unreleased]
 
 ## [1.4.0] - 2026-06-06
@@ -160,7 +173,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/hhelibeb/relwatch/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/hhelibeb/relwatch/compare/v1.3.4...v1.4.0
 [1.3.4]: https://github.com/hhelibeb/relwatch/compare/v1.3.3...v1.3.4
 [1.3.3]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...v1.3.3
