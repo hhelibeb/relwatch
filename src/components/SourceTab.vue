@@ -27,6 +27,8 @@ const openMoreId = ref<number | null>(null)
 const showToast = inject(ShowToastKey, () => {})
 
 const sourceSearch = ref('')
+const trimmedSourceSearch = computed(() => sourceSearch.value.trim())
+const hasActiveSourceSearch = computed(() => trimmedSourceSearch.value.length > 0)
 
 const SOURCE_SORT_FIELD_STORAGE_KEY = 'relwatch.source.sort.field'
 const SOURCE_SORT_DIRECTION_STORAGE_KEY = 'relwatch.source.sort.direction'
@@ -158,8 +160,8 @@ function sourceMatchesSearch(source: Source, query: string): boolean {
 }
 
 const filteredSources = computed(() => {
-  const q = sourceSearch.value
-  if (!q.trim()) return props.sources
+  const q = trimmedSourceSearch.value
+  if (!q) return props.sources
   return props.sources.filter(s => sourceMatchesSearch(s, q))
 })
 
@@ -461,6 +463,15 @@ const sortLabelText = computed(() => {
   return labels[sourceSortField.value]
 })
 
+const modeToggleTitle = computed(() => {
+  if (headerMode.value === 'add') {
+    return hasActiveSourceSearch.value
+      ? t('source.search_active_tip', trimmedSourceSearch.value)
+      : t('source.switch_search')
+  }
+  return t('source.switch_add')
+})
+
 function sourceCheckedText(source: Source): string {
   if (!source.last_checked_at) return t('source.never_checked')
   return t('source.last_checked', formatDate(source.last_checked_at))
@@ -560,11 +571,14 @@ function hideHealthTooltip() {
         <button
           type="button"
           class="btn-mode-toggle"
-          :title="headerMode === 'add' ? t('source.switch_search') : t('source.switch_add')"
+          :class="{ 'has-active-search': headerMode === 'add' && hasActiveSourceSearch }"
+          :title="modeToggleTitle"
+          :aria-label="modeToggleTitle"
           @click="headerMode = headerMode === 'add' ? 'search' : 'add'"
         >
           <svg v-if="headerMode === 'add'" width="16" height="16"><use href="/icons.svg#search-icon"/></svg>
           <span v-else class="mode-toggle-plus" aria-hidden="true">+</span>
+          <span v-if="headerMode === 'add' && hasActiveSourceSearch" class="mode-toggle-dot" aria-hidden="true"></span>
         </button>
       </div>
       <div v-if="selectionMode" class="bulk-bar">
@@ -601,6 +615,7 @@ function hideHealthTooltip() {
     </div>
     <div class="source-list">
       <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
+      <div v-else-if="hasActiveSourceSearch && sortedSources.length === 0" class="empty source-search-status">{{ t('source.search_empty') }}</div>
       <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }">
       <div v-if="selectionMode" class="source-checkbox">
         <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @change="toggleSelection(source.id)" />
@@ -666,6 +681,7 @@ function hideHealthTooltip() {
           </div>
         </div>
       </div>
+      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="empty source-search-status">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
     </div>
     <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" @close="closeContextMenu" />
     <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
@@ -748,6 +764,7 @@ function hideHealthTooltip() {
 }
 
 .btn-mode-toggle {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -769,6 +786,27 @@ function hideHealthTooltip() {
   color: var(--primary);
 }
 
+.btn-mode-toggle.has-active-search {
+  background: rgba(37, 99, 235, 0.08);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.mode-toggle-dot {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  background: var(--primary);
+}
+
+.btn-mode-toggle.has-active-search:hover .mode-toggle-dot {
+  border-color: var(--bg);
+}
+
 .btn-mode-toggle svg {
   width: 16px;
   height: 16px;
@@ -785,6 +823,10 @@ function hideHealthTooltip() {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.source-search-status {
+  padding-top: 30px;
 }
 
 .source-item {
