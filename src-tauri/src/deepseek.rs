@@ -152,7 +152,13 @@ pub async fn generate_summaries_for_new(
 
     {
         let state = app.state::<AppState>();
-        let conn = state.db.get().unwrap();
+        let conn = match state.db.get() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("数据库连接失败: {}", e);
+                return;
+            }
+        };
         let cfg = read_config(&conn);
         enabled = cfg.0;
         model = cfg.1;
@@ -217,11 +223,22 @@ pub async fn generate_summaries_for_new(
         let sem_clone = semaphore.clone();
 
         handles.push(tokio::spawn(async move {
-            let _permit = sem_clone.acquire_owned().await.unwrap();
+            let _permit = match sem_clone.acquire_owned().await {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("信号量获取失败: {}", e);
+                    return;
+                }
+            };
             match call_summary(&client, &model, &base_url, &prompt, &truncated).await {
                 Ok((summary, importance)) => {
-                    let state = app.state::<AppState>();
-                    let conn = state.db.get().unwrap();
+                    let conn = match app.state::<AppState>().db.get() {
+                        Ok(c) => c,
+                        Err(e) => {
+                            log::error!("数据库连接失败: {}", e);
+                            return;
+                        }
+                    };
                     if let Err(e) = db::releases::set_ai_summary(
                         &conn, release_id, &summary, &importance,
                     ) {

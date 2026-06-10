@@ -3,7 +3,7 @@ use crate::types::{AppState, LogSearchResult};
 
 #[tauri::command]
 pub fn get_logs(state: tauri::State<AppState>, limit: i64) -> Result<Vec<db::logs::LogEntry>, String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     db::logs::get_logs(&conn, limit)
 }
 
@@ -15,7 +15,7 @@ pub fn search_logs(
     page_size: i64,
     level: Option<String>,
 ) -> Result<LogSearchResult, String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let (entries, total) = db::logs::search_logs(&conn, &keyword, level.as_deref(), page, page_size)?;
     Ok(LogSearchResult {
         entries,
@@ -27,7 +27,7 @@ pub fn search_logs(
 
 #[tauri::command]
 pub fn clear_logs(state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     db::logs::clear_logs(&conn)?;
     db::logs::write_log_key(&conn, "INFO", "log.cleared", "{}");
     Ok(())

@@ -77,7 +77,7 @@ pub async fn add_source(
 
 #[tauri::command]
 pub fn remove_source(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     db::sources::remove_source(&conn, id)?;
     match source {
@@ -95,7 +95,7 @@ pub fn update_source(
     poll_interval_minutes: i64,
     muted: Option<bool>,
 ) -> Result<(), String> {
-    let mut conn = state.db.get().unwrap();
+    let mut conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     let old_enabled = source.as_ref().map(|s| s.enabled);
     let old_muted = source.as_ref().map(|s| s.muted);
@@ -155,7 +155,7 @@ pub fn update_source(
 
 #[tauri::command]
 pub fn list_sources(state: tauri::State<AppState>) -> Result<Vec<db::sources::Source>, String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     db::sources::list_sources(&conn)
 }
 

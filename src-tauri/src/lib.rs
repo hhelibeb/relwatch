@@ -136,7 +136,14 @@ pub fn run() {
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                         let state = app_clone.state::<AppState>();
-                        let conn = state.db.get().unwrap_or_else(|e| panic!("DB pool error: {}", e));
+                        let conn = match state.db.get() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("关闭窗口时数据库连接失败: {}", e);
+                                poll::stop_poll();
+                                return;
+                            }
+                        };
                         let minimize = db::settings::get_setting(&conn, KEY_MINIMIZE_TO_TRAY)
                             .ok()
                             .flatten()

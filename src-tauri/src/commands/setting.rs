@@ -22,7 +22,7 @@ use serde_json::json;
 
 #[tauri::command]
 pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
     let proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, if proxy_url.is_empty() { "none" } else { "custom" })?;
     Ok(AppSettings {
@@ -184,7 +184,7 @@ pub fn set_github_token(
 pub async fn test_deepseek_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
     let (model, base_url, api_key, proxy_url, proxy_mode);
     {
-        let conn = state.db.get().unwrap();
+        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
         let config = deepseek::read_config(&conn);
         model = config.1;
         base_url = config.2;

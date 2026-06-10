@@ -8,7 +8,7 @@ use serde_json::json;
 pub fn get_releases(
     state: tauri::State<AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     db::releases::get_releases_with_state(&conn)
 }
 
@@ -16,7 +16,7 @@ pub fn get_releases(
 pub fn get_pending_releases(
     state: tauri::State<AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     db::releases::get_pending_releases(&conn)
 }
 
@@ -28,7 +28,7 @@ pub fn set_notification_state(
     status: String,
     snooze_minutes: Option<i64>,
 ) -> Result<(), String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
 
     let snooze_until = snooze_minutes.map(|minutes| {
         let until = chrono::Utc::now() + chrono::Duration::minutes(minutes);
@@ -55,7 +55,7 @@ pub fn delete_release(
     state: tauri::State<AppState>,
     release_id: i64,
 ) -> Result<(), String> {
-    let conn = state.db.get().unwrap();
+    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
     match rel {
