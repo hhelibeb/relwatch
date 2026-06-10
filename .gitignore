@@ -32,3 +32,6 @@ nul
 # Thoughts (AI notes / plans)
 thoughts/
 .rpiv/
+
+# Security audit output
+piolium/
