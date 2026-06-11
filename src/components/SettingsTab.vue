@@ -351,6 +351,7 @@ async function handleSave() {
       pollIntervalMinutes: s.poll_interval_minutes,
       proxyMode: s.proxy_mode,
       proxyUrl: s.proxy_url.trim(),
+      autoStart: s.auto_start,
       minimizeToTray: s.minimize_to_tray,
       logRetentionDays: s.log_retention_days,
       deepseekEnabled: s.deepseek_enabled,
@@ -381,7 +382,7 @@ async function handleSave() {
 // ── 脏标记 ────────────────────────────────────────────
 
 const trackedKeys = [
-  'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'minimize_to_tray',
+  'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'auto_start', 'minimize_to_tray',
   'log_retention_days', 'check_prereleases', 'fetch_history',
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
   'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt',
@@ -405,7 +406,7 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
     ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance'].filter(k => f.has(k)).length,
   }
@@ -492,6 +493,10 @@ async function handleImportBackup() {
           </div>
         </div>
         <div v-if="settingsTab === 'general'" class="settings-form">
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.auto_start" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('auto_start') || null">{{ t('settings.auto_start') }}</span>
+          </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('poll_interval_minutes') || null">{{ t('settings.poll_interval') }}</span>
             <input

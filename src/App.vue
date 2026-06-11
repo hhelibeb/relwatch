@@ -28,6 +28,7 @@ const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
 const logRefreshKey = ref(0)
 const settings = ref<AppSettings>({
+  auto_start: false,
   poll_interval_minutes: 30,
   proxy_mode: 'none',
   proxy_url: '',

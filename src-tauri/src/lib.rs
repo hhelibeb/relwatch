@@ -1,3 +1,4 @@
+pub mod autostart;
 pub mod crypto;
 pub mod db;
 pub mod i18n;
@@ -130,6 +131,13 @@ pub fn run() {
             tray::setup_tray_listeners(app.handle());
             tray::update_tray_badge(app.handle());
             notify::request_permission(app.handle());
+
+            // 如果是从开机自启动启动的（带有 --autostart 参数），自动隐藏到托盘
+            if std::env::args().any(|a| a == "--autostart") {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.hide();
+                }
+            }
 
             if let Some(window) = app.get_webview_window("main") {
                 let app_clone = app.handle().clone();

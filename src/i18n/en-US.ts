@@ -91,6 +91,7 @@ export default {
   'settings.github_token_input': 'Enter GitHub Personal Access Token',
   'settings.github_token_note': 'Leave empty for anonymous access (60 requests/hour limit). Configure a token to increase to 5000 requests/hour.',
   'settings.poll_interval': 'Poll interval (minutes)',
+  'settings.auto_start': 'Auto start on boot',
   'settings.proxy_mode': 'Proxy Mode',
   'settings.proxy_none': 'No Proxy',
   'settings.proxy_system': 'Use System Proxy',
@@ -243,6 +244,7 @@ export default {
   'setting.deepseek_key_updated': 'DeepSeek API Key updated',
   'setting.github_token_updated': 'GitHub Token updated',
 
+  'setting.auto_start': 'Auto Start',
   'setting.poll_interval': 'Poll Interval',
   'setting.proxy_url': 'Proxy URL',
   'setting.proxy_mode': 'Proxy Mode',

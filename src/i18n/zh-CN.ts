@@ -91,6 +91,7 @@ export default {
   'settings.github_token_input': '输入 GitHub Personal Access Token',
   'settings.github_token_note': '留空即可匿名使用，未配置时受 GitHub API 限制（60 次/小时）。配置 Token 后提升至 5000 次/小时。',
   'settings.poll_interval': '全局轮询间隔（分钟）',
+  'settings.auto_start': '开机自启动',
   'settings.proxy_mode': '代理模式',
   'settings.proxy_none': '不使用代理',
   'settings.proxy_system': '使用系统代理',
@@ -243,6 +244,7 @@ export default {
   'setting.deepseek_key_updated': '已更新 DeepSeek API Key',
   'setting.github_token_updated': '已更新 GitHub Token',
 
+  'setting.auto_start': '开机自启动',
   'setting.poll_interval': '轮询间隔',
   'setting.proxy_url': '代理地址',
   'setting.proxy_mode': '代理模式',

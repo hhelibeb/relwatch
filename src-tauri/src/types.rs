@@ -29,6 +29,7 @@ pub struct AppSettings {
     pub poll_interval_minutes: i64,
     pub proxy_url: String,
     pub proxy_mode: String,
+    pub auto_start: bool,
     pub minimize_to_tray: bool,
     pub log_retention_days: i64,
     pub deepseek_enabled: bool,

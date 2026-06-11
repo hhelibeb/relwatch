@@ -51,6 +51,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     poll_interval_minutes: 15,
     proxy_mode: 'none',
     proxy_url: '',
+    auto_start: false,
     minimize_to_tray: false,
     log_retention_days: 30,
     deepseek_enabled: true,

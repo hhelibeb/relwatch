@@ -1,6 +1,7 @@
 use std::sync::atomic::Ordering;
 use tauri::Manager;
 
+use crate::autostart;
 use crate::crypto;
 use crate::db;
 use crate::deepseek;
@@ -9,9 +10,10 @@ use crate::db::settings::{
     self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY, KEY_DEEPSEEK_PROXY_BYPASS,
     KEY_DEEPSEEK_PROMPT, KEY_DEEPSEEK_MIN_IMPORTANCE,
+    KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
-    DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
+    DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
     DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME,
@@ -29,6 +31,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
         poll_interval_minutes: get_setting_i64(&conn, KEY_POLL_INTERVAL, 30)?,
         proxy_url,
         proxy_mode,
+        auto_start: get_setting_bool(&conn, KEY_AUTO_START, false)?,
         minimize_to_tray: get_setting_bool(&conn, KEY_MINIMIZE_TO_TRAY, true)?,
         log_retention_days: get_setting_i64(&conn, KEY_LOG_RETENTION, 0)?,
         deepseek_enabled: get_setting_bool(&conn, KEY_DEEPSEEK_ENABLED, false)?,
@@ -61,6 +64,7 @@ pub struct UpdateSettingsPayload {
     poll_interval_minutes: i64,
     proxy_url: String,
     proxy_mode: String,
+    auto_start: bool,
     minimize_to_tray: bool,
     log_retention_days: i64,
     deepseek_enabled: bool,
@@ -92,6 +96,7 @@ pub fn update_settings(
     let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)?;
     let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
     let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
+    let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START)?;
     let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, DEFAULT_MINIMIZE_TO_TRAY)?;
     let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, DEFAULT_LOG_RETENTION)?;
     let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_ENABLED)?;
@@ -113,6 +118,7 @@ pub fn update_settings(
             (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "setting.poll_interval"),
             (KEY_PROXY_MODE, &old_proxy_mode, &payload.proxy_mode, "setting.proxy_mode"),
             (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "setting.proxy_url"),
+            (KEY_AUTO_START, &old_auto_start, &payload.auto_start.to_string(), "setting.auto_start"),
             (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "setting.minimize_to_tray"),
             (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "setting.log_retention_days"),
             (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
@@ -143,6 +149,15 @@ pub fn update_settings(
         let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
         state.next_poll_at.store(next, Ordering::Relaxed);
         let _ = settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
+    }
+
+    // 开机自启动变化时，立即执行系统注册/注销
+    if old_auto_start != payload.auto_start.to_string() {
+        if payload.auto_start {
+            autostart::enable().map_err(|e| format!("设置开机自启动失败: {}", e))?;
+        } else {
+            autostart::disable().map_err(|e| format!("取消开机自启动失败: {}", e))?;
+        }
     }
 
     Ok(())
@@ -253,6 +268,7 @@ mod tests {
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
+        let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START).unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
@@ -272,6 +288,7 @@ mod tests {
             &conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
+                (KEY_AUTO_START, &old_auto_start, "false", ""),
                 (KEY_PROXY_MODE, &old_proxy_mode, "custom", ""),
                 (KEY_PROXY_URL, &old_proxy, "http://old", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
@@ -314,6 +331,7 @@ mod tests {
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
+        let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START).unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
@@ -332,6 +350,7 @@ mod tests {
             &conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
+                (KEY_AUTO_START, &old_auto_start, "false", ""),
                 (KEY_PROXY_MODE, &old_proxy_mode, "custom", ""),
                 (KEY_PROXY_URL, &old_proxy, "http://proxy", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
@@ -367,6 +386,7 @@ mod tests {
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
+        let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START).unwrap();
         let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, "0").unwrap();
         let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, "false").unwrap();
@@ -385,6 +405,7 @@ mod tests {
             &conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "60", "setting.poll_interval"),
+                (KEY_AUTO_START, &old_auto_start, "false", ""),
                 (KEY_PROXY_MODE, &old_proxy_mode, "none", ""),
                 (KEY_PROXY_URL, &old_proxy, "", ""),
                 (KEY_MINIMIZE_TO_TRAY, &old_minimize, "true", ""),
@@ -421,6 +442,7 @@ mod tests {
             (KEY_POLL_INTERVAL, "30"),
             (KEY_PROXY_MODE, "custom"),
             (KEY_PROXY_URL, "http://old"),
+            (KEY_AUTO_START, "false"),
             (KEY_MINIMIZE_TO_TRAY, "true"),
             (KEY_LOG_RETENTION, "7"),
             (KEY_DEEPSEEK_ENABLED, "false"),
@@ -444,6 +466,7 @@ mod tests {
             (KEY_POLL_INTERVAL, "60"),
             (KEY_PROXY_MODE, "custom"),
             (KEY_PROXY_URL, "http://new"),
+            (KEY_AUTO_START, "true"),
             (KEY_MINIMIZE_TO_TRAY, "false"),
             (KEY_LOG_RETENTION, "14"),
             (KEY_DEEPSEEK_ENABLED, "true"),
@@ -467,7 +490,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 16,
+        assert_eq!(items.len(), 17,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -482,11 +505,12 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 16;
+        const EXPECTED_SETTING_FIELDS: usize = 17;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyMode": "none",
             "proxyUrl": "",
+            "autoStart": false,
             "minimizeToTray": true,
             "logRetentionDays": 0,
             "deepseekEnabled": false,

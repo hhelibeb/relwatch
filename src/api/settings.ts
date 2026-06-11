@@ -4,6 +4,7 @@ export interface AppSettings {
   poll_interval_minutes: number
   proxy_mode: string
   proxy_url: string
+  auto_start: boolean
   minimize_to_tray: boolean
   log_retention_days: number
   deepseek_enabled: boolean
@@ -26,6 +27,7 @@ export interface UpdateSettingsPayload {
   pollIntervalMinutes: number
   proxyMode: string
   proxyUrl: string
+  autoStart: boolean
   minimizeToTray: boolean
   logRetentionDays: number
   deepseekEnabled: boolean

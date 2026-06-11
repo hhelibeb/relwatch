@@ -19,12 +19,14 @@ pub const KEY_FETCH_HISTORY: &str = "fetch_history";
 pub const KEY_FETCH_HISTORY_COUNT: &str = "fetch_history_count";
 pub const KEY_LANGUAGE: &str = "language";
 pub const KEY_THEME: &str = "theme";
+pub const KEY_AUTO_START: &str = "auto_start";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
 pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 
 // ── 默认值常量 ──────────────────────────────────────
 pub const DEFAULT_POLL_INTERVAL: &str = "30";
 pub const DEFAULT_PROXY_URL: &str = "";
+pub const DEFAULT_AUTO_START: &str = "false";
 pub const DEFAULT_MINIMIZE_TO_TRAY: &str = "true";
 pub const DEFAULT_LOG_RETENTION: &str = "0";
 pub const DEFAULT_DEEPSEEK_ENABLED: &str = "false";
