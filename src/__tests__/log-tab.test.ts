@@ -405,7 +405,7 @@ describe('LogTab.vue — 外部刷新', () => {
     vi.mocked(searchLogs).mockResolvedValue(
       createSearchResult([createLogEntry({ id: 99, message: 'New' })], 1)
     )
-    await wrapper.setProps({ refreshKey: 1 })
+    await (wrapper as any).setProps({ refreshKey: 1 })
     await new Promise(resolve => setTimeout(resolve, 20))
 
     expect(searchLogs).toHaveBeenCalled()

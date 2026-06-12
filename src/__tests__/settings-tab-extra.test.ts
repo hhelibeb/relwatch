@@ -807,7 +807,7 @@ describe('SettingsTab — Props 同步', () => {
     const input = wrapper.get('input[type="number"]') as ReturnType<typeof wrapper.get>
     expect((input.element as HTMLInputElement).value).toBe('15')
 
-    await wrapper.setProps({ settings: createSettings({ poll_interval_minutes: 60 }) })
+    await (wrapper as any).setProps({ settings: createSettings({ poll_interval_minutes: 60 }) })
     await flushPromises()
 
     expect((input.element as HTMLInputElement).value).toBe('60')
