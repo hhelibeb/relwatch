@@ -43,11 +43,13 @@ git log --pretty=%s -n 20 2>/dev/null || true
    执行 `git commit` **之前**，必须依次运行以下检查并确保全部通过，否则不允许提交：
 
    1. **TypeScript 编译检查**: `npx vue-tsc --noEmit` — 零错误
-   2. **前端测试**: `npx vitest run` — 全部通过
-   3. **前端 Lint**: `npm run lint` — 无 error
-   4. **Rust 编译**: `cargo build`（或 `cargo check`）— 成功
-   5. **Rust 测试**: `cargo test` — 全部通过
-   6. **Rust Clippy**: `cargo clippy -- -D warnings` — 无 error
+   2. **tsc 编译检查**（构建级 stricter 检查）: `npx tsc --noEmit` — 零错误
+      > `vue-tsc` 对 Vue SFC 类型推断较宽松，`tsc` 能捕获 setProps 等额外的类型错误。
+   3. **前端测试**: `npx vitest run` — 全部通过
+   4. **前端 Lint**: `npm run lint` — 无 error
+   5. **Rust 编译**: `cargo build`（或 `cargo check`）— 成功
+   6. **Rust 测试**: `cargo test` — 全部通过
+   7. **Rust Clippy**: `cargo clippy -- -D warnings` — 无 error
 
    > 如果某一步失败，必须先修复再提交。不得以「后续修复」为由跳过检查。
 
