@@ -26,6 +26,9 @@ nul
 .env
 .env.local
 
+# Test coverage output
+coverage/
+
 # Logs
 *.log
 

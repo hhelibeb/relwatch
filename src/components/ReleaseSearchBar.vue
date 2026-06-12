@@ -2,13 +2,15 @@
 import { ref, computed } from 'vue'
 import { t } from '../i18n'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   modelValue: string
   statusFilter: string
   importanceFilter: string
   viewMode: string
   showSearch?: boolean
-}>()
+}>(), {
+  showSearch: true,
+})
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
@@ -107,7 +109,7 @@ function onSearchEnter() {
 
 <template>
   <div class="log-search-row">
-    <div v-if="showSearch !== false" class="input-clear-wrap">
+    <div v-if="props.showSearch" class="input-clear-wrap">
       <input
         :value="modelValue"
         :placeholder="t('release.search')"

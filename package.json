@@ -9,12 +9,17 @@
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",
-    "lint": "eslint src/"
+    "lint": "eslint src/",
+    "coverage": "vitest run --coverage",
+    "coverage:rs": "cd src-tauri && cargo llvm-cov --all-features",
+    "coverage:rs:html": "cd src-tauri && cargo llvm-cov --all-features --html",
+    "coverage:all": "npm run coverage && npm run coverage:rs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "~2.11.1",
     "@vitejs/plugin-vue": "^6.0.6",
+    "@vitest/coverage-v8": "^4.1.8",
     "@vue/test-utils": "^2.4.10",
     "eslint": "^10.4.0",
     "eslint-plugin-vue": "^10.9.1",
