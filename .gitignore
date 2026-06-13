@@ -36,5 +36,11 @@ coverage/
 thoughts/
 .rpiv/
 
+# Migration / planning docs
+pnpm-migration-plan.md
+
+# Temporary test files
+src/__tests__/test-asgn-2.ts
+
 # Security audit output
 piolium/
