@@ -1,10 +1,8 @@
 name: Release
-
 on:
   push:
     tags:
       - 'v*'
-
 jobs:
   publish-tauri:
     permissions:
@@ -17,7 +15,6 @@ jobs:
             args: ''
           - platform: ubuntu-latest
             args: ''
-
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v6
@@ -28,11 +25,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: setup node
-        uses: actions/setup-node@v6
+      - uses: actions/setup-node@v6
         with:
           node-version: lts/*
-          cache: npm
+          cache: pnpm
+
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11
 
       - name: install Rust stable
         uses: dtolnay/rust-toolchain@stable
@@ -43,7 +43,7 @@ jobs:
           workspaces: './src-tauri -> target'
 
       - name: install frontend dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - uses: tauri-apps/tauri-action@v0
         env:
