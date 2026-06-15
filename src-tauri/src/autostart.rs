@@ -2,6 +2,7 @@
 //!
 //! - Windows: 通过注册表 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 实现
 //! - Linux: 通过 `~/.config/autostart/relwatch.desktop` 文件实现
+//! - macOS: 通过 `~/Library/LaunchAgents/com.relwatch.app.plist` launchd 服务实现
 //!
 //! 无论哪个平台，启动命令都附加 `--autostart` 参数，
 //! 便于应用在启动时检测并自动最小化到托盘。
@@ -40,7 +41,12 @@ pub fn enable() -> Result<(), String> {
         enable_linux()?;
     }
 
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    {
+        enable_macos()?;
+    }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         let _ = get_autostart_command(); // 抑制未使用警告
         log::warn!("当前平台不支持开机自启动");
@@ -59,6 +65,11 @@ pub fn disable() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         disable_linux()?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        disable_macos()?;
     }
 
     Ok(())
@@ -166,6 +177,84 @@ fn disable_linux() -> Result<(), String> {
             .map_err(|e| format!("无法移除自启动文件 {}: {}", desktop_path.display(), e))?;
     }
 
+    Ok(())
+}
+
+// ── macOS ──────────────────────────────────────────────
+
+#[cfg(target_os = "macos")]
+fn macos_plist_path() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME")
+        .map_err(|_| "无法获取 HOME 环境变量".to_string())?;
+    Ok(std::path::PathBuf::from(home).join("Library/LaunchAgents/com.relwatch.app.plist"))
+}
+
+#[cfg(target_os = "macos")]
+fn enable_macos() -> Result<(), String> {
+    let plist_path = macos_plist_path()?;
+    if let Some(parent) = plist_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("无法创建 LaunchAgents 目录: {}", e))?;
+    }
+
+    let exe = get_exe_path();
+    let plist_content = format!(
+        r##"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.relwatch.app</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{exe}</string>
+        <string>--autostart</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <false/>
+</dict>
+</plist>
+"##,
+        exe = exe.to_string_lossy()
+    );
+
+    std::fs::write(&plist_path, &plist_content)
+        .map_err(|e| format!("无法写入 plist 文件 {}: {}", plist_path.display(), e))?;
+
+    // 加载到 launchd
+    let status = std::process::Command::new("launchctl")
+        .args(["load", plist_path.to_str().unwrap_or("")])
+        .status()
+        .map_err(|e| format!("无法执行 launchctl load: {}", e))?;
+
+    if !status.success() {
+        return Err("launchctl load 失败".to_string());
+    }
+
+    log::info!("开机自启动已启用 (macOS launchd)");
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn disable_macos() -> Result<(), String> {
+    let plist_path = macos_plist_path()?;
+
+    if !plist_path.exists() {
+        return Ok(());
+    }
+
+    // 从 launchd 卸载
+    let _ = std::process::Command::new("launchctl")
+        .args(["unload", plist_path.to_str().unwrap_or("")])
+        .status();
+
+    // 删除 plist 文件
+    std::fs::remove_file(&plist_path)
+        .map_err(|e| format!("无法移除 plist 文件: {}", e))?;
+
+    log::info!("开机自启动已禁用 (macOS launchd)");
     Ok(())
 }
 

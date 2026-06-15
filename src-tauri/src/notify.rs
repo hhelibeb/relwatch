@@ -350,9 +350,78 @@ mod inner {
 }
 
 // ═══════════════════════════════════════════════════════════════
-// macOS / 未知平台回退（仅记录日志，无桌面通知）
+// macOS 实现 (osascript 通知)
 // ═══════════════════════════════════════════════════════════════
-#[cfg(not(any(windows, all(unix, not(target_os = "macos")))))]
+#[cfg(target_os = "macos")]
+mod inner {
+    use tauri::AppHandle;
+
+    pub fn uninit_com() {}
+
+    pub fn ensure_com() {}
+
+    /// 使用 osascript display notification 发送 macOS 通知。
+    ///
+    /// 注意: osascript 不支持动作按钮，因此与 Windows/Linux 不同，
+    /// 本实现不包含「前往」「忽略」「稍后提醒」按钮。
+    /// TODO: 未来可改用 UNUserNotificationCenter 或 notify-rust 以获得按钮支持。
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_release_notification(
+        _app: &AppHandle,
+        _release_id: i64,
+        _html_url: String,
+        owner: String,
+        repo: String,
+        tag: String,
+        name: String,
+        importance: Option<String>,
+    ) {
+        use std::process::Command;
+
+        fn escape_apple(s: &str) -> String {
+            s.replace('\\', "\\\\")
+                .replace('"', "\\\"")
+                .replace('\n', " ")
+                .replace('\r', " ")
+        }
+
+        let title = format!("{} / {}", owner, repo);
+        let body = if let Some(ref imp) = importance {
+            let label = match imp.as_str() {
+                "大" => "重要度: 🔴 大",
+                "中" => "重要度: 🟡 中",
+                _ => "重要度: 🟢 小",
+            };
+            format!("{} - {}  |  {}", tag, name, label)
+        } else {
+            format!("{} - {}", tag, name)
+        };
+
+        let script = format!(
+            r#"display notification "{}" with title "{}" subtitle "RelWatch""#,
+            escape_apple(&body),
+            escape_apple(&title),
+        );
+
+        match Command::new("osascript").arg("-e").arg(&script).output() {
+            Ok(out) if out.status.success() => {
+                log::info!("通知已发送: {} / {} {}", owner, repo, tag);
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                log::error!("osascript 发送通知失败: {}", stderr);
+            }
+            Err(e) => {
+                log::error!("无法执行 osascript: {}", e);
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// 未知平台回退（仅记录日志，无桌面通知）
+// ═══════════════════════════════════════════════════════════════
+#[cfg(not(any(windows, target_os = "macos", all(unix, not(target_os = "macos")))))]
 mod inner {
     use tauri::AppHandle;
 
