@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-06-11
+
+### Added
+- 开机自启动设置 — Windows（注册表）和 Linux（.desktop 文件）支持，
+  启动时自动最小化到系统托盘。
+- 监控源搜索增加结果计数、空结果提示和模式切换按钮状态指示。
+
+### Changed
+- 安全策略加固 — 收紧 CSP 限制，移除不必要的 shell 权限。
+- 将 `db.get().unwrap()` 等潜在 panic 调用替换为优雅错误处理，
+  提升运行时健壮性。
+
 ## [1.4.1] - 2026-06-08
 
 ### Added
@@ -17,18 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - 忽略 Windows 保留设备名 `nul`，优化筛选栏响应式布局。
 - AGENTS.md 补充 Commit 工作流说明。
-
-## [1.5.0] - 2026-06-11
-
-### Added
-- 开机自启动设置 — Windows（注册表）和 Linux（.desktop 文件）支持，
-  启动时自动最小化到系统托盘。
-- 监控源搜索增加结果计数、空结果提示和模式切换按钮状态指示。
-
-### Changed
-- 安全策略加固 — 收紧 CSP 限制，移除不必要的 shell 权限。
-- 将 `db.get().unwrap()` 等潜在 panic 调用替换为优雅错误处理，
-  提升运行时健壮性。
 
 ## [Unreleased]
 
