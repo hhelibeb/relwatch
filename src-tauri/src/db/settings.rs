@@ -296,4 +296,41 @@ mod tests {
             false
         );
     }
+
+    #[test]
+    fn test_strip_prompt_suffix_with_boundary() {
+        let result = strip_prompt_suffix("你是一个助手。\n\n请严格按以下 JSON 格式返回\n{\"summary\": ...}");
+        assert_eq!(result, "你是一个助手。");
+    }
+
+    #[test]
+    fn test_strip_prompt_suffix_without_boundary() {
+        let result = strip_prompt_suffix("你是一个助手。请进行分析。");
+        assert_eq!(result, "你是一个助手。请进行分析。");
+    }
+
+    #[test]
+    fn test_strip_prompt_suffix_boundary_at_start() {
+        let result = strip_prompt_suffix("请严格按以下 JSON 格式返回\n{\"summary\": ...}");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_prompt_suffix_exact_boundary() {
+        let result = strip_prompt_suffix("请严格按以下 JSON 格式返回");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_prompt_suffix_empty_string() {
+        let result = strip_prompt_suffix("");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_strip_prompt_suffix_boundary_with_trailing_spaces() {
+        let result = strip_prompt_suffix("你是一个助手。  \n请严格按以下 JSON 格式返回\n{\"summary\": ...}");
+        // trim_end() 会去掉 boundary 之前的空格
+        assert_eq!(result, "你是一个助手。");
+    }
 }

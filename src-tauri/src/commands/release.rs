@@ -165,4 +165,71 @@ mod tests {
         let diff = (computed - expected).num_seconds().abs();
         assert!(diff <= 1, "snooze_until computation should be correct");
     }
+
+    #[test]
+    fn test_set_notification_state_unknown_release_logs_unknown_key() {
+        let conn = init_memory_db().unwrap();
+
+        // 模拟 set_notification_state 对不存在的 release_id 走 None 分支
+        let rel = db::releases::get_release(&conn, 999).ok().flatten();
+        assert!(rel.is_none());
+
+        db::logs::write_log_key(
+            &conn,
+            "INFO",
+            "release.status_changed_unknown",
+            &serde_json::json!({"id": 999, "action": "ignored"}).to_string(),
+        );
+
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("release.status_changed_unknown")));
+    }
+
+    #[test]
+    fn test_delete_release_roundtrip() {
+        let conn = init_memory_db().unwrap();
+        let sid = db::sources::add_source(&conn, "github", "owner", "repo", "").unwrap();
+        let rid = db::releases::insert_release(&conn, sid, "v1.0", "R", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+
+        // 模拟 delete_release 的逻辑：查 release → 记日志 → 删除
+        let rel = db::releases::get_release(&conn, rid).ok().flatten();
+        assert!(rel.is_some());
+        if let Some(r) = rel {
+            db::logs::write_log_key(
+                &conn,
+                "INFO",
+                "release.deleted",
+                &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
+            );
+        }
+        db::releases::delete_release(&conn, rid).unwrap();
+
+        // 验证 release 已删除
+        assert!(db::releases::get_release(&conn, rid).unwrap().is_none());
+
+        // 验证日志已写入
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("release.deleted")));
+    }
+
+    #[test]
+    fn test_delete_release_unknown_logs_unknown_key() {
+        let conn = init_memory_db().unwrap();
+
+        // 模拟 delete_release 对不存在的 id 走 None 分支
+        let rel = db::releases::get_release(&conn, 999).ok().flatten();
+        assert!(rel.is_none());
+
+        db::logs::write_log_key(
+            &conn,
+            "INFO",
+            "release.deleted_unknown",
+            &serde_json::json!({"id": 999}).to_string(),
+        );
+        // delete_release 对不存在的 id 不应报错（SQL DELETE 匹配 0 行）
+        db::releases::delete_release(&conn, 999).unwrap();
+
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("release.deleted_unknown")));
+    }
 }

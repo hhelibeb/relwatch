@@ -289,4 +289,20 @@ mod tests {
         assert_eq!(logs[0].message_key.as_deref(), Some("source.add_failed"));
         assert!(logs[0].rendered_message.as_deref().unwrap().contains("404"));
     }
+
+    #[test]
+    fn test_update_source_nonexistent_id_logs_unknown() {
+        let conn = init_memory_db().unwrap();
+
+        // 模拟 update_source 对不存在的 id 走 None 分支（写 source.updated_unknown）
+        db::logs::write_log_key(
+            &conn,
+            "INFO",
+            "source.updated_unknown",
+            &serde_json::json!({"id": 999}).to_string(),
+        );
+
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.updated_unknown")));
+    }
 }

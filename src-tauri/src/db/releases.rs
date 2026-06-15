@@ -603,4 +603,55 @@ mod tests {
         assert!(releases[0].ai_summary.is_none());
         assert!(releases[0].ai_importance.is_none());
     }
+
+    #[test]
+    fn test_importance_ge_da_ge_da() {
+        assert!(importance_ge("大", "大"));
+    }
+
+    #[test]
+    fn test_importance_ge_da_ge_zhong() {
+        assert!(importance_ge("大", "中"));
+    }
+
+    #[test]
+    fn test_importance_ge_da_ge_xiao() {
+        assert!(importance_ge("大", "小"));
+    }
+
+    #[test]
+    fn test_importance_ge_zhong_lt_da() {
+        assert!(!importance_ge("中", "大"));
+    }
+
+    #[test]
+    fn test_importance_ge_zhong_ge_zhong() {
+        assert!(importance_ge("中", "中"));
+    }
+
+    #[test]
+    fn test_importance_ge_zhong_ge_xiao() {
+        assert!(importance_ge("中", "小"));
+    }
+
+    #[test]
+    fn test_importance_ge_xiao_lt_da() {
+        assert!(!importance_ge("小", "大"));
+    }
+
+    #[test]
+    fn test_importance_ge_xiao_lt_zhong() {
+        assert!(!importance_ge("小", "中"));
+    }
+
+    #[test]
+    fn test_importance_ge_xiao_ge_xiao() {
+        assert!(importance_ge("小", "小"));
+    }
+
+    #[test]
+    fn test_importance_ge_unknown_falls_back_to_xiao() {
+        assert!(importance_ge("未知", "小"));
+        assert!(!importance_ge("未知", "中"));
+    }
 }

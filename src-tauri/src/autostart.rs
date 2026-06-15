@@ -15,13 +15,16 @@ fn get_exe_path() -> PathBuf {
 
 /// 获取带有 --autostart 参数的命令行字符串
 fn get_autostart_command() -> String {
-    let exe = get_exe_path();
-    let exe_str = exe.to_string_lossy();
-    // 如果路径包含空格，需要用引号包裹
-    if exe_str.contains(' ') {
-        format!("\"{}\" --autostart", exe_str)
+    format_autostart_command(&get_exe_path().to_string_lossy())
+}
+
+/// 根据可执行文件路径格式化 autostart 命令行。
+/// 如果路径包含空格，自动用双引号包裹。
+fn format_autostart_command(exe_path: &str) -> String {
+    if exe_path.contains(' ') {
+        format!("\"{}\" --autostart", exe_path)
     } else {
-        format!("{} --autostart", exe_str)
+        format!("{} --autostart", exe_path)
     }
 }
 
@@ -164,4 +167,33 @@ fn disable_linux() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_autostart_command_no_spaces() {
+        let cmd = format_autostart_command("relwatch");
+        assert_eq!(cmd, "relwatch --autostart");
+    }
+
+    #[test]
+    fn test_format_autostart_command_with_spaces() {
+        let cmd = format_autostart_command("C:\\Program Files\\RelWatch\\relwatch.exe");
+        assert_eq!(cmd, "\"C:\\Program Files\\RelWatch\\relwatch.exe\" --autostart");
+    }
+
+    #[test]
+    fn test_format_autostart_command_empty_path() {
+        let cmd = format_autostart_command("");
+        assert_eq!(cmd, " --autostart");
+    }
+
+    #[test]
+    fn test_format_autostart_command_trailing_space() {
+        let cmd = format_autostart_command("/usr/local/bin/relwatch ");
+        assert_eq!(cmd, "\"/usr/local/bin/relwatch \" --autostart");
+    }
 }

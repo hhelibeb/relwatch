@@ -1046,4 +1046,127 @@ mod tests {
         assert_eq!(per_page, 100);
         assert!(paginate);
     }
+
+    // --- get_github_token tests ---
+
+    #[test]
+    fn test_get_github_token_no_key_returns_none() {
+        let conn = init_memory_db().unwrap();
+        assert!(get_github_token(&conn).is_none(), "未设置 token 时应返回 None");
+    }
+
+    #[test]
+    fn test_get_github_token_empty_string_returns_none() {
+        let conn = init_memory_db().unwrap();
+        crate::crypto::set_test_master_key();
+        db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, "").unwrap();
+        assert!(get_github_token(&conn).is_none(), "空字符串 token 时应返回 None");
+    }
+
+    #[test]
+    fn test_get_github_token_valid_returns_decrypted() {
+        let conn = init_memory_db().unwrap();
+        crate::crypto::set_test_master_key();
+        let encrypted = crate::crypto::encrypt("ghp_test_token");
+        db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted).unwrap();
+        let result = get_github_token(&conn);
+        assert_eq!(result.as_deref(), Some("ghp_test_token"), "应解密返回原始 token");
+    }
+
+    // --- load_poll_settings tests ---
+
+    #[test]
+    fn test_load_poll_settings_defaults() {
+        let conn = init_memory_db().unwrap();
+        let settings = load_poll_settings(&conn).unwrap();
+        assert_eq!(settings.proxy_url, "");
+        assert_eq!(settings.proxy_mode, "none");
+        assert!(settings.github_token.is_none());
+        assert!(!settings.fetch_history);
+        assert_eq!(settings.fetch_history_count, 1);
+    }
+
+    #[test]
+    fn test_load_poll_settings_configured() {
+        let conn = init_memory_db().unwrap();
+        crate::crypto::set_test_master_key();
+
+        db::settings::set_setting(&conn, KEY_PROXY_URL, "http://127.0.0.1:1080").unwrap();
+        db::settings::set_setting(&conn, KEY_PROXY_MODE, "custom").unwrap();
+        let encrypted = crate::crypto::encrypt("ghp_configured");
+        db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted).unwrap();
+        db::settings::set_setting(&conn, KEY_FETCH_HISTORY, "true").unwrap();
+        db::settings::set_setting(&conn, KEY_FETCH_HISTORY_COUNT, "5").unwrap();
+
+        let settings = load_poll_settings(&conn).unwrap();
+        assert_eq!(settings.proxy_url, "http://127.0.0.1:1080");
+        assert_eq!(settings.proxy_mode, "custom");
+        assert_eq!(settings.github_token.as_deref(), Some("ghp_configured"));
+        assert!(settings.fetch_history);
+        assert_eq!(settings.fetch_history_count, 5);
+    }
+
+    #[test]
+    fn test_load_poll_settings_proxy_mode_fallback() {
+        // proxy_url=非空但 proxy_mode 未设置 → fallback 为 "custom"
+        let conn = init_memory_db().unwrap();
+        db::settings::set_setting(&conn, KEY_PROXY_URL, "http://proxy:8080").unwrap();
+        let settings = load_poll_settings(&conn).unwrap();
+        assert_eq!(settings.proxy_mode, "custom");
+    }
+
+    // --- mark_older_as_read tests ---
+
+    #[test]
+    fn test_mark_older_as_read_empty_saved_is_noop() {
+        let conn = init_memory_db().unwrap();
+        mark_older_as_read(&conn, 1, &[]);
+        // 不应 panic，不应改变任何状态
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert!(logs.is_empty());
+    }
+
+    #[test]
+    fn test_mark_older_as_read_skips_latest_when_no_newer() {
+        let conn = init_memory_db().unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let r1 = db::releases::insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let r2 = db::releases::insert_release(&conn, sid, "v2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, None).unwrap();
+
+        // saved 按 published_at 降序排列（最新在前）
+        let saved = vec![(r2, Some("v2.0".into())), (r1, Some("v1.0".into()))];
+        mark_older_as_read(&conn, sid, &saved);
+
+        // 最新（v2.0）应保持 pending，v1.0 应变为 clicked
+        let releases = db::releases::get_releases_with_state(&conn).unwrap();
+        let r1_state = releases.iter().find(|r| r.id == r1).unwrap();
+        let r2_state = releases.iter().find(|r| r.id == r2).unwrap();
+        assert_eq!(r2_state.notification_status, "pending", "最新 release 应保持 pending");
+        assert_eq!(r1_state.notification_status, "clicked", "旧 release 应标记为已读");
+    }
+
+    #[test]
+    fn test_mark_older_as_read_all_when_newer_exists() {
+        let conn = init_memory_db().unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        // 先在 DB 中创建一个更新的 release
+        let newer_id = db::releases::insert_release(&conn, sid, "v3.0", "R3", "https://x", "2024-01-03T00:00:00Z", false, None).unwrap();
+
+        let r1 = db::releases::insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let r2 = db::releases::insert_release(&conn, sid, "v2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, None).unwrap();
+
+        // 只传 r1, r2 进来（r3 已存在于 DB）
+        let saved = vec![(r2, Some("v2.0".into())), (r1, Some("v1.0".into()))];
+        mark_older_as_read(&conn, sid, &saved);
+
+        // r3 已有更新版本在 DB 中，所以 r1, r2 都应标记为 clicked
+        let releases = db::releases::get_releases_with_state(&conn).unwrap();
+        let newer = releases.iter().find(|r| r.id == newer_id).unwrap();
+        let r1_state = releases.iter().find(|r| r.id == r1).unwrap();
+        let r2_state = releases.iter().find(|r| r.id == r2).unwrap();
+        assert_eq!(newer.notification_status, "pending", "完全独立的更新 release 不受影响");
+        assert_eq!(r1_state.notification_status, "clicked", "有更新版本时所有 saved release 都应标记");
+        assert_eq!(r2_state.notification_status, "clicked", "有更新版本时所有 saved release 都应标记");
+    }
 }

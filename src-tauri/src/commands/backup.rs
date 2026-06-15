@@ -182,4 +182,126 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("无法读取文件"));
     }
+
+    #[test]
+    fn test_export_vacuum_into_creates_valid_sqlite_file() {
+        let dir = std::env::temp_dir();
+        let backup_path = dir.join(format!("test_export_{}.db", std::process::id()));
+
+        // 创建源内存数据库并写入数据
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
+             INSERT INTO t VALUES (1, 'hello');"
+        ).unwrap();
+
+        // VACUUM INTO —— export_backup 的核心操作
+        let escaped = backup_path.to_str().unwrap().replace('\'', "''");
+        conn.execute_batch(&format!("VACUUM INTO '{}';", escaped)).unwrap();
+
+        // 验证文件已创建且是有效的 SQLite
+        assert!(backup_path.exists(), "VACUUM INTO 应创建备份文件");
+        assert!(validate_sqlite_file(backup_path.to_str().unwrap()).is_ok(),
+                "导出的文件应为有效的 SQLite 数据库");
+
+        // 验证数据往返
+        let restored = rusqlite::Connection::open(&backup_path).unwrap();
+        let val: String = restored.query_row(
+            "SELECT val FROM t WHERE id = 1", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(val, "hello");
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    #[test]
+    fn test_import_backup_restores_data() {
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir();
+        let backup_path = dir.join(format!("test_restore_{}.db", std::process::id()));
+
+        // 创建备份文件
+        {
+            let src = rusqlite::Connection::open(&backup_path).unwrap();
+            src.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
+                 INSERT INTO t VALUES (1, 'restored-data');"
+            ).unwrap();
+        }
+
+        // 创建内存目标数据库（模拟运行中的 DB）
+        let mut dst = rusqlite::Connection::open_in_memory().unwrap();
+        dst.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);"
+        ).unwrap();
+
+        // rusqlite Backup API —— import_backup 的核心操作
+        {
+            let src_conn = rusqlite::Connection::open(&backup_path).unwrap();
+            let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst).unwrap();
+            backup.run_to_completion(100, Duration::from_millis(250), None).unwrap();
+        }
+
+        // 验证数据已恢复
+        let val: String = dst.query_row(
+            "SELECT val FROM t WHERE id = 1", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(val, "restored-data");
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    #[test]
+    fn test_import_clears_existing_data_before_restore() {
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir();
+        let backup_path = dir.join(format!("test_clear_{}.db", std::process::id()));
+
+        // 创建备份（一条记录）
+        {
+            let src = rusqlite::Connection::open(&backup_path).unwrap();
+            src.execute_batch(
+                "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
+                 INSERT INTO t VALUES (1, 'fresh');"
+            ).unwrap();
+        }
+
+        // 创建目标数据库，包含脏数据
+        let mut dst = rusqlite::Connection::open_in_memory().unwrap();
+        dst.execute_batch(
+            "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
+             INSERT INTO t VALUES (1, 'stale');
+             INSERT INTO t VALUES (2, 'extra');"
+        ).unwrap();
+
+        // 模拟 import_backup 的清空步骤
+        dst.execute_batch(
+            "DELETE FROM t;"
+        ).unwrap();
+        let remaining: i64 = dst.query_row(
+            "SELECT COUNT(*) FROM t", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(remaining, 0, "清空后不应还有数据");
+
+        // 从备份恢复
+        {
+            let src_conn = rusqlite::Connection::open(&backup_path).unwrap();
+            let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst).unwrap();
+            backup.run_to_completion(100, Duration::from_millis(250), None).unwrap();
+        }
+
+        // 验证只有备份中的记录存在
+        let count: i64 = dst.query_row(
+            "SELECT COUNT(*) FROM t", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "只应存在恢复的一条记录");
+        let val: String = dst.query_row(
+            "SELECT val FROM t", [], |row| row.get(0)
+        ).unwrap();
+        assert_eq!(val, "fresh", "脏数据应被备份数据覆盖");
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
 }
