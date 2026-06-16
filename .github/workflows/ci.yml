@@ -42,6 +42,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache: false
       - run: cargo test
         working-directory: src-tauri
 
@@ -52,5 +53,6 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
+          cache: false
       - run: cargo check
         working-directory: src-tauri
