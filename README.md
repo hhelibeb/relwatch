@@ -10,7 +10,7 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。
 | 桌面通知 | 发现新版本时弹出系统通知 |
 | AI 摘要 | 集成 DeepSeek API，自动生成版本更新摘要 |
 | 系统托盘 | 关闭窗口时最小化到托盘，后台运行 |
-| 开机自启 | Windows/Linux 开机自动启动，启动后最小化到系统托盘 |
+| 开机自启 | Windows/Linux/macOS 开机自动启动，启动后最小化到系统托盘 |
 | 代理支持 | 支持 HTTP 代理，AI 请求可独立配置 |
 | 多语言 | 中文 / English |
 | 安全存储 | GitHub Token、API Key 加密存储 |
