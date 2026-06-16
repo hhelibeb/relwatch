@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 忽略 Windows 保留设备名 `nul`，优化筛选栏响应式布局。
 - AGENTS.md 补充 Commit 工作流说明。
 
+## [1.5.1] - 2026-06-16
+
+### Added
+- macOS 通知支持（osascript），发现新版本时弹出系统通知。
+- macOS 开机自启动支持（launchd），启动时自动最小化到系统托盘。
+
+### Fixed
+- 修复 TypeScript 构建时的 setProps 类型断言错误。
+
+### Changed
+- 从 npm 迁移至 pnpm，提升依赖安装性能与磁盘效率。
+- 配置 vitest 前端测试覆盖率工具，优化 ReleaseSearchBar。
+- pre-commit 增加 TypeScript 类型检查，提前捕获构建级错误。
+- README 功能表标注 macOS 支持状态。
+
 ## [Unreleased]
 
 ## [1.4.0] - 2026-06-06
@@ -185,7 +200,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.5.1...HEAD
+[1.5.1]: https://github.com/hhelibeb/relwatch/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/hhelibeb/relwatch/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/hhelibeb/relwatch/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/hhelibeb/relwatch/compare/v1.3.4...v1.4.0
