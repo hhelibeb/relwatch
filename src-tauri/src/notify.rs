@@ -356,8 +356,10 @@ mod inner {
 mod inner {
     use tauri::AppHandle;
 
+    #[allow(dead_code)]
     pub fn uninit_com() {}
 
+    #[allow(dead_code)]
     pub fn ensure_com() {}
 
     /// 使用 osascript display notification 发送 macOS 通知。

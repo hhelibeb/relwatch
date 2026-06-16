@@ -15,12 +15,14 @@ fn get_exe_path() -> PathBuf {
 }
 
 /// 获取带有 --autostart 参数的命令行字符串
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 fn get_autostart_command() -> String {
     format_autostart_command(&get_exe_path().to_string_lossy())
 }
 
 /// 根据可执行文件路径格式化 autostart 命令行。
 /// 如果路径包含空格，自动用双引号包裹。
+#[allow(dead_code)]
 fn format_autostart_command(exe_path: &str) -> String {
     if exe_path.contains(' ') {
         format!("\"{}\" --autostart", exe_path)
