@@ -189,8 +189,10 @@ mod inner {
     use tauri::{AppHandle, Emitter, Manager};
     use tauri_plugin_opener::OpenerExt;
 
+    #[allow(dead_code)]
     pub fn uninit_com() {}
 
+    #[allow(dead_code)]
     pub fn ensure_com() {}
 
     #[allow(clippy::too_many_arguments)]
