@@ -1162,4 +1162,232 @@ mod tests {
         assert_eq!(r1_state.notification_status, "clicked", "有更新版本时所有 saved release 都应标记");
         assert_eq!(r2_state.notification_status, "clicked", "有更新版本时所有 saved release 都应标记");
     }
+
+    // ── save_for_source 分发测试 ──────────────────────────
+
+    fn gh_release(tag: &str, date: &str, body: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "name": tag,
+            "html_url": format!("https://github.com/o/r/releases/tag/{}", tag),
+            "published_at": date,
+            "prerelease": false,
+            "body": body,
+        })
+    }
+
+    #[test]
+    fn test_save_for_source_dispatches_github_and_respects_max_count() {
+        let conn = init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+
+        let data = vec![
+            gh_release("v3.0", "2024-03-01T00:00:00Z", Some("v3")),
+            gh_release("v2.0", "2024-02-01T00:00:00Z", Some("v2")),
+            gh_release("v1.0", "2024-01-01T00:00:00Z", Some("v1")),
+        ];
+
+        // max_count=2 应只保存最新两条
+        let saved = save_for_source(&conn, &db::sources::Source {
+            id: sid,
+            source_type: "github".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            poll_interval_minutes: 30,
+            enabled: true,
+            last_checked_at: None,
+            last_check_status: "unknown".into(),
+            last_check_message: None,
+            consecutive_failures: 0,
+            last_new_count: 0,
+            muted: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            description: None,
+        }, &data, 2);
+
+        assert_eq!(saved.len(), 2, "max_count=2 应只保存 2 条");
+        assert_eq!(saved[0].1.as_deref(), Some("v3"));
+        assert_eq!(saved[1].1.as_deref(), Some("v2"));
+    }
+
+    #[test]
+    fn test_save_for_source_unsupported_type_is_noop() {
+        let conn = init_memory_db().unwrap();
+        let sid = db::sources::add_source(&conn, "gitlab", "o", "r", "").unwrap();
+        let data = vec![gh_release("v1", "2024-01-01T00:00:00Z", Some("b"))];
+
+        // 不支持的 source_type：save_for_source 返回空且不 panic
+        let saved = save_for_source(&conn, &db::sources::Source {
+            id: sid,
+            source_type: "gitlab".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            poll_interval_minutes: 30,
+            enabled: true,
+            last_checked_at: None,
+            last_check_status: "unknown".into(),
+            last_check_message: None,
+            consecutive_failures: 0,
+            last_new_count: 0,
+            muted: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            description: None,
+        }, &data, 10);
+
+        assert!(saved.is_empty(), "不支持的源类型应返回空");
+    }
+
+    // ── fetch_for_source_async 分发测试 ──────────────────
+
+    #[tokio::test]
+    async fn test_fetch_for_source_async_unsupported_type_errors() {
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let source = db::sources::Source {
+            id: 1,
+            source_type: "gitlab".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            poll_interval_minutes: 30,
+            enabled: true,
+            last_checked_at: None,
+            last_check_status: "unknown".into(),
+            last_check_message: None,
+            consecutive_failures: 0,
+            last_new_count: 0,
+            muted: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+            description: None,
+        };
+
+        // 不支持的源类型应通过 source_type 分发返回 err.unsupported_source 错误
+        // （github 分支的 HTTP 行为由 github.rs 自身的 wiremock 测试覆盖）
+        let r = fetch_for_source_async(&client, &source, 10).await;
+        assert!(r.is_err(), "不支持的源类型应返回错误");
+        let (status, msg) = r.unwrap_err();
+        assert_eq!(status, 0);
+        assert!(msg.contains("err.unsupported_source"), "错误信息: {}", msg);
+    }
+
+    // ── 编排链路集成测试：fetch→save→mark_read→record ──────
+    //
+    // 这是 poll_all_sources_async / check_single_source 内联的核心链路。
+    // 在重构抽取公共逻辑前，先把这条链路用真实的 github fetch + db 层串起来锁住行为。
+    // 重构后这些测试应保持不变地通过，从而验证行为等价性。
+
+    fn make_source(conn: &rusqlite::Connection, owner: &str, repo: &str) -> db::sources::Source {
+        let id = db::sources::add_source(conn, "github", owner, repo, "").unwrap();
+        db::sources::get_source(conn, id).unwrap().unwrap()
+    }
+
+    /// 模拟 poll.rs 编排主链路：
+    /// 1. 从远程拉取（这里用构造的 JSON 代替 HTTP，聚焦 save→mark→record 这段）
+    /// 2. save_for_source 入库
+    /// 3. mark_older_as_read 标记非最新
+    /// 4. record_check_success 更新源健康状态
+    fn simulate_fetch_save_mark_record(
+        conn: &rusqlite::Connection,
+        source: &db::sources::Source,
+        fetched: &[serde_json::Value],
+        max_count: usize,
+    ) -> Vec<(i64, Option<String>)> {
+        let saved = save_for_source(conn, source, fetched, max_count);
+        if !saved.is_empty() {
+            mark_older_as_read(conn, source.id, &saved);
+        }
+        let new_count = saved.len();
+        let _ = db::sources::record_check_success(conn, source.id, new_count);
+        saved
+    }
+
+    #[test]
+    fn test_pipeline_single_new_release_stays_pending() {
+        let conn = init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let source = make_source(&conn, "o", "r");
+
+        let fetched = vec![gh_release("v1.0", "2024-01-01T00:00:00Z", Some("body"))];
+        let saved = simulate_fetch_save_mark_record(&conn, &source, &fetched, 1);
+
+        // 唯一的新版本应保持 pending，可被通知
+        assert_eq!(saved.len(), 1);
+        let releases = db::releases::get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases[0].notification_status, "pending");
+
+        // 源健康状态更新为 ok，new_count=1
+        let s = db::sources::get_source(&conn, source.id).unwrap().unwrap();
+        assert_eq!(s.last_check_status, "ok");
+        assert_eq!(s.last_new_count, 1);
+        assert_eq!(s.consecutive_failures, 0);
+    }
+
+    #[test]
+    fn test_pipeline_multiple_new_only_latest_stays_pending() {
+        let conn = init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let source = make_source(&conn, "o", "r");
+
+        // 首次拉取 3 个新版本（历史模式 max_count=3）
+        let fetched = vec![
+            gh_release("v3.0", "2024-03-01T00:00:00Z", Some("v3")),
+            gh_release("v2.0", "2024-02-01T00:00:00Z", Some("v2")),
+            gh_release("v1.0", "2024-01-01T00:00:00Z", Some("v1")),
+        ];
+        let saved = simulate_fetch_save_mark_record(&conn, &source, &fetched, 3);
+        assert_eq!(saved.len(), 3);
+
+        // 只有最新 v3.0 保持 pending，v2/v1 被标记为 clicked
+        let releases = db::releases::get_releases_with_state(&conn).unwrap();
+        let status_of = |tag: &str| -> String {
+            releases.iter().find(|r| r.tag_name == tag).unwrap().notification_status.clone()
+        };
+        assert_eq!(status_of("v3.0"), "pending");
+        assert_eq!(status_of("v2.0"), "clicked");
+        assert_eq!(status_of("v1.0"), "clicked");
+    }
+
+    #[test]
+    fn test_pipeline_subsequent_poll_with_no_new_release() {
+        let conn = init_memory_db().unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+        let source = make_source(&conn, "o", "r");
+
+        // 第一轮：拉到 v1.0
+        let fetched1 = vec![gh_release("v1.0", "2024-01-01T00:00:00Z", Some("v1"))];
+        simulate_fetch_save_mark_record(&conn, &source, &fetched1, 1);
+
+        // 第二轮：同样的数据，save 返回空（已入库），但源健康状态仍应更新
+        let saved2 = simulate_fetch_save_mark_record(&conn, &source, &fetched1, 1);
+        assert!(saved2.is_empty(), "重复数据不应再次保存");
+
+        let s = db::sources::get_source(&conn, source.id).unwrap().unwrap();
+        assert_eq!(s.last_check_status, "ok");
+        assert_eq!(s.last_new_count, 0, "无新版本时 last_new_count 应为 0");
+
+        // release 数量不变，状态不变
+        let releases = db::releases::get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].notification_status, "pending");
+    }
+
+    #[test]
+    fn test_pipeline_failure_records_error_without_saving() {
+        let conn = init_memory_db().unwrap();
+        let source = make_source(&conn, "o", "r");
+
+        // 模拟 check 失败：不 save，直接 record_check_failure（与 poll.rs 失败分支一致）
+        let _ = db::sources::record_check_failure(&conn, source.id, "err.api_error|503|Service Unavailable");
+
+        let s = db::sources::get_source(&conn, source.id).unwrap().unwrap();
+        assert_eq!(s.last_check_status, "error");
+        assert_eq!(s.consecutive_failures, 1);
+        assert_eq!(s.last_new_count, 0);
+        assert!(s.last_check_message.as_deref().unwrap().contains("503"));
+
+        // 无 release 被保存
+        assert!(db::releases::get_releases_with_state(&conn).unwrap().is_empty());
+    }
 }

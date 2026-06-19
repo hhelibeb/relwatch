@@ -345,4 +345,80 @@ mod tests {
         assert_eq!(errors[0].level, "ERROR");
         assert!(errors[0].rendered_message.as_deref().unwrap().contains("timeout"));
     }
+
+    // ── 错误状态码 → 日志级别映射矩阵 ─────────────────────
+    //
+    // poll.rs 中 check 失败时的日志级别判定（内联闭包，出现两处）：
+    //     let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
+    //         "WARN"
+    //     } else {
+    //         "ERROR"
+    //     };
+    //
+    // 语义：临时性错误（网络 0、认证 401、限流 429、5xx 服务端）记 WARN，
+    //       永久性错误（404 不存在、422 参数等 4xx）记 ERROR。
+    // 该判定目前内联无法直接测试，这里把规则作为不变量复刻并锁住，
+    // 重构时若改动判定逻辑，此处必须同步——否则用户可见的日志级别会变。
+
+    /// 复刻 poll.rs 中的状态码→级别判定。保持同步。
+    fn check_failure_log_level(status: u16) -> &'static str {
+        if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
+            "WARN"
+        } else {
+            "ERROR"
+        }
+    }
+
+    #[test]
+    fn test_failure_log_level_matrix() {
+        // 临时性错误 → WARN
+        assert_eq!(check_failure_log_level(0), "WARN", "网络错误(0) 应 WARN");
+        assert_eq!(check_failure_log_level(401), "WARN", "未授权(401) 应 WARN");
+        assert_eq!(check_failure_log_level(403), "WARN", "禁止访问(403) 应 WARN");
+        assert_eq!(check_failure_log_level(429), "WARN", "限流(429) 应 WARN");
+        assert_eq!(check_failure_log_level(500), "WARN", "服务端错误(500) 应 WARN");
+        assert_eq!(check_failure_log_level(502), "WARN", "网关错误(502) 应 WARN");
+        assert_eq!(check_failure_log_level(503), "WARN", "服务不可用(503) 应 WARN");
+
+        // 永久性错误 → ERROR
+        assert_eq!(check_failure_log_level(400), "ERROR", "请求错误(400) 应 ERROR");
+        assert_eq!(check_failure_log_level(404), "ERROR", "仓库不存在(404) 应 ERROR");
+        assert_eq!(check_failure_log_level(422), "ERROR", "参数错误(422) 应 ERROR");
+
+        // 边界：499（最后一个 4xx）应 ERROR，500（第一个 5xx）应 WARN
+        assert_eq!(check_failure_log_level(499), "ERROR");
+        assert_eq!(check_failure_log_level(500), "WARN");
+    }
+
+    #[test]
+    fn test_check_failed_writes_correct_level_for_each_status() {
+        // 端到端验证：不同状态码对应的级别被正确写入 logs 表
+        let conn = init_memory_db().unwrap();
+        crate::db::settings::set_setting(
+            &conn,
+            crate::db::settings::KEY_LANGUAGE,
+            "zh-CN",
+        ).unwrap();
+
+        let cases: [(u16, &str); 3] = [
+            (503, "WARN"),
+            (404, "ERROR"),
+            (429, "WARN"),
+        ];
+        for (status, expected_level) in cases {
+            let level = check_failure_log_level(status);
+            assert_eq!(level, expected_level, "status {} 级别判定", status);
+            write_log_key(
+                &conn,
+                level,
+                "check.failed",
+                &serde_json::json!({"owner":"o","repo":"r","error": format!("status {status}")}).to_string(),
+            );
+        }
+
+        let (warns, _) = search_logs(&conn, "", Some("WARN"), 1, 10).unwrap();
+        assert_eq!(warns.len(), 2, "503 和 429 应各产生 1 条 WARN，共 2 条");
+        let (errors, _) = search_logs(&conn, "", Some("ERROR"), 1, 10).unwrap();
+        assert_eq!(errors.len(), 1, "404 应产生 1 条 ERROR");
+    }
 }

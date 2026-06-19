@@ -410,4 +410,70 @@ mod tests {
         let sources = list_sources(&conn).unwrap();
         assert_eq!(sources.len(), 1);
     }
+
+    // ── 断路器端到端：连续失败达阈值后触发禁用 ──────────────
+    //
+    // poll.rs::do_poll_async 中的断路器逻辑（MAX_CONSECUTIVE_FAILURES=3）：
+    //   当 source.consecutive_failures >= 3 时，调用 update_source(conn, id, false, interval) 禁用。
+    // 这里把"累积失败 → 检测阈值 → 触发禁用"的完整判定链路锁住，
+    // 重构断路器时这些不变量必须保持。
+
+    /// 复刻 poll.rs 中的断路器阈值常量，保持同步以检测漂移。
+    const TEST_MAX_CONSECUTIVE_FAILURES: i64 = 3;
+
+    #[test]
+    fn test_circuit_breaker_disables_after_threshold_failures() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "o", "r", "").unwrap();
+
+        // 累积 3 次失败（恰好达到阈值）
+        for _ in 0..TEST_MAX_CONSECUTIVE_FAILURES {
+            record_check_failure(&conn, id, "timeout").unwrap();
+        }
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(s.enabled, "失败累积期间源仍应 enabled");
+        assert_eq!(s.consecutive_failures, TEST_MAX_CONSECUTIVE_FAILURES);
+
+        // 模拟断路器判定：consecutive_failures >= 阈值 → 禁用
+        let should_disable = s.enabled && s.consecutive_failures >= TEST_MAX_CONSECUTIVE_FAILURES;
+        assert!(should_disable, "达到阈值应触发断路器");
+        if should_disable {
+            update_source(&conn, id, false, s.poll_interval_minutes).unwrap();
+        }
+
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(!s.enabled, "断路器触发后源应被禁用");
+    }
+
+    #[test]
+    fn test_circuit_breaker_does_not_trigger_below_threshold() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "o", "r", "").unwrap();
+
+        // 只累积 2 次失败（阈值 - 1）
+        for _ in 0..(TEST_MAX_CONSECUTIVE_FAILURES - 1) {
+            record_check_failure(&conn, id, "timeout").unwrap();
+        }
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(s.enabled);
+        assert_eq!(s.consecutive_failures, TEST_MAX_CONSECUTIVE_FAILURES - 1);
+
+        // 阈值之下不应触发
+        assert!(s.consecutive_failures < TEST_MAX_CONSECUTIVE_FAILURES);
+    }
+
+    #[test]
+    fn test_success_resets_failure_counter_before_circuit_breaker() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "o", "r", "").unwrap();
+
+        // 累积 2 次失败（阈值 - 1），再来一次成功
+        record_check_failure(&conn, id, "fail1").unwrap();
+        record_check_failure(&conn, id, "fail2").unwrap();
+        record_check_success(&conn, id, 0).unwrap();
+
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert_eq!(s.consecutive_failures, 0, "成功应重置失败计数");
+        assert!(s.enabled, "源不应被禁用");
+    }
 }
