@@ -42,16 +42,20 @@ git log --pretty=%s -n 20 2>/dev/null || true
 2. **Run pre-commit checks:**
    执行 `git commit` **之前**，必须依次运行以下检查并确保全部通过，否则不允许提交：
 
-   1. **TypeScript 编译检查**: `npx vue-tsc --noEmit` — 零错误
-   2. **tsc 编译检查**（构建级 stricter 检查）: `npx tsc --noEmit` — 零错误
+   本项目使用 **pnpm** 作为包管理器（见全局 AGENTS.md）。所有前端脚本用 `pnpm exec` / `pnpm run`，不要用 `npx` / `npm run`。
+
+   1. **TypeScript 编译检查（含 Vue SFC）**: `pnpm exec vue-tsc --noEmit` — 零错误
+   2. **tsc 编译检查**（构建级 stricter 检查）: `pnpm exec tsc --noEmit` — 零错误
       > `vue-tsc` 对 Vue SFC 类型推断较宽松，`tsc` 能捕获 setProps 等额外的类型错误。
-   3. **前端测试**: `npx vitest run` — 全部通过
-   4. **前端 Lint**: `npm run lint` — 无 error
+   3. **前端测试**: `pnpm exec vitest run` — 全部通过
+   4. **前端 Lint**: `pnpm run lint` — 无 error
    5. **Rust 编译**: `cargo build`（或 `cargo check`）— 成功
    6. **Rust 测试**: `cargo test` — 全部通过
    7. **Rust Clippy**: `cargo clippy -- -D warnings` — 无 error
 
    > 如果某一步失败，必须先修复再提交。不得以「后续修复」为由跳过检查。
+   >
+   > **pnpm install 网络问题排查**：若 `pnpm add` / `pnpm install` 卡在 `GET ... error (unknown)` 反复重试，原因是 pnpm 走 socks5 代理对 registry.npmjs.org 的高并发 metadata 查询不可靠（attestations + minimumReleaseAge 策略验证批量失败）。解法：用国内镜像直连，例如 `pnpm add -D <pkg> --registry=https://registry.npmmirror.com/ --config.proxy= --config.https-proxy=`，既快又让供应链策略正常生效，无需跳过 minimumReleaseAge。
 
    若任一检查失败，**立即停止**，向用户报告具体失败的步骤和错误信息，不要继续规划 commit。
 
