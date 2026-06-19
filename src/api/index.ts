@@ -28,4 +28,4 @@ export {
   exportBackup,
   importBackup,
 } from './settings'
-export { type LogEntry, getLogs, clearLogs } from './logs'
+export { type LogEntry, clearLogs } from './logs'

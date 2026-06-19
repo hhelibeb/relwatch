@@ -185,10 +185,10 @@ describe('invokeI18n 错误处理', () => {
 
   it('invoke 带参数调用', async () => {
     const { invoke } = await import('@tauri-apps/api/core')
-    ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(invoke as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
 
-    const { getLogs } = await import('../api/logs')
-    await getLogs(50)
-    expect(invoke).toHaveBeenCalledWith('get_logs', { limit: 50 })
+    const { removeSource } = await import('../api/sources')
+    await removeSource(42)
+    expect(invoke).toHaveBeenCalledWith('remove_source', { id: 42 })
   })
 })

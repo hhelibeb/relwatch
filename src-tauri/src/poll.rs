@@ -408,13 +408,6 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     })
 }
 
-#[allow(dead_code)]
-pub fn do_poll(app: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
-        do_poll_async(app).await;
-    });
-}
-
 pub fn trigger_poll_async(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let _ = trigger_poll(app).await;

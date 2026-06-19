@@ -13,14 +13,6 @@ pub fn get_releases(
 }
 
 #[tauri::command]
-pub fn get_pending_releases(
-    state: tauri::State<AppState>,
-) -> Result<Vec<db::releases::ReleaseInfo>, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-    db::releases::get_pending_releases(&conn)
-}
-
-#[tauri::command]
 pub fn set_notification_state(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,

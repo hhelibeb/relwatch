@@ -131,21 +131,6 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub fn init_db() -> Result<Connection> {
-    let dir = app_data_dir();
-    std::fs::create_dir_all(&dir).expect("Failed to create app data dir");
-
-    let conn = Connection::open(db_path())?;
-    conn.execute_batch(
-        "PRAGMA journal_mode=WAL;
-         PRAGMA wal_autocheckpoint=1000;
-         PRAGMA foreign_keys=ON;",
-    )?;
-    apply_schema(&conn)?;
-    migrate(&conn)?;
-    Ok(conn)
-}
-
 fn migrate(conn: &Connection) -> Result<()> {
     let has_summary: bool = conn
         .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='ai_summary'")

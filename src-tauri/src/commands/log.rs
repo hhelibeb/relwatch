@@ -2,12 +2,6 @@ use crate::db;
 use crate::types::{AppState, LogSearchResult};
 
 #[tauri::command]
-pub fn get_logs(state: tauri::State<AppState>, limit: i64) -> Result<Vec<db::logs::LogEntry>, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-    db::logs::get_logs(&conn, limit)
-}
-
-#[tauri::command]
 pub fn search_logs(
     state: tauri::State<AppState>,
     keyword: String,
