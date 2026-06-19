@@ -782,7 +782,7 @@ mod tests {
         assert_eq!(r1[0].1.as_deref(), Some("v1.15.10 body"));
         // v1.15.10 是全局最新 → 保持 pending（通知）
         // 模拟 poll_all_sources_async 的标记逻辑
-        assert!(db::releases::has_newer_release(&conn, sid, "2024-06-05T00:00:00Z").unwrap_or(true) == false,
+        assert!(!db::releases::has_newer_release(&conn, sid, "2024-06-05T00:00:00Z").unwrap_or(true),
             "v1.15.10 应是全局最新");
 
         // ── 第二轮：检测到 v1.15.9、v1.15.7（比 v1.15.10 旧）──

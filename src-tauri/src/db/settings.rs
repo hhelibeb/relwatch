@@ -279,22 +279,13 @@ mod tests {
     fn test_deepseek_proxy_bypass_defaults() {
         let conn = init_memory_db().unwrap();
         // 默认值应为 false
-        assert_eq!(
-            get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap(),
-            false
-        );
+        assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
         // 写入 true
         set_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS, "true").unwrap();
-        assert_eq!(
-            get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap(),
-            true
-        );
+        assert!(get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
         // 写回 false
         set_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS, "false").unwrap();
-        assert_eq!(
-            get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap(),
-            false
-        );
+        assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
     }
 
     #[test]
