@@ -15,6 +15,8 @@ export default {
   'app.new_found': '发现 {0} 个新版本',
   'app.no_sources': '没有监控源',
   'app.source_auto_disabled': '监控源 {0}/{1} 因连续 {2} 次失败已被自动禁用',
+  'app.load_failed': '数据加载失败: {0}',
+  'app.check_failed': '检查失败: {0}',
   'input.clear': '清空',
 
   'source.placeholder': 'GitHub 仓库 URL 或 owner/repo',
@@ -120,6 +122,7 @@ export default {
   'settings.importance_high_only': '仅大',
   'settings.test_connection': '测试连接',
   'settings.testing': '测试中...',
+  'settings.deepseek_test_title': 'DeepSeek 连接测试',
   'settings.save': '保存设置',
   'settings.saving': '保存中...',
   'settings.saved': '设置已保存',

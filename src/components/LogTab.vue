@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { type LogEntry, searchLogs, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
@@ -92,6 +92,9 @@ function focusFirstDropdownOption() {
   })
 }
 
+// 自增标记：用于丢弃并发场景下陈旧响应，避免旧请求结果覆盖新数据
+let loadId = 0
+
 const totalPages = computed(() => Math.max(1, Math.ceil(totalLogs.value / pageSize)))
 
 const pageInputStyle = computed(() => ({
@@ -99,14 +102,24 @@ const pageInputStyle = computed(() => ({
 }))
 
 async function loadData() {
+  const id = ++loadId
   loading.value = true
   try {
     const result = await searchLogs(searchKeyword.value, currentPage.value, pageSize, levelFilter.value === 'all' ? undefined : levelFilter.value)
+    // 并发场景下若已有更新的调用发起，丢弃本次陈旧响应
+    if (id !== loadId) return
     logs.value = result.entries
     totalLogs.value = result.total
     pageInput.value = String(currentPage.value)
+  } catch {
+    // 查询失败时清空列表（仅最新调用负责），交给空状态 UI 呈现，避免未捕获 rejection
+    if (id === loadId) {
+      logs.value = []
+      totalLogs.value = 0
+    }
   } finally {
-    loading.value = false
+    // 仅最新调用负责复位 loading，避免被陈旧响应提前清除
+    if (id === loadId) loading.value = false
   }
 }
 
@@ -182,6 +195,18 @@ watch(() => props.refreshKey, () => {
 
 onMounted(() => {
   loadData()
+})
+
+onUnmounted(() => {
+  // 清理未触发的定时器，避免卸载后回调修改已销毁组件的 ref
+  if (debounceTimer.value) {
+    clearTimeout(debounceTimer.value)
+    debounceTimer.value = null
+  }
+  if (hoverFilterTimer) {
+    clearTimeout(hoverFilterTimer)
+    hoverFilterTimer = null
+  }
 })
 </script>
 

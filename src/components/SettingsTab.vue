@@ -57,6 +57,9 @@ function handleOutsideClick(e: MouseEvent) {
 watch(themeDropdownOpen, (isOpen) => {
   if (isOpen) {
     nextTick(() => {
+      // 守卫：若下拉在 nextTick 执行前已被快速关闭（如同一微任务内再次 toggle），
+      // 不应再向 document 注册 outsideClick 监听器，避免监听器泄漏
+      if (!themeDropdownOpen.value) return
       outsideClickHandler = handleOutsideClick
       document.addEventListener('click', outsideClickHandler)
     })
@@ -109,6 +112,8 @@ function handleLangOutsideClick(e: MouseEvent) {
 watch(langDropdownOpen, (isOpen) => {
   if (isOpen) {
     nextTick(() => {
+      // 守卫：同 themeDropdownOpen，防止 nextTick 前已关闭导致监听器泄漏
+      if (!langDropdownOpen.value) return
       langOutsideClickHandler = handleLangOutsideClick
       document.addEventListener('click', langOutsideClickHandler)
     })
@@ -335,17 +340,8 @@ async function handleSave() {
       savingSettings.value = false
       return
     }
-    // 先设置敏感凭据，最后持久化全部设置到 DB
-    if (deepseekApiKey.value) {
-      await setDeepseekApiKey(deepseekApiKey.value)
-      deepseekApiKey.value = ''
-      form.deepseek_api_key_set = true
-    }
-    if (githubToken.value) {
-      await setGithubToken(githubToken.value)
-      githubToken.value = ''
-      form.github_token_set = true
-    }
+    // 先验证提示词、持久化主设置，再写敏感凭据：保证 updateSettings 失败时凭据不会被误写入，
+    // 避免“凭据已持久化但用户以为整体保存失败”的非原子状态。
     setLocale(form.language)
     await updateSettings({
       pollIntervalMinutes: s.poll_interval_minutes,
@@ -367,6 +363,18 @@ async function handleSave() {
       language: s.language,
       theme: s.theme,
     })
+    // 主设置持久化成功后再写凭据；若凭据写入失败，走外层 catch 提示 save_failed，
+    // 此时主设置已存、凭据未存，用户可重试凭据。
+    if (deepseekApiKey.value) {
+      await setDeepseekApiKey(deepseekApiKey.value)
+      deepseekApiKey.value = ''
+      form.deepseek_api_key_set = true
+    }
+    if (githubToken.value) {
+      await setGithubToken(githubToken.value)
+      githubToken.value = ''
+      form.github_token_set = true
+    }
     showToast(t('settings.saved'))
     const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
@@ -426,9 +434,9 @@ async function handleTestDeepseek() {
   testingDeepseek.value = true
   try {
     const msg = await testDeepseekConnection()
-    await message(msg, { title: 'DeepSeek Connection Test', kind: 'info' })
+    await message(msg, { title: t('settings.deepseek_test_title'), kind: 'info' })
   } catch (e: unknown) {
-    await message(t('settings.connect_failed') + (e instanceof Error ? e.message : String(e)), { title: 'DeepSeek Connection Test', kind: 'error' })
+    await message(t('settings.connect_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.deepseek_test_title'), kind: 'error' })
   } finally {
     testingDeepseek.value = false
   }

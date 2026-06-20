@@ -291,6 +291,37 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
   })
 })
 
+describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
+  it('成功对话框标题使用 i18n key 而非硬编码英文', async () => {
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    await testBtn!.trigger('click')
+    await flushPromises()
+
+    expect(messageMock).toHaveBeenCalledWith(
+      'Connection OK',
+      expect.objectContaining({ title: 'settings.deepseek_test_title' }),
+    )
+  })
+
+  it('失败对话框标题同样使用 i18n key', async () => {
+    testDeepseekConnectionMock.mockRejectedValueOnce(new Error('boom'))
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    await testBtn!.trigger('click')
+    await flushPromises()
+
+    expect(messageMock).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ title: 'settings.deepseek_test_title' }),
+    )
+  })
+})
+
 describe('SettingsTab — 备份导出', () => {
   it('导出成功，显示成功 toast 并 emit update', async () => {
     const showToast = vi.fn()
@@ -830,6 +861,60 @@ describe('SettingsTab — 组件卸载清理', () => {
     wrapper.unmount()
 
     expect(removeSpy).toHaveBeenCalled()
+    removeSpy.mockRestore()
+  })
+})
+
+describe('SettingsTab — 下拉快速 toggle 监听器泄漏（P1 #11）', () => {
+  // #11 守卫针对“watch isOpen=true 已排 nextTick、回调执行前下拉被关闭”的快闪场景。
+  // 该场景的最终不泄漏目标等价于：打开→关闭后 document 上的 outsideClick 监听器被成对移除。
+  it('主题下拉打开后关闭，outsideClick 监听器被成对移除（不残留）', async () => {
+    const wrapper = mountSettings(createSettings({ theme: 'light' }))
+    await clickSidebar(wrapper, 'settings.appearance')
+
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+    const themeSelect = wrapper.findAll('.theme-select')[1]
+    const trigger = themeSelect.get('.theme-select-trigger')
+
+    // 打开：注册 outsideClick
+    await trigger.trigger('click')
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    const addedClicks = addSpy.mock.calls.filter(c => c[0] === 'click').length
+    expect(addedClicks).toBe(1)
+
+    // 关闭：移除 outsideClick
+    await trigger.trigger('click')
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    const removedClicks = removeSpy.mock.calls.filter(c => c[0] === 'click').length
+
+    expect(removedClicks).toBe(1) // 成对移除，不残留
+    addSpy.mockRestore()
+    removeSpy.mockRestore()
+  })
+
+  it('语言下拉打开后关闭，outsideClick 监听器被成对移除（不残留）', async () => {
+    const wrapper = mountSettings(createSettings({ language: 'zh-CN' }))
+    await clickSidebar(wrapper, 'settings.appearance')
+
+    const addSpy = vi.spyOn(document, 'addEventListener')
+    const removeSpy = vi.spyOn(document, 'removeEventListener')
+    const langSelect = wrapper.findAll('.theme-select')[0]
+    const trigger = langSelect.get('.theme-select-trigger')
+
+    await trigger.trigger('click')
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    expect(addSpy.mock.calls.filter(c => c[0] === 'click').length).toBe(1)
+
+    await trigger.trigger('click')
+    await vi.runAllTimersAsync()
+    await flushPromises()
+    expect(removeSpy.mock.calls.filter(c => c[0] === 'click').length).toBe(1)
+
+    addSpy.mockRestore()
     removeSpy.mockRestore()
   })
 })

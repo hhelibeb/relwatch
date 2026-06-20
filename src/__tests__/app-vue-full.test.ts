@@ -30,6 +30,8 @@ vi.mock('../i18n', () => ({
     if (key === 'app.new_found') return `发现 ${args[0]} 个新版本`
     if (key === 'app.already_latest') return '已是最新'
     if (key === 'app.no_sources') return '没有启用的源'
+    if (key === 'app.load_failed') return `加载失败:${args.join(',')}`
+    if (key === 'app.check_failed') return `检查失败:${args.join(',')}`
     return key
   }),
   setLocale: vi.fn(),
@@ -436,6 +438,94 @@ describe('App.vue — 卸载清理', () => {
     wrapper.unmount()
 
     expect(unregisterCloser).toHaveBeenCalled()
+  })
+
+  it('卸载时清理 countdown 定时器（fake timers）', async () => {
+    vi.useFakeTimers()
+    const clearIntervalSpy = vi.spyOn(globalThis, 'clearInterval')
+    const wrapper = await mountApp()
+
+    wrapper.unmount()
+
+    // onMounted 的 startCountdown 会 setInterval，卸载时应 clearInterval
+    expect(clearIntervalSpy).toHaveBeenCalled()
+    vi.useRealTimers()
+    clearIntervalSpy.mockRestore()
+  })
+
+  it('卸载时清理 toast 定时器', async () => {
+    vi.useFakeTimers()
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout')
+    const wrapper = await mountApp()
+
+    // 触发一个 toast，创建 setTimeout
+    ;(wrapper.vm as any).showToast('msg')
+    wrapper.unmount()
+
+    // toast setTimeout 应在卸载时被清理
+    expect(clearTimeoutSpy).toHaveBeenCalled()
+    vi.useRealTimers()
+    clearTimeoutSpy.mockRestore()
+  })
+
+  it('卸载时清理 systemThemeMedia.onchange', async () => {
+    const onchangeSpy = vi.fn()
+    window.matchMedia = vi.fn().mockReturnValue({ matches: false, onchange: onchangeSpy })
+    const wrapper = await mountApp()
+
+    wrapper.unmount()
+
+    // watchSystemTheme 赋了 onchange，卸载时应置 null
+    expect((window.matchMedia as any)()).toHaveProperty('onchange', null)
+  })
+})
+
+describe('App.vue — 异步错误处理（P1 #4）', () => {
+  it('loadSources 失败时显示 toast 且不产生未捕获 rejection', async () => {
+    vi.mocked(listSources).mockRejectedValue(new Error('db locked'))
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect((wrapper.vm as any).toastVisible).toBe(true)
+    expect((wrapper.vm as any).toastMessage).toContain('加载失败')
+    expect((wrapper.vm as any).toastMessage).toContain('db locked')
+  })
+
+  it('loadReleases 失败时显示 toast', async () => {
+    vi.mocked(getReleases).mockRejectedValue(new Error('network'))
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect((wrapper.vm as any).toastVisible).toBe(true)
+    expect((wrapper.vm as any).toastMessage).toContain('加载失败')
+    expect((wrapper.vm as any).toastMessage).toContain('network')
+  })
+
+  it('loadSettings 失败时显示 toast', async () => {
+    vi.mocked(getSettings).mockRejectedValue(new Error('settings io'))
+    const wrapper = await mountApp()
+    await flushPromises()
+
+    expect((wrapper.vm as any).toastVisible).toBe(true)
+    expect((wrapper.vm as any).toastMessage).toContain('加载失败')
+    expect((wrapper.vm as any).toastMessage).toContain('settings io')
+  })
+
+  it('handlePoll 失败时显示检查失败 toast 且 polling 复位', async () => {
+    vi.mocked(triggerPoll).mockRejectedValue(new Error('poll err'))
+    vi.mocked(listSources).mockResolvedValue([
+      { id: 1, owner: 'a', repo: 'b', enabled: true } as never,
+    ])
+    const wrapper = await mountApp()
+    await (wrapper.vm as any).loadSources()
+    await flushPromises()
+
+    await (wrapper.vm as any).handlePoll()
+
+    expect((wrapper.vm as any).toastVisible).toBe(true)
+    expect((wrapper.vm as any).toastMessage).toContain('检查失败')
+    expect((wrapper.vm as any).toastMessage).toContain('poll err')
+    expect((wrapper.vm as any).polling).toBe(false)
   })
 })
 

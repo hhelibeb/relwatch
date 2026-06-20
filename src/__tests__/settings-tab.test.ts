@@ -206,3 +206,42 @@ describe('SettingsTab — 表单保护性行为', () => {
     expect(wrapper.emitted('update')?.[0]).toEqual([false, true])
   })
 })
+
+describe('SettingsTab — 保存原子性（P0 #2）', () => {
+  it('updateSettings 失败时不写入凭据，凭据输入与未设置标记保持不变', async () => {
+    const wrapper = mountSettings(createSettings({ deepseek_api_key_set: false, github_token_set: false }))
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const apiKeyInput = wrapper.find('input[type="password"]')
+    await apiKeyInput.setValue('sk-new-key')
+
+    updateSettingsMock.mockRejectedValueOnce(new Error('db locked'))
+
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(updateSettingsMock).toHaveBeenCalledOnce()
+    // 凭据在 updateSettings 之后才写入；updateSettings 失败 → 凭据不应被调用
+    expect(setDeepseekApiKeyMock).not.toHaveBeenCalled()
+    expect(setGithubTokenMock).not.toHaveBeenCalled()
+    // 输入未清空、标记未被误置为 true（避免“凭据已存但 UI 以为未存”的反向不一致）
+    expect((apiKeyInput.element as HTMLInputElement).value).toBe('sk-new-key')
+    expect((wrapper.vm as any).form.deepseek_api_key_set).toBe(false)
+  })
+
+  it('updateSettings 成功后才写入凭据（调用顺序：先主设置后凭据）', async () => {
+    const wrapper = mountSettings(createSettings({ deepseek_api_key_set: false }))
+    await clickSidebar(wrapper, 'settings.ai')
+
+    await wrapper.find('input[type="password"]').setValue('sk-new-key')
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(updateSettingsMock).toHaveBeenCalledOnce()
+    expect(setDeepseekApiKeyMock).toHaveBeenCalledWith('sk-new-key')
+    // 严格校验调用顺序：updateSettings 必须早于 setDeepseekApiKey
+    const settingsOrder = vi.mocked(updateSettings).mock.invocationCallOrder[0]
+    const credOrder = vi.mocked(setDeepseekApiKey).mock.invocationCallOrder[0]
+    expect(settingsOrder).toBeLessThan(credOrder)
+  })
+})

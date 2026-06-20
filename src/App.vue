@@ -164,15 +164,27 @@ async function loadAll() {
 }
 
 async function loadSources() {
-  sources.value = await listSources()
+  try {
+    sources.value = await listSources()
+  } catch (e: unknown) {
+    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+  }
 }
 async function loadReleases() {
-  releases.value = await getReleases()
+  try {
+    releases.value = await getReleases()
+  } catch (e: unknown) {
+    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+  }
 }
 async function loadSettings() {
-  settings.value = await getSettings()
-  setLocale(settings.value.language)
-  applyTheme(settings.value.theme)
+  try {
+    settings.value = await getSettings()
+    setLocale(settings.value.language)
+    applyTheme(settings.value.theme)
+  } catch (e: unknown) {
+    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+  }
 }
 
 function applyTheme(theme: string) {
@@ -239,6 +251,8 @@ async function handlePoll() {
     } else {
       showToast(t('app.new_found', String(result.new_releases.length)))
     }
+  } catch (e: unknown) {
+    showToast(t('app.check_failed', e instanceof Error ? e.message : String(e)))
   } finally {
     polling.value = false
   }
@@ -335,6 +349,18 @@ onUnmounted(() => {
     unlisten()
   }
   unlisteners.length = 0
+  // 清理定时器与媒体监听，避免卸载后回调修改已销毁组件的 ref（HMR/测试场景）
+  if (countdownTimer) {
+    clearInterval(countdownTimer)
+    countdownTimer = null
+  }
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+    toastTimer = null
+  }
+  if (systemThemeMedia) {
+    systemThemeMedia.onchange = null
+  }
 })
 </script>
 

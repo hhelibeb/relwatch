@@ -15,6 +15,8 @@ export default {
   'app.new_found': 'Found {0} new release(s)',
   'app.no_sources': 'No monitoring sources',
   'app.source_auto_disabled': 'Source {0}/{1} auto-disabled after {2} consecutive failures',
+  'app.load_failed': 'Failed to load data: {0}',
+  'app.check_failed': 'Check failed: {0}',
   'input.clear': 'Clear',
 
   'source.placeholder': 'GitHub repo URL or owner/repo',
@@ -120,6 +122,7 @@ export default {
   'settings.importance_high_only': 'High Only',
   'settings.test_connection': 'Test Connection',
   'settings.testing': 'Testing...',
+  'settings.deepseek_test_title': 'DeepSeek Connection Test',
   'settings.save': 'Save Settings',
   'settings.saving': 'Saving...',
   'settings.saved': 'Settings saved',

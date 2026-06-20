@@ -289,3 +289,61 @@ describe('ReleaseItem.vue — 重要性样式', () => {
     expect(classes).not.toContain('release-importance-low')
   })
 })
+
+describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
+  it('未读版本标记失败时不打开链接，并提示失败', async () => {
+    const toast = vi.fn()
+    vi.mocked(setNotificationState).mockRejectedValue(new Error('err.network'))
+    vi.mocked(openReleaseUrl).mockResolvedValue(undefined)
+
+    const wrapper = shallowMount(ReleaseItem, {
+      props: { release: createRelease({ id: 5, notification_status: 'pending' }) },
+      global: { provide: { [ShowToastKey as symbol]: toast } },
+    })
+
+    await wrapper.find('.release-link-action').trigger('click')
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(setNotificationState).toHaveBeenCalledWith(5, 'clicked')
+    // 标记失败 → 不应打开链接，避免“链接已开但列表仍显示未读”
+    expect(openReleaseUrl).not.toHaveBeenCalled()
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('release.status_failed'))
+  })
+
+  it('未读版本标记成功后才打开链接（调用顺序：先标记后打开）', async () => {
+    vi.mocked(setNotificationState).mockResolvedValue(undefined)
+    vi.mocked(openReleaseUrl).mockResolvedValue(undefined)
+
+    const wrapper = mountRelease(createRelease({ id: 5, notification_status: 'pending' }))
+
+    await wrapper.find('.release-link-action').trigger('click')
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(setNotificationState).toHaveBeenCalledWith(5, 'clicked')
+    expect(openReleaseUrl).toHaveBeenCalled()
+    // 严格校验调用顺序：setNotificationState 必须早于 openReleaseUrl
+    const stateOrder = vi.mocked(setNotificationState).mock.invocationCallOrder[0]
+    const openOrder = vi.mocked(openReleaseUrl).mock.invocationCallOrder[0]
+    expect(stateOrder).toBeLessThan(openOrder)
+  })
+})
+
+describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
+  it('语言切换后 releaseMenuItems/summaryMenuItems 的 label 实时更新', async () => {
+    const { t } = await import('../i18n')
+    // 先用默认实现（返回 key）挂载
+    const wrapper = mountRelease(createRelease({ ai_summary: '摘要内容' }))
+
+    // 切换到“英文”实现：返回 key 大写以模拟语言切换后的不同文案
+    vi.mocked(t).mockImplementation((key: string) => `EN:${key}`)
+    // 访问 computed 触发重新求值，验证 label 随 t 的实现变化而更新
+    expect((wrapper.vm as any).releaseMenuItems).toEqual([
+      { id: 'openLink', label: 'EN:context.open' },
+      { id: 'copyLink', label: 'EN:context.copy_link' },
+      { id: 'deleteRelease', label: 'EN:context.delete_release' },
+    ])
+    expect((wrapper.vm as any).summaryMenuItems).toEqual([
+      { id: 'copySummary', label: 'EN:context.copy_summary' },
+    ])
+  })
+})

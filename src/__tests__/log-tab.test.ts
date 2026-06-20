@@ -440,3 +440,73 @@ describe('LogTab.vue — 日志级别样式', () => {
     expect(wrapper.find('.log-level').classes()).toContain('log-info')
   })
 })
+
+describe('LogTab.vue — 并发竞态保护', () => {
+  it('并发请求时丢弃陈旧响应，保留最新结果', async () => {
+    const wrapper = await mountLogTab()
+    vi.mocked(searchLogs).mockClear()
+
+    // 用可控的 pending Promise 模拟两次并发请求：旧请求慢、新请求快
+    let resolveFirst!: (v: ReturnType<typeof createSearchResult>) => void
+    let resolveSecond!: (v: ReturnType<typeof createSearchResult>) => void
+    const firstPromise = new Promise<ReturnType<typeof createSearchResult>>(r => { resolveFirst = r })
+    const secondPromise = new Promise<ReturnType<typeof createSearchResult>>(r => { resolveSecond = r })
+    vi.mocked(searchLogs).mockReturnValueOnce(firstPromise)
+    vi.mocked(searchLogs).mockReturnValueOnce(secondPromise)
+
+    // 触发第一次 loadData（旧请求，将慢返回）
+    await wrapper.find('.filter-trigger').trigger('click')
+    await wrapper.findAll('.filter-dropdown button')[3].trigger('click') // ERROR
+    // 触发第二次 loadData（新请求，将先返回）
+    await (wrapper as any).setProps({ refreshKey: 1 })
+    await flushPromises() // 等待 watch 回调触发第二次 loadData
+
+    // 新请求先解析
+    resolveSecond(createSearchResult([createLogEntry({ id: 2, message: 'NEW_DATA' })], 1))
+    await flushPromises()
+    // 旧请求后解析（应被丢弃，不覆盖新结果）
+    resolveFirst(createSearchResult([createLogEntry({ id: 1, message: 'OLD_DATA' })], 1))
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('NEW_DATA')
+    expect(wrapper.text()).not.toContain('OLD_DATA')
+  })
+})
+
+describe('LogTab.vue — 错误处理（P1 #5）', () => {
+  it('searchLogs 抛错时清空列表、复位 loading 且无未捕获 rejection', async () => {
+    vi.mocked(searchLogs).mockRejectedValueOnce(new Error('db error'))
+    const wrapper = await mountLogTab()
+    await flushPromises()
+
+    // 错误已被 catch，loading 复位，列表为空
+    expect((wrapper.vm as any).loading).toBe(false)
+    expect((wrapper.vm as any).logs).toEqual([])
+    expect((wrapper.vm as any).totalLogs).toBe(0)
+    expect(wrapper.text()).toContain('log.no_records')
+  })
+})
+
+describe('LogTab.vue — 定时器清理（P1 #10）', () => {
+  it('卸载时清理 debounce 定时器，不再触发后续 loadData', async () => {
+    vi.useFakeTimers()
+    vi.mocked(searchLogs).mockResolvedValue(createSearchResult([], 0))
+    // 不使用 mountLogTab helper（其内部 setTimeout 与 fake timers 不兼容），直接 mount
+    const wrapper = mount(LogTab, { props: { refreshKey: 0 } })
+    await flushPromises()
+    vi.advanceTimersByTime(20) // 推进 onMounted 中可能的微任务等待
+    vi.mocked(searchLogs).mockClear()
+
+    // 输入搜索词，启动 debounce 定时器（300ms）
+    await wrapper.find('input').setValue('test')
+    await flushPromises()
+    // 立即卸载，应清理定时器
+    wrapper.unmount()
+    // 推进超过 debounce 时间，定时器已被清理，不应再调用 searchLogs
+    vi.advanceTimersByTime(400)
+    await flushPromises()
+
+    expect(searchLogs).not.toHaveBeenCalled()
+    vi.useRealTimers()
+  })
+})

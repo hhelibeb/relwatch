@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, inject, onMounted, onUnmounted } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { ShowToastKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
@@ -63,15 +63,16 @@ function closeMenus() {
 }
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
-const summaryMenuItems: ContextMenuItem[] = [
+// 使用 computed 保证语言切换后右键菜单 label 实时更新
+const summaryMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'copySummary', label: t('context.copy_summary') },
-]
+])
 
-const releaseMenuItems: ContextMenuItem[] = [
+const releaseMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'openLink', label: t('context.open') },
   { id: 'copyLink', label: t('context.copy_link') },
   { id: 'deleteRelease', label: t('context.delete_release') },
-]
+])
 
 function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
   if (!text) return
@@ -169,10 +170,12 @@ async function handleGoRelease(release: ReleaseInfo) {
     return
   }
   isUpdating.value = true
-  openReleaseUrl(release.html_url)
   try {
+    // 先标记已读再打开链接：保证状态与 UI 一致。若标记失败则不打开链接，
+    // 避免出现“链接已打开但列表仍显示未读”的不同步状态。
     await setNotificationState(release.id, 'clicked')
     emit('update')
+    openReleaseUrl(release.html_url)
   } catch (e: unknown) {
     showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
