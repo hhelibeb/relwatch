@@ -47,6 +47,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-06-21
+
+### Added
+- AI 全文翻译 Release Notes — 新增「译文」视图，可在摘要 / 译文 / 原文三种视图间切换；通过设置项开关启用，轮询发现新版本时自动翻译。
+- Release 全文以 Markdown 格式渲染（GitHub 风格），支持代码块、表格、链接等。
+
+### Fixed
+- 日志页并发加载不再被陈旧响应覆盖。
+- 设置保存改为先写主设置再存凭据，避免主设置失败时凭据已持久化导致状态不一致。
+- 打开 Release 链接改为先标记已读再跳转，避免标记失败时列表仍显示未读。
+- 加载源 / Release / 设置失败或单源检查失败时显示错误提示。
+- 语言切换后右键菜单标签与对话框标题实时更新。
+- 右键菜单自动钳位到视口内，避免边缘溢出。
+- 批量静音跳过已暂停的监控源，与单源静音语义一致。
+- 保存设置失败时回滚 UI 语言到已持久化语言。
+- 月份导航增加下限保护；点击打开的下拉不再因鼠标移出而自动关闭。
+
 ## [1.4.0] - 2026-06-06
 
 ### Added
@@ -200,7 +217,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.5.1...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/hhelibeb/relwatch/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/hhelibeb/relwatch/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/hhelibeb/relwatch/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/hhelibeb/relwatch/compare/v1.4.0...v1.4.1
