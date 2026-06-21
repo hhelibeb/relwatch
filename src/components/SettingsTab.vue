@@ -141,6 +141,11 @@ function selectLang(val: string) {
   setLocale(val)
   setTimeout(() => {
     langDropdownOpen.value = false
+    // 下拉关闭后把焦点移回触发器，避免 v-if 移除聚焦选项后焦点回退到 body
+    nextTick(() => {
+      const langTrigger = langSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
+      langTrigger?.focus()
+    })
   }, 0)
 }
 
@@ -246,6 +251,11 @@ function selectTheme(val: string) {
   setThemePreview(val)
   setTimeout(() => {
     themeDropdownOpen.value = false
+    // 下拉关闭后把焦点移回触发器，避免 v-if 移除聚焦选项后焦点回退到 body
+    nextTick(() => {
+      const themeTrigger = themeSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
+      themeTrigger?.focus()
+    })
   }, 0)
 }
 
@@ -380,6 +390,8 @@ async function handleSave() {
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
     emit('update', pollChanged)
   } catch (e: unknown) {
+    // updateSettings 失败时回滚 UI 语言到已持久化的语言，避免 UI 与后端不一致
+    setLocale(props.settings.language)
     showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     savingSettings.value = false
@@ -425,7 +437,9 @@ function discardChanges() {
   const themeDirty = dirtyFields.value.has('theme')
   Object.assign(form, props.settings)
   if (langDirty) setLocale(form.language)
-  if (themeDirty) setThemePreview(form.theme)
+  // 使用 clearThemePreview 清除预览状态（previewTheme 置 null），避免残留“预览中”语义
+  // 导致下次打开下拉时 .previewed 类错误高亮当前主题选项
+  if (themeDirty) clearThemePreview()
   deepseekApiKey.value = ''
   githubToken.value = ''
 }

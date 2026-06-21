@@ -22,6 +22,11 @@ const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 // 级别过滤下拉
 const openFilter = ref(false)
 let hoverFilterTimer: ReturnType<typeof setTimeout> | null = null
+// 标记当前下拉是否由点击打开：点击打开的不因 hover 离开自动关闭
+let filterOpenedByClick = false
+
+// 下拉关闭时重置 click 标记（覆盖选项点击、Escape、外部点击等所有关闭路径）
+watch(openFilter, (v) => { if (!v) filterOpenedByClick = false })
 
 function hoverFilterEnter() {
   if (hoverFilterTimer) {
@@ -31,6 +36,8 @@ function hoverFilterEnter() {
 }
 
 function hoverFilterLeave() {
+  // 点击打开的下拉不因 hover 离开自动关闭
+  if (filterOpenedByClick) return
   hoverFilterTimer = setTimeout(() => {
     openFilter.value = false
   }, 120)
@@ -41,6 +48,7 @@ function toggleFilter() {
     openFilter.value = false
   } else {
     openFilter.value = true
+    filterOpenedByClick = true
     focusFirstDropdownOption()
   }
 }

@@ -7,7 +7,7 @@ export interface ContextMenuItem {
   label: string
 }
 
-defineProps<{
+const props = defineProps<{
   x: number
   y: number
   items?: ContextMenuItem[]
@@ -20,10 +20,27 @@ const emit = defineEmits<{
 }>()
 
 const menuRef = ref<HTMLElement | null>(null)
+// 视口钳位后的实际坐标，避免菜单在窗口右/下边缘溢出视口
+const adjustedX = ref(props.x)
+const adjustedY = ref(props.y)
 
-// 打开后自动聚焦第一个菜单项
+// 打开后钳位到视口内并自动聚焦第一个菜单项
 onMounted(async () => {
   await nextTick()
+  const el = menuRef.value
+  if (el) {
+    const rect = el.getBoundingClientRect()
+    let x = props.x
+    let y = props.y
+    if (x + rect.width > window.innerWidth - 4) {
+      x = Math.max(4, window.innerWidth - rect.width - 4)
+    }
+    if (y + rect.height > window.innerHeight - 4) {
+      y = Math.max(4, window.innerHeight - rect.height - 4)
+    }
+    adjustedX.value = x
+    adjustedY.value = y
+  }
   const firstButton = menuRef.value?.querySelector('button') as HTMLButtonElement | null
   firstButton?.focus()
 })
@@ -59,7 +76,7 @@ function handleKeydown(e: KeyboardEvent) {
 </script>
 
 <template>
-  <div ref="menuRef" class="context-menu" role="menu" tabindex="-1" :style="{ left: x + 'px', top: y + 'px' }" @click.stop @keydown="handleKeydown">
+  <div ref="menuRef" class="context-menu" role="menu" tabindex="-1" :style="{ left: adjustedX + 'px', top: adjustedY + 'px' }" @click.stop @keydown="handleKeydown">
     <template v-if="items">
       <button v-for="item in items" :key="item.id" role="menuitem" tabindex="0" @click="$emit('action', item.id)">
         {{ item.label }}

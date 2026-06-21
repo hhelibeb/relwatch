@@ -25,6 +25,8 @@ const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const openMoreId = ref<number | null>(null)
 const showToast = inject(ShowToastKey, () => {})
+// 新增源高亮动画的定时器句柄；连续添加时先 clear 旧定时器，避免旧回调截断新源高亮
+let highlightTimer: ReturnType<typeof setTimeout> | undefined
 
 const sourceSearch = ref('')
 const trimmedSourceSearch = computed(() => sourceSearch.value.trim())
@@ -120,7 +122,8 @@ async function handleBulkMuteToggle(muted: boolean) {
   for (const id of ids) {
     try {
       const source = props.sources.find(s => s.id === id)
-      if (!source) continue
+      // 跳过已暂停源：对暂停源执行静音无意义，与单源静音按钮 disabled 语义一致
+      if (!source || !source.enabled) continue
       await updateSource(id, source.enabled, source.poll_interval_minutes, muted)
       success++
     } catch { failed++ }
@@ -231,7 +234,8 @@ async function handleAdd() {
     }
     urlInput.value = ''
     highlightedId.value = id
-    setTimeout(() => { highlightedId.value = null }, 2200)
+    clearTimeout(highlightTimer)
+    highlightTimer = setTimeout(() => { highlightedId.value = null }, 2200)
     emit('update')
   } catch (e: unknown) {
     const errMsg = e instanceof Error ? e.message : String(e)

@@ -74,6 +74,9 @@ function backToCalendar() {
 }
 
 function prevMonth() {
+  // 下限保护：不允许早于 2010-01，与 nextMonth 的上限保护对称，避免远古日期渲染异常
+  const MIN_YEAR = 2010
+  if (calendarYear.value <= MIN_YEAR && calendarMonth.value === 1) return
   if (calendarMonth.value === 1) {
     calendarMonth.value = 12
     calendarYear.value--

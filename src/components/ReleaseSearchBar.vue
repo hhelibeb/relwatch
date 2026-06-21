@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { t } from '../i18n'
 
 const props = withDefaults(defineProps<{
@@ -23,6 +23,12 @@ const emit = defineEmits<{
 // ========== 筛选下拉状态 ==========
 const openFilter = ref<'status' | 'importance' | null>(null)
 let hoverFilterTimer: ReturnType<typeof setTimeout> | null = null
+// 标记当前下拉是否由点击打开：点击打开的不因 hover 离开自动关闭，
+// 仅在点击选项/外部或 Escape 时关闭，避免用户移出后无法回头点击选项
+let filterOpenedByClick = false
+
+// 下拉关闭时重置 click 标记（覆盖选项点击、Escape、外部点击等所有关闭路径）
+watch(openFilter, (v) => { if (v === null) filterOpenedByClick = false })
 
 function hoverFilterEnter() {
   if (hoverFilterTimer) {
@@ -32,6 +38,8 @@ function hoverFilterEnter() {
 }
 
 function hoverFilterLeave() {
+  // 点击打开的下拉不因 hover 离开自动关闭
+  if (filterOpenedByClick) return
   hoverFilterTimer = setTimeout(() => {
     openFilter.value = null
   }, 120)
@@ -42,6 +50,7 @@ function toggleFilter(filter: 'status' | 'importance') {
     openFilter.value = null
   } else {
     openFilter.value = filter
+    filterOpenedByClick = true
     focusFirstDropdownOption(filter)
   }
 }
