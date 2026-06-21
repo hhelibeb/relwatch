@@ -21,6 +21,7 @@ pub struct ReleaseInfo {
     pub snooze_until: Option<String>,
     pub ai_summary: Option<String>,
     pub ai_importance: Option<String>,
+    pub body_translated: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -78,6 +79,46 @@ pub fn get_releases_without_summary(
         .map_err(|e| e.to_string())?;
 
     Ok(releases)
+}
+
+/// 返回需要翻译但尚未翻译的 (id, body) 列表。
+/// 条件：body 非空、body_translated 为空、翻译重试次数 < 5。
+pub fn get_releases_without_translation(
+    conn: &Connection,
+) -> Result<Vec<(i64, Option<String>)>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, body FROM releases WHERE body_translated IS NULL AND body IS NOT NULL AND body != '' AND (translate_retry_count IS NULL OR translate_retry_count < 5)",
+        )
+        .map_err(|e| e.to_string())?;
+    let releases = stmt
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(releases)
+}
+
+pub fn set_body_translated(
+    conn: &Connection,
+    release_id: i64,
+    translated: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE releases SET body_translated = ?1, translate_retry_count = 0 WHERE id = ?2",
+        rusqlite::params![translated, release_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+pub fn increment_translate_retry_count(conn: &Connection, release_id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE releases SET translate_retry_count = COALESCE(translate_retry_count, 0) + 1 WHERE id = ?1",
+        rusqlite::params![release_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 pub fn set_ai_summary(
@@ -163,7 +204,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                     r.tag_name, r.release_name, r.html_url, r.published_at,
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance
+                    r.ai_summary, r.ai_importance, r.body_translated
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -190,6 +231,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                 snooze_until: row.get(13)?,
                 ai_summary: row.get(14)?,
                 ai_importance: row.get(15)?,
+                body_translated: row.get(16)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -208,7 +250,7 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                     r.tag_name, r.release_name, r.html_url, r.published_at,
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance
+                    r.ai_summary, r.ai_importance, r.body_translated
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -236,6 +278,7 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                 snooze_until: row.get(13)?,
                 ai_summary: row.get(14)?,
                 ai_importance: row.get(15)?,
+                body_translated: row.get(16)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -283,7 +326,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 r.tag_name, r.release_name, r.html_url, r.published_at,
                 r.prerelease, r.body, r.detected_at,
                 COALESCE(ns.status, 'pending'), ns.snooze_until,
-                r.ai_summary, r.ai_importance
+                r.ai_summary, r.ai_importance, r.body_translated
          FROM releases r
          JOIN sources s ON r.source_id = s.id
          LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -313,6 +356,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 snooze_until: row.get(13)?,
                 ai_summary: row.get(14)?,
                 ai_importance: row.get(15)?,
+                body_translated: row.get(16)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -602,6 +646,62 @@ mod tests {
         assert_eq!(releases.len(), 1);
         assert!(releases[0].ai_summary.is_none());
         assert!(releases[0].ai_importance.is_none());
+        assert!(releases[0].body_translated.is_none());
+    }
+
+    #[test]
+    fn test_body_translated_store_and_retrieve() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, Some("release body")).unwrap();
+        assert!(rid > 0);
+
+        // 有 body 且未翻译 → 出现在待翻译列表
+        let pending = get_releases_without_translation(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, rid);
+
+        set_body_translated(&conn, rid, "发布说明译文").unwrap();
+
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases[0].body_translated.as_deref(), Some("发布说明译文"));
+        // 翻译完成后不再出现在待翻译列表
+        assert!(get_releases_without_translation(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_get_releases_without_translation_skips_empty_body() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        // body 为空 → 不应进入待翻译列表
+        let _rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        assert!(get_releases_without_translation(&conn).unwrap().is_empty());
+
+        // body 非空 → 进入待翻译列表
+        let rid2 = insert_release(&conn, sid, "v2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, Some("body")).unwrap();
+        let pending = get_releases_without_translation(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, rid2);
+    }
+
+    #[test]
+    fn test_translate_retry_count_excludes_after_limit() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, Some("body")).unwrap();
+
+        // 重试 5 次后不再出现在待翻译列表
+        for _ in 0..5 {
+            increment_translate_retry_count(&conn, rid).unwrap();
+        }
+        assert!(get_releases_without_translation(&conn).unwrap().is_empty());
+
+        // set_body_translated 会重置 retry_count
+        set_body_translated(&conn, rid, "译文").unwrap();
+        let count: i64 = conn
+            .query_row("SELECT translate_retry_count FROM releases WHERE id=?1", rusqlite::params![rid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

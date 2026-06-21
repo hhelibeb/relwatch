@@ -13,6 +13,7 @@ pub const KEY_DEEPSEEK_API_KEY: &str = "deepseek_api_key";
 pub const KEY_DEEPSEEK_PROXY_BYPASS: &str = "deepseek_proxy_bypass";
 pub const KEY_DEEPSEEK_PROMPT: &str = "deepseek_prompt";
 pub const KEY_DEEPSEEK_MIN_IMPORTANCE: &str = "deepseek_min_importance";
+pub const KEY_DEEPSEEK_TRANSLATE_RELEASE: &str = "deepseek_translate_release";
 
 pub const KEY_CHECK_PRERELEASES: &str = "check_prereleases";
 pub const KEY_FETCH_HISTORY: &str = "fetch_history";
@@ -33,6 +34,7 @@ pub const DEFAULT_DEEPSEEK_ENABLED: &str = "false";
 pub const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-v4-flash";
 pub const DEFAULT_DEEPSEEK_BASE_URL: &str = "https://api.deepseek.com";
 pub const DEFAULT_DEEPSEEK_PROXY_BYPASS: &str = "false";
+pub const DEFAULT_DEEPSEEK_TRANSLATE_RELEASE: &str = "false";
 pub const DEFAULT_DEEPSEEK_PROMPT_EDITABLE: &str = concat!(
     "你是版本发布摘要助手。请用中文总结下面 GitHub Release 更新内容，并评估重要度。\n",
     "\n",
@@ -68,6 +70,20 @@ pub fn strip_prompt_suffix(prompt: &str) -> String {
 }
 
 pub const DEFAULT_DEEPSEEK_MIN_IMPORTANCE: &str = "小";
+
+/// 翻译 release note 全文使用的固定提示词模板。
+/// `{}` 为 release body 占位符，`{lang}` 为目标语言（运行时注入）。
+/// 不对用户开放编辑，避免与摘要提示词的 `{}` 占位校验冲突。
+pub const DEFAULT_DEEPSEEK_TRANSLATE_PROMPT: &str = concat!(
+    "请将以下 GitHub Release 更新说明完整翻译成{lang}。",
+    "要求：\n",
+    "1. 必须翻译全部内容，覆盖输入的每一段、每一句，不得跳过或省略任何段落；\n",
+    "2. 保留原文的 Markdown 格式、代码块、链接 URL、标题层级；\n",
+    "3. 代码标识符、命令、配置键、@用户名、#编号、版本号等技术性 token 原样保留；\n",
+    "4. 链接的 URL 原样保留，但链接的显示文本若为自然语言则翻译；\n",
+    "5. 不要添加任何解释、注释、前后缀，直接输出完整译文。\n\n",
+    "Release 内容：\n{}"
+);
 
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";

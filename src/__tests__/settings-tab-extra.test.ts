@@ -68,6 +68,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     deepseek_proxy_bypass: false,
     deepseek_prompt: 'Summarize {}',
     deepseek_min_importance: '小',
+  deepseek_translate_release: false,
     check_prereleases: false,
     fetch_history: false,
     fetch_history_count: 1,

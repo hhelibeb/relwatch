@@ -10,12 +10,14 @@ use crate::db::settings::{
     self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY, KEY_DEEPSEEK_PROXY_BYPASS,
     KEY_DEEPSEEK_PROMPT, KEY_DEEPSEEK_MIN_IMPORTANCE,
+    KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
+    DEFAULT_DEEPSEEK_TRANSLATE_RELEASE,
     DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
     strip_prompt_suffix,
@@ -44,6 +46,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
         deepseek_proxy_bypass: get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false)?,
         deepseek_prompt: strip_prompt_suffix(&get_setting_str(&conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)?),
         deepseek_min_importance: get_setting_str(&conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)?,
+        deepseek_translate_release: get_setting_bool(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, false)?,
 
         check_prereleases: get_setting_bool(&conn, KEY_CHECK_PRERELEASES, false)?,
         fetch_history: get_setting_bool(&conn, KEY_FETCH_HISTORY, false)?,
@@ -73,6 +76,7 @@ pub struct UpdateSettingsPayload {
     deepseek_proxy_bypass: bool,
     deepseek_prompt: String,
     deepseek_min_importance: String,
+    deepseek_translate_release: bool,
 
     check_prereleases: bool,
     fetch_history: bool,
@@ -106,6 +110,7 @@ pub fn update_settings(
     let old_deepseek_prompt = get_setting_str(&conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)?;
     let old_deepseek_min_importance = get_setting_str(&conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)?;
 
+    let old_deepseek_translate = get_setting_str(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, DEFAULT_DEEPSEEK_TRANSLATE_RELEASE)?;
     let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
     let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
     let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
@@ -127,6 +132,7 @@ pub fn update_settings(
             (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, &payload.deepseek_proxy_bypass.to_string(), "setting.deepseek_proxy_bypass"),
             (KEY_DEEPSEEK_PROMPT, &old_deepseek_prompt, &strip_prompt_suffix(&payload.deepseek_prompt), "setting.deepseek_prompt"),
             (KEY_DEEPSEEK_MIN_IMPORTANCE, &old_deepseek_min_importance, &payload.deepseek_min_importance, "setting.deepseek_min_importance"),
+            (KEY_DEEPSEEK_TRANSLATE_RELEASE, &old_deepseek_translate, &payload.deepseek_translate_release.to_string(), "setting.deepseek_translate_release"),
 
             (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
             (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
@@ -451,6 +457,7 @@ mod tests {
             (KEY_DEEPSEEK_PROXY_BYPASS, "false"),
             (KEY_DEEPSEEK_PROMPT, ""),
             (KEY_DEEPSEEK_MIN_IMPORTANCE, "小"),
+            (KEY_DEEPSEEK_TRANSLATE_RELEASE, "false"),
             (KEY_CHECK_PRERELEASES, "false"),
             (KEY_FETCH_HISTORY, "false"),
             (KEY_FETCH_HISTORY_COUNT, "3"),
@@ -475,6 +482,7 @@ mod tests {
             (KEY_DEEPSEEK_PROXY_BYPASS, "true"),
             (KEY_DEEPSEEK_PROMPT, "你是一个帮助助手"),
             (KEY_DEEPSEEK_MIN_IMPORTANCE, "大"),
+            (KEY_DEEPSEEK_TRANSLATE_RELEASE, "true"),
             (KEY_CHECK_PRERELEASES, "true"),
             (KEY_FETCH_HISTORY, "true"),
             (KEY_FETCH_HISTORY_COUNT, "5"),
@@ -490,7 +498,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 17,
+        assert_eq!(items.len(), 18,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -505,7 +513,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 17;
+        const EXPECTED_SETTING_FIELDS: usize = 18;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyMode": "none",
@@ -519,6 +527,7 @@ mod tests {
             "deepseekProxyBypass": false,
             "deepseekPrompt": "",
             "deepseekMinImportance": "小",
+            "deepseekTranslateRelease": false,
 
             "checkPrereleases": false,
             "fetchHistory": true,
@@ -540,6 +549,7 @@ mod tests {
         assert!(!payload.deepseek_proxy_bypass);
         assert_eq!(payload.deepseek_prompt, "");
         assert_eq!(payload.deepseek_min_importance, "小");
+        assert!(!payload.deepseek_translate_release);
 
         assert!(!payload.check_prereleases);
         assert!(payload.fetch_history);

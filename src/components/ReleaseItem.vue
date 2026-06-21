@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
-import { ShowToastKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
+import MarkdownContent from './common/MarkdownContent.vue'
+import { ShowToastKey, AiEnabledKey } from '../injection-keys'
+import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, translateRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
@@ -11,9 +12,97 @@ import { registerCloser, unregisterCloser, closeAllContextMenus } from '../compo
 const props = defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: [] }>()
 const showToast = inject(ShowToastKey, () => {})
+const aiEnabledRef = inject(AiEnabledKey, ref(false))
+
+const aiEnabled = computed(() => aiEnabledRef.value)
 
 const snoozeMinutes = 24 * 60
 const isUpdating = ref(false)
+
+// ========== 显示模式切换：摘要 / 译文 / 原文 ==========
+type ViewMode = 'summary' | 'translated' | 'full'
+const viewMode = ref<ViewMode>('summary')
+const expanded = ref(false)
+const translating = ref(false)
+
+const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
+  const modes: { mode: ViewMode; label: string }[] = []
+  if (props.release.ai_summary) modes.push({ mode: 'summary', label: t('release.view_summary') })
+  // 译文：有译文或正在翻译时都显示该标签，翻译中显示“翻译中...”
+  if (props.release.body_translated) {
+    modes.push({ mode: 'translated', label: t('release.view_translated') })
+  } else if (translating.value) {
+    modes.push({ mode: 'translated', label: t('release.view_translating') })
+  }
+  if (props.release.body) modes.push({ mode: 'full', label: t('release.view_full') })
+  return modes
+})
+
+const currentContent = computed<string | null>(() => {
+  switch (viewMode.value) {
+    case 'summary': return props.release.ai_summary
+    case 'translated':
+      // 翻译中且无译文时返回 null（模板会显示占位文案）
+      if (translating.value && !props.release.body_translated) return null
+      return props.release.body_translated
+    case 'full': return props.release.body
+    default: return null
+  }
+})
+
+const hasLongContent = computed(() => {
+  const c = currentContent.value
+  // 估算超过 6 行（约 240 字符）时显示展开按钮
+  return c !== null && c.length > 240
+})
+
+function switchMode(mode: ViewMode) {
+  viewMode.value = mode
+  expanded.value = false
+}
+
+// 展开/收起时保持视口稳定。展开长内容后滚动到下方点击「收起」，
+// 内容高度骤减会让视口漂移。以被点击的收起按钮作为视口锚点：
+// 记录按钮点击时的视口 top，收起渲染后 scrollBy 把按钮拉回原位置。
+// 以按钮（而非卡片）为锚点，可保证多卡片乱序收起时仍稳定——
+// 每次只锚定被点击的那个按钮，与卡片数量和顺序无关。
+// 注意：滚动容器是 .app-main 而非 window，需向上查找实际滚动容器。
+function toggleExpand(e: MouseEvent) {
+  if (!expanded.value) {
+    expanded.value = true
+    return
+  }
+  const btn = e.currentTarget as HTMLElement | null
+  const topBefore = btn ? btn.getBoundingClientRect().top : null
+  expanded.value = false
+  if (topBefore === null || !btn) return
+  nextTick(() => {
+    if (!btn) return
+    const topAfter = btn.getBoundingClientRect().top
+    const delta = topAfter - topBefore
+    if (delta !== 0) {
+      // 优先用按钮所在的滚动容器；找不到才回退到 window
+      const scroller = btn.closest('.app-main') as HTMLElement | null
+      if (scroller) {
+        scroller.scrollTop += delta
+      } else {
+        window.scrollBy(0, delta)
+      }
+    }
+  })
+}
+
+// 翻译完成后自动切换到译文视图：当 body_translated 从无到有，
+// 且当前停留在原文视图（用户在此触发了翻译），自动切到译文标签。
+watch(() => props.release.body_translated, (newVal, oldVal) => {
+  if (newVal && !oldVal) {
+    translating.value = false
+    if (viewMode.value === 'full') {
+      viewMode.value = 'translated'
+      expanded.value = false
+    }
+  }
+})
 
 // ========== 摘要悬浮提示 ==========
 const summaryTooltip = ref<{ x: number; y: number; text: string } | null>(null)
@@ -63,10 +152,20 @@ function closeMenus() {
 }
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
+// 「翻译」选项仅在：当前为原文视图、无译文、AI 已启用 时出现
+const canTranslate = computed(() =>
+  viewMode.value === 'full'
+  && !props.release.body_translated
+  && aiEnabled.value
+)
 // 使用 computed 保证语言切换后右键菜单 label 实时更新
-const summaryMenuItems = computed<ContextMenuItem[]>(() => [
-  { id: 'copySummary', label: t('context.copy_summary') },
-])
+const summaryMenuItems = computed<ContextMenuItem[]>(() => {
+  const items: ContextMenuItem[] = [{ id: 'copyContent', label: t('context.copy_content') }]
+  if (canTranslate.value) {
+    items.push({ id: 'translate', label: t('context.translate') })
+  }
+  return items
+})
 
 const releaseMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'openLink', label: t('context.open') },
@@ -86,9 +185,28 @@ async function handleCopySummary() {
   summaryContextMenu.value = null
 }
 
+async function handleTranslateRelease() {
+  const releaseId = props.release.id
+  summaryContextMenu.value = null
+  // 立即进入翻译中状态并切到译文标签，让用户看到即时反馈
+  translating.value = true
+  viewMode.value = 'translated'
+  expanded.value = false
+  try {
+    await translateRelease(releaseId)
+    emit('update')
+  } catch (e: unknown) {
+    translating.value = false
+    viewMode.value = 'full'
+    showToast?.(t('release.translate_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
 function handleSummaryMenuAction(actionId: string) {
-  if (actionId === 'copySummary') {
+  if (actionId === 'copyContent') {
     handleCopySummary()
+  } else if (actionId === 'translate') {
+    handleTranslateRelease()
   }
 }
 
@@ -120,6 +238,10 @@ function handleReleaseMenuAction(actionId: string) {
 onMounted(() => {
   registerCloser(closeMenus)
   document.addEventListener('click', closeMenus)
+  // 默认视图优先级：摘要 > 译文 > 原文
+  if (props.release.ai_summary) viewMode.value = 'summary'
+  else if (props.release.body_translated) viewMode.value = 'translated'
+  else if (props.release.body) viewMode.value = 'full'
 })
 onUnmounted(() => {
   unregisterCloser(closeMenus)
@@ -214,29 +336,52 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
         <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
       </div>
-      <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
+      <div class="release-header-right">
+        <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
+        <button class="btn-sm" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
+        <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status, release.snooze_until)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
+        <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
+          <svg><use href="/icons.svg#link-icon"/></svg>
+        </button>
+        <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
+      </div>
     </div>
     <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
-    <div v-if="release.ai_summary" class="release-summary-line">
-      <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-      <span
-        class="release-summary-text"
-        tabindex="0"
-        @mouseenter="handleSummaryEnter($event, release.ai_summary)"
-        @mousemove="handleSummaryMove"
-        @mouseleave="hideSummaryTooltip"
-        @focus="handleSummaryFocus($event, release.ai_summary)"
-        @blur="hideSummaryTooltip"
-        @contextmenu.prevent.stop="handleSummaryContextMenu($event, release.ai_summary)"
-      >{{ release.ai_summary }}</span>
-    </div>
-    <div class="release-actions">
-      <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-      <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
-        <svg><use href="/icons.svg#link-icon"/></svg>
+    <div v-if="availableModes.length > 0" class="release-content">
+      <div v-if="availableModes.length > 1" class="release-view-tabs">
+        <button
+          v-for="m in availableModes"
+          :key="m.mode"
+          class="release-view-tab"
+          :class="{ active: viewMode === m.mode }"
+          @click="switchMode(m.mode)"
+        >{{ m.label }}</button>
+      </div>
+      <!-- 摘要模式：保持原有 2 行 clamp + 悬浮提示 -->
+      <div v-if="viewMode === 'summary' && currentContent" class="release-summary-line">
+        <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+        <span
+          class="release-summary-text"
+          tabindex="0"
+          @mouseenter="handleSummaryEnter($event, currentContent)"
+          @mousemove="handleSummaryMove"
+          @mouseleave="hideSummaryTooltip"
+          @focus="handleSummaryFocus($event, currentContent)"
+          @blur="hideSummaryTooltip"
+          @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)"
+        >{{ currentContent }}</span>
+      </div>
+      <!-- 译文 / 原文模式：Markdown 渲染 + 长文本可展开 -->
+      <div v-else-if="currentContent" class="release-body-text" :class="{ expanded }" @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)">
+        <MarkdownContent :content="currentContent" />
+      </div>
+      <!-- 翻译中占位：译文尚未到达时显示加载提示 -->
+      <div v-else-if="translating && viewMode === 'translated'" class="release-translating-hint">
+        {{ t('release.translating_hint') }}
+      </div>
+      <button v-if="hasLongContent && viewMode !== 'summary'" class="btn-sm release-expand-btn" @click="toggleExpand">
+        {{ expanded ? t('release.collapse') : t('release.expand') }}
       </button>
-      <button v-if="isReadStatus(release.notification_status)" class="btn-sm" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
-      <button v-if="isUnreadStatus(release.notification_status, release.snooze_until)" class="btn-sm btn-danger-soft" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
     </div>
   </div>
 
@@ -288,6 +433,13 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   margin-bottom: 6px;
 }
 
+.release-header-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
 .release-heading {
   display: flex;
   align-items: center;
@@ -326,7 +478,6 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 .release-date {
   font-size: 12px;
   color: var(--text-muted);
-  margin-left: auto;
   white-space: nowrap;
 }
 
@@ -352,6 +503,70 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   margin-top: 4px;
   color: var(--text);
   line-height: 1.55;
+}
+
+.release-content {
+  margin-top: 4px;
+}
+
+.release-view-tabs {
+  display: inline-flex;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 2px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+.release-view-tab {
+  padding: 2px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.release-view-tab:hover {
+  color: var(--text);
+}
+
+.release-view-tab.active {
+  background: var(--surface);
+  color: var(--primary);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+}
+
+.release-body-text {
+  margin-top: 4px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+  max-height: 9em;
+  overflow: hidden;
+  border-radius: 4px;
+}
+
+.release-body-text.expanded {
+  max-height: none;
+}
+
+.release-expand-btn {
+  margin-top: 4px;
+  font-size: 11px;
+}
+
+.release-translating-hint {
+  margin-top: 4px;
+  padding: 12px;
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  background: var(--bg);
+  border-radius: 6px;
 }
 
 .release-importance-chip {
@@ -409,15 +624,6 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   line-height: 1.6;
   overflow-wrap: anywhere;
   pointer-events: none;
-}
-
-.release-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-  margin-top: 8px;
 }
 
 .status-inline {

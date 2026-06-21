@@ -77,6 +77,42 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     poll::check_single_source(app, id).await
 }
 
+/// 对单条 release 触发 AI 全文翻译。
+/// 用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
+/// 仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
+#[tauri::command]
+pub async fn translate_release(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    release_id: i64,
+) -> Result<(), String> {
+    // 读取该 release 的 body，无 body 则无需翻译
+    let body = {
+        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        // 已有译文则跳过
+        let existing = db::releases::get_release(&conn, release_id)
+            .map_err(|e| format!("查询失败: {}", e))?;
+        if let Some(ref r) = existing {
+            if r.body_translated.is_some() {
+                return Ok(());
+            }
+        }
+        existing
+            .ok_or_else(|| format!("err.release_not_found|{}", release_id))? // 安全地构造错误字符串
+            .body
+            .clone()
+    };
+    let body = body.ok_or_else(|| "err.empty_body".to_string())?;
+
+    // 委托给 deepseek 的批量翻译函数（它内部会校验 AI 开关、key、并发）
+    let saved = vec![(release_id, Some(body))];
+    crate::deepseek::generate_translations_for_new(&app, &saved, true).await;
+
+    // 翻译完成后通知前端刷新
+    let _ = app.emit("release-state-changed", release_id);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

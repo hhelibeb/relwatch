@@ -366,6 +366,7 @@ async function handleSave() {
       deepseekProxyBypass: s.deepseek_proxy_bypass,
       deepseekPrompt: s.deepseek_prompt,
       deepseekMinImportance: s.deepseek_min_importance,
+      deepseekTranslateRelease: s.deepseek_translate_release,
 
       checkPrereleases: s.check_prereleases,
       fetchHistory: s.fetch_history,
@@ -406,7 +407,7 @@ const trackedKeys = [
   'log_retention_days', 'check_prereleases', 'fetch_history',
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
   'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt',
-  'deepseek_min_importance', 'language', 'theme',
+  'deepseek_min_importance', 'deepseek_translate_release', 'language', 'theme',
 ] as const
 
 const dirtyFields = computed(() => {
@@ -428,7 +429,7 @@ const dirtyByTab = computed(() => {
   return {
     general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
-    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance'].filter(k => f.has(k)).length,
+    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
   }
 })
 
@@ -605,6 +606,11 @@ async function handleImportBackup() {
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.deepseek_proxy_bypass" />
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_proxy_bypass') || null">{{ t('settings.deepseek_proxy_bypass') }}</span>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.deepseek_translate_release" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_translate_release') || null">{{ t('settings.translate_release') }}</span>
+            <span class="setting-hint">{{ t('settings.translate_release_desc') }}</span>
           </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_api_key') || null">{{ t('settings.api_key') }}</span>
@@ -943,6 +949,7 @@ select.setting-input {
 
 .setting-row-checkbox {
   flex-direction: row;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
@@ -1006,6 +1013,16 @@ select.setting-input {
   color: var(--text-muted);
   margin: 4px 0 12px;
   line-height: 1.5;
+}
+
+.setting-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  flex-basis: 100%;
+  width: 100%;
+  margin-left: 0;
+  margin-top: -2px;
 }
 
 .backup-actions {

@@ -76,6 +76,7 @@ const defaultSettings = {
   deepseek_proxy_bypass: false,
   deepseek_prompt: '',
   deepseek_min_importance: '小',
+  deepseek_translate_release: false,
   check_prereleases: false,
   fetch_history: false,
   fetch_history_count: 1,

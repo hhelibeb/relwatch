@@ -50,6 +50,7 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     snooze_until: null,
     ai_summary: null,
     ai_importance: null,
+    body_translated: null,
     ...overrides,
   }
 }

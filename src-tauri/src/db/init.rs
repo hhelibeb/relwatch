@@ -236,6 +236,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
 
+    // ── Migration 9: body_translated + translate_retry_count on releases ──
+    // 用于 AI 翻译 release note 全文功能。
+    let has_body_translated: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='body_translated'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_body_translated {
+        conn.execute_batch(
+            "ALTER TABLE releases ADD COLUMN body_translated TEXT;
+             ALTER TABLE releases ADD COLUMN translate_retry_count INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -288,6 +301,10 @@ mod tests {
 
         // Migration 8: logs.rendered_message
         assert!(has_column(&conn, "logs", "rendered_message"));
+
+        // Migration 9: releases.body_translated, releases.translate_retry_count
+        assert!(has_column(&conn, "releases", "body_translated"));
+        assert!(has_column(&conn, "releases", "translate_retry_count"));
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> bool {

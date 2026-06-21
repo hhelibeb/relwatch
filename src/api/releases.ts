@@ -19,6 +19,7 @@ export interface ReleaseInfo {
   snooze_until: string | null
   ai_summary: string | null
   ai_importance: string | null
+  body_translated: string | null
 }
 
 export interface PollResult {
@@ -41,6 +42,10 @@ export async function setNotificationState(
 
 export async function deleteRelease(releaseId: number): Promise<void> {
   return invokeI18n('delete_release', { releaseId })
+}
+
+export async function translateRelease(releaseId: number): Promise<void> {
+  return invokeI18n('translate_release', { releaseId })
 }
 
 export async function triggerPoll(): Promise<PollResult> {

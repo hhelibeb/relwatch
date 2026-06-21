@@ -102,6 +102,7 @@ pub fn run() {
             commands::get_releases,
             commands::set_notification_state,
             commands::delete_release,
+            commands::translate_release,
             commands::clear_logs,
             commands::trigger_poll,
             commands::check_single_source,

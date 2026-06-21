@@ -66,6 +66,7 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     snooze_until: null,
     ai_summary: null,
     ai_importance: null,
+    body_translated: null,
     ...overrides,
   }
 }
@@ -189,13 +190,13 @@ describe('ReleaseItem.vue — 右键菜单: 摘要复制', () => {
     expect(wrapper.findComponent({ name: 'ContextMenu' }).exists()).toBe(true)
   })
 
-  it('摘要右键菜单选择"复制摘要" → 写入剪贴板', async () => {
+  it('摘要右键菜单选择"复制内容" → 写入剪贴板', async () => {
     const wrapper = mountRelease(createRelease({ ai_summary: '这是一个修复摘要' }))
 
     await wrapper.find('.release-summary-text').trigger('contextmenu', { clientX: 150, clientY: 250 })
 
     const ctxMenu = wrapper.findComponent({ name: 'ContextMenu' })
-    await ctxMenu.vm.$emit('action', 'copySummary')
+    await ctxMenu.vm.$emit('action', 'copyContent')
 
     expect(mockClipboard.writeText).toHaveBeenCalledWith('这是一个修复摘要')
   })
@@ -362,6 +363,7 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
     const wrapper = mountRelease(createRelease({
       ai_summary: '修复bug',
       ai_importance: null,
+    body_translated: null,
     }))
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(false)

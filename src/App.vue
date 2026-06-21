@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide } from 'vue'
-import { ShowToastKey } from './injection-keys'
+import { ShowToastKey, AiEnabledKey } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { listen } from '@tauri-apps/api/event'
@@ -41,6 +41,7 @@ const settings = ref<AppSettings>({
   deepseek_proxy_bypass: false,
   deepseek_prompt: '',
   deepseek_min_importance: '小',
+  deepseek_translate_release: false,
   check_prereleases: false,
   fetch_history: false,
   fetch_history_count: 1,
@@ -124,6 +125,7 @@ function showToast(msg: string) {
 }
 
 provide(ShowToastKey, showToast)
+provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
 
 function repoKey(owner: string, repo: string): string {
   return `${owner}/${repo}`.toLowerCase()

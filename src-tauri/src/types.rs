@@ -39,6 +39,7 @@ pub struct AppSettings {
     pub deepseek_proxy_bypass: bool,
     pub deepseek_prompt: String,
     pub deepseek_min_importance: String,
+    pub deepseek_translate_release: bool,
 
     pub check_prereleases: bool,
     pub fetch_history: bool,

@@ -221,6 +221,7 @@ async fn do_poll_core(
 
     if !all_saved.is_empty() {
         deepseek::generate_summaries_for_new(app, &all_saved).await;
+        deepseek::generate_translations_for_new(app, &all_saved, false).await;
     }
 
     let (_, new_releases) = collect_pending_and_notify(app, &all_new_ids, is_manual);
@@ -237,6 +238,20 @@ async fn do_poll_core(
     if !retry_releases.is_empty() {
         log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
         deepseek::generate_summaries_for_new(app, &retry_releases).await;
+    }
+
+    // 重试之前失败的 AI 译文生成
+    let retry_translations = {
+        let state = app.state::<AppState>();
+        if let Ok(conn) = state.db.get() {
+            db::releases::get_releases_without_translation(&conn).unwrap_or_default()
+        } else {
+            vec![]
+        }
+    };
+    if !retry_translations.is_empty() {
+        log::info!("正在重试 {} 个之前失败的 AI 译文", retry_translations.len());
+        deepseek::generate_translations_for_new(app, &retry_translations, false).await;
     }
 
     (all_new_ids, new_releases)
@@ -394,6 +409,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     if !saved.is_empty() {
         deepseek::generate_summaries_for_new(&app, &saved).await;
+        deepseek::generate_translations_for_new(&app, &saved, false).await;
     }
 
     let (_, new_releases) = collect_pending_and_notify(&app, &new_ids, false);

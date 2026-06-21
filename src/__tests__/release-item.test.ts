@@ -62,6 +62,7 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     snooze_until: null,
     ai_summary: null,
     ai_importance: null,
+    body_translated: null,
     ...overrides,
   }
 }
@@ -343,7 +344,7 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
       { id: 'deleteRelease', label: 'EN:context.delete_release' },
     ])
     expect((wrapper.vm as any).summaryMenuItems).toEqual([
-      { id: 'copySummary', label: 'EN:context.copy_summary' },
+      { id: 'copyContent', label: 'EN:context.copy_content' },
     ])
   })
 })

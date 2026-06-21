@@ -56,6 +56,7 @@ describe('updateSettings', () => {
     deepseekProxyBypass: false,
     deepseekPrompt: '',
     deepseekMinImportance: '小',
+    deepseekTranslateRelease: false,
     checkPrereleases: false,
     fetchHistory: false,
     fetchHistoryCount: 1,
