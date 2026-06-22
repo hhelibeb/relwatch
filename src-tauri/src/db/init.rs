@@ -249,6 +249,19 @@ fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // ── Migration 10: extra_metadata on releases ──
+    // 用于 HuggingFace 模型元数据（pipeline_tag/downloads/likes/gated/tags 等），
+    // body 列改为存储模型 README（人类可读内容）。
+    let has_extra_metadata: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='extra_metadata'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_extra_metadata {
+        conn.execute_batch(
+            "ALTER TABLE releases ADD COLUMN extra_metadata TEXT;",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -305,6 +318,9 @@ mod tests {
         // Migration 9: releases.body_translated, releases.translate_retry_count
         assert!(has_column(&conn, "releases", "body_translated"));
         assert!(has_column(&conn, "releases", "translate_retry_count"));
+
+        // Migration 10: releases.extra_metadata
+        assert!(has_column(&conn, "releases", "extra_metadata"));
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> bool {

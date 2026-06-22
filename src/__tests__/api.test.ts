@@ -22,7 +22,7 @@ vi.mock('../i18n', () => ({
   t: vi.fn((key: string) => key),
 }))
 
-import { parseGitHubUrl } from '../api/sources'
+import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl } from '../api/sources'
 import { translateError } from '../api/client'
 
 describe('parseGitHubUrl', () => {
@@ -94,6 +94,55 @@ describe('parseGitHubUrl', () => {
   it('rejects owner starting with hyphen', () => {
     const result = parseGitHubUrl('-badowner/repo')
     expect(result).toBeNull()
+  })
+})
+
+// ── parseHFOrgUrl / parseSourceUrl ───────────────────────────────
+
+describe('parseHFOrgUrl', () => {
+  it('解析 huggingface.co/<org> 链接', () => {
+    expect(parseHFOrgUrl('https://huggingface.co/moonshotai')).toBe('moonshotai')
+    expect(parseHFOrgUrl('https://huggingface.co/moonshotai/')).toBe('moonshotai')
+  })
+
+  it('解析 huggingface.co/organizations/<org> 链接', () => {
+    expect(parseHFOrgUrl('https://huggingface.co/organizations/moonshotai/')).toBe('moonshotai')
+    expect(parseHFOrgUrl('https://huggingface.co/organizations/moonshotai')).toBe('moonshotai')
+  })
+
+  it('排除保留路径（datasets/spaces/models 等）', () => {
+    expect(parseHFOrgUrl('https://huggingface.co/datasets')).toBeNull()
+    expect(parseHFOrgUrl('https://huggingface.co/spaces')).toBeNull()
+    expect(parseHFOrgUrl('https://huggingface.co/models')).toBeNull()
+  })
+
+  it('纯组织名直接返回', () => {
+    expect(parseHFOrgUrl('moonshotai')).toBe('moonshotai')
+  })
+
+  it('无效输入返回 null', () => {
+    expect(parseHFOrgUrl('1invalid')).toBeNull()
+    expect(parseHFOrgUrl('https://huggingface.co/datasets/org')).toBeNull()
+  })
+})
+
+describe('parseSourceUrl', () => {
+  it('GitHub 链接识别为 github 类型', () => {
+    expect(parseSourceUrl('https://github.com/microsoft/vscode')).toEqual({ type: 'github', owner: 'microsoft', repo: 'vscode' })
+    expect(parseSourceUrl('microsoft/vscode')).toEqual({ type: 'github', owner: 'microsoft', repo: 'vscode' })
+  })
+
+  it('HuggingFace 链接识别为 huggingface 类型', () => {
+    expect(parseSourceUrl('https://huggingface.co/moonshotai')).toEqual({ type: 'huggingface', owner: 'moonshotai', repo: '' })
+    expect(parseSourceUrl('https://huggingface.co/organizations/moonshotai/')).toEqual({ type: 'huggingface', owner: 'moonshotai', repo: '' })
+  })
+
+  it('纯组织名识别为 huggingface 类型', () => {
+    expect(parseSourceUrl('moonshotai')).toEqual({ type: 'huggingface', owner: 'moonshotai', repo: '' })
+  })
+
+  it('明确 HF 链接优先于 GitHub 短格式', () => {
+    expect(parseSourceUrl('https://huggingface.co/microsoft/vscode')?.type).toBe('huggingface')
   })
 })
 

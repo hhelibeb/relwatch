@@ -13,6 +13,7 @@ use crate::db::settings::{
 };
 use crate::crypto;
 use crate::github;
+use crate::huggingface;
 use crate::http;
 use crate::deepseek;
 use serde_json::json;
@@ -69,6 +70,7 @@ async fn fetch_for_source_async(
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     match source.source_type.as_str() {
         "github" => github::fetch_releases(client, &source.owner, &source.repo, per_page).await,
+        "huggingface" => huggingface::fetch_org_models(client, &source.owner, per_page).await,
         other => Err((0, format!("err.unsupported_source|{}", other))),
     }
 }
@@ -81,6 +83,7 @@ async fn fetch_all_for_source_async(
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     match source.source_type.as_str() {
         "github" => github::fetch_all_releases_with_limit(client, &source.owner, &source.repo, max_count).await,
+        "huggingface" => huggingface::fetch_all_org_models_with_limit(client, &source.owner, max_count).await,
         other => Err((0, format!("err.unsupported_source|{}", other))),
     }
 }
@@ -95,6 +98,44 @@ fn save_for_source(
         "github" => github::save_releases(conn, source.id, data, max_count),
         other => {
             log::error!("不支持的监控源类型: {}", other);
+            vec![]
+        }
+    }
+}
+
+/// HuggingFace 源的三阶段保存（避免 conn 跨 await）:
+/// 1. insert_new_models（持 conn，同步）
+/// 2. fetch_readmes（不持 conn，异步并行拉取 README）
+/// 3. finalize_models（重新获取 conn，同步回填 body+extra_metadata）
+async fn save_huggingface_models(
+    app: &tauri::AppHandle,
+    source: &db::sources::Source,
+    data: &[serde_json::Value],
+    max_count: usize,
+    client: &reqwest::Client,
+) -> Vec<(i64, Option<String>)> {
+    // 阶段 1：insert
+    let new_models = {
+        let state = app.state::<AppState>();
+        match state.db.get() {
+            Ok(conn) => huggingface::insert_new_models(&conn, source.id, data, max_count),
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return vec![];
+            }
+        }
+    };
+    if new_models.is_empty() {
+        return vec![];
+    }
+    // 阶段 2：并行拉取 README（不持 conn）
+    let readmes = huggingface::fetch_readmes(client, &new_models).await;
+    // 阶段 3：回填 body + extra_metadata
+    let state = app.state::<AppState>();
+    match state.db.get() {
+        Ok(conn) => huggingface::finalize_models(&conn, new_models, readmes),
+        Err(e) => {
+            log::error!("err.db_lock|{}", e);
             vec![]
         }
     }
@@ -375,7 +416,19 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             return Err(msg);
         }
     };
-    let saved: Vec<(i64, Option<String>)>;
+    let saved: Vec<(i64, Option<String>)> = if source_obj.source_type == "huggingface" {
+        save_huggingface_models(&app, &source_obj, &releases, max_count.unwrap_or(usize::MAX), &client).await
+    } else {
+        let state = app.state::<AppState>();
+        let conn = match state.db.get() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return Err(e.to_string());
+            }
+        };
+        save_for_source(&conn, &source_obj, &releases, max_count.unwrap_or(usize::MAX))
+    };
     {
         let state = app.state::<AppState>();
         let conn = match state.db.get() {
@@ -385,7 +438,6 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
                 return Err(e.to_string());
             }
         };
-        saved = save_for_source(&conn, &source_obj, &releases, max_count.unwrap_or(usize::MAX));
         if !saved.is_empty() {
             mark_older_as_read(&conn, source_obj.id, &saved);
         }
@@ -398,10 +450,12 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         );
     }
 
-    if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo).await {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            let _ = db::sources::update_source_description(&conn, source_obj.id, &desc);
+    if source_obj.source_type == "github" {
+        if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo).await {
+            let state = app.state::<AppState>();
+            if let Ok(conn) = state.db.get() {
+                let _ = db::sources::update_source_description(&conn, source_obj.id, &desc);
+            }
         }
     }
 
@@ -573,6 +627,19 @@ async fn poll_all_sources_async(
             };
             match fetch_result {
                 Ok(releases) => {
+                    let saved = if source.source_type == "huggingface" {
+                        save_huggingface_models(&app, &source, &releases, max_count.unwrap_or(usize::MAX), &client).await
+                    } else {
+                        let state = app.state::<AppState>();
+                        let conn = match state.db.get() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("err.db_lock|{}", e);
+                                return (vec![], vec![]);
+                            }
+                        };
+                        save_for_source(&conn, &source, &releases, max_count.unwrap_or(usize::MAX))
+                    };
                     let state = app.state::<AppState>();
                     let conn = match state.db.get() {
                         Ok(c) => c,
@@ -581,7 +648,6 @@ async fn poll_all_sources_async(
                             return (vec![], vec![]);
                         }
                     };
-                    let saved = save_for_source(&conn, &source, &releases, max_count.unwrap_or(usize::MAX));
                     if !saved.is_empty() {
                         mark_older_as_read(&conn, source.id, &saved);
                     }

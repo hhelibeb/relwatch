@@ -1,6 +1,6 @@
 use crate::db;
 use crate::types::AppState;
-use crate::{crypto, http, github};
+use crate::{crypto, http, github, huggingface};
 use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE};
 use serde_json::json;
 
@@ -49,12 +49,33 @@ pub async fn add_source(
                 return Err(e);
             }
         };
-        description = match github::fetch_repo_info(&client, &owner, &repo).await {
-            Ok(d) => d,
-            Err((status, msg)) => {
-                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+        description = match source_type.as_str() {
+            "github" => match github::fetch_repo_info(&client, &owner, &repo).await {
+                Ok(d) => d,
+                Err((status, msg)) => {
+                    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                    db::logs::write_log_key(
+                        &conn, level, "source.add_failed",
+                        &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
+                    );
+                    return Err(msg);
+                }
+            },
+            "huggingface" => {
+                if let Err((status, msg)) = huggingface::verify_org_exists(&client, &owner).await {
+                    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                    db::logs::write_log_key(
+                        &conn, level, "source.add_failed",
+                        &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
+                    );
+                    return Err(msg);
+                }
+                format!("HuggingFace organization: {}", owner)
+            }
+            other => {
+                let msg = format!("err.unsupported_source|{}", other);
                 db::logs::write_log_key(
-                    &conn, level, "source.add_failed",
+                    &conn, "ERROR", "source.add_failed",
                     &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
                 );
                 return Err(msg);

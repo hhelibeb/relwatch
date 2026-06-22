@@ -8,6 +8,7 @@ mod tray;
 mod types;
 mod http;
 mod github;
+mod huggingface;
 mod deepseek;
 mod poll;
 mod retry;

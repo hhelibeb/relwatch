@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SourceTab from '../components/SourceTab.vue'
 import { ShowToastKey } from '../injection-keys'
-import { parseGitHubUrl, addSource, removeSource, updateSource } from '../api/sources'
+import { parseSourceUrl, addSource, removeSource, updateSource } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
@@ -13,7 +13,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), confirm: vi.fn()
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ readText: vi.fn() }))
 
 vi.mock('../api/sources', () => ({
-  parseGitHubUrl: vi.fn(),
+  parseSourceUrl: vi.fn(),
   addSource: vi.fn(),
   removeSource: vi.fn(),
   updateSource: vi.fn(),
@@ -34,7 +34,7 @@ vi.mock('../i18n', () => ({
   getLocale: vi.fn(() => 'en'),
 }))
 
-const parseGitHubUrlMock = vi.mocked(parseGitHubUrl)
+const parseSourceUrlMock = vi.mocked(parseSourceUrl)
 const addSourceMock = vi.mocked(addSource)
 const removeSourceMock = vi.mocked(removeSource)
 const updateSourceMock = vi.mocked(updateSource)
@@ -107,11 +107,11 @@ function mountSourceTab(
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
-  parseGitHubUrlMock.mockImplementation((raw: string) => {
+  parseSourceUrlMock.mockImplementation((raw: string) => {
     const match = raw.match(/github\.com\/([^/]+)\/([^/?#]+)/)
-    if (match) return { owner: match[1], repo: match[2] }
+    if (match) return { type: 'github', owner: match[1], repo: match[2] }
     const shortMatch = raw.match(/^([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/([a-zA-Z0-9_.-]+)$/)
-    if (shortMatch) return { owner: shortMatch[1], repo: shortMatch[2] }
+    if (shortMatch) return { type: 'github', owner: shortMatch[1], repo: shortMatch[2] }
     return null
   })
   addSourceMock.mockResolvedValue(1)
@@ -139,7 +139,7 @@ describe('SourceTab — 添加 Source', () => {
     await addButton.trigger('click')
     await flushPromises()
 
-    expect(parseGitHubUrlMock).toHaveBeenCalledWith('https://github.com/vuejs/core')
+    expect(parseSourceUrlMock).toHaveBeenCalledWith('https://github.com/vuejs/core')
     expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core')
     expect((input.element as HTMLInputElement).value).toBe('')
   })
@@ -153,7 +153,7 @@ describe('SourceTab — 添加 Source', () => {
     await addButton.trigger('click')
     await flushPromises()
 
-    expect(parseGitHubUrlMock).toHaveBeenCalled()
+    expect(parseSourceUrlMock).toHaveBeenCalled()
     expect(addSourceMock).not.toHaveBeenCalled()
     expect(messageMock).toHaveBeenCalledWith('source.invalid_url', expect.any(Object))
   })
@@ -397,7 +397,7 @@ describe('SourceTab — 检查单个 Source 更新', () => {
           tag_name: 'v3.3.0', release_name: '3.3.0', html_url: 'https://github.com/vuejs/core/releases/tag/v3.3.0',
           published_at: '2025-06-01T00:00:00Z', prerelease: false, body: null,
           detected_at: '2025-06-01T00:00:00Z', notification_status: 'pending',
-          snooze_until: null, ai_summary: null, ai_importance: null, body_translated: null },
+          snooze_until: null, ai_summary: null, ai_importance: null, body_translated: null, extra_metadata: null },
       ],
     })
     const source = createSource({ id: 11 })

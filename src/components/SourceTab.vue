@@ -2,7 +2,7 @@
 import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { type Source, parseGitHubUrl, addSource, removeSource, updateSource } from '../api/sources'
+import { type Source, parseSourceUrl, addSource, removeSource, updateSource } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
@@ -182,8 +182,12 @@ const sortDirectionOptions = computed(() => [
 
 const { contextMenu, closeContextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
-function openSourceUrl(owner: string, repo: string) {
-  openReleaseUrl(`https://github.com/${owner}/${repo}`)
+function openSourceUrl(source: Source) {
+  if (source.source_type === 'huggingface') {
+    openReleaseUrl(`https://huggingface.co/${source.owner}`)
+  } else {
+    openReleaseUrl(`https://github.com/${source.owner}/${source.repo}`)
+  }
 }
 
 function sourceQuery(source: Source): string {
@@ -216,7 +220,7 @@ function sourceExists(owner: string, repo: string): boolean {
 async function handleAdd() {
   const raw = urlInput.value.trim()
   if (!raw) return
-  const parsed = parseGitHubUrl(raw)
+  const parsed = parseSourceUrl(raw)
   if (!parsed) {
     await message(t('source.invalid_url'), { title: t('source.input_invalid'), kind: 'warning' })
     return
@@ -227,7 +231,7 @@ async function handleAdd() {
   }
   loading.value = true
   try {
-    const id = await addSource('github', parsed.owner, parsed.repo)
+    const id = await addSource(parsed.type, parsed.owner, parsed.repo)
     if (id === 0) {
       showToast?.(t('source.exists'))
       return
@@ -239,7 +243,7 @@ async function handleAdd() {
     emit('update')
   } catch (e: unknown) {
     const errMsg = e instanceof Error ? e.message : String(e)
-    await message(tm('source.add_failed', { source_type: 'github', owner: parsed.owner, repo: parsed.repo, error: errMsg }), { title: t('settings.error'), kind: 'error' })
+    await message(tm('source.add_failed', { source_type: parsed.type, owner: parsed.owner, repo: parsed.repo, error: errMsg }), { title: t('settings.error'), kind: 'error' })
     emit('update')
   } finally {
     loading.value = false
@@ -626,8 +630,8 @@ function hideHealthTooltip() {
       </div>
         <div class="source-main">
           <div class="source-info">
-            <span class="source-name">{{ source.owner }}/{{ source.repo }}</span>
-            <button class="btn-icon-link" @click="openSourceUrl(source.owner, source.repo)" @contextmenu.prevent.stop="handleContextMenu($event, `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
+            <span class="source-name">{{ source.repo ? `${source.owner}/${source.repo}` : source.owner }}</span>
+            <button class="btn-icon-link" @click="openSourceUrl(source)" @contextmenu.prevent.stop="handleContextMenu($event, source.source_type === 'huggingface' ? `https://huggingface.co/${source.owner}` : `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
               <svg><use href="/icons.svg#link-icon"/></svg>
             </button>
             <button class="btn-icon-link" @click="openSourceReleases(source)" :title="t('source.view_releases')">

@@ -20,6 +20,7 @@ export interface ReleaseInfo {
   ai_summary: string | null
   ai_importance: string | null
   body_translated: string | null
+  extra_metadata: string | null
 }
 
 export interface PollResult {

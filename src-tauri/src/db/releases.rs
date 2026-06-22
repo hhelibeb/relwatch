@@ -22,6 +22,7 @@ pub struct ReleaseInfo {
     pub ai_summary: Option<String>,
     pub ai_importance: Option<String>,
     pub body_translated: Option<String>,
+    pub extra_metadata: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,6 +108,24 @@ pub fn set_body_translated(
     conn.execute(
         "UPDATE releases SET body_translated = ?1, translate_retry_count = 0 WHERE id = ?2",
         rusqlite::params![translated, release_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 设置 release 的 body 和 extra_metadata。
+///
+/// 用于 HuggingFace 源：insert_release 时 body 传空，插入成功后异步拉取 README
+/// 回填 body，同时写入模型元数据 JSON（pipeline_tag/downloads/likes 等）。
+pub fn set_release_body_and_metadata(
+    conn: &Connection,
+    release_id: i64,
+    body: Option<&str>,
+    extra_metadata: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE releases SET body = ?1, extra_metadata = ?2 WHERE id = ?3",
+        rusqlite::params![body, extra_metadata, release_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -204,7 +223,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                     r.tag_name, r.release_name, r.html_url, r.published_at,
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance, r.body_translated
+                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -232,6 +251,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                 ai_summary: row.get(14)?,
                 ai_importance: row.get(15)?,
                 body_translated: row.get(16)?,
+                extra_metadata: row.get(17)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -250,7 +270,7 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                     r.tag_name, r.release_name, r.html_url, r.published_at,
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance, r.body_translated
+                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -279,6 +299,7 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                 ai_summary: row.get(14)?,
                 ai_importance: row.get(15)?,
                 body_translated: row.get(16)?,
+                extra_metadata: row.get(17)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -326,7 +347,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 r.tag_name, r.release_name, r.html_url, r.published_at,
                 r.prerelease, r.body, r.detected_at,
                 COALESCE(ns.status, 'pending'), ns.snooze_until,
-                r.ai_summary, r.ai_importance, r.body_translated
+                r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata
          FROM releases r
          JOIN sources s ON r.source_id = s.id
          LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -357,6 +378,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 ai_summary: row.get(14)?,
                 ai_importance: row.get(15)?,
                 body_translated: row.get(16)?,
+                extra_metadata: row.get(17)?,
             })
         })
         .map_err(|e| e.to_string())?

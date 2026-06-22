@@ -34,6 +34,7 @@ const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
   } else if (translating.value) {
     modes.push({ mode: 'translated', label: t('release.view_translating') })
   }
+  // HuggingFace 源的 body 是模型 README（人类可读），作为“原文”展示
   if (props.release.body) modes.push({ mode: 'full', label: t('release.view_full') })
   return modes
 })
@@ -311,6 +312,68 @@ function releaseDisplayTitle(release: ReleaseInfo): string {
   return name && name !== release.tag_name ? name : ''
 }
 
+// ========== HuggingFace 模型元数据 ==========
+// HF 源的 release.extra_metadata 存储模型元数据 JSON（pipeline_tag/downloads/likes/gated/tags）
+// body 列存模型 README（人类可读内容）
+interface HfMeta {
+  pipeline_tag: string | null
+  downloads: number | null
+  likes: number | null
+  gated: boolean | null
+}
+
+const hfMeta = computed<HfMeta | null>(() => {
+  if (props.release.source_type !== 'huggingface' || !props.release.extra_metadata) return null
+  try {
+    const obj = JSON.parse(props.release.extra_metadata)
+    return {
+      pipeline_tag: typeof obj.pipeline_tag === 'string' ? obj.pipeline_tag : null,
+      downloads: typeof obj.downloads === 'number' ? obj.downloads : null,
+      likes: typeof obj.likes === 'number' ? obj.likes : null,
+      gated: typeof obj.gated === 'boolean' ? obj.gated : null,
+    }
+  } catch {
+    return null
+  }
+})
+
+function formatCount(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
+  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K'
+  return String(n)
+}
+
+// HF 源 tooltip 内容：pipeline_tag / downloads / likes / gated
+const hfTooltip = computed<string | null>(() => {
+  if (!hfMeta.value) return null
+  const parts: string[] = []
+  if (hfMeta.value.pipeline_tag) parts.push(`${t('release.hf_pipeline_tag')}: ${hfMeta.value.pipeline_tag}`)
+  if (hfMeta.value.downloads != null) parts.push(`${t('release.hf_downloads')}: ${formatCount(hfMeta.value.downloads)}`)
+  if (hfMeta.value.likes != null) parts.push(`${t('release.hf_likes')}: ${formatCount(hfMeta.value.likes)}`)
+  if (hfMeta.value.gated) parts.push('gated')
+  return parts.length ? parts.join('  ·  ') : null
+})
+
+const hfHoverTooltip = ref<{ visible: boolean; x: number; y: number } | null>(null)
+
+function showHfTooltip(e: MouseEvent) {
+  if (!hfTooltip.value) return
+  hfHoverTooltip.value = { visible: true, x: e.clientX + 10, y: e.clientY + 10 }
+}
+
+function moveHfTooltip(e: MouseEvent) {
+  if (!hfHoverTooltip.value) return
+  hfHoverTooltip.value.x = e.clientX + 10
+  hfHoverTooltip.value.y = e.clientY + 10
+}
+
+function hideHfTooltip() {
+  hfHoverTooltip.value = null
+}
+
+// HF 源 tag_name 已含组织名（如 moonshotai/Kimi-K2.7-Code），不重复显示 release-repo 前缀
+const showReleaseRepo = computed(() => props.release.source_type !== 'huggingface')
+
 function releaseImportanceText(release: ReleaseInfo): string {
   return release.ai_importance || ''
 }
@@ -330,8 +393,8 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
     <div class="release-header">
       <div class="release-heading">
-        <span class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-        <span class="release-tag">{{ release.tag_name }}</span>
+        <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
+        <span class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
         <span class="release-dot">·</span>
         <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
         <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
@@ -395,6 +458,15 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     :style="{ left: summaryTooltip.x + 'px', top: summaryTooltip.y + 'px' }"
   >
     {{ summaryTooltip.text }}
+  </div>
+
+  <!-- HF 模型元数据悬浮提示 -->
+  <div
+    v-if="hfHoverTooltip?.visible && hfTooltip"
+    class="release-summary-tooltip release-hf-tooltip"
+    :style="{ left: hfHoverTooltip.x + 'px', top: hfHoverTooltip.y + 'px' }"
+  >
+    {{ hfTooltip }}
   </div>
 </template>
 <style scoped>
@@ -494,6 +566,20 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 .badge-pre {
   background: #f3e8ff;
   color: #9333ea;
+}
+
+.badge-hf-tag {
+  background: #ffedd5;
+  color: #c2410c;
+}
+
+.release-tag-hf {
+  cursor: help;
+  text-decoration: underline dotted rgba(37, 99, 235, 0.4);
+}
+
+.release-hf-tooltip {
+  white-space: nowrap;
 }
 
 .release-summary-line {
