@@ -373,6 +373,7 @@ async function handleSave() {
       fetchHistoryCount: s.fetch_history_count ?? 1,
       language: s.language,
       theme: s.theme,
+      showSourceTypeIcons: s.show_source_type_icons,
     })
     // 主设置持久化成功后再写凭据；若凭据写入失败，走外层 catch 提示 save_failed，
     // 此时主设置已存、凭据未存，用户可重试凭据。
@@ -407,7 +408,7 @@ const trackedKeys = [
   'log_retention_days', 'check_prereleases', 'fetch_history',
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
   'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt',
-  'deepseek_min_importance', 'deepseek_translate_release', 'language', 'theme',
+  'deepseek_min_importance', 'deepseek_translate_release', 'language', 'theme', 'show_source_type_icons',
 ] as const
 
 const dirtyFields = computed(() => {
@@ -428,7 +429,7 @@ const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
     general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
-    appearance: ['language', 'theme', 'minimize_to_tray'].filter(k => f.has(k)).length,
+    appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'].filter(k => f.has(k)).length,
     ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
   }
 })
@@ -721,6 +722,10 @@ async function handleImportBackup() {
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.minimize_to_tray" />
             <span class="setting-label" :data-dirty="dirtyFields.has('minimize_to_tray') || null">{{ t('settings.minimize_tray') }}</span>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.show_source_type_icons" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('show_source_type_icons') || null">{{ t('settings.show_source_type_icons') }}</span>
           </label>
         </div>
         <div v-if="settingsTab !== 'data'" class="setting-actions">

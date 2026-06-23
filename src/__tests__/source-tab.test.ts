@@ -93,6 +93,7 @@ function mountSourceTab(
       polling: false,
       unreadReleaseCounts: opts.unreadReleaseCounts ?? {},
       totalReleaseCounts: opts.totalReleaseCounts ?? {},
+      showSourceTypeIcons: true,
     },
     global: {
       provide: {
@@ -417,6 +418,7 @@ describe('SourceTab — 检查单个 Source 更新', () => {
         polling: true,
         unreadReleaseCounts: {},
         totalReleaseCounts: {},
+        showSourceTypeIcons: true,
       },
       global: {
         provide: { [ShowToastKey as symbol]: vi.fn() },

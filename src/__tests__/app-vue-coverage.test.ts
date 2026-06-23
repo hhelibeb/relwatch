@@ -85,6 +85,7 @@ const defaultSettings = {
   fetch_history_count: 1,
   language: 'zh-CN',
   theme: 'system',
+  show_source_type_icons: true,
   github_token_set: false,
 }
 

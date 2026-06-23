@@ -479,6 +479,7 @@ describe('SourceTab header mode switch', () => {
         polling: false,
         unreadReleaseCounts: {},
         totalReleaseCounts: {},
+        showSourceTypeIcons: true,
       },
       global: {
         stubs: { ContextMenu: true },

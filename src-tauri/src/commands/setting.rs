@@ -13,12 +13,12 @@ use crate::db::settings::{
     KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
-    KEY_LANGUAGE, KEY_THEME, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
+    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
     DEFAULT_DEEPSEEK_TRANSLATE_RELEASE,
-    DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME,
+    DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME, DEFAULT_SHOW_SOURCE_TYPE_ICONS,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
     strip_prompt_suffix,
 };
@@ -53,6 +53,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
         fetch_history_count: get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1)?.max(0),
         language: get_setting_str(&conn, KEY_LANGUAGE, &get_default_language())?,
         theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
+        show_source_type_icons: get_setting_bool(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, true)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
             .chars()
             .next()
@@ -83,6 +84,7 @@ pub struct UpdateSettingsPayload {
     fetch_history_count: i64,
     language: String,
     theme: String,
+    show_source_type_icons: bool,
 }
 
 #[tauri::command]
@@ -116,6 +118,7 @@ pub fn update_settings(
     let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
     let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
     let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
+    let old_show_icons = get_setting_str(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, DEFAULT_SHOW_SOURCE_TYPE_ICONS)?;
 
     let (interval_changed, changes) = settings::apply_settings(
         &conn,
@@ -142,6 +145,7 @@ pub fn update_settings(
             // 切换语言后日志搜索仅对新写入的行生效，旧行以原 locale 的 rendered_message 存在。
             // 参见 write_log_key 中的注释了解设计取舍。
             (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
+            (KEY_SHOW_SOURCE_TYPE_ICONS, &old_show_icons, &payload.show_source_type_icons.to_string(), "setting.show_source_type_icons"),
         ],
     )?;
 
@@ -463,6 +467,7 @@ mod tests {
             (KEY_FETCH_HISTORY_COUNT, "3"),
             (KEY_LANGUAGE, "zh-CN"),
             (KEY_THEME, "system"),
+            (KEY_SHOW_SOURCE_TYPE_ICONS, "true"),
         ];
         for &(key, val) in &old_values {
             settings::set_setting(&conn, key, val).unwrap();
@@ -488,6 +493,7 @@ mod tests {
             (KEY_FETCH_HISTORY_COUNT, "5"),
             (KEY_LANGUAGE, "en-US"),
             (KEY_THEME, "dark"),
+            (KEY_SHOW_SOURCE_TYPE_ICONS, "false"),
         ];
 
         let items: Vec<(&str, &str, &str, &str)> = old_values.iter()
@@ -498,7 +504,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 18,
+        assert_eq!(items.len(), 19,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -513,7 +519,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 18;
+        const EXPECTED_SETTING_FIELDS: usize = 19;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyMode": "none",
@@ -534,6 +540,7 @@ mod tests {
             "fetchHistoryCount": 3,
             "language": "zh-CN",
             "theme": "system",
+            "showSourceTypeIcons": true,
         });
         let payload: UpdateSettingsPayload = serde_json::from_value(json)
             .expect("UpdateSettingsPayload 反序列化失败，前端字段名可能不匹配");
@@ -556,6 +563,7 @@ mod tests {
         assert_eq!(payload.fetch_history_count, 3);
         assert_eq!(payload.language, "zh-CN");
         assert_eq!(payload.theme, "system");
+        assert!(payload.show_source_type_icons);
 
         // 常量标记，修改配置项时需同步改这里
         let _guard = EXPECTED_SETTING_FIELDS;

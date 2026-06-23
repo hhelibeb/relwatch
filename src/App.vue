@@ -47,6 +47,7 @@ const settings = ref<AppSettings>({
   fetch_history_count: 1,
   language: 'zh-CN',
   theme: 'system',
+  show_source_type_icons: true,
   github_token_set: false,
 })
 
@@ -387,7 +388,7 @@ onUnmounted(() => {
     </header>
 
     <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
-      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts"
+      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts" :show-source-type-icons="settings.show_source_type_icons"
         @update="loadSources(); loadReleases(); refreshLogs()"
         @check-result="handleSourceCheckResult"
         @check-busy="sourceChecking = $event"

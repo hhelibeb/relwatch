@@ -21,6 +21,7 @@ export interface AppSettings {
   fetch_history_count: number
   language: string
   theme: string
+  show_source_type_icons: boolean
   github_token_set: boolean
 }
 
@@ -44,6 +45,7 @@ export interface UpdateSettingsPayload {
   fetchHistoryCount: number
   language: string
   theme: string
+  showSourceTypeIcons: boolean
 }
 
 export async function getSettings(): Promise<AppSettings> {

@@ -10,7 +10,7 @@ import ContextMenu from './common/ContextMenu.vue'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 
-const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number> }>()
+const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean }>()
 const emit = defineEmits<{
   update: []
   checkResult: [count: number]
@@ -630,6 +630,9 @@ function hideHealthTooltip() {
       </div>
         <div class="source-main">
           <div class="source-info">
+            <span v-if="props.showSourceTypeIcons" class="source-type-badge" :class="source.source_type" :title="source.source_type === 'huggingface' ? t('source.type_huggingface') : t('source.type_github')">
+              <svg><use :href="source.source_type === 'huggingface' ? '/icons.svg#huggingface-icon' : '/icons.svg#github-mark'"/></svg>
+            </span>
             <span class="source-name">{{ source.repo ? `${source.owner}/${source.repo}` : source.owner }}</span>
             <button class="btn-icon-link" @click="openSourceUrl(source)" @contextmenu.prevent.stop="handleContextMenu($event, source.source_type === 'huggingface' ? `https://huggingface.co/${source.owner}` : `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
               <svg><use href="/icons.svg#link-icon"/></svg>
@@ -861,6 +864,33 @@ function hideHealthTooltip() {
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.source-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  cursor: help;
+}
+
+.source-type-badge svg {
+  width: 13px;
+  height: 13px;
+}
+
+.source-type-badge.github {
+  background: #181717;
+  color: #ffffff;
+}
+
+.source-type-badge.huggingface {
+  background: #ffffff;
+  color: #ffd21e;
+  border: 1px solid var(--border);
 }
 
 .source-name {

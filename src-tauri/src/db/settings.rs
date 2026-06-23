@@ -20,6 +20,7 @@ pub const KEY_FETCH_HISTORY: &str = "fetch_history";
 pub const KEY_FETCH_HISTORY_COUNT: &str = "fetch_history_count";
 pub const KEY_LANGUAGE: &str = "language";
 pub const KEY_THEME: &str = "theme";
+pub const KEY_SHOW_SOURCE_TYPE_ICONS: &str = "show_source_type_icons";
 pub const KEY_AUTO_START: &str = "auto_start";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
 pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
@@ -88,6 +89,7 @@ pub const DEFAULT_DEEPSEEK_TRANSLATE_PROMPT: &str = concat!(
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";
 pub const DEFAULT_THEME: &str = "system";
+pub const DEFAULT_SHOW_SOURCE_TYPE_ICONS: &str = "true";
 
 // ── 语言检测 ────────────────────────────────────────
 

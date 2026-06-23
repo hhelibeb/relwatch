@@ -46,5 +46,6 @@ pub struct AppSettings {
     pub fetch_history_count: i64,
     pub language: String,
     pub theme: String,
+    pub show_source_type_icons: bool,
     pub github_token_set: bool,
 }

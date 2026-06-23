@@ -62,6 +62,7 @@ describe('updateSettings', () => {
     fetchHistoryCount: 1,
     language: 'zh-CN',
     theme: 'light',
+    showSourceTypeIcons: true,
   }
 
   it('调起 update_settings 命令并传递 payload', async () => {
