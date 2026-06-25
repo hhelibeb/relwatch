@@ -9,6 +9,7 @@ mod types;
 mod http;
 mod github;
 mod huggingface;
+pub mod source;
 mod deepseek;
 mod poll;
 mod retry;

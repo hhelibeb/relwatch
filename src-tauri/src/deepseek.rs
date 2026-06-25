@@ -1,5 +1,4 @@
 use rusqlite::Connection;
-use tauri::Manager;
 
 use crate::crypto;
 use crate::db;
@@ -11,7 +10,6 @@ use crate::db::settings::{
     DEFAULT_DEEPSEEK_TRANSLATE_PROMPT, DEFAULT_DEEPSEEK_TRANSLATE_RELEASE,
     DEEPSEEK_PROMPT_FIXED_SUFFIX,
 };
-use crate::types::AppState;
 
 pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>, String) {
     let enabled = db::settings::get_setting(conn, KEY_DEEPSEEK_ENABLED)
@@ -288,14 +286,14 @@ async fn call_translate(
 }
 
 pub async fn generate_summaries_for_new(
-    app: &tauri::AppHandle,
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
 ) {
     let (enabled, model, base_url, api_key, prompt, proxy_url, proxy_mode);
 
     {
-        let state = app.state::<AppState>();
-        let conn = match state.db.get() {
+        let conn = match db_pool.get() {
             Ok(c) => c,
             Err(e) => {
                 log::error!("数据库连接失败: {}", e);
@@ -345,11 +343,7 @@ pub async fn generate_summaries_for_new(
         }
     };
 
-    let semaphore: std::sync::Arc<tokio::sync::Semaphore>;
-    {
-        let state = app.state::<AppState>();
-        semaphore = state.deepseek_semaphore.clone();
-    }
+    let semaphore = deepseek_semaphore.clone();
     let mut handles = Vec::new();
     for (release_id, body) in saved {
         let body_text = match body {
@@ -361,7 +355,8 @@ pub async fn generate_summaries_for_new(
         let model = model.clone();
         let base_url = base_url.clone();
         let prompt = prompt.clone();
-        let app = app.clone();
+        let db = db_pool.clone();
+        let db2 = db_pool.clone();
         let release_id = *release_id;
         let sem_clone = semaphore.clone();
 
@@ -375,52 +370,58 @@ pub async fn generate_summaries_for_new(
             };
             match call_summary(&client, &model, &base_url, &prompt, &truncated).await {
                 Ok((summary, importance)) => {
-                    let conn = match app.state::<AppState>().db.get() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!("数据库连接失败: {}", e);
-                            return;
+                    // 同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let conn = match db.get() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("数据库连接失败: {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = db::releases::set_ai_summary(
+                            &conn, release_id, &summary, &importance,
+                        ) {
+                            log::error!("保存摘要失败 id={}: {}", release_id, e);
+                        } else {
+                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+                            match rel {
+                                Some(r) => db::logs::write_log(
+                                    &conn,
+                                    "INFO",
+                                    &format!("AI 摘要已生成: {}/{} {} 重要度={}", r.owner, r.repo, r.tag_name, importance),
+                                ),
+                                None => db::logs::write_log(
+                                    &conn,
+                                    "INFO",
+                                    &format!("AI 摘要已生成: id={} 重要度={}", release_id, importance),
+                                ),
+                            }
                         }
-                    };
-                    if let Err(e) = db::releases::set_ai_summary(
-                        &conn, release_id, &summary, &importance,
-                    ) {
-                        log::error!("保存摘要失败 id={}: {}", release_id, e);
-                    } else {
-                        let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                        match rel {
-                            Some(r) => db::logs::write_log(
-                                &conn,
-                                "INFO",
-                                &format!("AI 摘要已生成: {}/{} {} 重要度={}", r.owner, r.repo, r.tag_name, importance),
-                            ),
-                            None => db::logs::write_log(
-                                &conn,
-                                "INFO",
-                                &format!("AI 摘要已生成: id={} 重要度={}", release_id, importance),
-                            ),
-                        }
-                    }
+                    })
+                    .await;
                 }
                 Err(e) => {
                     log::error!("生成摘要失败 id={}: {}", release_id, e);
-                    let state = app.state::<AppState>();
-                    if let Ok(conn) = state.db.get() {
-                        let _ = db::releases::increment_retry_count(&conn, release_id);
-                        let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                        match rel {
-                            Some(r) => db::logs::write_log(
-                                &conn,
-                                "ERROR",
-                                &format!("AI 摘要生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
-                            ),
-                            None => db::logs::write_log(
-                                &conn,
-                                "ERROR",
-                                &format!("AI 摘要生成失败: id={}: {}", release_id, e),
-                            ),
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Ok(conn) = db2.get() {
+                            let _ = db::releases::increment_retry_count(&conn, release_id);
+                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+                            match rel {
+                                Some(r) => db::logs::write_log(
+                                    &conn,
+                                    "ERROR",
+                                    &format!("AI 摘要生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
+                                ),
+                                None => db::logs::write_log(
+                                    &conn,
+                                    "ERROR",
+                                    &format!("AI 摘要生成失败: id={}: {}", release_id, e),
+                                ),
+                            }
                         }
-                    }
+                    })
+                    .await;
                 }
             }
         }));
@@ -436,15 +437,15 @@ pub async fn generate_summaries_for_new(
 /// - `force=false`：仅在 `deepseek_translate_release=true` 且已配置 API key 时生效（轮询自动场景）
 /// - `force=true`：绕过 `translate_enabled` 开关，只要 AI 已启用且配置 key 即翻译（手动单条场景）
 pub async fn generate_translations_for_new(
-    app: &tauri::AppHandle,
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
     force: bool,
 ) {
     let (enabled, model, base_url, api_key, proxy_url, proxy_mode, translate_enabled, target_lang);
 
     {
-        let state = app.state::<AppState>();
-        let conn = match state.db.get() {
+        let conn = match db_pool.get() {
             Ok(c) => c,
             Err(e) => {
                 log::error!("数据库连接失败: {}", e);
@@ -497,11 +498,7 @@ pub async fn generate_translations_for_new(
         }
     };
 
-    let semaphore: std::sync::Arc<tokio::sync::Semaphore>;
-    {
-        let state = app.state::<AppState>();
-        semaphore = state.deepseek_semaphore.clone();
-    }
+    let semaphore = deepseek_semaphore.clone();
     let mut handles = Vec::new();
     for (release_id, body) in saved {
         let body_text = match body {
@@ -514,7 +511,8 @@ pub async fn generate_translations_for_new(
         let model = model.clone();
         let base_url = base_url.clone();
         let target_lang = target_lang.clone();
-        let app = app.clone();
+        let db = db_pool.clone();
+        let db2 = db_pool.clone();
         let release_id = *release_id;
         let sem_clone = semaphore.clone();
 
@@ -532,67 +530,77 @@ pub async fn generate_translations_for_new(
             let sample: String = truncated.chars().take(500).collect();
             if let Ok(detected) = call_detect_language(&client, &model, &base_url, &sample).await {
                 if detected.trim() == target_lang {
-                    let conn = match app.state::<AppState>().db.get() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!("数据库连接失败: {}", e);
-                            return;
+                    // 同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
+                    let target_lang_log = target_lang.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let conn = match db.get() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("数据库连接失败: {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = db::releases::set_body_translated(&conn, release_id, &truncated) {
+                            log::error!("保存译文失败 id={}: {}", release_id, e);
+                        } else {
+                            log::info!("跳过翻译(语言一致): id={} lang={}", release_id, target_lang_log);
                         }
-                    };
-                    if let Err(e) = db::releases::set_body_translated(&conn, release_id, &truncated) {
-                        log::error!("保存译文失败 id={}: {}", release_id, e);
-                    } else {
-                        log::info!("跳过翻译(语言一致): id={} lang={}", release_id, target_lang);
-                    }
+                    })
+                    .await;
                     return;
                 }
             }
             match call_translate(&client, &model, &base_url, &target_lang, &truncated).await {
                 Ok(translated) => {
-                    let conn = match app.state::<AppState>().db.get() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!("数据库连接失败: {}", e);
-                            return;
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let conn = match db.get() {
+                            Ok(c) => c,
+                            Err(e) => {
+                                log::error!("数据库连接失败: {}", e);
+                                return;
+                            }
+                        };
+                        if let Err(e) = db::releases::set_body_translated(&conn, release_id, &translated) {
+                            log::error!("保存译文失败 id={}: {}", release_id, e);
+                        } else {
+                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+                            match rel {
+                                Some(r) => db::logs::write_log(
+                                    &conn,
+                                    "INFO",
+                                    &format!("AI 译文已生成: {}/{} {}", r.owner, r.repo, r.tag_name),
+                                ),
+                                None => db::logs::write_log(
+                                    &conn,
+                                    "INFO",
+                                    &format!("AI 译文已生成: id={}", release_id),
+                                ),
+                            }
                         }
-                    };
-                    if let Err(e) = db::releases::set_body_translated(&conn, release_id, &translated) {
-                        log::error!("保存译文失败 id={}: {}", release_id, e);
-                    } else {
-                        let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                        match rel {
-                            Some(r) => db::logs::write_log(
-                                &conn,
-                                "INFO",
-                                &format!("AI 译文已生成: {}/{} {}", r.owner, r.repo, r.tag_name),
-                            ),
-                            None => db::logs::write_log(
-                                &conn,
-                                "INFO",
-                                &format!("AI 译文已生成: id={}", release_id),
-                            ),
-                        }
-                    }
+                    })
+                    .await;
                 }
                 Err(e) => {
                     log::error!("生成译文失败 id={}: {}", release_id, e);
-                    let state = app.state::<AppState>();
-                    if let Ok(conn) = state.db.get() {
-                        let _ = db::releases::increment_translate_retry_count(&conn, release_id);
-                        let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                        match rel {
-                            Some(r) => db::logs::write_log(
-                                &conn,
-                                "ERROR",
-                                &format!("AI 译文生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
-                            ),
-                            None => db::logs::write_log(
-                                &conn,
-                                "ERROR",
-                                &format!("AI 译文生成失败: id={}: {}", release_id, e),
-                            ),
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Ok(conn) = db2.get() {
+                            let _ = db::releases::increment_translate_retry_count(&conn, release_id);
+                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+                            match rel {
+                                Some(r) => db::logs::write_log(
+                                    &conn,
+                                    "ERROR",
+                                    &format!("AI 译文生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
+                                ),
+                                None => db::logs::write_log(
+                                    &conn,
+                                    "ERROR",
+                                    &format!("AI 译文生成失败: id={}: {}", release_id, e),
+                                ),
+                            }
                         }
-                    }
+                    })
+                    .await;
                 }
             }
         }));

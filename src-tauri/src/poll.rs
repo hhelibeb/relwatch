@@ -13,12 +13,11 @@ use crate::db::settings::{
 };
 use crate::crypto;
 use crate::github;
-use crate::huggingface;
 use crate::http;
 use crate::deepseek;
+use crate::source;
 use serde_json::json;
-use crate::notify;
-use crate::types::{AppState, PollResult};
+use crate::types::{AppState, PollResult, ReleaseNotifyParams};
 
 static POLL_LOCK: AtomicBool = AtomicBool::new(false);
 static POLL_RUNNING: AtomicBool = AtomicBool::new(true);
@@ -61,84 +60,6 @@ fn get_github_token(conn: &rusqlite::Connection) -> Option<String> {
         }
     }
     Some(plain)
-}
-
-async fn fetch_for_source_async(
-    client: &reqwest::Client,
-    source: &db::sources::Source,
-    per_page: usize,
-) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    match source.source_type.as_str() {
-        "github" => github::fetch_releases(client, &source.owner, &source.repo, per_page).await,
-        "huggingface" => huggingface::fetch_org_models(client, &source.owner, per_page).await,
-        other => Err((0, format!("err.unsupported_source|{}", other))),
-    }
-}
-
-/// 使用分页拉取全部 releases（仅首次全量查询时使用）。
-async fn fetch_all_for_source_async(
-    client: &reqwest::Client,
-    source: &db::sources::Source,
-    max_count: Option<usize>,
-) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    match source.source_type.as_str() {
-        "github" => github::fetch_all_releases_with_limit(client, &source.owner, &source.repo, max_count).await,
-        "huggingface" => huggingface::fetch_all_org_models_with_limit(client, &source.owner, max_count).await,
-        other => Err((0, format!("err.unsupported_source|{}", other))),
-    }
-}
-
-fn save_for_source(
-    conn: &rusqlite::Connection,
-    source: &db::sources::Source,
-    data: &[serde_json::Value],
-    max_count: usize,
-) -> Vec<(i64, Option<String>)> {
-    match source.source_type.as_str() {
-        "github" => github::save_releases(conn, source.id, data, max_count),
-        other => {
-            log::error!("不支持的监控源类型: {}", other);
-            vec![]
-        }
-    }
-}
-
-/// HuggingFace 源的三阶段保存（避免 conn 跨 await）:
-/// 1. insert_new_models（持 conn，同步）
-/// 2. fetch_readmes（不持 conn，异步并行拉取 README）
-/// 3. finalize_models（重新获取 conn，同步回填 body+extra_metadata）
-async fn save_huggingface_models(
-    app: &tauri::AppHandle,
-    source: &db::sources::Source,
-    data: &[serde_json::Value],
-    max_count: usize,
-    client: &reqwest::Client,
-) -> Vec<(i64, Option<String>)> {
-    // 阶段 1：insert
-    let new_models = {
-        let state = app.state::<AppState>();
-        match state.db.get() {
-            Ok(conn) => huggingface::insert_new_models(&conn, source.id, data, max_count),
-            Err(e) => {
-                log::error!("err.db_lock|{}", e);
-                return vec![];
-            }
-        }
-    };
-    if new_models.is_empty() {
-        return vec![];
-    }
-    // 阶段 2：并行拉取 README（不持 conn）
-    let readmes = huggingface::fetch_readmes(client, &new_models).await;
-    // 阶段 3：回填 body + extra_metadata
-    let state = app.state::<AppState>();
-    match state.db.get() {
-        Ok(conn) => huggingface::finalize_models(&conn, new_models, readmes),
-        Err(e) => {
-            log::error!("err.db_lock|{}", e);
-            vec![]
-        }
-    }
 }
 
 /// 根据 fetch_history 配置计算分页参数。
@@ -238,6 +159,23 @@ fn mark_older_as_read(conn: &rusqlite::Connection, source_id: i64, saved: &[(i64
     }
 }
 
+/// Post-save 事务性步骤：mark_older_as_read → record_check_success → 返回 (ids, saved)。
+/// 从 `poll_all_sources_async` 和 `check_single_source` 的 spawn_blocking 闭包中提取，
+/// 便于直接测试真实代码路径，消除 `simulate_fetch_save_mark_record` 等价副本。
+fn post_save_mark_record(
+    conn: &rusqlite::Connection,
+    source_id: i64,
+    saved: &[(i64, Option<String>)],
+) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
+    if !saved.is_empty() {
+        mark_older_as_read(conn, source_id, saved);
+    }
+    let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
+    let new_count = ids.len();
+    let _ = db::sources::record_check_success(conn, source_id, new_count);
+    (ids, saved.to_vec())
+}
+
 pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
     do_trigger_poll_async(app).await
@@ -246,7 +184,9 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 /// 两个 do_*_poll_async 函数的公共核心：拉取所有源 → AI 摘要 → 通知 → 重试失败摘要
 #[allow(clippy::too_many_arguments)]
 async fn do_poll_core(
-    app: &tauri::AppHandle,
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    emitter: &dyn crate::types::Emitter,
     sources: &[db::sources::Source],
     proxy_url: &str,
     proxy_mode: &str,
@@ -256,43 +196,45 @@ async fn do_poll_core(
     is_manual: bool,
 ) -> (Vec<i64>, Vec<db::releases::ReleaseInfo>) {
     let (all_new_ids, all_saved) = poll_all_sources_async(
-        app, sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count,
+        db_pool, sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count,
     )
     .await;
 
     if !all_saved.is_empty() {
-        deepseek::generate_summaries_for_new(app, &all_saved).await;
-        deepseek::generate_translations_for_new(app, &all_saved, false).await;
+        deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &all_saved).await;
+        deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &all_saved, false).await;
     }
 
-    let (_, new_releases) = collect_pending_and_notify(app, &all_new_ids, is_manual);
+    let (_, new_releases) = collect_pending_and_notify(db_pool, emitter, &all_new_ids, is_manual).await;
 
-    // 重试之前失败的 AI 摘要生成
-    let retry_releases = {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            db::releases::get_releases_without_summary(&conn).unwrap_or_default()
-        } else {
-            vec![]
-        }
-    };
+    // 重试之前失败的 AI 摘要 / 译文：两份失败名单读取合并到一次 spawn_blocking，
+    // 避免在 async fn 内同步 DB 调用阻塞 tokio worker（与 Phase 2 的 spawn_blocking 改造一致）。
+    let retry_pool = db_pool.clone();
+    let (retry_releases, retry_translations) =
+        tokio::task::spawn_blocking(move || {
+            match retry_pool.get() {
+                Ok(conn) => (
+                    db::releases::get_releases_without_summary(&conn).unwrap_or_default(),
+                    db::releases::get_releases_without_translation(&conn).unwrap_or_default(),
+                ),
+                Err(e) => {
+                    log::error!("err.db_lock|{}", e);
+                    (Vec::new(), Vec::new())
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("do_poll_core retry spawn_blocking panic: {}", e);
+            (Vec::new(), Vec::new())
+        });
     if !retry_releases.is_empty() {
         log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
-        deepseek::generate_summaries_for_new(app, &retry_releases).await;
+        deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &retry_releases).await;
     }
-
-    // 重试之前失败的 AI 译文生成
-    let retry_translations = {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            db::releases::get_releases_without_translation(&conn).unwrap_or_default()
-        } else {
-            vec![]
-        }
-    };
     if !retry_translations.is_empty() {
         log::info!("正在重试 {} 个之前失败的 AI 译文", retry_translations.len());
-        deepseek::generate_translations_for_new(app, &retry_translations, false).await;
+        deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &retry_translations, false).await;
     }
 
     (all_new_ids, new_releases)
@@ -316,9 +258,14 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         fetch_history_count = settings.fetch_history_count;
     }
 
+    let (db_pool, deepseek_semaphore) = {
+        let state = app.state::<AppState>();
+        (state.db.clone(), state.deepseek_semaphore.clone())
+    };
+    let emitter: &dyn crate::types::Emitter = &app;
     let (_, new_releases) = do_poll_core(
-        &app, &sources, &proxy_url, &proxy_mode, github_token.as_deref(),
-        fetch_history, fetch_history_count, true,
+        &db_pool, &deepseek_semaphore, emitter, &sources, &proxy_url, &proxy_mode,
+        github_token.as_deref(), fetch_history, fetch_history_count, true,
     ).await;
 
     // 手动触发特有逻辑：更新 next_poll_at
@@ -371,6 +318,13 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         || source_obj.last_checked_at.as_deref() == Some("");
     let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, is_first_query, fetch_history_count);
 
+    // 从 AppHandle 提取依赖，注入提纯后的核心函数
+    let (db_pool, deepseek_semaphore) = {
+        let state = app.state::<AppState>();
+        (state.db.clone(), state.deepseek_semaphore.clone())
+    };
+    let emitter: &dyn crate::types::Emitter = &app;
+
     let client = match http::build_http_client(http::HttpClientConfig {
         proxy_url: &proxy_url,
         proxy_mode: &proxy_mode,
@@ -379,8 +333,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     }) {
         Ok(client) => client,
         Err(e) => {
-            let state = app.state::<AppState>();
-            if let Ok(conn) = state.db.get() {
+            if let Ok(conn) = db_pool.get() {
                 let _ = db::sources::record_check_failure(&conn, source_obj.id, &e);
                 db::logs::write_log_key(
                     &conn,
@@ -393,16 +346,18 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     };
 
+    let adapter = match source::get_adapter(&source_obj.source_type) {
+        Ok(a) => a,
+        Err((_, msg)) => return Err(msg),
+    };
     let releases = match if needs_pagination {
-        let limit = max_count;
-        fetch_all_for_source_async(&client, &source_obj, limit).await
+        adapter.fetch_all(&client, &source_obj, max_count).await
     } else {
-        fetch_for_source_async(&client, &source_obj, per_page).await
+        adapter.fetch(&client, &source_obj, per_page).await
     } {
         Ok(releases) => releases,
         Err((status, msg)) => {
-            let state = app.state::<AppState>();
-            if let Ok(conn) = state.db.get() {
+            if let Ok(conn) = db_pool.get() {
                 let _ = db::sources::record_check_failure(&conn, source_obj.id, &msg);
                 // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
                 let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
@@ -416,57 +371,59 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             return Err(msg);
         }
     };
-    let saved: Vec<(i64, Option<String>)> = if source_obj.source_type == "huggingface" {
-        save_huggingface_models(&app, &source_obj, &releases, max_count.unwrap_or(usize::MAX), &client).await
-    } else {
-        let state = app.state::<AppState>();
-        let conn = match state.db.get() {
+    // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
+    let saved: Vec<(i64, Option<String>)> = adapter.save(&db_pool, &source_obj, &releases, max_count.unwrap_or(usize::MAX), &client).await;
+    // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
+    let db_pool_blk = db_pool.clone();
+    let source_id = source_obj.id;
+    let owner = source_obj.owner.clone();
+    let repo = source_obj.repo.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let conn = match db_pool_blk.get() {
             Ok(c) => c,
             Err(e) => {
                 log::error!("err.db_lock|{}", e);
-                return Err(e.to_string());
+                return (vec![], saved);
             }
         };
-        save_for_source(&conn, &source_obj, &releases, max_count.unwrap_or(usize::MAX))
-    };
-    {
-        let state = app.state::<AppState>();
-        let conn = match state.db.get() {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("err.db_lock|{}", e);
-                return Err(e.to_string());
-            }
-        };
-        if !saved.is_empty() {
-            mark_older_as_read(&conn, source_obj.id, &saved);
-        }
-        let _ = db::sources::record_check_success(&conn, source_obj.id, saved.len());
+        let (ids, saved) = post_save_mark_record(&conn, source_id, &saved);
+        let new_count = ids.len();
         db::logs::write_log_key(
             &conn,
             "INFO",
             "check.manual",
-            &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "count": saved.len()}).to_string(),
+            &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
         );
-    }
+        (ids, saved)
+    })
+    .await;
+    let (new_ids, saved) = match result {
+        Ok((ids, saved)) => (ids, saved),
+        Err(e) => {
+            log::error!("check_single_source post-save spawn_blocking panic: {}", e);
+            (vec![], vec![])
+        }
+    };
 
     if source_obj.source_type == "github" {
         if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo).await {
-            let state = app.state::<AppState>();
-            if let Ok(conn) = state.db.get() {
-                let _ = db::sources::update_source_description(&conn, source_obj.id, &desc);
-            }
+            let db_pool_blk = db_pool.clone();
+            let source_id = source_obj.id;
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = db_pool_blk.get() {
+                    let _ = db::sources::update_source_description(&conn, source_id, &desc);
+                }
+            })
+            .await;
         }
     }
 
-    let new_ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
-
     if !saved.is_empty() {
-        deepseek::generate_summaries_for_new(&app, &saved).await;
-        deepseek::generate_translations_for_new(&app, &saved, false).await;
+        deepseek::generate_summaries_for_new(&db_pool, &deepseek_semaphore, &saved).await;
+        deepseek::generate_translations_for_new(&db_pool, &deepseek_semaphore, &saved, false).await;
     }
 
-    let (_, new_releases) = collect_pending_and_notify(&app, &new_ids, false);
+    let (_, new_releases) = collect_pending_and_notify(&db_pool, emitter, &new_ids, false).await;
 
     let _ = app.emit("poll-completed", ());
 
@@ -568,16 +525,22 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    do_poll_core(
-        &app, &enabled, &proxy_url, &proxy_mode, github_token.as_deref(),
-        fetch_history, fetch_history_count, false,
-    ).await;
+    {
+        let state = app.state::<AppState>();
+        let db_pool = state.db.clone();
+        let semaphore = state.deepseek_semaphore.clone();
+        let emitter: &dyn crate::types::Emitter = &app;
+        do_poll_core(
+            &db_pool, &semaphore, emitter, &enabled, &proxy_url, &proxy_mode,
+            github_token.as_deref(), fetch_history, fetch_history_count, false,
+        ).await;
+    }
 
     let _ = app.emit("poll-completed", ());
 }
 
 async fn poll_all_sources_async(
-    app: &tauri::AppHandle,
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     sources: &[db::sources::Source],
     proxy_url: &str,
     proxy_mode: &str,
@@ -593,8 +556,7 @@ async fn poll_all_sources_async(
     }) {
         Ok(c) => c,
         Err(e) => {
-            let state = app.state::<AppState>();
-            if let Ok(conn) = state.db.get() {
+            if let Ok(conn) = db_pool.get() {
                 for source in sources {
                     let _ = db::sources::record_check_failure(&conn, source.id, &e);
                 }
@@ -606,74 +568,94 @@ async fn poll_all_sources_async(
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENCY));
     let mut handles = Vec::new();
+    let pool = db_pool.clone();
 
     for source in sources {
         let sem = semaphore.clone();
         let client = client.clone();
         let source = source.clone();
-        let app = app.clone();
+        let db_pool = pool.clone();
 
         let is_first_query = source.last_checked_at.is_none()
             || source.last_checked_at.as_deref() == Some("");
         let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, is_first_query, fetch_history_count);
 
         handles.push(tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await.expect("semaphore closed");
+            // 背压信号量获取改为 graceful：不再 expect 后被 handle.await 静默吞掉
+            let _permit = match sem.acquire_owned().await {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("err.sem_closed|{}", e);
+                    return (vec![], vec![]);
+                }
+            };
+            // source 分发收敛为 trait 调用，消除原裸 `if source_type == "huggingface"` 分叉
+            let adapter = match source::get_adapter(&source.source_type) {
+                Ok(a) => a,
+                Err((_, msg)) => {
+                    log::error!("{}", msg);
+                    return (vec![], vec![]);
+                }
+            };
             let fetch_result = if needs_pagination {
-                let limit = max_count;
-                fetch_all_for_source_async(&client, &source, limit).await
+                adapter.fetch_all(&client, &source, max_count).await
             } else {
-                fetch_for_source_async(&client, &source, per_page).await
+                adapter.fetch(&client, &source, per_page).await
             };
             match fetch_result {
                 Ok(releases) => {
-                    let saved = if source.source_type == "huggingface" {
-                        save_huggingface_models(&app, &source, &releases, max_count.unwrap_or(usize::MAX), &client).await
-                    } else {
-                        let state = app.state::<AppState>();
-                        let conn = match state.db.get() {
+                    // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
+                    let saved = adapter.save(&db_pool, &source, &releases, max_count.unwrap_or(usize::MAX), &client).await;
+                    // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
+                    let db_pool_blk = db_pool.clone();
+                    let source_id = source.id;
+                    let owner = source.owner.clone();
+                    let repo = source.repo.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                        let conn = match db_pool_blk.get() {
                             Ok(c) => c,
                             Err(e) => {
                                 log::error!("err.db_lock|{}", e);
-                                return (vec![], vec![]);
+                                return (vec![], saved);
                             }
                         };
-                        save_for_source(&conn, &source, &releases, max_count.unwrap_or(usize::MAX))
-                    };
-                    let state = app.state::<AppState>();
-                    let conn = match state.db.get() {
-                        Ok(c) => c,
-                        Err(e) => {
-                            log::error!("err.db_lock|{}", e);
-                            return (vec![], vec![]);
-                        }
-                    };
-                    if !saved.is_empty() {
-                        mark_older_as_read(&conn, source.id, &saved);
-                    }
-                    let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
-                    let new_count = ids.len();
-                    let _ = db::sources::record_check_success(&conn, source.id, new_count);
-                    db::logs::write_log_key(
-                        &conn,
-                        "INFO",
-                        "check.auto",
-                        &json!({"owner": &source.owner, "repo": &source.repo, "count": new_count}).to_string(),
-                    );
-                    (ids, saved)
-                }
-                Err((status, msg)) => {
-                    let state = app.state::<AppState>();
-                    if let Ok(conn) = state.db.get() {
-                        let _ = db::sources::record_check_failure(&conn, source.id, &msg);
-                        let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                        let (ids, saved) = post_save_mark_record(&conn, source_id, &saved);
+                        let new_count = ids.len();
                         db::logs::write_log_key(
                             &conn,
-                            level,
-                            "check.failed",
-                            &json!({"owner": &source.owner, "repo": &source.repo, "error": &msg}).to_string(),
+                            "INFO",
+                            "check.auto",
+                            &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
                         );
+                        (ids, saved)
+                    })
+                    .await;
+                    match result {
+                        Ok((ids, saved)) => (ids, saved),
+                        Err(e) => {
+                            log::error!("poll post-save spawn_blocking panic: {}", e);
+                            (vec![], vec![])
+                        }
                     }
+                }
+                Err((status, msg)) => {
+                    let db_pool_blk = db_pool.clone();
+                    let source_id = source.id;
+                    let owner = source.owner.clone();
+                    let repo = source.repo.clone();
+                    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                    let _ = tokio::task::spawn_blocking(move || {
+                        if let Ok(conn) = db_pool_blk.get() {
+                            let _ = db::sources::record_check_failure(&conn, source_id, &msg);
+                            db::logs::write_log_key(
+                                &conn,
+                                level,
+                                "check.failed",
+                                &json!({"owner": &owner, "repo": &repo, "error": &msg}).to_string(),
+                            );
+                        }
+                    })
+                    .await;
                     (vec![], vec![])
                 }
             }
@@ -692,61 +674,58 @@ async fn poll_all_sources_async(
     (all_new_ids, all_saved)
 }
 
-fn collect_pending_and_notify(
-    app: &tauri::AppHandle,
+async fn collect_pending_and_notify(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    emitter: &dyn crate::types::Emitter,
     new_ids: &[i64],
     is_manual: bool,
 ) -> (Vec<db::releases::ReleaseInfo>, Vec<db::releases::ReleaseInfo>) {
-    let pending;
-    let muted_source_ids;
-    {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
-            muted_source_ids = db::sources::list_muted_source_ids(&conn)
-                .unwrap_or_default()
-                .into_iter()
-                .collect::<std::collections::HashSet<_>>();
-        } else {
-            pending = Vec::new();
-            muted_source_ids = std::collections::HashSet::new();
-        }
-    }
-
-    // Pending here means unread and eligible now, including expired snoozes.
-    for release in &pending {
-        // 标记该发布已通知
-        {
-            let state = app.state::<AppState>();
-            if let Ok(conn) = state.db.get() {
-                let _ = db::releases::set_last_notified_at(&conn, release.id);
+    // 一次性取连接：读 pending + muted，并把本轮 pending 批量标记已通知。
+    // 同步 DB 调用收笼进 spawn_blocking，避免在 async 上下文阻塞 tokio worker。
+    let pool = db_pool.clone();
+    let (pending, muted_source_ids): (
+        Vec<db::releases::ReleaseInfo>,
+        std::collections::HashSet<i64>,
+    ) = tokio::task::spawn_blocking(move || {
+        let conn = match pool.get() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return (Vec::new(), std::collections::HashSet::new());
             }
+        };
+        let pending = db::releases::get_pending_releases(&conn).unwrap_or_default();
+        // 批量标记已通知：本轮 pending 全部置 last_notified_at，避免 N 次取连接
+        for release in &pending {
+            let _ = db::releases::set_last_notified_at(&conn, release.id);
         }
+        let muted_source_ids = db::sources::list_muted_source_ids(&conn)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        (pending, muted_source_ids)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        log::error!("collect_pending spawn_blocking panic: {}", e);
+        (Vec::new(), std::collections::HashSet::new())
+    });
 
+    // 派发桌面通知。Pending here means unread and eligible now, including expired snoozes.
+    // 通过 Emitter trait 注入，可测上下文中替换为 NoopEmitter。
+    for release in &pending {
         // 静默的源：只标记已通知，不发送桌面通知
         if muted_source_ids.contains(&release.source_id) {
             continue;
         }
-
-        let app_clone = app.clone();
-        let release_id = release.id;
-        let html_url = release.html_url.clone();
-        let owner = release.owner.clone();
-        let repo = release.repo.clone();
-        let tag = release.tag_name.clone();
-        let name = release.release_name.clone();
-        let importance = release.ai_importance.clone();
-        let _ = app.run_on_main_thread(move || {
-            notify::send_release_notification(
-                &app_clone,
-                release_id,
-                html_url,
-                owner,
-                repo,
-                tag,
-                name,
-                importance,
-            );
+        emitter.notify_release(ReleaseNotifyParams {
+            release_id: release.id,
+            html_url: release.html_url.clone(),
+            owner: release.owner.clone(),
+            repo: release.repo.clone(),
+            tag: release.tag_name.clone(),
+            name: release.release_name.clone(),
+            importance: release.ai_importance.clone(),
         });
     }
 
@@ -755,26 +734,32 @@ fn collect_pending_and_notify(
         .filter(|r| new_ids.contains(&r.id))
         .collect();
 
-    if is_manual {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
+    // is_manual 日志 + 最终 pending 读取合并到一次 spawn_blocking
+    let count = new_ids.len();
+    let pool2 = db_pool.clone();
+    let all_pending = tokio::task::spawn_blocking(move || {
+        let conn = match pool2.get() {
+            Ok(c) => c,
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return Vec::new();
+            }
+        };
+        if is_manual {
             db::logs::write_log_key(
                 &conn,
                 "INFO",
                 "check.manual_all_done",
-                &json!({"count": new_ids.len()}).to_string(),
+                &json!({"count": count}).to_string(),
             );
         }
-    }
-
-    let all_pending = {
-        let state = app.state::<AppState>();
-        if let Ok(conn) = state.db.get() {
-            db::releases::get_pending_releases(&conn).unwrap_or_default()
-        } else {
-            Vec::new()
-        }
-    };
+        db::releases::get_pending_releases(&conn).unwrap_or_default()
+    })
+    .await
+    .unwrap_or_else(|e| {
+        log::error!("collect_pending tail spawn_blocking panic: {}", e);
+        Vec::new()
+    });
 
     (all_pending, new_releases)
 }
@@ -1245,7 +1230,7 @@ mod tests {
         assert_eq!(r2_state.notification_status, "clicked", "有更新版本时所有 saved release 都应标记");
     }
 
-    // ── save_for_source 分发测试 ──────────────────────────
+    // ── source 分发测试（原 save_for_source / fetch_for_source_async 分发）──
 
     fn gh_release(tag: &str, date: &str, body: Option<&str>) -> serde_json::Value {
         serde_json::json!({
@@ -1258,8 +1243,10 @@ mod tests {
         })
     }
 
+    /// github 入库逻辑由 `github::save_releases` 覆盖（trait 实现内部调它）。
+    /// 此测试验证 max_count 行为保持。
     #[test]
-    fn test_save_for_source_dispatches_github_and_respects_max_count() {
+    fn test_github_save_respects_max_count() {
         let conn = init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
         let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
@@ -1271,87 +1258,31 @@ mod tests {
         ];
 
         // max_count=2 应只保存最新两条
-        let saved = save_for_source(&conn, &db::sources::Source {
-            id: sid,
-            source_type: "github".into(),
-            owner: "o".into(),
-            repo: "r".into(),
-            poll_interval_minutes: 30,
-            enabled: true,
-            last_checked_at: None,
-            last_check_status: "unknown".into(),
-            last_check_message: None,
-            consecutive_failures: 0,
-            last_new_count: 0,
-            muted: false,
-            created_at: String::new(),
-            updated_at: String::new(),
-            description: None,
-        }, &data, 2);
+        let saved = github::save_releases(&conn, sid, &data, 2);
 
         assert_eq!(saved.len(), 2, "max_count=2 应只保存 2 条");
         assert_eq!(saved[0].1.as_deref(), Some("v3"));
         assert_eq!(saved[1].1.as_deref(), Some("v2"));
     }
 
+    /// 不支持的 source_type：`get_adapter` 返回 `err.unsupported_source` 错误，
+    /// 取代原 `save_for_source`/`fetch_for_source_async` 的 noop/error 分支。
     #[test]
-    fn test_save_for_source_unsupported_type_is_noop() {
-        let conn = init_memory_db().unwrap();
-        let sid = db::sources::add_source(&conn, "gitlab", "o", "r", "").unwrap();
-        let data = vec![gh_release("v1", "2024-01-01T00:00:00Z", Some("b"))];
-
-        // 不支持的 source_type：save_for_source 返回空且不 panic
-        let saved = save_for_source(&conn, &db::sources::Source {
-            id: sid,
-            source_type: "gitlab".into(),
-            owner: "o".into(),
-            repo: "r".into(),
-            poll_interval_minutes: 30,
-            enabled: true,
-            last_checked_at: None,
-            last_check_status: "unknown".into(),
-            last_check_message: None,
-            consecutive_failures: 0,
-            last_new_count: 0,
-            muted: false,
-            created_at: String::new(),
-            updated_at: String::new(),
-            description: None,
-        }, &data, 10);
-
-        assert!(saved.is_empty(), "不支持的源类型应返回空");
+    fn test_get_adapter_unsupported_type_errors() {
+        match source::get_adapter("gitlab") {
+            Ok(_) => panic!("不支持的源类型应返回错误"),
+            Err((status, msg)) => {
+                assert_eq!(status, 0);
+                assert!(msg.contains("err.unsupported_source"), "错误信息: {}", msg);
+            }
+        }
     }
 
-    // ── fetch_for_source_async 分发测试 ──────────────────
-
-    #[tokio::test]
-    async fn test_fetch_for_source_async_unsupported_type_errors() {
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let source = db::sources::Source {
-            id: 1,
-            source_type: "gitlab".into(),
-            owner: "o".into(),
-            repo: "r".into(),
-            poll_interval_minutes: 30,
-            enabled: true,
-            last_checked_at: None,
-            last_check_status: "unknown".into(),
-            last_check_message: None,
-            consecutive_failures: 0,
-            last_new_count: 0,
-            muted: false,
-            created_at: String::new(),
-            updated_at: String::new(),
-            description: None,
-        };
-
-        // 不支持的源类型应通过 source_type 分发返回 err.unsupported_source 错误
-        // （github 分支的 HTTP 行为由 github.rs 自身的 wiremock 测试覆盖）
-        let r = fetch_for_source_async(&client, &source, 10).await;
-        assert!(r.is_err(), "不支持的源类型应返回错误");
-        let (status, msg) = r.unwrap_err();
-        assert_eq!(status, 0);
-        assert!(msg.contains("err.unsupported_source"), "错误信息: {}", msg);
+    /// github / huggingface 应能取得适配器。
+    #[test]
+    fn test_get_adapter_supported_types() {
+        assert!(source::get_adapter("github").is_ok());
+        assert!(source::get_adapter("huggingface").is_ok());
     }
 
     // ── 编排链路集成测试：fetch→save→mark_read→record ──────
@@ -1367,24 +1298,9 @@ mod tests {
 
     /// 模拟 poll.rs 编排主链路：
     /// 1. 从远程拉取（这里用构造的 JSON 代替 HTTP，聚焦 save→mark→record 这段）
-    /// 2. save_for_source 入库
+    /// 2. github::save_releases 入库（trait 实现内部调它）
     /// 3. mark_older_as_read 标记非最新
     /// 4. record_check_success 更新源健康状态
-    fn simulate_fetch_save_mark_record(
-        conn: &rusqlite::Connection,
-        source: &db::sources::Source,
-        fetched: &[serde_json::Value],
-        max_count: usize,
-    ) -> Vec<(i64, Option<String>)> {
-        let saved = save_for_source(conn, source, fetched, max_count);
-        if !saved.is_empty() {
-            mark_older_as_read(conn, source.id, &saved);
-        }
-        let new_count = saved.len();
-        let _ = db::sources::record_check_success(conn, source.id, new_count);
-        saved
-    }
-
     #[test]
     fn test_pipeline_single_new_release_stays_pending() {
         let conn = init_memory_db().unwrap();
@@ -1392,10 +1308,12 @@ mod tests {
         let source = make_source(&conn, "o", "r");
 
         let fetched = vec![gh_release("v1.0", "2024-01-01T00:00:00Z", Some("body"))];
-        let saved = simulate_fetch_save_mark_record(&conn, &source, &fetched, 1);
+        let saved = github::save_releases(&conn, source.id, &fetched, 1);
+        assert_eq!(saved.len(), 1);
+        let (_ids, saved) = post_save_mark_record(&conn, source.id, &saved);
+        assert_eq!(saved.len(), 1);
 
         // 唯一的新版本应保持 pending，可被通知
-        assert_eq!(saved.len(), 1);
         let releases = db::releases::get_releases_with_state(&conn).unwrap();
         assert_eq!(releases[0].notification_status, "pending");
 
@@ -1418,7 +1336,9 @@ mod tests {
             gh_release("v2.0", "2024-02-01T00:00:00Z", Some("v2")),
             gh_release("v1.0", "2024-01-01T00:00:00Z", Some("v1")),
         ];
-        let saved = simulate_fetch_save_mark_record(&conn, &source, &fetched, 3);
+        let saved = github::save_releases(&conn, source.id, &fetched, 3);
+        assert_eq!(saved.len(), 3);
+        let (_ids, saved) = post_save_mark_record(&conn, source.id, &saved);
         assert_eq!(saved.len(), 3);
 
         // 只有最新 v3.0 保持 pending，v2/v1 被标记为 clicked
@@ -1439,11 +1359,13 @@ mod tests {
 
         // 第一轮：拉到 v1.0
         let fetched1 = vec![gh_release("v1.0", "2024-01-01T00:00:00Z", Some("v1"))];
-        simulate_fetch_save_mark_record(&conn, &source, &fetched1, 1);
+        let saved = github::save_releases(&conn, source.id, &fetched1, 1);
+        let (_ids, _saved) = post_save_mark_record(&conn, source.id, &saved);
 
         // 第二轮：同样的数据，save 返回空（已入库），但源健康状态仍应更新
-        let saved2 = simulate_fetch_save_mark_record(&conn, &source, &fetched1, 1);
+        let saved2 = github::save_releases(&conn, source.id, &fetched1, 1);
         assert!(saved2.is_empty(), "重复数据不应再次保存");
+        let (_ids2, _saved2) = post_save_mark_record(&conn, source.id, &saved2);
 
         let s = db::sources::get_source(&conn, source.id).unwrap().unwrap();
         assert_eq!(s.last_check_status, "ok");
@@ -1471,5 +1393,94 @@ mod tests {
 
         // 无 release 被保存
         assert!(db::releases::get_releases_with_state(&conn).unwrap().is_empty());
+    }
+
+    // ── collect_pending_and_notify 编排链路注入式测试（Phase 3 / S3）──
+    //
+    // 直接测真实的私有 async fn collect_pending_and_notify，注入 NoopEmitter
+    // + init_memory_pool，覆盖「通知派发次数 / muted 源跳过 / new_ids 过滤」状态机。
+    // 这条链路原先无法被 CI 触达（S3），至此消除“测试副本”假象。
+
+    /// 单条 pending release：通知派发 1 次，new_releases 含该条。
+    #[tokio::test]
+    async fn test_collect_pending_notifies_single_release() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let saved = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+            let source = make_source(&conn, "o", "r");
+            github::save_releases(&conn, source.id, &[gh_release("v1", "2024-01-01T00:00:00Z", Some("b"))], 1)
+        };
+        assert_eq!(saved.len(), 1);
+        let new_ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
+
+        let emitter = crate::types::NoopEmitter::new();
+        let (all_pending, new_releases) =
+            collect_pending_and_notify(&pool, &emitter, &new_ids, false).await;
+
+        assert_eq!(emitter.call_count(), 1, "单条 pending 应派发 1 次通知");
+        assert_eq!(new_releases.len(), 1, "new_ids 全包含 → new_releases 含该条");
+        // 标记 last_notified_at 后该 release 不再未读pending（only_notified_missing=true），
+        // 故 all_pending（末尾重读）应为空——这是 collect 真实行为。
+        assert!(all_pending.is_empty(), "已通知的 release 应从 unread pending 列表移除");
+    }
+
+    /// 静音源：其 pending release 不派发通知，但仍计入 new_releases 过滤结果。
+    #[tokio::test]
+    async fn test_collect_pending_skips_muted_source() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let (id_a, id_b) = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+            let source_a = make_source(&conn, "oa", "ra");
+            let source_b = make_source(&conn, "ob", "rb");
+            let a = github::save_releases(&conn, source_a.id, &[gh_release("v1", "2024-01-01T00:00:00Z", Some("a"))], 1);
+            let b = github::save_releases(&conn, source_b.id, &[gh_release("v1", "2024-01-01T00:00:00Z", Some("b"))], 1);
+            assert_eq!(a.len(), 1);
+            assert_eq!(b.len(), 1);
+            db::sources::set_source_muted(&conn, source_a.id, true).unwrap();
+            (a[0].0, b[0].0)
+        };
+        let new_ids = vec![id_a, id_b];
+
+        let emitter = crate::types::NoopEmitter::new();
+        let (_all_pending, new_releases) =
+            collect_pending_and_notify(&pool, &emitter, &new_ids, false).await;
+
+        assert_eq!(emitter.call_count(), 1, "静音源不派发通知，仅 source_b 通知");
+        assert_eq!(new_releases.len(), 2, "muted 不剔除 new_releases（仅跳过通知）");
+    }
+
+    /// 通知派发阶段对全部 pending 都触发；new_releases 仅按 new_ids 子集过滤。
+    #[tokio::test]
+    async fn test_collect_pending_new_ids_subset_filters_result() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id_v2 = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+            let source = make_source(&conn, "o", "r");
+            // 直接 save_releases（不走 post_save_mark_record），两条都保持 pending
+            let saved = github::save_releases(
+                &conn,
+                source.id,
+                &[
+                    gh_release("v2", "2024-03-01T00:00:00Z", Some("v2")),
+                    gh_release("v1", "2024-02-01T00:00:00Z", Some("v1")),
+                ],
+                2,
+            );
+            assert_eq!(saved.len(), 2);
+            saved[0].0
+        };
+        // new_ids 只含 v2 → new_releases 只返回 v2，但通知阶段对两条 pending 都派发
+        let new_ids = vec![id_v2];
+
+        let emitter = crate::types::NoopEmitter::new();
+        let (_all_pending, new_releases) =
+            collect_pending_and_notify(&pool, &emitter, &new_ids, false).await;
+
+        assert_eq!(emitter.call_count(), 2, "通知派发对全部 pending 触发，与 new_ids 无关");
+        assert_eq!(new_releases.len(), 1, "new_releases 按 new_ids 子集过滤后仅含 v2");
+        assert_eq!(new_releases[0].tag_name, "v2");
     }
 }

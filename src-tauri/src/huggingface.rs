@@ -7,8 +7,65 @@
 use rusqlite::Connection;
 
 use crate::db::releases;
+use crate::db::sources::Source;
+use crate::db;
+use crate::http;
+use crate::source::SourceAdapter;
 
 const HF_API_BASE: &str = "https://huggingface.co";
+
+/// HuggingFace 监控源适配器。实现 `SourceAdapter` trait，
+/// 把 fetch / save / verify 收敛到统一接口。
+///
+/// `save` 为异步三阶段（insert→fetch_readmes→finalize），吸收与 github 同步保存的差异。
+pub struct HuggingFaceAdapter;
+
+#[async_trait::async_trait]
+impl SourceAdapter for HuggingFaceAdapter {
+    fn source_type(&self) -> &'static str {
+        "huggingface"
+    }
+
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        source: &Source,
+        per_page: usize,
+    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+        fetch_org_models(client, &source.owner, per_page).await
+    }
+
+    async fn fetch_all(
+        &self,
+        client: &reqwest::Client,
+        source: &Source,
+        max_count: Option<usize>,
+    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+        fetch_all_org_models_with_limit(client, &source.owner, max_count).await
+    }
+
+    async fn save(
+        &self,
+        db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        source: &Source,
+        data: &[serde_json::Value],
+        max_count: usize,
+        client: &reqwest::Client,
+    ) -> Vec<(i64, Option<String>)> {
+        save_huggingface_models(db, source, data, max_count, client).await
+    }
+
+    async fn verify_and_describe(
+        &self,
+        client: &reqwest::Client,
+        owner: &str,
+        _repo: &str,
+    ) -> Result<String, (u16, String)> {
+        // HF repo 参数无意义（以 owner 为组织名），但 verify 需要 owner。
+        verify_org_exists(client, owner).await?;
+        Ok(format!("HuggingFace organization: {}", owner))
+    }
+}
 
 /// 解析后的 HuggingFace 模型元数据。
 ///
@@ -71,71 +128,23 @@ impl HfModel {
     }
 }
 
-/// 重试包装：403 不重试（HF 拒绝访问），其他可重试错误最多重试 3 次。
-async fn with_retry<T, F, Fut>(f: F) -> Result<T, (u16, String)>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, (u16, String)>>,
-{
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 403 {
-            return false;
-        }
-        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
-        true
-    }, f)
-    .await
-}
-
-/// 从 Link header 中提取 `rel="next"` 的 URL（与 GitHub Link header 格式一致）。
-fn parse_next_link(link_header: &str) -> Option<String> {
-    for part in link_header.split(',') {
-        let trimmed = part.trim();
-        if trimmed.contains("rel=\"next\"") {
-            let start = trimmed.find('<')?;
-            let end = trimmed.find('>')?;
-            return Some(trimmed[start + 1..end].to_string());
-        }
-    }
-    None
-}
+// 重试与 parse_next_link 已下沉到 `http.rs`（`fetch_page_with_retry` / `parse_next_link`），
+// 消除与 github.rs 的逐字符重复。
 
 /// 获取单页模型列表，返回 (models, 下一页 URL)。
 async fn fetch_models_page(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-    let status = resp.status().as_u16();
-    if !resp.status().is_success() {
-        let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("err.api_error|{}|{}", status, reason)));
-    }
-
-    let next_url = resp
-        .headers()
-        .get("link")
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_next_link);
-
-    let models: Vec<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| (status, format!("err.parse_failed|{}", e)))?;
-
-    Ok((models, next_url))
+    http::fetch_page_with_retry(client, url).await
 }
 
 async fn fetch_models_page_with_retry(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    with_retry(|| async { fetch_models_page(client, url).await }).await
+    // http::fetch_page_with_retry 已含重试，保留此函数供现有测试调用。
+    fetch_models_page(client, url).await
 }
 
 /// 构造按 createdAt 降序的单页请求 URL。
@@ -144,6 +153,44 @@ fn build_page_url(org: &str, limit: usize) -> String {
         "{}/api/models?author={}&sort=createdAt&direction=-1&limit={}",
         HF_API_BASE, org, limit,
     )
+}
+
+/// HuggingFace 源的三阶段保存（避免 conn 跨 await）:
+/// 1. insert_new_models（持 conn，同步）
+/// 2. fetch_readmes（不持 conn，异步并行拉取 README）
+/// 3. finalize_models（重新获取 conn，同步回填 body+extra_metadata）
+///
+/// 从 `&Pool` 取连接，取代原 `&AppHandle` 签名，使编排层不再关心取连接方式。
+async fn save_huggingface_models(
+    db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    source: &db::sources::Source,
+    data: &[serde_json::Value],
+    max_count: usize,
+    client: &reqwest::Client,
+) -> Vec<(i64, Option<String>)> {
+    // 阶段 1：insert
+    let new_models = {
+        match db.get() {
+            Ok(conn) => insert_new_models(&conn, source.id, data, max_count),
+            Err(e) => {
+                log::error!("err.db_lock|{}", e);
+                return vec![];
+            }
+        }
+    };
+    if new_models.is_empty() {
+        return vec![];
+    }
+    // 阶段 2：并行拉取 README（不持 conn）
+    let readmes = fetch_readmes(client, &new_models).await;
+    // 阶段 3：回填 body + extra_metadata
+    match db.get() {
+        Ok(conn) => finalize_models(&conn, new_models, readmes),
+        Err(e) => {
+            log::error!("err.db_lock|{}", e);
+            vec![]
+        }
+    }
 }
 
 /// 获取组织的模型列表（单页，按 createdAt 降序）。
@@ -161,41 +208,15 @@ pub async fn fetch_org_models(
 
 /// 首次全量分页拉取（fetch_history 开启时）。
 ///
-/// 复用 GitHub 的 Link header 翻页模式，按 createdAt 降序翻页直到达到 `max_count` 或无下一页。
+/// 复用 `http::paginated_fetch` 的 Link header 翻页模式，按 createdAt 降序翻页直到达到 `max_count` 或无下一页。
 /// 对应 `poll.rs::fetch_all_for_source_async` 的 huggingface 分支。
 pub async fn fetch_all_org_models_with_limit(
     client: &reqwest::Client,
     org: &str,
     max_count: Option<usize>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    let mut all = Vec::new();
-    let mut url = build_page_url(org, 100);
-
-    loop {
-        let (models, next_url) = fetch_models_page_with_retry(client, &url).await?;
-        let count = models.len();
-        all.extend(models);
-        log::info!(
-            "分页拉取 {}: 获取 {} 条{}",
-            url,
-            count,
-            next_url.as_ref().map(|_| "，还有下一页").unwrap_or("，已完成"),
-        );
-
-        if let Some(limit) = max_count {
-            if all.len() >= limit {
-                log::info!("已获取 {} 条，达到上限 {}，停止翻页", all.len(), limit);
-                break;
-            }
-        }
-
-        match next_url {
-            Some(next) => url = next,
-            None => break,
-        }
-    }
-
-    Ok(all)
+    let first_url = build_page_url(org, 100);
+    http::paginated_fetch(client, first_url, max_count).await
 }
 
 /// 验证组织是否存在（调 API 看能否正常返回 2xx）。
@@ -440,21 +461,7 @@ mod tests {
         assert!(parsed["tags"].is_array());
     }
 
-    #[test]
-    fn test_parse_next_link_found() {
-        let header = "<https://huggingface.co/api/models?author=org&sort=createdAt&direction=-1&limit=100&p=2>; rel=\"next\", \
-                       <https://huggingface.co/api/models?author=org&p=5>; rel=\"last\"";
-        assert_eq!(
-            parse_next_link(header).as_deref(),
-            Some("https://huggingface.co/api/models?author=org&sort=createdAt&direction=-1&limit=100&p=2")
-        );
-    }
-
-    #[test]
-    fn test_parse_next_link_not_found() {
-        let header = "<https://huggingface.co/api/models?p=1>; rel=\"last\"";
-        assert!(parse_next_link(header).is_none());
-    }
+    // ── parse_next_link 测试已移至 http.rs（函数下沉后归属处）──
 
     // ── insert_new_models + finalize_models 测试 ──
     // 用 helper 模拟三阶段但不拉取 README（readmes 传 None），聚焦入库与去重逻辑。

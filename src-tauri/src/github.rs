@@ -1,6 +1,79 @@
 use rusqlite::Connection;
 
 use crate::db::releases;
+use crate::db::sources::Source;
+use crate::http;
+use crate::source::SourceAdapter;
+
+const GH_API_BASE: &str = "https://api.github.com";
+
+/// GitHub 监控源适配器。实现 `SourceAdapter` trait，
+/// 把 fetch / save / verify 收敛到统一接口。
+pub struct GithubAdapter;
+
+#[async_trait::async_trait]
+impl SourceAdapter for GithubAdapter {
+    fn source_type(&self) -> &'static str {
+        "github"
+    }
+
+    async fn fetch(
+        &self,
+        client: &reqwest::Client,
+        source: &Source,
+        per_page: usize,
+    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+        fetch_releases(client, &source.owner, &source.repo, per_page).await
+    }
+
+    async fn fetch_all(
+        &self,
+        client: &reqwest::Client,
+        source: &Source,
+        max_count: Option<usize>,
+    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+        fetch_all_releases_with_limit(client, &source.owner, &source.repo, max_count).await
+    }
+
+    async fn save(
+        &self,
+        db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        source: &Source,
+        data: &[serde_json::Value],
+        max_count: usize,
+        _client: &reqwest::Client,
+    ) -> Vec<(i64, Option<String>)> {
+        // github save 是同步的，用 spawn_blocking 转包避免在 async 上下文阻塞
+        // （与 Phase 2 的 spawn_blocking 改造顺接）。
+        let db = db.clone();
+        let source_id = source.id;
+        let data = data.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let conn = match db.get() {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("err.db_lock|{}", e);
+                    return vec![];
+                }
+            };
+            save_releases(&conn, source_id, &data, max_count)
+        })
+        .await
+        .unwrap_or_else(|e| {
+            log::error!("github save spawn_blocking panic: {}", e);
+            vec![]
+        })
+    }
+
+    async fn verify_and_describe(
+        &self,
+        client: &reqwest::Client,
+        owner: &str,
+        repo: &str,
+    ) -> Result<String, (u16, String)> {
+        fetch_repo_info(client, owner, repo).await
+    }
+}
 
 async fn fetch_releases_inner(
     client: &reqwest::Client,
@@ -16,25 +89,10 @@ async fn fetch_releases_inner(
         repo,
         per_page,
     );
-    // 复用 fetch_releases_page 消除 HTTP 请求逻辑重复，忽略分页信息
-    fetch_releases_page(client, &url).await.map(|(releases, _)| releases)
-}
-
-/// 重试包装：403 不重试，其他可重试错误最多重试 3 次
-async fn with_retry<T, F, Fut>(f: F) -> Result<T, (u16, String)>
-where
-    F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, (u16, String)>>,
-{
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 403 {
-            return false;
-        }
-        log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
-        true
-    }, f)
-    .await
+    // 复用 http::fetch_page_with_retry 消除 HTTP 请求逻辑重复，忽略分页信息
+    http::fetch_page_with_retry(client, &url)
+        .await
+        .map(|(releases, _)| releases)
 }
 
 async fn fetch_releases_with_retry(
@@ -44,10 +102,7 @@ async fn fetch_releases_with_retry(
     api_base: &str,
     per_page: usize,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    with_retry(|| async {
-        fetch_releases_inner(client, owner, repo, api_base, per_page).await
-    })
-    .await
+    fetch_releases_inner(client, owner, repo, api_base, per_page).await
 }
 
 pub async fn fetch_releases(
@@ -56,68 +111,10 @@ pub async fn fetch_releases(
     repo: &str,
     per_page: usize,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    fetch_releases_with_retry(client, owner, repo, "https://api.github.com", per_page).await
+    fetch_releases_with_retry(client, owner, repo, GH_API_BASE, per_page).await
 }
 
-// ── 分页拉取 ────────────────────────────────────────
-
-/// 从 GitHub API Link header 中提取 `rel="next"` 的 URL。
-///
-/// Link header 格式:
-/// `<https://api.github.com/repos/.../releases?per_page=100&page=2>; rel="next", ...`
-fn parse_next_link(link_header: &str) -> Option<String> {
-    for part in link_header.split(',') {
-        let trimmed = part.trim();
-        if trimmed.contains("rel=\"next\"") {
-            // 提取 <...> 中的 URL
-            let start = trimmed.find('<')?;
-            let end = trimmed.find('>')?;
-            return Some(trimmed[start + 1..end].to_string());
-        }
-    }
-    None
-}
-
-/// 获取单页 releases，返回 (releases, 下一页 URL)。
-async fn fetch_releases_page(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-    let status = resp.status().as_u16();
-    if !resp.status().is_success() {
-        let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("err.api_error|{}|{}", status, reason)));
-    }
-
-    let next_url = resp
-        .headers()
-        .get("link")
-        .and_then(|v| v.to_str().ok())
-        .and_then(parse_next_link);
-
-    let releases: Vec<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| (status, format!("err.parse_failed|{}", e)))?;
-
-    Ok((releases, next_url))
-}
-
-/// 单页 + 重试
-async fn fetch_releases_page_with_retry(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    with_retry(|| async {
-        fetch_releases_page(client, url).await
-    })
-    .await
-}
+// ── 分页拉取（复用 http::paginated_fetch）────────────────
 
 /// 拉取 releases 直到满足 max_count，自动翻页。
 /// - `None` = 不设上限（拉取全部）
@@ -128,7 +125,7 @@ pub async fn fetch_all_releases_with_limit(
     repo: &str,
     max_count: Option<usize>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    fetch_all_releases_inner(client, owner, repo, "https://api.github.com", max_count).await
+    fetch_all_releases_inner(client, owner, repo, GH_API_BASE, max_count).await
 }
 
 async fn fetch_all_releases_inner(
@@ -143,36 +140,7 @@ async fn fetch_all_releases_inner(
         api_base.trim_end_matches('/'),
         owner, repo,
     );
-
-    let mut all_releases = Vec::new();
-    let mut url = first_url;
-
-    loop {
-        let (releases, next_url) = fetch_releases_page_with_retry(client, &url).await?;
-        let count = releases.len();
-        all_releases.extend(releases);
-        log::info!(
-            "分页拉取 {}: 获取 {} 条{}",
-            url,
-            count,
-            next_url.as_ref().map(|_| "，还有下一页").unwrap_or("，已完成"),
-        );
-
-        // 已达到需要的数量上限，提前停止
-        if let Some(limit) = max_count {
-            if all_releases.len() >= limit {
-                log::info!("已获取 {} 条，达到上限 {}，停止翻页", all_releases.len(), limit);
-                break;
-            }
-        }
-
-        match next_url {
-            Some(next) => url = next,
-            None => break,
-        }
-    }
-
-    Ok(all_releases)
+    http::paginated_fetch(client, first_url, max_count).await
 }
 
 pub async fn fetch_repo_info(
@@ -365,34 +333,7 @@ mod tests {
         assert_eq!(result.unwrap_err().0, 429);
     }
 
-    // ── parse_next_link 测试 ──
-
-    #[test]
-    fn test_parse_next_link_found() {
-        let header = "<https://api.github.com/repos/o/r/releases?per_page=100&page=2>; rel=\"next\", \
-                       <https://api.github.com/repos/o/r/releases?per_page=100&page=4>; rel=\"last\"";
-        assert_eq!(
-            parse_next_link(header).as_deref(),
-            Some("https://api.github.com/repos/o/r/releases?per_page=100&page=2")
-        );
-    }
-
-    #[test]
-    fn test_parse_next_link_not_found() {
-        let header = "<https://api.github.com/repos/o/r/releases?per_page=100&page=1>; rel=\"last\"";
-        assert!(parse_next_link(header).is_none());
-    }
-
-    #[test]
-    fn test_parse_next_link_empty() {
-        assert!(parse_next_link("").is_none());
-    }
-
-    #[test]
-    fn test_parse_next_link_no_brackets() {
-        let header = "rel=\"next\"";
-        assert!(parse_next_link(header).is_none());
-    }
+    // ── parse_next_link 测试已移至 http.rs（函数下沉后归属处）──
 
     // ── fetch_all_releases 分页测试 ──
 

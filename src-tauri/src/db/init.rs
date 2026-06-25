@@ -56,8 +56,10 @@ pub fn init_pool(
             )
         });
 
+    // 容量与 poll MAX_CONCURRENCY(10) 对齐并留余量，覆盖 spawn_blocking 闭包与
+    // collect_pending_and_notify 并发取连接；避免 spawn 内 pool.get() 排队。
     let pool = r2d2::Pool::builder()
-        .max_size(5)
+        .max_size(16)
         .build(manager)
         .map_err(|e| e.to_string())?;
 

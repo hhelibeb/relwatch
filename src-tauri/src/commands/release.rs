@@ -106,7 +106,7 @@ pub async fn translate_release(
 
     // 委托给 deepseek 的批量翻译函数（它内部会校验 AI 开关、key、并发）
     let saved = vec![(release_id, Some(body))];
-    crate::deepseek::generate_translations_for_new(&app, &saved, true).await;
+    crate::deepseek::generate_translations_for_new(&state.db, &state.deepseek_semaphore, &saved, true).await;
 
     // 翻译完成后通知前端刷新
     let _ = app.emit("release-state-changed", release_id);
