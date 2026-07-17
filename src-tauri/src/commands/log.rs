@@ -2,29 +2,40 @@ use crate::db;
 use crate::types::{AppState, LogSearchResult};
 
 #[tauri::command]
-pub fn search_logs(
-    state: tauri::State<AppState>,
+pub async fn search_logs(
+    state: tauri::State<'_, AppState>,
     keyword: String,
     page: i64,
     page_size: i64,
     level: Option<String>,
 ) -> Result<LogSearchResult, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-    let (entries, total) = db::logs::search_logs(&conn, &keyword, level.as_deref(), page, page_size)?;
-    Ok(LogSearchResult {
-        entries,
-        total,
-        page,
-        page_size,
+    // 同步 SQLite I/O 放进 spawn_blocking，避免在 Tauri 主线程冻结 UI
+    let pool = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let (entries, total) = db::logs::search_logs(&conn, &keyword, level.as_deref(), page, page_size)?;
+        Ok(LogSearchResult {
+            entries,
+            total,
+            page,
+            page_size,
+        })
     })
+    .await
+    .map_err(|e| format!("search_logs 后台任务失败: {}", e))?
 }
 
 #[tauri::command]
-pub fn clear_logs(state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-    db::logs::clear_logs(&conn)?;
-    db::logs::write_log_key(&conn, "INFO", "log.cleared", "{}");
-    Ok(())
+pub async fn clear_logs(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let pool = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        db::logs::clear_logs(&conn)?;
+        db::logs::write_log_key(&conn, "INFO", "log.cleared", "{}");
+        Ok::<_, String>(())
+    })
+    .await
+    .map_err(|e| format!("clear_logs 后台任务失败: {}", e))?
 }
 
 #[cfg(test)]

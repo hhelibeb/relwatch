@@ -88,7 +88,7 @@ pub struct UpdateSettingsPayload {
 }
 
 #[tauri::command]
-pub fn update_settings(
+pub async fn update_settings(
     app: tauri::AppHandle,
     payload: UpdateSettingsPayload,
 ) -> Result<(), String> {
@@ -96,81 +96,92 @@ pub fn update_settings(
     let log_retention_days = payload.log_retention_days.clamp(0, 3650);
     let fetch_history_count = payload.fetch_history_count.max(0);
 
+    // 拿到 pool 与 next_poll_at 的克隆，避免跨 await 持有 tauri::State 借用。
+    // 同步 SQLite I/O（读旧值 + 写 19 项 + 写日志）与系统注册表写入（自启动）
+    // 一并放进 spawn_blocking，避免在 Tauri 主线程冻结 UI（轮询高峰期 pool.get
+    // 可能等待，且 autostart 注册表写入是阻塞 I/O）。
     let state = app.state::<AppState>();
-    let conn = state.db.get().map_err(|e| e.to_string())?;
+    let pool = state.db.clone();
+    let next_poll_at = state.next_poll_at.clone();
 
-    let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)?;
-    let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
-    let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
-    let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START)?;
-    let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, DEFAULT_MINIMIZE_TO_TRAY)?;
-    let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, DEFAULT_LOG_RETENTION)?;
-    let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_ENABLED)?;
-    let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL)?;
-    let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)?;
-    let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS)?;
-    let old_deepseek_prompt = get_setting_str(&conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)?;
-    let old_deepseek_min_importance = get_setting_str(&conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)?;
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let conn = pool.get().map_err(|e| e.to_string())?;
 
-    let old_deepseek_translate = get_setting_str(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, DEFAULT_DEEPSEEK_TRANSLATE_RELEASE)?;
-    let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
-    let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
-    let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
-    let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
-    let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
-    let old_show_icons = get_setting_str(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, DEFAULT_SHOW_SOURCE_TYPE_ICONS)?;
+        let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)?;
+        let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
+        let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
+        let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START)?;
+        let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, DEFAULT_MINIMIZE_TO_TRAY)?;
+        let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, DEFAULT_LOG_RETENTION)?;
+        let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_ENABLED)?;
+        let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL)?;
+        let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)?;
+        let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS)?;
+        let old_deepseek_prompt = get_setting_str(&conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)?;
+        let old_deepseek_min_importance = get_setting_str(&conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)?;
 
-    let (interval_changed, changes) = settings::apply_settings(
-        &conn,
-        &[
-            (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "setting.poll_interval"),
-            (KEY_PROXY_MODE, &old_proxy_mode, &payload.proxy_mode, "setting.proxy_mode"),
-            (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "setting.proxy_url"),
-            (KEY_AUTO_START, &old_auto_start, &payload.auto_start.to_string(), "setting.auto_start"),
-            (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "setting.minimize_to_tray"),
-            (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "setting.log_retention_days"),
-            (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
-            (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "setting.deepseek_model"),
-            (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
-            (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, &payload.deepseek_proxy_bypass.to_string(), "setting.deepseek_proxy_bypass"),
-            (KEY_DEEPSEEK_PROMPT, &old_deepseek_prompt, &strip_prompt_suffix(&payload.deepseek_prompt), "setting.deepseek_prompt"),
-            (KEY_DEEPSEEK_MIN_IMPORTANCE, &old_deepseek_min_importance, &payload.deepseek_min_importance, "setting.deepseek_min_importance"),
-            (KEY_DEEPSEEK_TRANSLATE_RELEASE, &old_deepseek_translate, &payload.deepseek_translate_release.to_string(), "setting.deepseek_translate_release"),
+        let old_deepseek_translate = get_setting_str(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, DEFAULT_DEEPSEEK_TRANSLATE_RELEASE)?;
+        let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
+        let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
+        let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
+        let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
+        let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
+        let old_show_icons = get_setting_str(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, DEFAULT_SHOW_SOURCE_TYPE_ICONS)?;
 
-            (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
-            (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
-            (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, &fetch_history_count.to_string(), "setting.fetch_history_count"),
-            (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
-            // 不在此处触发 rendered_message 回填：这是有意为之的 locale-frozen 设计。
-            // 切换语言后日志搜索仅对新写入的行生效，旧行以原 locale 的 rendered_message 存在。
-            // 参见 write_log_key 中的注释了解设计取舍。
-            (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
-            (KEY_SHOW_SOURCE_TYPE_ICONS, &old_show_icons, &payload.show_source_type_icons.to_string(), "setting.show_source_type_icons"),
-        ],
-    )?;
+        let (interval_changed, changes) = settings::apply_settings(
+            &conn,
+            &[
+                (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "setting.poll_interval"),
+                (KEY_PROXY_MODE, &old_proxy_mode, &payload.proxy_mode, "setting.proxy_mode"),
+                (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "setting.proxy_url"),
+                (KEY_AUTO_START, &old_auto_start, &payload.auto_start.to_string(), "setting.auto_start"),
+                (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "setting.minimize_to_tray"),
+                (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "setting.log_retention_days"),
+                (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
+                (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "setting.deepseek_model"),
+                (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
+                (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, &payload.deepseek_proxy_bypass.to_string(), "setting.deepseek_proxy_bypass"),
+                (KEY_DEEPSEEK_PROMPT, &old_deepseek_prompt, &strip_prompt_suffix(&payload.deepseek_prompt), "setting.deepseek_prompt"),
+                (KEY_DEEPSEEK_MIN_IMPORTANCE, &old_deepseek_min_importance, &payload.deepseek_min_importance, "setting.deepseek_min_importance"),
+                (KEY_DEEPSEEK_TRANSLATE_RELEASE, &old_deepseek_translate, &payload.deepseek_translate_release.to_string(), "setting.deepseek_translate_release"),
 
-    if changes.is_empty() {
-        return Ok(());
-    }
+                (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
+                (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
+                (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, &fetch_history_count.to_string(), "setting.fetch_history_count"),
+                (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
+                // 不在此处触发 rendered_message 回填：这是有意为之的 locale-frozen 设计。
+                // 切换语言后日志搜索仅对新写入的行生效，旧行以原 locale 的 rendered_message 存在。
+                // 参见 write_log_key 中的注释了解设计取舍。
+                (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
+                (KEY_SHOW_SOURCE_TYPE_ICONS, &old_show_icons, &payload.show_source_type_icons.to_string(), "setting.show_source_type_icons"),
+            ],
+        )?;
 
-    db::logs::write_log_key(&conn, "INFO", "setting.updated", &json!({"changes": changes.join(", ")}).to_string());
-
-    if interval_changed {
-        let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
-        state.next_poll_at.store(next, Ordering::Relaxed);
-        let _ = settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
-    }
-
-    // 开机自启动变化时，立即执行系统注册/注销
-    if old_auto_start != payload.auto_start.to_string() {
-        if payload.auto_start {
-            autostart::enable().map_err(|e| format!("设置开机自启动失败: {}", e))?;
-        } else {
-            autostart::disable().map_err(|e| format!("取消开机自启动失败: {}", e))?;
+        if changes.is_empty() {
+            return Ok(());
         }
-    }
 
-    Ok(())
+        db::logs::write_log_key(&conn, "INFO", "setting.updated", &json!({"changes": changes.join(", ")}).to_string());
+
+        if interval_changed {
+            let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
+            next_poll_at.store(next, Ordering::Relaxed);
+            let _ = settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
+        }
+
+        // 开机自启动变化时，立即执行系统注册/注销（注册表写入是阻塞 I/O，已在 spawn_blocking 内）
+        if old_auto_start != payload.auto_start.to_string() {
+            if payload.auto_start {
+                autostart::enable().map_err(|e| format!("设置开机自启动失败: {}", e))?;
+            } else {
+                autostart::disable().map_err(|e| format!("取消开机自启动失败: {}", e))?;
+            }
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("update_settings 后台任务失败: {}", e))?
 }
 
 #[tauri::command]

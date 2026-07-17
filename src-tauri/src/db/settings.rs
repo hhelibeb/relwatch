@@ -144,21 +144,23 @@ pub fn get_setting_i64(conn: &Connection, key: &str, default: i64) -> Result<i64
 // ── 批量应用（仅写入变化的项）───────────────────────
 
 /// 每项为 (key, old_str, new_str, label)。
-/// 返回 (第一项是否变化且 key == KEY_POLL_INTERVAL, 变更描述列表)。
+/// 返回 (轮询周期是否发生变化, 变更描述列表)。
+///
+/// `interval_changed` 的判定看**任意**一项 key == KEY_POLL_INTERVAL 的设置发生变化，
+/// 而非“第一个变更项”是否为轮询周期——旧实现依赖调用方把 poll_interval 放在数组第一位，
+/// 一旦其它项同时变更，轮询周期变更会被吞掉， leading to 不重算 next_poll_at。
 pub fn apply_settings(
     conn: &Connection,
     items: &[(&str, &str, &str, &str)],
 ) -> Result<(bool, Vec<String>), String> {
-    let mut first_changed = false;
+    let mut interval_changed = false;
     let mut changes: Vec<String> = Vec::new();
-    let mut first = true;
 
     for &(key, old_val, new_val, label) in items {
         if old_val != new_val {
             set_setting(conn, key, new_val)?;
-            if first {
-                first_changed = key == KEY_POLL_INTERVAL;
-                first = false;
+            if key == KEY_POLL_INTERVAL {
+                interval_changed = true;
             }
             if !label.is_empty() {
                 changes.push(format!("{}→{}", label, new_val));
@@ -166,7 +168,7 @@ pub fn apply_settings(
         }
     }
 
-    Ok((first_changed, changes))
+    Ok((interval_changed, changes))
 }
 
 // ── 内部 ────────────────────────────────────────────
@@ -289,8 +291,32 @@ mod tests {
             ],
         ).unwrap();
 
-        assert!(changed, "KEY_POLL_INTERVAL 变化时应返回 first_changed=true");
+        assert!(changed, "KEY_POLL_INTERVAL 变化时应返回 interval_changed=true");
         assert_eq!(changes.len(), 1);
+    }
+
+    /// 问题4 回归测试：轮询周期变更但不是数组中第一个变更项时，interval_changed 仍应为 true。
+    /// 旧实现只看“第一个变更项”，会把被前面其它项掩盖的 poll_interval 变更吞掉。
+    #[test]
+    fn test_apply_settings_interval_not_first_still_triggers_flag() {
+        let conn = init_memory_db().unwrap();
+        set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+        set_setting(&conn, KEY_PROXY_URL, "old").unwrap();
+
+        let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
+        let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
+        // proxy_url 放在 poll_interval 之前且也变更——旧实现会因“第一个变更项是 proxy”
+        // 而错报 interval_changed=false。
+        let (changed, changes) = apply_settings(
+            &conn,
+            &[
+                (KEY_PROXY_URL, &old_proxy, "new", "setting.proxy_url"),
+                (KEY_POLL_INTERVAL, &old_interval, "60", "setting.poll_interval"),
+            ],
+        ).unwrap();
+
+        assert!(changed, "poll_interval 变化时 interval_changed 必须为 true，无论它在数组中的位置");
+        assert_eq!(changes.len(), 2);
     }
 
     #[test]

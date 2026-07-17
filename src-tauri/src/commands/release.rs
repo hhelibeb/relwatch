@@ -5,11 +5,18 @@ use tauri::Emitter;
 use serde_json::json;
 
 #[tauri::command]
-pub fn get_releases(
-    state: tauri::State<AppState>,
+pub async fn get_releases(
+    state: tauri::State<'_, AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-    db::releases::get_releases_with_state(&conn)
+    // 同步 SQLite I/O 放进 spawn_blocking，避免在 Tauri 主线程冻结 UI
+    // （池连接在轮询高峰期可能被占用， pool.get() 会等待最多 acquire_timeout）
+    let pool = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        db::releases::get_releases_with_state(&conn)
+    })
+    .await
+    .map_err(|e| format!("get_releases 后台任务失败: {}", e))?
 }
 
 #[tauri::command]
