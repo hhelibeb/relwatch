@@ -47,7 +47,7 @@ pub async fn export_backup(app: tauri::AppHandle) -> Result<String, String> {
     let path = save_file_dialog(&app).await;
     let path = match path {
         Some(p) => p,
-        None => return Err("备份已取消".to_string()),
+        None => return Err("err.backup_cancelled_export".to_string()),
     };
 
     let path_str = path.as_path().unwrap().to_string_lossy().to_string();
@@ -78,7 +78,7 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     let path = open_file_dialog(&app).await;
     let path = match path {
         Some(p) => p,
-        None => return Err("导入已取消".to_string()),
+        None => return Err("err.backup_cancelled_import".to_string()),
     };
 
     let path_str = path.as_path().unwrap().to_string_lossy().to_string();
@@ -101,21 +101,12 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
         .get()
         .map_err(|e| format!("无法获取数据库连接: {}", e))?;
 
-    // 先清空现有数据（按外键依赖顺序：子表 → 父表）
-    dst_conn
-        .execute_batch(
-            "PRAGMA foreign_keys=OFF;
-             DELETE FROM notification_state;
-             DELETE FROM releases;
-             DELETE FROM sources;
-             DELETE FROM logs;
-             DELETE FROM app_settings;
-             PRAGMA foreign_keys=ON;",
-        )
-        .map_err(|e| format!("清空数据失败: {}", e))?;
-
-    // 使用 rusqlite backup API 将备份文件内容复制到运行中的数据库
-    // 通过池连接写入，SQLite 自身的 WAL 锁机制保证并发一致性
+    // 不预先 DELETE：SQLite Backup API 是页级整库覆盖拷贝，目标库的内容会被
+    // 源库**完整替换**（含 schema），预先 DELETE 对结果无影响、反而会在恢复失败
+    // 时造成用户数据被清空且无法回滚的数据丢失窗口。
+    //
+    // 使用 rusqlite backup API 将备份文件内容复制到运行中的数据库。
+    // 通过池连接写入，SQLite 自身的 WAL 锁机制保证并发一致性。
     {
         let backup = Backup::new(&src_conn, &mut dst_conn)
             .map_err(|e| format!("创建备份会话失败: {}", e))?;
@@ -123,8 +114,34 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
             .run_to_completion(100, Duration::from_millis(250), None)
             .map_err(|e| format!("恢复数据失败: {}", e))?;
     } // backup 在此处释放，dst_conn 不再被借用
+    drop(dst_conn);
 
-    let state = app.state::<crate::types::AppState>();
+    // 恢复后跑迁移： imported 备份可能来自旧版本应用（缺 ai_summary/muted/
+    // body_translated/rendered_message 等列），不补列会让引用这些列的查询立即报错，
+    // 应用处于半瘫痪直到下次重启。此处主动补齐，避免该断裂。
+    // 同时检查 master key 一致性： 备份里的加密设置（github_token/deepseek_api_key）
+    // 用的是导出机器的 master key 加密，本机 master key 无法解密，自动清空避免静默失效。
+    let cleared_keys: Vec<&'static str> = {
+        let conn = state.db.get().map_err(|e| format!("恢复后获取连接失败: {}", e))?;
+        // Backup 整库覆盖后，目标库 schema 被备份的 schema 完全替换。旧版本备份可能
+        // 缺 logs 等基础表，也可能缺 ai_summary 等 ALTER 后新增的列。先 apply_schema
+        // （CREATE TABLE IF NOT EXISTS 补齐缺失基础表），再 migrate（ALTER 补齐新增列），
+        // 确保运行中的应用查询新列/新表不会报错。
+        if let Err(e) = crate::db::init::apply_schema(&conn) {
+            return Err(format!("恢复后补齐基础表失败: {}。建议重启应用以完成迁移。", e));
+        }
+        if let Err(e) = crate::db::init::migrate(&conn) {
+            return Err(format!("恢复后迁移数据库失败: {}。建议重启应用以完成迁移。", e));
+        }
+        crate::crypto::verify_master_key_consistency(&conn)
+    };
+    if !cleared_keys.is_empty() {
+        eprintln!(
+            "WARNING: 导入的备份中以下加密设置无法用本机 master key 解密，已自动清空，请重新配置: {}",
+            cleared_keys.join(", ")
+        );
+    }
+
     if let Ok(conn) = state.db.get() {
         crate::db::logs::write_log_key(&conn, "INFO", "backup.imported", &json!({"path": &path_str}).to_string());
     }
@@ -276,16 +293,9 @@ mod tests {
              INSERT INTO t VALUES (2, 'extra');"
         ).unwrap();
 
-        // 模拟 import_backup 的清空步骤
-        dst.execute_batch(
-            "DELETE FROM t;"
-        ).unwrap();
-        let remaining: i64 = dst.query_row(
-            "SELECT COUNT(*) FROM t", [], |row| row.get(0)
-        ).unwrap();
-        assert_eq!(remaining, 0, "清空后不应还有数据");
-
-        // 从备份恢复
+        // 注意：生产代码 import_backup 不再预先 DELETE（Backup API 页级整库覆盖，
+        // DELETE 是死代码且制造数据丢失窗口）。这里仅验证 Backup 覆盖后脏数据被替换。
+        // 从备份恢复（整库覆盖）
         {
             let src_conn = rusqlite::Connection::open(&backup_path).unwrap();
             let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst).unwrap();
@@ -301,6 +311,74 @@ mod tests {
             "SELECT val FROM t", [], |row| row.get(0)
         ).unwrap();
         assert_eq!(val, "fresh", "脏数据应被备份数据覆盖");
+
+        let _ = std::fs::remove_file(&backup_path);
+    }
+
+    /// 问题2 回归测试：导入旧版本 schema 的备份（缺 ai_summary 等 ALTER 后新增的列）
+    /// 后，Backup API 整库覆盖会把目标库 schema 退回旧版；不补列会让引用新列的
+    /// 查询立即报错。此处验证 import_backup 修复后的链路：覆盖 → apply_schema → migrate → 查询新列成功。
+    #[test]
+    fn test_import_old_schema_backup_then_migrate_restores_columns() {
+        use crate::db::init::{apply_schema, migrate};
+        use std::time::Duration;
+
+        let dir = std::env::temp_dir();
+        let backup_path = dir.join(format!("test_old_schema_{}.db", std::process::id()));
+
+        // 构造一个旧版本 schema 的备份：只有基础 releases 表，无 ai_summary/ai_importance 列
+        {
+            let src = rusqlite::Connection::open(&backup_path).unwrap();
+            src.execute_batch(
+                "CREATE TABLE releases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_id INTEGER NOT NULL,
+                    tag_name TEXT NOT NULL,
+                    release_name TEXT NOT NULL,
+                    html_url TEXT NOT NULL,
+                    published_at TEXT NOT NULL,
+                    prerelease INTEGER NOT NULL DEFAULT 0,
+                    body TEXT,
+                    detected_at TEXT NOT NULL,
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    UNIQUE(source_id, tag_name)
+                );
+                 INSERT INTO releases VALUES (1, 1, 'v1', 'R', 'u', '2024-01-01', 0, 'b', '2024-01-01', 0);
+                 CREATE TABLE sources (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    source_type TEXT NOT NULL, owner TEXT NOT NULL, repo TEXT NOT NULL,
+                    poll_interval_minutes INTEGER NOT NULL DEFAULT 30,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_checked_at TEXT, last_check_status TEXT NOT NULL DEFAULT 'unknown',
+                    last_check_message TEXT, consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                    last_new_count INTEGER NOT NULL DEFAULT 0, muted INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                    UNIQUE(source_type, owner, repo)
+                );
+                 INSERT INTO sources VALUES (1,'github','o','r',30,1,NULL,'unknown',NULL,0,0,0,'2024','2024');"
+            ).unwrap();
+        }
+
+        // 目标库：先用完整 init 建 schema，再被旧备份覆盖（模拟运行中应用导入旧备份）
+        let mut dst = crate::db::init::init_memory_db().unwrap();
+        {
+            let src_conn = rusqlite::Connection::open(&backup_path).unwrap();
+            let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst).unwrap();
+            backup.run_to_completion(100, Duration::from_millis(250), None).unwrap();
+        }
+
+        // 覆盖后查询新列应失败（证明 schema 已退回旧版）
+        let pre = dst.prepare("SELECT r.ai_summary FROM releases r");
+        assert!(pre.is_err(), "覆盖后旧 schema 应缺 ai_summary 列");
+        drop(pre);
+
+        // 跑恢复后链路：先补基础表，再 migrate 补 ALTER 列（与 import_backup 一致）
+        apply_schema(&dst).expect("apply_schema 应补齐缺失的基础表");
+        migrate(&dst).expect("migrate 应成功补齐缺失列");
+
+        // 现在引用新列的查询应成功
+        let ok = dst.prepare("SELECT r.ai_summary, r.ai_importance, r.body_translated FROM releases r");
+        assert!(ok.is_ok(), "migrate 后应补齐 ai_summary/ai_importance/body_translated 列");
 
         let _ = std::fs::remove_file(&backup_path);
     }

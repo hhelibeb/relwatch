@@ -72,7 +72,7 @@ pub fn init_pool(
     Ok(pool)
 }
 
-fn apply_schema(conn: &Connection) -> Result<()> {
+pub fn apply_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -133,7 +133,7 @@ fn apply_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn migrate(conn: &Connection) -> Result<()> {
+pub fn migrate(conn: &Connection) -> Result<()> {
     let has_summary: bool = conn
         .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='ai_summary'")
         .and_then(|mut s| s.exists([]))
