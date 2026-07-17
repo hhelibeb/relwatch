@@ -295,6 +295,8 @@ export default {
   'err.api_error': 'GitHub API returned {0} {1}',
   'err.parse_failed': 'Failed to parse response: {0}',
   'err.poll_in_progress': 'Poll in progress, please try again later',
+  'err.backup_cancelled_export': 'Backup cancelled',
+  'err.backup_cancelled_import': 'Restore cancelled',
   'err.unsupported_source': 'Unsupported source type: {0}',
   'err.source_not_found': 'Source not found',
 }

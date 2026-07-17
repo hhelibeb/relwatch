@@ -341,8 +341,9 @@ describe('SettingsTab — 备份导出', () => {
     expect(wrapper.emitted('update')?.[0]).toEqual([false])
   })
 
-  it('导出取消（路径含"取消"），显示取消 toast', async () => {
-    exportBackupMock.mockRejectedValueOnce(new Error('用户取消'))
+  it('导出取消（后端返回 err.backup_cancelled_export），显示取消 toast', async () => {
+    // 新 contract：后端用稳定 err key 表示用户取消；invokeI18n 在测试转换器下返回 key 本身。
+    exportBackupMock.mockRejectedValueOnce(new Error('err.backup_cancelled_export'))
     const showToast = vi.fn()
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
@@ -389,8 +390,9 @@ describe('SettingsTab — 备份导入', () => {
     expect(importBackupMock).not.toHaveBeenCalled()
   })
 
-  it('导入取消（路径含"取消"），显示取消 toast', async () => {
-    importBackupMock.mockRejectedValueOnce(new Error('用户取消'))
+  it('导入取消（后端返回 err.backup_cancelled_import），显示取消 toast', async () => {
+    // 新 contract：后端用稳定 err key 表示用户取消；invokeI18n 在测试转换器下返回 key 本身。
+    importBackupMock.mockRejectedValueOnce(new Error('err.backup_cancelled_import'))
     const showToast = vi.fn()
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },

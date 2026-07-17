@@ -465,7 +465,9 @@ async function handleExportBackup() {
     emit('update', false)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (msg.includes('取消')) {
+    // 后端用 `err.backup_cancelled_export` 稳定 key 表示用户取消；invokeI18n 已将其翻译为
+    // t('err.backup_cancelled_export')，两侧同走 i18n，故比较结果与 UI 语言一致、不依赖中文子串。
+    if (msg === t('err.backup_cancelled_export')) {
       showToast(t('backup.export_cancelled'))
     } else {
       showToast(t('backup.export_failed') + msg)
@@ -482,7 +484,8 @@ async function handleImportBackup() {
     emit('update', false, true)
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
-    if (msg.includes('取消')) {
+    // 同 export：用 `err.backup_cancelled_import` 稳定 key 判定用户取消，不依赖中文子串。
+    if (msg === t('err.backup_cancelled_import')) {
       showToast(t('backup.import_cancelled'))
     } else {
       showToast(t('backup.import_failed') + msg)

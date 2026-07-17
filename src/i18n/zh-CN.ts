@@ -295,6 +295,8 @@ export default {
   'err.api_error': 'GitHub API 返回 {0} {1}',
   'err.parse_failed': '解析响应失败: {0}',
   'err.poll_in_progress': '轮询正在进行中，请稍后再试',
+  'err.backup_cancelled_export': '已取消备份',
+  'err.backup_cancelled_import': '已取消恢复',
   'err.unsupported_source': '不支持的监控源类型: {0}',
   'err.source_not_found': '监控源不存在',
 }
