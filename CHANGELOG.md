@@ -47,6 +47,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-07-17
+
+### Added
+- 新增 HuggingFace 组织模型监控支持 — 对接 HuggingFace Hub API，支持按组织拉取模型列表、并行拉取 README 回填 body 与 extra_metadata 元数据（pipeline_tag/downloads/likes），ReleaseItem 展示 HF 模型元数据徽标，SourceTab 适配双源类型。
+- 监控源列表显示源类型图标（GitHub / HuggingFace 品牌徽章），外观设置新增「在监控源列表显示源类型图标」开关（默认开启）。
+- 数据库新增 migration 10 — releases.extra_metadata 列。
+
+### Changed
+- 后端架构治理 S1/S2/S3：新增 SourceAdapter trait 收敛源分发并消除字符串匹配，分页循环下沉至 http.rs::paginated_fetch；同步 DB 调用与注册表写入移入 spawn_blocking 避免冻结 Tauri 主线程；编排层提纯为 &Pool + &dyn Emitter 注入式可测签名。
+
+### Fixed
+- 阻断 GitHub Token 随 HuggingFace 请求泄露：共享 HTTP client 不再注入 default Authorization，token 改由 fetch_page/verify 等按请求 .bearer_auth 设置，仅 DeepSeek 单域名场景才设默认鉴权。
+- 修复备份导入数据丢失窗口与旧 schema 退化：移除 import 前预 DELETE 全表死代码，导入后补跑 apply_schema + migrate 防止旧版备份缺列/缺表，并校验 master key 一致性、清空不可解密凭据并提示重新配置。
+- 阻断 Tauri 主线程冻结：get_releases / search_logs / clear_logs / update_settings 改为 async，将同步 SQLite I/O 与自启动注册表写入移入 spawn_blocking；修复 apply_settings 仅看首变更项导致轮询周期变更被吞的问题，改为扫描所有变更项。
+- 备份取消改用稳定 err key（err.backup_cancelled_export/import），前端经 i18n 翻译比较结果，不再依赖中文字串匹配。
+
 ## [1.6.0] - 2026-06-21
 
 ### Added
@@ -217,7 +233,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/hhelibeb/relwatch/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/hhelibeb/relwatch/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/hhelibeb/relwatch/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/hhelibeb/relwatch/compare/v1.4.1...v1.5.0
