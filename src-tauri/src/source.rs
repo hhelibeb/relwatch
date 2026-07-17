@@ -19,17 +19,24 @@ use async_trait::async_trait;
 use crate::db::sources::Source;
 
 /// 监控源适配器 trait：把 fetch / save / verify / description 收敛为统一接口。
+///
+/// `fetch` / `fetch_all` / `verify_and_describe` 接收的 `client` **不携带 default
+/// Authorization header**（见 `http::build_http_client` 的 `set_default_auth` 说明）。
+/// 鉴权 token 通过 `token` 参数传入，由适配器实现按请求 `.bearer_auth(token)`
+/// 设置，确保 GitHub Token **不会**随 HuggingFace 请求泄露给 huggingface.co。
+/// 无需鉴权的源（如 HuggingFace）实现中忽略 `token` 即可。
 #[async_trait]
 pub trait SourceAdapter: Send + Sync {
     /// 该适配器处理的 source_type 字符串（如 "github" / "huggingface"）。
     fn source_type(&self) -> &'static str;
 
-    /// 单页拉取（非翻页模式）。
+    /// 单页拉取（非翻页模式）。`token` 为该 source 对应的鉴权 token（可忽略）。
     async fn fetch(
         &self,
         client: &reqwest::Client,
         source: &Source,
         per_page: usize,
+        token: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, (u16, String)>;
 
     /// 翻页拉取全部（fetch_history 开启时的首次全量查询）。
@@ -39,6 +46,7 @@ pub trait SourceAdapter: Send + Sync {
         client: &reqwest::Client,
         source: &Source,
         max_count: Option<usize>,
+        token: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, (u16, String)>;
 
     /// 保存到数据库。返回 `(id, body)` 对，供 `mark_older_as_read` 使用。
@@ -52,13 +60,14 @@ pub trait SourceAdapter: Send + Sync {
         client: &reqwest::Client,
     ) -> Vec<(i64, Option<String>)>;
 
-    /// 验证源可达并返回展示用的 description。
-    /// 对应 `commands/source.rs::add_source` 的 verify + description 分支。
+    /// 验证源可达并返回展示用的 description。`token` 为该 source 对应的鉴权
+    /// token（无鉴权源可忽略）。对应 `commands/source.rs::add_source` 分支。
     async fn verify_and_describe(
         &self,
         client: &reqwest::Client,
         owner: &str,
         repo: &str,
+        token: Option<&str>,
     ) -> Result<String, (u16, String)>;
 }
 

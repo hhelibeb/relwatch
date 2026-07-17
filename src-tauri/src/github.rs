@@ -22,8 +22,9 @@ impl SourceAdapter for GithubAdapter {
         client: &reqwest::Client,
         source: &Source,
         per_page: usize,
+        token: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-        fetch_releases(client, &source.owner, &source.repo, per_page).await
+        fetch_releases(client, &source.owner, &source.repo, per_page, token).await
     }
 
     async fn fetch_all(
@@ -31,8 +32,9 @@ impl SourceAdapter for GithubAdapter {
         client: &reqwest::Client,
         source: &Source,
         max_count: Option<usize>,
+        token: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-        fetch_all_releases_with_limit(client, &source.owner, &source.repo, max_count).await
+        fetch_all_releases_with_limit(client, &source.owner, &source.repo, max_count, token).await
     }
 
     async fn save(
@@ -70,8 +72,9 @@ impl SourceAdapter for GithubAdapter {
         client: &reqwest::Client,
         owner: &str,
         repo: &str,
+        token: Option<&str>,
     ) -> Result<String, (u16, String)> {
-        fetch_repo_info(client, owner, repo).await
+        fetch_repo_info(client, owner, repo, token).await
     }
 }
 
@@ -81,6 +84,7 @@ async fn fetch_releases_inner(
     repo: &str,
     api_base: &str,
     per_page: usize,
+    token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let url = format!(
         "{}/repos/{}/{}/releases?per_page={}",
@@ -89,8 +93,8 @@ async fn fetch_releases_inner(
         repo,
         per_page,
     );
-    // 复用 http::fetch_page_with_retry 消除 HTTP 请求逻辑重复，忽略分页信息
-    http::fetch_page_with_retry(client, &url)
+    // token 按请求设置，避免共享 client 时 GitHub Token 作为 default header 泄露给 huggingface.co
+    http::fetch_page_with_retry(client, &url, token)
         .await
         .map(|(releases, _)| releases)
 }
@@ -101,8 +105,9 @@ async fn fetch_releases_with_retry(
     repo: &str,
     api_base: &str,
     per_page: usize,
+    token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    fetch_releases_inner(client, owner, repo, api_base, per_page).await
+    fetch_releases_inner(client, owner, repo, api_base, per_page, token).await
 }
 
 pub async fn fetch_releases(
@@ -110,8 +115,9 @@ pub async fn fetch_releases(
     owner: &str,
     repo: &str,
     per_page: usize,
+    token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    fetch_releases_with_retry(client, owner, repo, GH_API_BASE, per_page).await
+    fetch_releases_with_retry(client, owner, repo, GH_API_BASE, per_page, token).await
 }
 
 // ── 分页拉取（复用 http::paginated_fetch）────────────────
@@ -124,8 +130,9 @@ pub async fn fetch_all_releases_with_limit(
     owner: &str,
     repo: &str,
     max_count: Option<usize>,
+    token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
-    fetch_all_releases_inner(client, owner, repo, GH_API_BASE, max_count).await
+    fetch_all_releases_inner(client, owner, repo, GH_API_BASE, max_count, token).await
 }
 
 async fn fetch_all_releases_inner(
@@ -134,23 +141,28 @@ async fn fetch_all_releases_inner(
     repo: &str,
     api_base: &str,
     max_count: Option<usize>,
+    token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let first_url = format!(
         "{}/repos/{}/{}/releases?per_page=100",
         api_base.trim_end_matches('/'),
         owner, repo,
     );
-    http::paginated_fetch(client, first_url, max_count).await
+    http::paginated_fetch(client, first_url, max_count, token).await
 }
 
 pub async fn fetch_repo_info(
     client: &reqwest::Client,
     owner: &str,
     repo: &str,
+    token: Option<&str>,
 ) -> Result<String, (u16, String)> {
     let url = format!("https://api.github.com/repos/{}/{}", owner, repo);
-    let resp = client
-        .get(&url)
+    let mut req = client.get(&url);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| (0, format!("err.repo_verify_failed|{}", e)))?;
@@ -257,7 +269,7 @@ mod tests {
         let url = format!("{}/repos/{}/{}/releases?per_page={}", mock.uri(), "owner", "repo", 10);
         let raw_resp = client.get(&url).send().await;
         eprintln!("DEBUG raw_resp: {:?}", raw_resp);
-        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10).await;
+        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10, None).await;
         eprintln!("DEBUG result err: {:?}", result.as_ref().map_err(|e| &e.1));
         assert!(result.is_ok());
         let releases = result.unwrap();
@@ -275,7 +287,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10).await;
+        let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10, None).await;
 
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, 403);
@@ -299,7 +311,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
+        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10, None).await;
         assert!(result.is_ok());
     }
 
@@ -313,7 +325,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
+        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10, None).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, 403);
     }
@@ -328,7 +340,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10).await;
+        let result = fetch_releases_with_retry(&client, "owner", "repo", &mock.uri(), 10, None).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, 429);
     }
@@ -368,7 +380,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None, None).await;
         assert!(result.is_ok());
         let releases = result.unwrap();
         assert_eq!(releases.len(), 3);
@@ -404,7 +416,7 @@ mod tests {
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         // max_count=4: page 1 = 3 items (< 4), fetch page 2; total = 6 (>= 4), stop
-        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), Some(4)).await;
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), Some(4), None).await;
         assert!(result.is_ok());
         let releases = result.unwrap();
         // 应至少获取 4 条；实际拿到 6 条（翻了一整页后检查到 >=4 才停）
@@ -436,7 +448,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None, None).await;
         assert!(result.is_ok());
         let releases = result.unwrap();
         assert_eq!(releases.len(), 4);
@@ -477,7 +489,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None, None).await;
         assert!(result.is_ok());
         let releases = result.unwrap();
         assert_eq!(releases.len(), 6);
@@ -508,7 +520,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None).await;
+        let result = fetch_all_releases_inner(&client, "o", "r", &mock.uri(), None, None).await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().0, 403);
     }

@@ -71,12 +71,14 @@ pub fn read_translate_config(conn: &Connection) -> (bool, String) {
 }
 
 pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<reqwest::Client, String> {
+    // DeepSeek 所有请求都打同一 API 域名，token 作为 default header 安全。
     crate::http::build_http_client(crate::http::HttpClientConfig {
         proxy_url,
         proxy_mode,
         bearer_token: Some(api_key),
         timeout_secs: 60,
         content_type_json: true,
+        set_default_auth: true,
     })
 }
 
@@ -910,5 +912,233 @@ mod tests {
         let max = peak.load(Ordering::SeqCst);
         assert!(max <= 1, "并发峰值 {} 不应超过信号量限制 1", max);
         assert_eq!(max, 1, "应严格串行执行");
+    }
+
+    // ── 编排函数 generate_summaries_for_new / generate_translations_for_new 集成测试 ──
+    //
+    // 注入 init_memory_pool + wiremock，直接驱动真实的公开编排函数，覆盖
+    // enabled / api_key / 成功写摘要 / 失败重试计数 / 空体跳过 /
+    // 翻译 force 绕过开关 / 语言检测短路写原文 / 翻译失败重试 等编排分支。
+    // 这条链路原先无测试覆盖（CI 不可达），至此补齐。
+
+    fn enable_deepseek(conn: &rusqlite::Connection, base_url: &str) {
+        crate::crypto::set_test_master_key();
+        db::settings::set_setting(conn, KEY_DEEPSEEK_ENABLED, "true").unwrap();
+        db::settings::set_setting(conn, KEY_DEEPSEEK_BASE_URL, base_url).unwrap();
+        db::settings::set_setting(conn, KEY_DEEPSEEK_API_KEY, &crate::crypto::encrypt("test-key")).unwrap();
+    }
+
+    fn insert_release_with_body(conn: &rusqlite::Connection, body: &str) -> i64 {
+        let sid = db::sources::add_source(conn, "github", "o", "r", "").unwrap();
+        db::releases::insert_release(
+            conn, sid, "v1", "v1", "https://github.com/o/r/releases/tag/v1",
+            "2024-01-01T00:00:00Z", false, Some(body),
+        ).unwrap()
+    }
+
+    fn retry_count(conn: &rusqlite::Connection, id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(retry_count, 0) FROM releases WHERE id = ?1",
+            rusqlite::params![id], |r| r.get(0),
+        ).unwrap()
+    }
+
+    fn translate_retry_count(conn: &rusqlite::Connection, id: i64) -> i64 {
+        conn.query_row(
+            "SELECT COALESCE(translate_retry_count, 0) FROM releases WHERE id = ?1",
+            rusqlite::params![id], |r| r.get(0),
+        ).unwrap()
+    }
+
+    /// 未启用 DeepSeek：编排函数应早返回，不发起任何请求、不写摘要。
+    #[tokio::test]
+    async fn test_generate_summaries_disabled_no_call() {
+        let _mock = MockServer::start().await; // 不挂 mock：若误调用会落到错误分支
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            insert_release_with_body(&conn, "body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_summaries_for_new(&pool, &sem, &[(id, Some("body".to_string()))]).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.ai_summary.is_none(), "未启用 AI 不应写摘要");
+        assert_eq!(retry_count(&conn, id), 0, "未启用不应触发请求");
+    }
+
+    /// 已启用但未配置 api_key：应早返回，不发起请求。
+    #[tokio::test]
+    async fn test_generate_summaries_no_api_key_no_call() {
+        let _mock = MockServer::start().await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, KEY_DEEPSEEK_ENABLED, "true").unwrap();
+            // 故意不设置 api_key
+            insert_release_with_body(&conn, "body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_summaries_for_new(&pool, &sem, &[(id, Some("body".to_string()))]).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.ai_summary.is_none());
+        assert_eq!(retry_count(&conn, id), 0, "无 api_key 不应触发请求");
+    }
+
+    /// 成功路径：mock 200 返回摘要 JSON，应写回 ai_summary / ai_importance 并重置 retry_count。
+    #[tokio::test]
+    async fn test_generate_summaries_success_writes_summary() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_response()))
+            .mount(&mock).await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            insert_release_with_body(&conn, "release body content")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_summaries_for_new(&pool, &sem, &[(id, Some("release body content".to_string()))]).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert_eq!(rel.ai_summary.as_deref(), Some("测试摘要内容"));
+        assert_eq!(rel.ai_importance.as_deref(), Some("中"));
+        assert_eq!(retry_count(&conn, id), 0, "成功后 retry_count 应被重置");
+    }
+
+    /// 失败路径：mock 500（非 429 不重试），应递增 retry_count 且不写摘要。
+    #[tokio::test]
+    async fn test_generate_summaries_error_increments_retry() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock).await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            insert_release_with_body(&conn, "release body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_summaries_for_new(&pool, &sem, &[(id, Some("release body".to_string()))]).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.ai_summary.is_none(), "失败不应写摘要");
+        assert!(retry_count(&conn, id) >= 1, "失败应递增 retry_count");
+    }
+
+    /// body 为 None：应被 continue 跳过，不发起请求（retry_count 保持 0 证明未触发错误分支）。
+    #[tokio::test]
+    async fn test_generate_summaries_skips_none_body() {
+        let mock = MockServer::start().await; // 无 mock
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            insert_release_with_body(&conn, "body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_summaries_for_new(&pool, &sem, &[(id, None)]).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.ai_summary.is_none());
+        assert_eq!(retry_count(&conn, id), 0, "None body 不应触发请求");
+    }
+
+    /// 翻译：translate 未启用且 force=false → 早返回，不翻译、不触发请求。
+    #[tokio::test]
+    async fn test_generate_translations_disabled_no_force_noop() {
+        let mock = MockServer::start().await; // 无 mock
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            // KEY_DEEPSEEK_TRANSLATE_RELEASE 默认 false
+            insert_release_with_body(&conn, "body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_translations_for_new(&pool, &sem, &[(id, Some("body".to_string()))], false).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.body_translated.is_none(), "translate 未启用且非 force 不应翻译");
+        assert_eq!(translate_retry_count(&conn, id), 0);
+    }
+
+    /// 翻译：force=true 绕过 translate 开关。detect 返回非目标语言 → 继续翻译并写译文。
+    #[tokio::test]
+    async fn test_generate_translations_force_bypasses_switch() {
+        let mock = MockServer::start().await;
+        // 单 mock：detect 得 "English"(≠ 默认中文 → 继续翻译)，translate 得 "English" 作为译文
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_detect_response("English")))
+            .mount(&mock).await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            // translate_release 未启用，靠 force=true 绕过
+            insert_release_with_body(&conn, "release body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_translations_for_new(&pool, &sem, &[(id, Some("release body".to_string()))], true).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.body_translated.is_some(), "force=true 应绕过开关执行翻译");
+        assert_eq!(translate_retry_count(&conn, id), 0);
+    }
+
+    /// 翻译：语言检测 == 目标语言 → 短路跳过翻译，直接写原文为 body_translated。
+    #[tokio::test]
+    async fn test_generate_translations_language_match_writes_original() {
+        let mock = MockServer::start().await;
+        // detect 返回 "中文" == 默认 target_lang("中文") → 跳过翻译，写原文
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_detect_response("中文")))
+            .mount(&mock).await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            db::settings::set_setting(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, "true").unwrap();
+            insert_release_with_body(&conn, "原文内容")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_translations_for_new(&pool, &sem, &[(id, Some("原文内容".to_string()))], false).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert_eq!(rel.body_translated.as_deref(), Some("原文内容"), "语言一致应直接写原文跳过翻译");
+    }
+
+    /// 翻译失败：detect 与 translate 均 500（detect 失败不阻塞翻译），应递增 translate_retry_count。
+    #[tokio::test]
+    async fn test_generate_translations_error_increments_retry() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&mock).await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            db::settings::set_setting(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, "true").unwrap();
+            insert_release_with_body(&conn, "release body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        generate_translations_for_new(&pool, &sem, &[(id, Some("release body".to_string()))], false).await;
+
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(rel.body_translated.is_none(), "翻译失败不应写译文");
+        assert!(translate_retry_count(&conn, id) >= 1, "翻译失败应递增 translate_retry_count");
     }
 }

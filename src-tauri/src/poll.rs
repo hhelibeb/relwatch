@@ -325,10 +325,12 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     };
     let emitter: &dyn crate::types::Emitter = &app;
 
+    // client 不携带 default Authorization——github token 由 adapter 按请求设置，
+    // 避免 HF 请求泄露 GitHub Token（见 http::HttpClientConfig::set_default_auth）
     let client = match http::build_http_client(http::HttpClientConfig {
         proxy_url: &proxy_url,
         proxy_mode: &proxy_mode,
-        bearer_token: github_token.as_deref(),
+        bearer_token: None,
         ..Default::default()
     }) {
         Ok(client) => client,
@@ -351,9 +353,9 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         Err((_, msg)) => return Err(msg),
     };
     let releases = match if needs_pagination {
-        adapter.fetch_all(&client, &source_obj, max_count).await
+        adapter.fetch_all(&client, &source_obj, max_count, github_token.as_deref()).await
     } else {
-        adapter.fetch(&client, &source_obj, per_page).await
+        adapter.fetch(&client, &source_obj, per_page, github_token.as_deref()).await
     } {
         Ok(releases) => releases,
         Err((status, msg)) => {
@@ -406,7 +408,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     };
 
     if source_obj.source_type == "github" {
-        if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo).await {
+        if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo, github_token.as_deref()).await {
             let db_pool_blk = db_pool.clone();
             let source_id = source_obj.id;
             let _ = tokio::task::spawn_blocking(move || {
@@ -548,10 +550,12 @@ async fn poll_all_sources_async(
     fetch_history: bool,
     fetch_history_count: usize,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
+    // client 不携带 default Authorization——github token 由 adapter 按请求设置，
+    // 避免 HF 请求泄露 GitHub Token（见 http::HttpClientConfig::set_default_auth）
     let client = match http::build_http_client(http::HttpClientConfig {
         proxy_url,
         proxy_mode,
-        bearer_token: github_token,
+        bearer_token: None,
         ..Default::default()
     }) {
         Ok(c) => c,
@@ -575,6 +579,9 @@ async fn poll_all_sources_async(
         let client = client.clone();
         let source = source.clone();
         let db_pool = pool.clone();
+        // github_token 是 Option<&str>（来自 do_poll_core 的借用），spawn 需要 'static，
+        // 先克隆为 owned。仅 github 源会使用它做 per-request 鉴权；HF 源忽略。
+        let token = github_token.map(|s| s.to_string());
 
         let is_first_query = source.last_checked_at.is_none()
             || source.last_checked_at.as_deref() == Some("");
@@ -598,9 +605,9 @@ async fn poll_all_sources_async(
                 }
             };
             let fetch_result = if needs_pagination {
-                adapter.fetch_all(&client, &source, max_count).await
+                adapter.fetch_all(&client, &source, max_count, token.as_deref()).await
             } else {
-                adapter.fetch(&client, &source, per_page).await
+                adapter.fetch(&client, &source, per_page, token.as_deref()).await
             };
             match fetch_result {
                 Ok(releases) => {

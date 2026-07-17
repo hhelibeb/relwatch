@@ -34,10 +34,12 @@ pub async fn add_source(
                 }
                 Some(plain)
             });
+        // client 不携带 default Authorization——github token 由 adapter 按请求设置，
+        // 避免 HF 请求泄露 GitHub Token
         let client = match http::build_http_client(http::HttpClientConfig {
             proxy_url: &proxy_url,
             proxy_mode: &proxy_mode,
-            bearer_token: github_token.as_deref(),
+            bearer_token: None,
             ..Default::default()
         }) {
             Ok(c) => c,
@@ -60,7 +62,7 @@ pub async fn add_source(
                 return Err(msg);
             }
         };
-        description = match adapter.verify_and_describe(&client, &owner, &repo).await {
+        description = match adapter.verify_and_describe(&client, &owner, &repo, github_token.as_deref()).await {
             Ok(d) => d,
             Err((status, msg)) => {
                 let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };

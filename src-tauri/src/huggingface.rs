@@ -31,7 +31,9 @@ impl SourceAdapter for HuggingFaceAdapter {
         client: &reqwest::Client,
         source: &Source,
         per_page: usize,
+        _token: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+        // HF 公开模型读取无需认证，显式传 None 确保不携带任何 Authorization
         fetch_org_models(client, &source.owner, per_page).await
     }
 
@@ -40,6 +42,7 @@ impl SourceAdapter for HuggingFaceAdapter {
         client: &reqwest::Client,
         source: &Source,
         max_count: Option<usize>,
+        _token: Option<&str>,
     ) -> Result<Vec<serde_json::Value>, (u16, String)> {
         fetch_all_org_models_with_limit(client, &source.owner, max_count).await
     }
@@ -60,6 +63,7 @@ impl SourceAdapter for HuggingFaceAdapter {
         client: &reqwest::Client,
         owner: &str,
         _repo: &str,
+        _token: Option<&str>,
     ) -> Result<String, (u16, String)> {
         // HF repo 参数无意义（以 owner 为组织名），但 verify 需要 owner。
         verify_org_exists(client, owner).await?;
@@ -136,7 +140,8 @@ async fn fetch_models_page(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    http::fetch_page_with_retry(client, url).await
+    // HF 公开 API 无需鉴权，显式传 None，绝不携带 Authorization header
+    http::fetch_page_with_retry(client, url, None).await
 }
 
 async fn fetch_models_page_with_retry(
@@ -216,7 +221,8 @@ pub async fn fetch_all_org_models_with_limit(
     max_count: Option<usize>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let first_url = build_page_url(org, 100);
-    http::paginated_fetch(client, first_url, max_count).await
+    // HF 无需鉴权，传 None
+    http::paginated_fetch(client, first_url, max_count, None).await
 }
 
 /// 验证组织是否存在（调 API 看能否正常返回 2xx）。

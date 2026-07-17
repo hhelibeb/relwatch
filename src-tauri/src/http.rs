@@ -5,6 +5,13 @@ pub struct HttpClientConfig<'a> {
     pub bearer_token: Option<&'a str>,
     pub timeout_secs: u64,
     pub content_type_json: bool,
+    /// 为 true 时把 `bearer_token` 作为 client 的 **default header**（对所有域名生效）。
+    /// 仅 DeepSeek 这种「所有请求都打同一 API 域名」的场景可安全设 true。
+    /// GitHub 监控层与 HuggingFace 共用 client 抓取时必须设 false（默认），
+    /// 否则 GitHub Token 会以 default header 形式泄露给 huggingface.co。
+    /// GitHub 的 token 改由 `http::fetch_page_with_retry` / `paginated_fetch` 的
+    /// `token` 参数按请求设置（仅对 github 请求生效）。
+    pub set_default_auth: bool,
 }
 
 impl<'a> Default for HttpClientConfig<'a> {
@@ -15,19 +22,26 @@ impl<'a> Default for HttpClientConfig<'a> {
             bearer_token: None,
             timeout_secs: 30,
             content_type_json: false,
+            set_default_auth: false,
         }
     }
 }
 
 /// 通用 HTTP 客户端构建器，供 GitHub API 和 DeepSeek API 共用。
+///
+/// **注意**：当 `set_default_auth=false`（默认）时，`bearer_token` **不会**被设为
+/// default header；调用方必须在每个需要鉴权的请求上通过 `bearer_auth` 单独设置，
+/// 避免共享 client 时 token 被发给无关域名。
 pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, String> {
     let mut headers = reqwest::header::HeaderMap::new();
-    if let Some(token) = config.bearer_token {
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
-                .map_err(|e| format!("无效的 Bearer Token: {}", e))?,
-        );
+    if config.set_default_auth {
+        if let Some(token) = config.bearer_token {
+            headers.insert(
+                reqwest::header::AUTHORIZATION,
+                reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token))
+                    .map_err(|e| format!("无效的 Bearer Token: {}", e))?,
+            );
+        }
     }
     if config.content_type_json {
         headers.insert(
@@ -39,7 +53,7 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
         .user_agent("RelWatch/0.4")
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .connect_timeout(std::time::Duration::from_secs(10));
-    if config.bearer_token.is_none() && headers.is_empty() {
+    if headers.is_empty() {
         // 无 headers 时不调用 default_headers（仅 user_agent）
     } else {
         builder = builder.default_headers(headers);
@@ -87,14 +101,19 @@ pub fn parse_next_link(link_header: &str) -> Option<String> {
     None
 }
 
-/// 获取单页，返回 (items, 下一页 URL)。
+/// 获取单页，返回 (items, 下一页 URL)。`token` 按请求设置 Authorization（仅作用于
+/// 本次请求的 URL，不会泄露给其它域名）。HuggingFace 等无需鉴权的源传 `None`。
 /// 与 `github::fetch_releases_page` / `huggingface::fetch_models_page` 行为一致。
 async fn fetch_page(
     client: &reqwest::Client,
     url: &str,
+    token: Option<&str>,
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    let resp = client
-        .get(url)
+    let mut req = client.get(url);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let resp = req
         .send()
         .await
         .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
@@ -142,26 +161,31 @@ fn default_should_retry(e: &(u16, String)) -> bool {
 }
 
 /// 单页拉取 + 默认重试。返回 (items, 下一页 URL)。
+/// `token` 为 `Some` 时仅对本次请求 URL 设置 Authorization（见 `fetch_page`）。
 pub async fn fetch_page_with_retry(
     client: &reqwest::Client,
     url: &str,
+    token: Option<&str>,
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    with_retry(default_should_retry, || async { fetch_page(client, url).await }).await
+    with_retry(default_should_retry, || async { fetch_page(client, url, token).await }).await
 }
 
 /// 翻页拉取直到满足 `max_count` 或无下一页。复用 `fetch_page_with_retry`。
 /// - `None` = 不设上限（拉取全部）
 /// - `Some(n)` = 拉取至少 n 条后停止
+///
+/// `token` 同 `fetch_page_with_retry`，按请求设置，避免泄露给无关域名。
 pub async fn paginated_fetch(
     client: &reqwest::Client,
     first_url: String,
     max_count: Option<usize>,
+    token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let mut all = Vec::new();
     let mut url = first_url;
 
     loop {
-        let (items, next_url) = fetch_page_with_retry(client, &url).await?;
+        let (items, next_url) = fetch_page_with_retry(client, &url, token).await?;
         let count = items.len();
         all.extend(items);
         log::info!(
@@ -226,5 +250,51 @@ mod tests {
     fn test_parse_next_link_no_brackets() {
         let header = "rel=\"next\"";
         assert!(parse_next_link(header).is_none());
+    }
+
+    // ── Token 泄露防护回归测试（问题1）──
+    // 守护"GitHub Token 不得随 HF 请求泄露"的契约：
+    // token=None 时请求**不携带** Authorization header（HF 场景）；
+    // token=Some 时**携带** Authorization（GitHub 场景），且按请求设置、不依赖 default header。
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::matchers::{method, path, header_exists};
+
+    #[tokio::test]
+    async fn test_fetch_page_no_token_omits_authorization() {
+        // 反证：挂一个"只在 Authorization header 存在时才返回 200"的 mock。
+        // token=None 的请求只要不带 Authorization，就会落到 wiremock 默认的未匹配响应（非 2xx），
+        // fetch_page_with_retry 以错误返回，从而证明没有携带 Authorization。
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/models"))
+            .and(header_exists("authorization"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([])),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/api/models", mock.uri());
+        let result = fetch_page_with_retry(&client, &url, None).await;
+        assert!(result.is_err(), "token=None 不应携带 Authorization，故不应命中要求该 header 的 mock");
+    }
+
+    #[tokio::test]
+    async fn test_fetch_page_with_token_sends_authorization() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases"))
+            .and(header_exists("authorization"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([])),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/repos/o/r/releases", mock.uri());
+        let result = fetch_page_with_retry(&client, &url, Some("ghp_secret")).await;
+        assert!(result.is_ok(), "token=Some 时应带 Authorization 命中要求该 header 的 mock");
     }
 }
