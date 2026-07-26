@@ -305,28 +305,26 @@ onUnmounted(() => {
 }
 
 .btn-icon:hover {
-  background: var(--danger);
+  background: var(--danger-soft-bg);
   border-color: var(--danger);
 }
 
 .btn-icon:hover svg {
-  color: #fff;
+  color: var(--danger);
 }
 
 .log-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
 }
 
 .log-item {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 6px 12px;
-  background: var(--surface);
-  border-radius: 4px;
-  border: 1px solid var(--border);
+  padding: 7px 8px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
   font-size: 13px;
 }
 
@@ -450,7 +448,7 @@ onUnmounted(() => {
 }
 
 .filter-trigger:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .filter-divider {
@@ -480,8 +478,8 @@ onUnmounted(() => {
   min-width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
   padding: 4px;
   white-space: nowrap;
 }
@@ -501,55 +499,12 @@ onUnmounted(() => {
 }
 
 .filter-dropdown button:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .filter-dropdown button.selected {
   font-weight: 600;
   color: var(--primary);
-}
-
-/* 状态下拉选项颜色（与版本列表 badge 一致） */
-.filter-field:first-child .filter-dropdown button:nth-child(1),
-.filter-field:first-child .filter-dropdown button:nth-child(1).selected {
-  color: var(--text);
-  font-weight: normal;
-}
-
-.filter-field:last-child .filter-dropdown button:nth-child(1),
-.filter-field:last-child .filter-dropdown button:nth-child(1).selected {
-  color: var(--text);
-  font-weight: normal;
-}
-
-.filter-field:first-child .filter-dropdown button:nth-child(2) {
-  color: var(--primary);
-}
-.filter-field:first-child .filter-dropdown button:nth-child(2):hover,
-.filter-field:first-child .filter-dropdown button:nth-child(2).selected {
-  background: #dbeafe;
-}
-
-.filter-field:first-child .filter-dropdown button:nth-child(3) {
-  color: var(--success);
-}
-.filter-field:first-child .filter-dropdown button:nth-child(3):hover,
-.filter-field:first-child .filter-dropdown button:nth-child(3).selected {
-  background: #dcfce7;
-}
-
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(2):hover),
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(2).selected) {
-  background: rgba(59, 130, 246, 0.25);
-}
-
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(3):hover),
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(3).selected) {
-  background: rgba(74, 222, 128, 0.2);
-}
-
-:global([data-theme="dark"] .filter-dropdown) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
 }
 
 
@@ -580,10 +535,8 @@ onUnmounted(() => {
   max-width: none;
 }
 
-/* 滚动后 sticky 元素显示分隔线 */
+/* 滚动后 sticky 元素贴顶 */
 :global(.app-main.is-scrolled .log-search-row) {
   top: calc(-1 * var(--app-padding-y, 16px));
-  border-radius: var(--radius);
-  box-shadow: 0 0 0 1px var(--border), 0 2px 6px rgba(0,0,0,0.04);
 }
 </style>

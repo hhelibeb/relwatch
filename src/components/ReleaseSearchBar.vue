@@ -177,8 +177,8 @@ function onSearchEnter() {
 .view-tabs {
   display: flex;
   gap: 4px;
-  background: var(--bg);
-  border-radius: var(--radius);
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
   padding: 2px;
   flex-shrink: 0;
 }
@@ -190,23 +190,22 @@ function onSearchEnter() {
   padding: 5px 12px;
   border: none;
   background: transparent;
-  color: #6b7280;
-  border-radius: 6px;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 12px;
-  transition: all 0.15s;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
   white-space: nowrap;
 }
 
 .view-tabs button:hover {
-  background: rgba(0,0,0,0.04);
+  color: var(--text);
 }
 
 .view-tabs button.active {
-  background: var(--surface);
+  background: var(--control-active);
   color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
 .view-tabs button svg {
@@ -251,7 +250,7 @@ function onSearchEnter() {
 }
 
 .filter-trigger:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .filter-divider {
@@ -281,8 +280,8 @@ function onSearchEnter() {
   min-width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
   padding: 4px;
   white-space: nowrap;
 }
@@ -302,55 +301,12 @@ function onSearchEnter() {
 }
 
 .filter-dropdown button:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .filter-dropdown button.selected {
   font-weight: 600;
   color: var(--primary);
-}
-
-/* 状态下拉选项颜色（与版本列表 badge 一致） */
-.filter-field:first-child .filter-dropdown button:nth-child(1),
-.filter-field:first-child .filter-dropdown button:nth-child(1).selected {
-  color: var(--text);
-  font-weight: normal;
-}
-
-.filter-field:last-child .filter-dropdown button:nth-child(1),
-.filter-field:last-child .filter-dropdown button:nth-child(1).selected {
-  color: var(--text);
-  font-weight: normal;
-}
-
-.filter-field:first-child .filter-dropdown button:nth-child(2) {
-  color: var(--primary);
-}
-.filter-field:first-child .filter-dropdown button:nth-child(2):hover,
-.filter-field:first-child .filter-dropdown button:nth-child(2).selected {
-  background: #dbeafe;
-}
-
-.filter-field:first-child .filter-dropdown button:nth-child(3) {
-  color: var(--success);
-}
-.filter-field:first-child .filter-dropdown button:nth-child(3):hover,
-.filter-field:first-child .filter-dropdown button:nth-child(3).selected {
-  background: #dcfce7;
-}
-
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(2):hover),
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(2).selected) {
-  background: rgba(59, 130, 246, 0.25);
-}
-
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(3):hover),
-:global([data-theme="dark"] .filter-field:first-child .filter-dropdown button:nth-child(3).selected) {
-  background: rgba(74, 222, 128, 0.2);
-}
-
-:global([data-theme="dark"] .filter-dropdown) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
 }
 
 
@@ -381,21 +337,8 @@ function onSearchEnter() {
   max-width: none;
 }
 
-/* 滚动后 sticky 元素显示分隔线 */
+/* 滚动后 sticky 元素贴顶 */
 :global(.app-main.is-scrolled .log-search-row) {
   top: calc(-1 * var(--app-padding-y, 16px));
-  border-radius: var(--radius);
-  box-shadow: 0 0 0 1px var(--border), 0 2px 6px rgba(0,0,0,0.04);
-}
-
-:global([data-theme="dark"] .view-tabs button) {
-  color: #94a3b8;
-}
-:global([data-theme="dark"] .view-tabs button:hover) {
-  background: rgba(255,255,255,0.06);
-}
-:global([data-theme="dark"] .view-tabs button.active) {
-  color: #ffffff;
-  background: rgba(96, 165, 250, 0.2);
 }
 </style>

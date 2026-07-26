@@ -94,9 +94,9 @@ function handleKeydown(e: KeyboardEvent) {
   z-index: 10000;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 4px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  box-shadow: var(--shadow-lg);
   display: flex;
   flex-direction: column;
   min-width: 120px;
@@ -112,10 +112,6 @@ function handleKeydown(e: KeyboardEvent) {
   border-radius: 4px;
 }
 .context-menu button:hover {
-  background: var(--bg);
-}
-
-:global([data-theme="dark"] .context-menu) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  background: var(--bg-subtle);
 }
 </style>

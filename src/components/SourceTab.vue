@@ -712,24 +712,15 @@ function hideHealthTooltip() {
 
 :global(.app-main.is-scrolled .source-sticky-panel) {
   top: calc(-1 * var(--app-padding-y, 16px));
-  border-radius: var(--radius);
-  box-shadow: 0 2px 6px rgba(0,0,0,0.06);
 }
 
 .source-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-}
-
-.source-sticky-panel.has-bulk-bar .source-header {
-  border-bottom-left-radius: 0;
-  border-bottom-right-radius: 0;
-  border-color: var(--primary);
+  padding: 10px 8px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
 }
 
 .source-header .input-clear-wrap {
@@ -741,16 +732,18 @@ function hideHealthTooltip() {
   flex: 1;
   padding: 8px 12px;
   padding-right: 34px;
-  background: var(--bg);
+  background: var(--input-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 13px;
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .source-header .input-clear-wrap input:focus {
   border-color: var(--primary);
+  box-shadow: var(--focus-ring);
 }
 
 .source-header .input-clear-wrap .search-input {
@@ -759,14 +752,23 @@ function hideHealthTooltip() {
 
 .btn-add-source {
   padding: 8px 14px;
-  background: var(--primary);
-  color: #fff;
+  background: var(--ink);
+  color: var(--on-ink);
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
   white-space: nowrap;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+
+.btn-add-source:hover:not(:disabled) {
+  background: var(--ink-hover);
+}
+
+.btn-add-source:active:not(:disabled) {
+  transform: translateY(1px);
 }
 
 .btn-add-source:disabled {
@@ -792,14 +794,14 @@ function hideHealthTooltip() {
 }
 
 .btn-mode-toggle:hover {
-  background: var(--bg);
-  border-color: var(--primary);
-  color: var(--primary);
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 .btn-mode-toggle.has-active-search {
-  background: rgba(37, 99, 235, 0.08);
-  border-color: var(--primary);
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
   color: var(--primary);
 }
 
@@ -833,11 +835,15 @@ function hideHealthTooltip() {
 .source-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
 }
 
 .source-search-status {
   padding-top: 30px;
+}
+
+/* 搜索结果计数行不显示空状态图标 */
+.source-search-status::before {
+  content: none;
 }
 
 .source-item {
@@ -845,10 +851,15 @@ function hideHealthTooltip() {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 10px 14px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
+  padding: 12px 8px;
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease;
+}
+
+.source-item:hover {
+  background: var(--bg-subtle);
 }
 
 .source-main {
@@ -915,23 +926,23 @@ function hideHealthTooltip() {
 
 .source-pending-link {
   padding: 1px 7px;
-  border: 1px solid #bfdbfe;
-  border-radius: 999px;
-  background: #eff6ff;
-  color: var(--primary);
+  border: none;
+  border-radius: var(--radius-xs);
+  background: var(--primary-soft-bg);
+  color: var(--primary-soft-text);
   font: inherit;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 
 .source-pending-link:hover {
-  border-color: var(--primary);
-  background: #dbeafe;
+  background: var(--primary-soft-border);
 }
 
 .source-pending-link:focus-visible {
-  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline: 2px solid var(--primary-soft-border);
   outline-offset: 2px;
 }
 
@@ -945,8 +956,8 @@ function hideHealthTooltip() {
   padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.14);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
   font-size: 12px;
   line-height: 1.6;
   pointer-events: none;
@@ -1007,22 +1018,30 @@ function hideHealthTooltip() {
 }
 
 .badge {
-  display: inline-block;
-  padding: 2px 8px;
-  background: var(--bg);
-  border-radius: 10px;
-  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  background: transparent;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
-.badge-on {
-  background: #dcfce7;
-  color: var(--success);
+.badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-faint);
+  flex-shrink: 0;
 }
 
-.badge-off {
-  background: #fef3c7;
-  color: var(--warning);
+.badge-on::before {
+  background: var(--success);
+}
+
+.badge-off::before {
+  background: var(--warning);
 }
 
 .source-actions {
@@ -1033,26 +1052,10 @@ function hideHealthTooltip() {
   flex-shrink: 0;
 }
 
-/* 静默徽章 */
-.badge-muted {
-  background: #dbeafe;
-  color: #1d4ed8;
-}
-
 /* 更多按钮下拉容器 */
 .dropdown-more {
   position: relative;
   display: inline-flex;
-}
-
-.btn-more {
-  border-color: var(--border);
-  color: var(--text-muted);
-}
-
-.btn-more:hover {
-  background: var(--bg);
-  color: var(--text);
 }
 
 /* 侧边弹出面板 */
@@ -1064,8 +1067,8 @@ function hideHealthTooltip() {
   min-width: 140px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lg);
   z-index: 100;
   overflow: hidden;
 }
@@ -1086,7 +1089,7 @@ function hideHealthTooltip() {
 }
 
 .dropdown-item:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .dropdown-item:disabled {
@@ -1109,7 +1112,7 @@ function hideHealthTooltip() {
 }
 
 .dropdown-item-danger:hover:not(:disabled) {
-  background: #fef2f2;
+  background: var(--danger-soft-bg);
 }
 
 /* 新增源高亮动画 */
@@ -1119,34 +1122,27 @@ function hideHealthTooltip() {
 
 @keyframes highlight-pulse {
   0% {
-    background-color: rgba(37, 99, 235, 0.12);
-    border-color: rgba(37, 99, 235, 0.3);
+    background-color: var(--primary-soft-bg);
   }
   100% {
     background-color: transparent;
-    border-color: var(--border);
   }
 }
 
-.btn-check {
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
-/* 图标操作按钮 */
+/* 图标操作按钮（幽灵风格：默认仅图标，悬停浮现底色） */
 .btn-icon-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border: 1px solid var(--border);
-  background: var(--surface);
+  border: none;
+  background: transparent;
   color: var(--text-muted);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: background 0.12s ease, color 0.12s ease;
   flex-shrink: 0;
 }
 
@@ -1156,7 +1152,7 @@ function hideHealthTooltip() {
 }
 
 .btn-icon-action:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-hover);
   color: var(--text);
 }
 
@@ -1165,43 +1161,14 @@ function hideHealthTooltip() {
   cursor: not-allowed;
 }
 
-.btn-check {
-  color: var(--primary);
-  border-color: var(--primary);
-}
-
-.btn-check:hover:not(:disabled) {
-  background: var(--primary);
-  color: #fff;
-}
-
-.btn-pause {
-  color: var(--warning);
-  border-color: var(--warning);
-}
-
-.btn-pause:hover:not(:disabled) {
-  background: var(--warning);
-  color: #fff;
-}
-
-.btn-resume {
-  color: var(--success);
-  border-color: var(--success);
-}
-
+.btn-check:hover:not(:disabled),
+.btn-pause:hover:not(:disabled),
 .btn-resume:hover:not(:disabled) {
-  background: var(--success);
-  color: #fff;
+  background: var(--bg-hover);
+  color: var(--text);
 }
 
-:global([data-theme="dark"] .source-health-tooltip) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-}
 
-:global([data-theme="dark"] .dropdown-item-danger:hover:not(:disabled)) {
-  background: rgba(248, 113, 113, 0.15);
-}
 .sort-group {
   position: relative;
   flex-shrink: 0;
@@ -1213,17 +1180,18 @@ function hideHealthTooltip() {
   gap: 4px;
   padding: 6px 7px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s;
+  transition: background 0.12s, border-color 0.12s;
 }
 
 .sort-trigger:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
 }
 
 .sort-direction-icon {
@@ -1250,8 +1218,8 @@ function hideHealthTooltip() {
   min-width: 140px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
   padding: 4px;
 }
 
@@ -1270,7 +1238,7 @@ function hideHealthTooltip() {
 }
 
 .sort-dropdown button:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .sort-dropdown button.selected {
@@ -1290,24 +1258,19 @@ function hideHealthTooltip() {
   gap: 4px;
   padding: 6px 7px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.12s;
+  transition: background 0.12s, border-color 0.12s;
   flex-shrink: 0;
 }
 
 .btn-select:hover {
-  background: var(--bg);
-  border-color: var(--primary);
-  color: var(--primary);
-}
-
-:global([data-theme="dark"] .sort-dropdown) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
 }
 
 /* 选择模式复选框 */
@@ -1331,11 +1294,9 @@ function hideHealthTooltip() {
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
-  padding: 8px 12px;
-  background: var(--surface);
-  border: 1px solid var(--primary);
-  border-top: none;
-  border-radius: 0 0 var(--radius) var(--radius);
+  padding: 8px 8px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 
@@ -1377,7 +1338,7 @@ function hideHealthTooltip() {
 }
 
 .bulk-bar .btn-sm:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-hover);
 }
 
 .bulk-bar .btn-sm:disabled {
@@ -1385,16 +1346,12 @@ function hideHealthTooltip() {
   cursor: not-allowed;
 }
 
-.btn-danger {
-  color: var(--danger) !important;
-  border-color: var(--danger) !important;
+.bulk-bar .btn-danger {
+  color: var(--danger);
 }
 
-.btn-danger:hover:not(:disabled) {
-  background: #fef2f2 !important;
-}
-
-:global([data-theme="dark"] .btn-danger:hover:not(:disabled)) {
-  background: rgba(248, 113, 113, 0.15) !important;
+.bulk-bar .btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft-bg);
+  border-color: var(--danger);
 }
 </style>

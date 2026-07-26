@@ -113,25 +113,23 @@ function handleOpenUrl(url: string) {
 
 <style scoped>
 .repo-group {
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  margin-bottom: 8px;
-  overflow: hidden;
+  background: transparent;
+  margin-bottom: 4px;
 }
 
 .repo-group-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px;
   cursor: pointer;
   user-select: none;
+  border-radius: var(--radius-sm);
   transition: background 0.1s;
 }
 
 .repo-group-header:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .repo-group-header .repo-name {
@@ -205,30 +203,23 @@ function handleOpenUrl(url: string) {
 
 .repo-group-body {
   border-top: 1px solid var(--border);
-  padding: 6px 14px 10px;
+  padding: 2px 0 6px;
 }
 
 .repo-group-body .release-item {
   border: none;
-  border-left: 4px solid var(--primary);
-  margin-bottom: 6px;
-  padding: 9px 12px;
-  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 10px 8px;
+  background: transparent;
 }
 
-.repo-group-body .release-item.release-importance-high {
-  border-left-color: var(--danger);
-}
-
-.repo-group-body .release-item.release-importance-medium {
-  border-left-color: #eab308;
-}
-
-.repo-group-body .release-item.release-importance-low {
-  border-left-color: var(--success);
+.repo-group-body .release-item:hover {
+  border-color: var(--border);
+  background: var(--bg-subtle);
 }
 
 .repo-group-body .release-item:last-child {
-  margin-bottom: 0;
+  border-bottom: none;
 }
 </style>

@@ -473,27 +473,15 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 /* 版本列表 */
 .release-item {
   position: relative;
-  padding: 10px 14px;
+  padding: 12px 14px;
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  border-left: 4px solid var(--primary);
+  transition: border-color 0.15s ease;
 }
 
-.release-item.is-prerelease {
-  border-left-color: #9333ea;
-}
-
-.release-item.release-importance-high {
-  border-left-color: var(--danger);
-}
-
-.release-item.release-importance-medium {
-  border-left-color: #eab308;
-}
-
-.release-item.release-importance-low {
-  border-left-color: var(--success);
+.release-item:hover {
+  border-color: var(--border-strong);
 }
 
 .release-header {
@@ -556,26 +544,18 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 
 .badge {
   display: inline-block;
-  padding: 2px 8px;
-  background: var(--bg);
-  border-radius: 10px;
+  padding: 0 5px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
   font-size: 11px;
+  line-height: 16px;
   color: var(--text-muted);
-}
-
-.badge-pre {
-  background: #f3e8ff;
-  color: #9333ea;
-}
-
-.badge-hf-tag {
-  background: #ffedd5;
-  color: #c2410c;
 }
 
 .release-tag-hf {
   cursor: help;
-  text-decoration: underline dotted rgba(37, 99, 235, 0.4);
+  text-decoration: underline dotted var(--primary-soft-border);
 }
 
 .release-hf-tooltip {
@@ -600,8 +580,8 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   gap: 2px;
   margin-bottom: 6px;
   padding: 2px;
-  background: var(--bg);
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
 }
 
 .release-view-tab {
@@ -620,10 +600,9 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 }
 
 .release-view-tab.active {
-  background: var(--surface);
-  color: var(--primary);
+  background: var(--control-active);
+  color: var(--text);
   font-weight: 600;
-  box-shadow: 0 1px 2px rgba(0,0,0,0.08);
 }
 
 .release-body-text {
@@ -651,35 +630,40 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   color: var(--text-muted);
   font-size: 13px;
   text-align: center;
-  background: var(--bg);
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
 }
 
 .release-importance-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
-  min-width: 22px;
-  padding: 1px 6px;
-  border-radius: 5px;
-  text-align: center;
+  padding: 0;
   font-size: 12px;
-  font-weight: 700;
-  background: var(--bg);
+  font-weight: 500;
   color: var(--text-muted);
 }
 
-.release-importance-chip.release-importance-high {
-  background: #fee2e2;
-  color: var(--danger);
+.release-importance-chip::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-faint);
+  flex-shrink: 0;
 }
 
-.release-importance-chip.release-importance-medium {
-  background: #fef3c7;
-  color: #d97706;
+.release-importance-chip.release-importance-high::before {
+  background: var(--danger);
 }
 
-.release-importance-chip.release-importance-low {
-  background: #dcfce7;
-  color: var(--success);
+.release-importance-chip.release-importance-medium::before {
+  background: var(--warning);
+}
+
+.release-importance-chip.release-importance-low::before {
+  background: var(--success);
 }
 
 .release-summary-text {
@@ -692,7 +676,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 }
 
 .release-summary-text:focus-visible {
-  outline: 2px solid rgba(37, 99, 235, 0.35);
+  outline: 2px solid var(--primary-soft-border);
   outline-offset: 2px;
 }
 
@@ -703,8 +687,8 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   padding: 9px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.14);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
   color: var(--text);
   font-size: 13px;
   line-height: 1.6;
@@ -715,17 +699,19 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 .status-inline {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  background: var(--bg);
+  gap: 5px;
+  padding: 0;
+  font-size: 12px;
   color: var(--text-muted);
+  flex-shrink: 0;
 }
 
-.status-inline {
-  padding: 1px 7px;
-  font-size: 11px;
+.status-inline::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-faint);
   flex-shrink: 0;
 }
 
@@ -736,24 +722,16 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 
 .status-unread,
 .status-pending {
-  background: #dbeafe;
   color: var(--primary);
 }
 
-.status-read,
-.status-clicked {
-  background: #dcfce7;
-  color: var(--success);
+.status-unread::before,
+.status-pending::before {
+  background: var(--primary);
 }
 
-.status-ignored {
-  background: #f3f4f6;
-  color: #6b7280;
-}
-
-.status-snoozed {
-  background: #fef3c7;
-  color: var(--warning);
+.status-snoozed::before {
+  background: var(--warning);
 }
 
 .release-link-action {
@@ -769,10 +747,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 }
 
 .release-link-action:hover {
-  background: var(--bg);
+  background: var(--bg-hover);
 }
 
-:global([data-theme="dark"] .release-summary-tooltip) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-}
 </style>

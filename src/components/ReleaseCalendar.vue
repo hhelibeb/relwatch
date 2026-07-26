@@ -207,7 +207,7 @@ function handleCellClick(cell: CalendarCell) {
 }
 
 .calendar-nav button:hover:not(:disabled) {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .calendar-nav button:disabled {
@@ -231,7 +231,7 @@ function handleCellClick(cell: CalendarCell) {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   gap: 2px;
-  background: var(--surface);
+  background: transparent;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   padding: 8px;
@@ -264,7 +264,7 @@ function handleCellClick(cell: CalendarCell) {
 }
 
 .calendar-cell.current-month:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
 }
 
 .calendar-cell.other-month {
@@ -283,19 +283,19 @@ function handleCellClick(cell: CalendarCell) {
 }
 
 .calendar-cell-count-1 {
-  background: #dbeafe;
+  background: var(--heat-1);
 }
 
 .calendar-cell-count-2 {
-  background: #fef3c7;
+  background: var(--heat-2);
 }
 
 .calendar-cell-count-3 {
-  background: #fed7aa;
+  background: var(--heat-3);
 }
 
 .calendar-cell-count-4 {
-  background: #fecaca;
+  background: var(--heat-4);
 }
 
 .calendar-cell-count-1:hover,
@@ -305,14 +305,21 @@ function handleCellClick(cell: CalendarCell) {
   filter: brightness(0.95);
 }
 
+:global([data-theme="dark"] .calendar-cell-count-1:hover),
+:global([data-theme="dark"] .calendar-cell-count-2:hover),
+:global([data-theme="dark"] .calendar-cell-count-3:hover),
+:global([data-theme="dark"] .calendar-cell-count-4:hover) {
+  filter: brightness(1.2);
+}
+
 .calendar-tooltip {
   position: fixed;
   z-index: 10001;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  box-shadow: var(--shadow-lg);
   font-size: 12px;
   max-width: 260px;
   pointer-events: none;
@@ -335,7 +342,5 @@ function handleCellClick(cell: CalendarCell) {
   color: var(--primary);
 }
 
-:global([data-theme="dark"] .calendar-tooltip) {
-  box-shadow: 0 6px 20px rgba(0,0,0,0.4);
-}
+
 </style>

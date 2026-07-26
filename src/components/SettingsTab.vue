@@ -751,28 +751,25 @@ async function handleImportBackup() {
 .settings-sidebar {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 120px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
   position: sticky;
   top: 0;
   align-self: flex-start;
-  padding: 8px;
+  padding: 0 12px 0 0;
 }
 
 .settings-sidebar button {
   position: relative;
-  padding: 10px 14px;
+  padding: 7px 10px;
   border: none;
   background: transparent;
-  color: var(--text);
+  color: var(--text-muted);
   font-size: 13px;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s;
+  transition: background 0.15s, color 0.15s;
 }
 
 .sidebar-dirty-dot {
@@ -787,12 +784,13 @@ async function handleImportBackup() {
 }
 
 .settings-sidebar button:hover {
-  background: var(--bg);
+  background: var(--bg-subtle);
+  color: var(--text);
 }
 
 .settings-sidebar button.active {
-  background: var(--primary);
-  color: #fff;
+  background: var(--bg-subtle);
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -819,15 +817,15 @@ async function handleImportBackup() {
   padding: 0;
   border: none;
   background: transparent;
-  color: #6b7280;
+  color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   transition: color 0.15s, background 0.15s;
 }
 
 .version-github-btn:hover {
-  color: #1f2937;
-  background: var(--bg);
+  color: var(--text);
+  background: var(--bg-subtle);
 }
 
 .version-github-btn svg {
@@ -848,10 +846,8 @@ async function handleImportBackup() {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 16px;
-  background: var(--surface);
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
+  padding: 2px 0 24px;
+  background: transparent;
 }
 
 .setting-row {
@@ -883,9 +879,9 @@ async function handleImportBackup() {
 
 .setting-input {
   padding: 8px 12px;
-  background: var(--bg);
+  background: var(--input-bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--text);
   font-size: 13px;
   outline: none;
@@ -917,9 +913,9 @@ async function handleImportBackup() {
 .setting-prompt-fixed {
   width: 100%;
   padding: 8px 12px;
-  background: var(--bg);
-  border: 1px dashed var(--border);
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: 0.85em;
   line-height: 1.5;
@@ -937,8 +933,13 @@ async function handleImportBackup() {
   color: inherit;
 }
 
+.setting-input {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
 .setting-input:focus {
   border-color: var(--primary);
+  box-shadow: var(--focus-ring);
 }
 
 .setting-note {
@@ -980,8 +981,8 @@ select.setting-input {
   gap: 12px;
   padding: 7px 14px;
   margin-bottom: 12px;
-  background: var(--surface);
-  border: 1px solid var(--warning);
+  background: var(--warning-soft-bg);
+  border: 1px solid var(--border);
   border-radius: var(--radius);
 }
 
@@ -1049,26 +1050,19 @@ select.setting-input {
 .btn-secondary {
   align-self: flex-start;
   padding: 6px 16px;
-  background: var(--surface) !important;
-  color: var(--primary) !important;
-  border: 1px solid var(--primary) !important;
-  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   font-weight: 500;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
 .btn-secondary:hover {
-  background: var(--primary) !important;
-  color: #fff !important;
-}
-
-:global([data-theme="dark"] .version-github-btn) {
-  color: #94a3b8;
-}
-:global([data-theme="dark"] .version-github-btn:hover) {
-  color: #e2e8f0;
-  background: rgba(255,255,255,0.06);
+  background: var(--bg-subtle);
+  border-color: var(--text-faint);
 }
 
 /* ── 自定义主题下拉选择器 ───────────────────────── */
@@ -1101,7 +1095,7 @@ select.setting-input {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  box-shadow: var(--shadow-lg);
   z-index: 100;
   overflow: hidden;
 }
@@ -1116,8 +1110,8 @@ select.setting-input {
 
 .theme-select-option:hover,
 .theme-select-option.previewed {
-  background: var(--primary);
-  color: #fff;
+  background: var(--bg-subtle);
+  color: var(--text);
 }
 
 .theme-select-option.selected {

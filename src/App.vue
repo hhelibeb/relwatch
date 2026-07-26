@@ -415,12 +415,12 @@ onUnmounted(() => {
   right: 20px;
   bottom: 20px;
   z-index: 9999;
-  padding: 10px 24px;
-  background: var(--text);
-  color: #fff;
+  padding: 9px 18px;
+  background: var(--ink);
+  color: var(--on-ink);
   border-radius: var(--radius);
   font-size: 13px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+  box-shadow: var(--shadow-lg);
   pointer-events: none;
 }
 
@@ -442,9 +442,4 @@ onUnmounted(() => {
   transform: translateX(60px);
 }
 
-:global([data-theme="dark"] .toast) {
-  background: #334155;
-  color: #e2e8f0;
-  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-}
 </style>

@@ -91,15 +91,15 @@ const html = computed(() => {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 0.9em;
   padding: 1px 4px;
-  background: var(--bg);
-  border-radius: 3px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-xs);
 }
 
 .markdown-body :deep(pre) {
   margin: 8px 0;
   padding: 10px 12px;
-  background: var(--bg);
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
   overflow-x: auto;
 }
 
@@ -136,7 +136,7 @@ const html = computed(() => {
 }
 
 .markdown-body :deep(th) {
-  background: var(--bg);
+  background: var(--bg-subtle);
   font-weight: 600;
 }
 

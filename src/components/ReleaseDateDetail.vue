@@ -58,9 +58,9 @@ const dateDetailTitle = computed(() => {
   gap: 4px;
   padding: 4px 10px;
   border: none;
-  background: var(--bg);
+  background: var(--bg-subtle);
   color: var(--text);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
   font-size: 13px;
   margin-bottom: 12px;
@@ -68,7 +68,7 @@ const dateDetailTitle = computed(() => {
 }
 
 .calendar-back:hover {
-  background: var(--border);
+  background: var(--bg-hover);
 }
 
 .calendar-back svg {
