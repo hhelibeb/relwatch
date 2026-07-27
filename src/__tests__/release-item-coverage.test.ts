@@ -399,6 +399,16 @@ describe('ReleaseItem.vue — 操作按钮状态', () => {
 
     expect(wrapper.text()).toContain('release.ignore')
   })
+
+  it('snoozed 状态且 snooze_until 未到期时仍显示 Ignore 按钮（闭环不中断）', () => {
+    // snooze_until 未来，按钮判断不传 snooze_until 以保证可取消提醒
+    const wrapper = mountRelease(createRelease({
+      notification_status: 'snoozed',
+      snooze_until: '2099-01-01T00:00:00Z',
+    }))
+
+    expect(wrapper.text()).toContain('release.ignore')
+  })
 })
 
 describe('ReleaseItem.vue — 组件卸载清理', () => {
