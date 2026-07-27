@@ -357,7 +357,8 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
     }))
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(true)
-    expect(wrapper.find('.release-importance-chip').text()).toBe('大')
+    // 组件将中文枚举映射为 i18n key（mock 的 t 原样返回 key）
+    expect(wrapper.find('.release-importance-chip').text()).toBe('release.importance_high')
   })
 
   it('无 ai_importance 时不显示重要性标签', () => {

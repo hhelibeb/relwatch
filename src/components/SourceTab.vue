@@ -714,13 +714,13 @@ function hideHealthTooltip() {
   top: calc(-1 * var(--app-padding-y, 16px));
 }
 
+/* 与版本/日志 tab 的 .log-search-row 对齐：无内边距、无分隔线，保证三个 tab 输入框位置一致 */
 .source-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 8px;
+  padding: 0;
   background: var(--bg);
-  border-bottom: 1px solid var(--border);
 }
 
 .source-header .input-clear-wrap {
@@ -1294,7 +1294,7 @@ function hideHealthTooltip() {
   gap: 6px;
   align-items: center;
   flex-wrap: wrap;
-  padding: 8px 8px;
+  padding: 8px 0;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
   font-size: 12px;

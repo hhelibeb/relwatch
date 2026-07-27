@@ -374,8 +374,14 @@ function hideHfTooltip() {
 // HF 源 tag_name 已含组织名（如 moonshotai/Kimi-K2.7-Code），不重复显示 release-repo 前缀
 const showReleaseRepo = computed(() => props.release.source_type !== 'huggingface')
 
+// ai_importance 存的是中文枚举（大/中/小），展示时映射到 i18n 文案，兼容英文界面
 function releaseImportanceText(release: ReleaseInfo): string {
-  return release.ai_importance || ''
+  switch (release.ai_importance) {
+    case '大': return t('release.importance_high')
+    case '中': return t('release.importance_medium')
+    case '小': return t('release.importance_low')
+    default: return ''
+  }
 }
 
 function releaseImportanceClass(release: ReleaseInfo): string {
@@ -395,9 +401,10 @@ function releaseImportanceClass(release: ReleaseInfo): string {
       <div class="release-heading">
         <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
         <span class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
-        <span class="release-dot">·</span>
-        <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
+        <!-- 版本固有属性（重要性/预发布）贴版本号；状态（圆点+文字）放在分隔符后自成一体，避免圆点被误读为重要性指示 -->
+        <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
         <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+        <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
       </div>
       <div class="release-header-right">
         <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
@@ -422,7 +429,6 @@ function releaseImportanceClass(release: ReleaseInfo): string {
       </div>
       <!-- 摘要模式：保持原有 2 行 clamp + 悬浮提示 -->
       <div v-if="viewMode === 'summary' && currentContent" class="release-summary-line">
-        <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
         <span
           class="release-summary-text"
           tabindex="0"
@@ -521,11 +527,6 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   font-weight: 600;
   font-size: 14px;
   color: var(--primary);
-  flex-shrink: 0;
-}
-
-.release-dot {
-  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -634,36 +635,31 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   border-radius: var(--radius-sm);
 }
 
+/* 重要性软色徽章：位于 header 行，三个内容视图常驻可见；规格与 badge-pre 一致 */
 .release-importance-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
   flex-shrink: 0;
-  padding: 0;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
 }
 
-.release-importance-chip::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--text-faint);
-  flex-shrink: 0;
+.release-importance-chip.release-importance-high {
+  background: var(--danger-soft-bg);
+  color: var(--danger-soft-text);
 }
 
-.release-importance-chip.release-importance-high::before {
-  background: var(--danger);
+.release-importance-chip.release-importance-medium {
+  background: var(--warning-soft-bg);
+  color: var(--warning-soft-text);
 }
 
-.release-importance-chip.release-importance-medium::before {
-  background: var(--warning);
-}
-
-.release-importance-chip.release-importance-low::before {
-  background: var(--success);
+.release-importance-chip.release-importance-low {
+  background: var(--success-soft-bg);
+  color: var(--success-soft-text);
 }
 
 .release-summary-text {
