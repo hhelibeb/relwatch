@@ -47,6 +47,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-07-27
+
+### Changed
+- 统一组件样式与配色方案，Tab 改为下划线式文字页签，主操作按钮改为墨色实心按钮。
+
+### Fixed
+- 重排 release header 视觉层级，将重要性指示常驻显示在版本号旁；对齐 source tab 各输入框间距。
+
 ## [1.7.0] - 2026-07-17
 
 ### Added
@@ -233,7 +241,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.8.0...HEAD
+[1.8.0]: https://github.com/hhelibeb/relwatch/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/hhelibeb/relwatch/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/hhelibeb/relwatch/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/hhelibeb/relwatch/compare/v1.5.0...v1.5.1
