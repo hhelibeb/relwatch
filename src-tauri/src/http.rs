@@ -211,6 +211,40 @@ pub async fn paginated_fetch(
     Ok(all)
 }
 
+/// 下载 URL 的原始字节（剪贴板图片等场景），限制最大 `max_bytes` 防止异常响应撑爆内存。
+/// scheme 校验由调用方负责；错误统一为 `err.*` i18n 格式。
+pub async fn download_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("err.request_failed|{}", e))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("err.download_failed|HTTP {}", status.as_u16()));
+    }
+    if let Some(len) = resp.content_length() {
+        if len as usize > max_bytes {
+            return Err(format!("err.download_failed|file too large ({} bytes)", len));
+        }
+    }
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("err.request_failed|{}", e))?;
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "err.download_failed|file too large ({} bytes)",
+            bytes.len()
+        ));
+    }
+    Ok(bytes.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +312,51 @@ mod tests {
         let url = format!("{}/api/models", mock.uri());
         let result = fetch_page_with_retry(&client, &url, None).await;
         assert!(result.is_err(), "token=None 不应携带 Authorization，故不应命中要求该 header 的 mock");
+    }
+
+    #[tokio::test]
+    async fn test_download_bytes_success() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/img.png"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![1u8, 2, 3, 255]))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/img.png", mock.uri());
+        let result = download_bytes(&client, &url, 1024).await;
+        assert_eq!(result.unwrap(), vec![1u8, 2, 3, 255]);
+    }
+
+    #[tokio::test]
+    async fn test_download_bytes_http_error() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/missing.png"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/missing.png", mock.uri());
+        let err = download_bytes(&client, &url, 1024).await.unwrap_err();
+        assert!(err.starts_with("err.download_failed|"), "意外的错误格式: {}", err);
+    }
+
+    #[tokio::test]
+    async fn test_download_bytes_too_large() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/big.bin"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![0u8; 2048]))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/big.bin", mock.uri());
+        let err = download_bytes(&client, &url, 1024).await.unwrap_err();
+        assert!(err.contains("too large"), "应报大小超限: {}", err);
     }
 
     #[tokio::test]

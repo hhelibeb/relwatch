@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
@@ -8,9 +8,10 @@ import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
+import type { ReleaseContentMode } from './releaseTypes'
 
 const props = defineProps<{ release: ReleaseInfo }>()
-const emit = defineEmits<{ update: [] }>()
+const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, mode: ReleaseContentMode] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
 
@@ -20,9 +21,8 @@ const snoozeMinutes = 24 * 60
 const isUpdating = ref(false)
 
 // ========== 显示模式切换：摘要 / 译文 / 原文 ==========
-type ViewMode = 'summary' | 'translated' | 'full'
+type ViewMode = ReleaseContentMode
 const viewMode = ref<ViewMode>('summary')
-const expanded = ref(false)
 const translating = ref(false)
 
 const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
@@ -53,44 +53,28 @@ const currentContent = computed<string | null>(() => {
 
 const hasLongContent = computed(() => {
   const c = currentContent.value
-  // 估算超过 6 行（约 240 字符）时显示展开按钮
+  // 估算超过 6 行（约 240 字符）时内容区可点击打开详情弹窗
   return c !== null && c.length > 240
 })
 
+// 只要有正文或译文可看，就提供「阅读全文」入口（按钮 + 右键菜单），
+// 短内容也可能需要在弹窗中聚焦阅读、复制或逐版本导航
+const canOpenDetail = computed(() => !!(props.release.body || props.release.body_translated))
+
 function switchMode(mode: ViewMode) {
   viewMode.value = mode
-  expanded.value = false
 }
 
-// 展开/收起时保持视口稳定。展开长内容后滚动到下方点击「收起」，
-// 内容高度骤减会让视口漂移。以被点击的收起按钮作为视口锚点：
-// 记录按钮点击时的视口 top，收起渲染后 scrollBy 把按钮拉回原位置。
-// 以按钮（而非卡片）为锚点，可保证多卡片乱序收起时仍稳定——
-// 每次只锚定被点击的那个按钮，与卡片数量和顺序无关。
-// 注意：滚动容器是 .app-main 而非 window，需向上查找实际滚动容器。
-function toggleExpand(e: MouseEvent) {
-  if (!expanded.value) {
-    expanded.value = true
-    return
-  }
-  const btn = e.currentTarget as HTMLElement | null
-  const topBefore = btn ? btn.getBoundingClientRect().top : null
-  expanded.value = false
-  if (topBefore === null || !btn) return
-  nextTick(() => {
-    if (!btn) return
-    const topAfter = btn.getBoundingClientRect().top
-    const delta = topAfter - topBefore
-    if (delta !== 0) {
-      // 优先用按钮所在的滚动容器；找不到才回退到 window
-      const scroller = btn.closest('.app-main') as HTMLElement | null
-      if (scroller) {
-        scroller.scrollTop += delta
-      } else {
-        window.scrollBy(0, delta)
-      }
-    }
-  })
+// 长内容不再就地展开，改为打开详情弹窗完整阅读。携带当前视图模式，
+// 弹窗继承用户已选的内容（摘要模式下弹窗回退到 译文 > 原文）。
+function openDetail() {
+  if (!canOpenDetail.value) return
+  emit('open-detail', props.release, viewMode.value)
+}
+
+function handleContentClick() {
+  if (!hasLongContent.value) return
+  openDetail()
 }
 
 // 翻译完成后自动切换到译文视图：当 body_translated 从无到有，
@@ -100,7 +84,6 @@ watch(() => props.release.body_translated, (newVal, oldVal) => {
     translating.value = false
     if (viewMode.value === 'full') {
       viewMode.value = 'translated'
-      expanded.value = false
     }
   }
 })
@@ -161,7 +144,11 @@ const canTranslate = computed(() =>
 )
 // 使用 computed 保证语言切换后右键菜单 label 实时更新
 const summaryMenuItems = computed<ContextMenuItem[]>(() => {
-  const items: ContextMenuItem[] = [{ id: 'copyContent', label: t('context.copy_content') }]
+  const items: ContextMenuItem[] = []
+  if (canOpenDetail.value) {
+    items.push({ id: 'readFull', label: t('release.read_full') })
+  }
+  items.push({ id: 'copyContent', label: t('context.copy_content') })
   if (canTranslate.value) {
     items.push({ id: 'translate', label: t('context.translate') })
   }
@@ -192,7 +179,6 @@ async function handleTranslateRelease() {
   // 立即进入翻译中状态并切到译文标签，让用户看到即时反馈
   translating.value = true
   viewMode.value = 'translated'
-  expanded.value = false
   try {
     await translateRelease(releaseId)
     emit('update')
@@ -204,7 +190,9 @@ async function handleTranslateRelease() {
 }
 
 function handleSummaryMenuAction(actionId: string) {
-  if (actionId === 'copyContent') {
+  if (actionId === 'readFull') {
+    openDetail()
+  } else if (actionId === 'copyContent') {
     handleCopySummary()
   } else if (actionId === 'translate') {
     handleTranslateRelease()
@@ -440,16 +428,23 @@ function releaseImportanceClass(release: ReleaseInfo): string {
           @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)"
         >{{ currentContent }}</span>
       </div>
-      <!-- 译文 / 原文模式：Markdown 渲染 + 长文本可展开 -->
-      <div v-else-if="currentContent" class="release-body-text" :class="{ expanded }" @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)">
+      <!-- 译文 / 原文模式：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
+      <div
+        v-else-if="currentContent"
+        class="release-body-text"
+        :class="{ clickable: hasLongContent }"
+        :title="hasLongContent ? t('release.read_full') : undefined"
+        @click="handleContentClick"
+        @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)"
+      >
         <MarkdownContent :content="currentContent" />
       </div>
       <!-- 翻译中占位：译文尚未到达时显示加载提示 -->
       <div v-else-if="translating && viewMode === 'translated'" class="release-translating-hint">
         {{ t('release.translating_hint') }}
       </div>
-      <button v-if="hasLongContent && viewMode !== 'summary'" class="btn-sm release-expand-btn" @click="toggleExpand">
-        {{ expanded ? t('release.collapse') : t('release.expand') }}
+      <button v-if="canOpenDetail && viewMode !== 'summary'" class="btn-sm release-expand-btn" @click="openDetail">
+        {{ t('release.read_full') }}
       </button>
     </div>
   </div>
@@ -616,8 +611,12 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   border-radius: 4px;
 }
 
-.release-body-text.expanded {
-  max-height: none;
+.release-body-text.clickable {
+  cursor: pointer;
+}
+
+.release-body-text.clickable:hover {
+  background: var(--bg-subtle);
 }
 
 .release-expand-btn {

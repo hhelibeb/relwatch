@@ -5,6 +5,8 @@ pub mod release;
 pub mod log;
 pub mod setting;
 pub mod poll;
+pub mod download;
+pub mod clipboard;
 
 pub use source::*;
 pub use release::*;
@@ -13,3 +15,5 @@ pub use setting::*;
 pub use poll::*;
 pub use backup::*;
 pub use window::*;
+pub use download::*;
+pub use clipboard::*;

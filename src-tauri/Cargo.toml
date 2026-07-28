@@ -41,6 +41,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-prevent-default = "5"
+# 直接依赖以便在主线程上执行剪贴板写入（插件在 tokio worker 线程调用会触发 Windows 1418）
+arboard = "3.6"
 sys-locale = "0.3"
 async-trait = "0.1"
 

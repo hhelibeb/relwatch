@@ -118,6 +118,9 @@ pub fn run() {
             commands::export_backup,
             commands::import_backup,
             commands::hide_to_tray,
+            commands::fetch_url_bytes,
+            commands::set_clipboard_text,
+            commands::set_clipboard_image,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

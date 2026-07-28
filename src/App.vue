@@ -10,6 +10,7 @@ import { type AppSettings, getSettings } from './api/settings'
 import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
 import { useEscapeToTray } from './composables/useEscapeToTray'
+import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
 import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
@@ -282,6 +283,8 @@ function openSourceUnreadReleases(query: string) {
 }
 
 useEscapeToTray(computed(() => settings.value.minimize_to_tray))
+// 外链一律交给系统浏览器，webview 自身永不导航
+useExternalLinkGuard()
 
 onMounted(async () => {
   await loadAll()

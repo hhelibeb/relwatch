@@ -3,13 +3,15 @@ import { computed } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
 import ReleaseItem from './ReleaseItem.vue'
+import type { ReleaseContentMode } from './releaseTypes'
 
 const props = defineProps<{
   releases: ReleaseInfo[]
   isFiltering: boolean
 }>()
 
-const emit = defineEmits<{ update: [] }>()
+// open-detail 携带导航序列：简单视图使用全局时间倒序序列
+const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, mode: ReleaseContentMode, sequence: ReleaseInfo[]] }>()
 
 const sortedReleases = computed(() => {
   return [...props.releases].sort(
@@ -28,6 +30,7 @@ const sortedReleases = computed(() => {
       :key="release.id"
       :release="release"
       @update="emit('update')"
+      @open-detail="(release, mode) => emit('open-detail', release, mode, sortedReleases)"
     />
   </div>
 </template>
