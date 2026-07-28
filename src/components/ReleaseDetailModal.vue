@@ -11,12 +11,10 @@ import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel } from '../utils'
 import type { ReleaseContentMode } from './releaseTypes'
 
-// 版本详情弹窗：在列表中以紧凑预览替代就地展开，点击后在弹窗中完整阅读。
-// 摘要/译文/原文切换、翻译、复制逻辑与 ReleaseItem 保持一致，避免两处行为分叉。
+// 版本详情弹窗：卡片只展示单一预览（摘要 > 译文 > 原文），点击后进入弹窗完整阅读，
+// 摘要/译文/原文的内容切换集中在弹窗内进行（卡片不再提供标签）。
 const props = defineProps<{
   release: ReleaseInfo
-  // 打开弹窗时用户在卡片上已选的内容模式，弹窗初始视图继承它
-  initialMode?: ReleaseContentMode | null
   position: number // 1-based，在当前过滤序列中的位置
   total: number
   hasPrev: boolean
@@ -144,31 +142,34 @@ async function handleBodyMenuAction(actionId: string) {
   }
 }
 
-// ========== 显示模式切换：译文 / 原文 ==========
-// 弹窗不提供摘要视图：「阅读全文」的意图就是读完整内容，摘要与此矛盾。
-// 从摘要模式打开时回退到 译文 > 原文。
+// ========== 显示模式切换：摘要 / 译文 / 原文 ==========
+// 弹窗承载全部内容切换。默认视图优先全文（译文 > 原文）：摘要在卡片上已经看过，
+// 「阅读全文」的意图就是读完整内容；摘要标签保留供回看。
 type ViewMode = ReleaseContentMode
 
 function defaultViewMode(): ViewMode {
   if (props.release.body_translated) return 'translated'
-  return 'full'
+  if (props.release.body) return 'full'
+  return 'summary'
 }
 
-// 解析期望的内容模式：当前版本有对应内容则采用，否则回退默认优先级
+// 逐版本导航时解析期望的内容模式：目标版本有对应内容则采用，否则回退默认优先级
 function resolveMode(mode: ViewMode | null | undefined): ViewMode {
   switch (mode) {
+    case 'summary': return props.release.ai_summary ? 'summary' : defaultViewMode()
     case 'translated': return props.release.body_translated ? 'translated' : defaultViewMode()
     case 'full': return props.release.body ? 'full' : defaultViewMode()
     default: return defaultViewMode()
   }
 }
 
-const viewMode = ref<ViewMode>(resolveMode(props.initialMode))
+const viewMode = ref<ViewMode>(defaultViewMode())
 const translating = ref(false)
 const bodyEl = ref<HTMLElement | null>(null)
 
 const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
   const modes: { mode: ViewMode; label: string }[] = []
+  if (props.release.ai_summary) modes.push({ mode: 'summary', label: t('release.view_summary') })
   if (props.release.body_translated) {
     modes.push({ mode: 'translated', label: t('release.view_translated') })
   } else if (translating.value) {
@@ -180,6 +181,7 @@ const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
 
 const currentContent = computed<string | null>(() => {
   switch (viewMode.value) {
+    case 'summary': return props.release.ai_summary
     case 'translated':
       if (translating.value && !props.release.body_translated) return null
       return props.release.body_translated

@@ -7,6 +7,7 @@ import type { ReleaseInfo } from '../api/releases'
 vi.mock('../api/releases', () => ({
   setNotificationState: vi.fn(),
   deleteRelease: vi.fn(),
+  translateRelease: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({

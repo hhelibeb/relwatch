@@ -165,3 +165,49 @@ describe('ReleaseDetailModal 正文右键菜单', () => {
     wrapper.unmount()
   })
 })
+
+describe('ReleaseDetailModal 内容视图切换（摘要 / 译文 / 原文）', () => {
+  function makeFullRelease(): ReleaseInfo {
+    return { ...makeRelease('## 原文内容'), ai_summary: '这是摘要', body_translated: '## 译文内容' }
+  }
+
+  function mountFull(release: ReleaseInfo) {
+    return mount(ReleaseDetailModal, {
+      props: { release, position: 1, total: 1, hasPrev: false, hasNext: false },
+    })
+  }
+
+  function tabLabels(): string[] {
+    return Array.from(document.body.querySelectorAll('.release-detail-tabs .release-view-tab'))
+      .map(b => b.textContent?.trim() ?? '')
+  }
+
+  it('三种内容齐备时显示摘要/译文/原文标签，默认选中译文并渲染译文', () => {
+    const wrapper = mountFull(makeFullRelease())
+
+    expect(tabLabels()).toEqual(['摘要', '译文', '原文'])
+    expect(document.body.querySelector('.release-view-tab.active')?.textContent?.trim()).toBe('译文')
+    expect(document.body.querySelector('.release-detail-markdown')?.textContent).toContain('译文内容')
+    wrapper.unmount()
+  })
+
+  it('点击摘要标签切换显示摘要内容', async () => {
+    const wrapper = mountFull(makeFullRelease())
+
+    const tabs = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.release-detail-tabs .release-view-tab'))
+    tabs[0].click()
+    await nextTick()
+
+    expect(document.body.querySelector('.release-view-tab.active')?.textContent?.trim()).toBe('摘要')
+    expect(document.body.querySelector('.release-detail-markdown')?.textContent).toContain('这是摘要')
+    wrapper.unmount()
+  })
+
+  it('无译文时默认选中原版', () => {
+    const wrapper = mountFull({ ...makeRelease('## 原文内容'), ai_summary: '这是摘要' })
+
+    expect(tabLabels()).toEqual(['摘要', '原文'])
+    expect(document.body.querySelector('.release-view-tab.active')?.textContent?.trim()).toBe('原文')
+    wrapper.unmount()
+  })
+})

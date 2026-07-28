@@ -4,7 +4,6 @@ import type { ReleaseInfo } from '../api/releases'
 import { getLocale, t } from '../i18n'
 import { parseDateKey, toDateKey } from '../utils/dateKey'
 import ReleaseItem from './ReleaseItem.vue'
-import type { ReleaseContentMode } from './releaseTypes'
 
 const props = defineProps<{
   selectedDate: string
@@ -15,7 +14,7 @@ const emit = defineEmits<{
   update: []
   back: []
   // open-detail 携带导航序列：日历视图使用当日版本序列
-  'open-detail': [release: ReleaseInfo, mode: ReleaseContentMode, sequence: ReleaseInfo[]]
+  'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]
 }>()
 
 const dateDetailReleases = computed(() => {
@@ -44,7 +43,7 @@ const dateDetailTitle = computed(() => {
       :key="release.id"
       :release="release"
       @update="emit('update')"
-      @open-detail="(release, mode) => emit('open-detail', release, mode, dateDetailReleases)"
+      @open-detail="(release) => emit('open-detail', release, dateDetailReleases)"
     />
   </div>
 </template>

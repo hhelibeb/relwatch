@@ -8,10 +8,9 @@ import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
-import type { ReleaseContentMode } from './releaseTypes'
 
 const props = defineProps<{ release: ReleaseInfo }>()
-const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, mode: ReleaseContentMode] }>()
+const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
 
@@ -20,71 +19,40 @@ const aiEnabled = computed(() => aiEnabledRef.value)
 const snoozeMinutes = 24 * 60
 const isUpdating = ref(false)
 
-// ========== 显示模式切换：摘要 / 译文 / 原文 ==========
-type ViewMode = ReleaseContentMode
-const viewMode = ref<ViewMode>('summary')
+// ========== 卡片内容预览：摘要 > 译文 > 原文 ==========
+// 卡片不再提供内容标签：摘要/译文/原文的切换集中在详情弹窗内进行，
+// 点击正文预览或「阅读全文」按钮一步直达弹窗阅读全文。
 const translating = ref(false)
 
-const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
-  const modes: { mode: ViewMode; label: string }[] = []
-  if (props.release.ai_summary) modes.push({ mode: 'summary', label: t('release.view_summary') })
-  // 译文：有译文或正在翻译时都显示该标签，翻译中显示“翻译中...”
-  if (props.release.body_translated) {
-    modes.push({ mode: 'translated', label: t('release.view_translated') })
-  } else if (translating.value) {
-    modes.push({ mode: 'translated', label: t('release.view_translating') })
-  }
-  // HuggingFace 源的 body 是模型 README（人类可读），作为“原文”展示
-  if (props.release.body) modes.push({ mode: 'full', label: t('release.view_full') })
-  return modes
+// 卡片只展示一种内容：摘要是概览的首选；无摘要时回退到译文/原文截断预览
+// （HuggingFace 源的 body 是模型 README，作为“原文”展示）
+const previewKind = computed<'summary' | 'body' | null>(() => {
+  if (props.release.ai_summary) return 'summary'
+  if (props.release.body_translated || props.release.body) return 'body'
+  return null
 })
 
-const currentContent = computed<string | null>(() => {
-  switch (viewMode.value) {
+const previewContent = computed<string | null>(() => {
+  switch (previewKind.value) {
     case 'summary': return props.release.ai_summary
-    case 'translated':
-      // 翻译中且无译文时返回 null（模板会显示占位文案）
-      if (translating.value && !props.release.body_translated) return null
-      return props.release.body_translated
-    case 'full': return props.release.body
+    case 'body': return props.release.body_translated || props.release.body
     default: return null
   }
-})
-
-const hasLongContent = computed(() => {
-  const c = currentContent.value
-  // 估算超过 6 行（约 240 字符）时内容区可点击打开详情弹窗
-  return c !== null && c.length > 240
 })
 
 // 只要有正文或译文可看，就提供「阅读全文」入口（按钮 + 右键菜单），
 // 短内容也可能需要在弹窗中聚焦阅读、复制或逐版本导航
 const canOpenDetail = computed(() => !!(props.release.body || props.release.body_translated))
 
-function switchMode(mode: ViewMode) {
-  viewMode.value = mode
-}
-
-// 长内容不再就地展开，改为打开详情弹窗完整阅读。携带当前视图模式，
-// 弹窗继承用户已选的内容（摘要模式下弹窗回退到 译文 > 原文）。
 function openDetail() {
   if (!canOpenDetail.value) return
-  emit('open-detail', props.release, viewMode.value)
+  emit('open-detail', props.release)
 }
 
-function handleContentClick() {
-  if (!hasLongContent.value) return
-  openDetail()
-}
-
-// 翻译完成后自动切换到译文视图：当 body_translated 从无到有，
-// 且当前停留在原文视图（用户在此触发了翻译），自动切到译文标签。
+// 翻译完成后清除翻译中状态：无摘要时预览内容由 computed 自动从原文刷新为译文
 watch(() => props.release.body_translated, (newVal, oldVal) => {
   if (newVal && !oldVal) {
     translating.value = false
-    if (viewMode.value === 'full') {
-      viewMode.value = 'translated'
-    }
   }
 })
 
@@ -136,9 +104,9 @@ function closeMenus() {
 }
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
-// 「翻译」选项仅在：当前为原文视图、无译文、AI 已启用 时出现
+// 「翻译」选项仅在：有原文、无译文、AI 已启用 时出现
 const canTranslate = computed(() =>
-  viewMode.value === 'full'
+  !!props.release.body
   && !props.release.body_translated
   && aiEnabled.value
 )
@@ -176,15 +144,13 @@ async function handleCopySummary() {
 async function handleTranslateRelease() {
   const releaseId = props.release.id
   summaryContextMenu.value = null
-  // 立即进入翻译中状态并切到译文标签，让用户看到即时反馈
+  // 立即进入翻译中状态，内容区下方显示提示行提供即时反馈
   translating.value = true
-  viewMode.value = 'translated'
   try {
     await translateRelease(releaseId)
     emit('update')
   } catch (e: unknown) {
     translating.value = false
-    viewMode.value = 'full'
     showToast?.(t('release.translate_failed') + (e instanceof Error ? e.message : String(e)))
   }
 }
@@ -227,10 +193,6 @@ function handleReleaseMenuAction(actionId: string) {
 onMounted(() => {
   registerCloser(closeMenus)
   document.addEventListener('click', closeMenus)
-  // 默认视图优先级：摘要 > 译文 > 原文
-  if (props.release.ai_summary) viewMode.value = 'summary'
-  else if (props.release.body_translated) viewMode.value = 'translated'
-  else if (props.release.body) viewMode.value = 'full'
 })
 onUnmounted(() => {
   unregisterCloser(closeMenus)
@@ -405,45 +367,35 @@ function releaseImportanceClass(release: ReleaseInfo): string {
       </div>
     </div>
     <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
-    <div v-if="availableModes.length > 0" class="release-content">
-      <div v-if="availableModes.length > 1" class="release-view-tabs">
-        <button
-          v-for="m in availableModes"
-          :key="m.mode"
-          class="release-view-tab"
-          :class="{ active: viewMode === m.mode }"
-          @click="switchMode(m.mode)"
-        >{{ m.label }}</button>
-      </div>
-      <!-- 摘要模式：保持原有 2 行 clamp + 悬浮提示 -->
-      <div v-if="viewMode === 'summary' && currentContent" class="release-summary-line">
+    <div v-if="previewContent" class="release-content">
+      <!-- 摘要：2 行 clamp + 悬浮提示 -->
+      <div v-if="previewKind === 'summary'" class="release-summary-line">
         <span
           class="release-summary-text"
           tabindex="0"
-          @mouseenter="handleSummaryEnter($event, currentContent)"
+          @mouseenter="handleSummaryEnter($event, previewContent)"
           @mousemove="handleSummaryMove"
           @mouseleave="hideSummaryTooltip"
-          @focus="handleSummaryFocus($event, currentContent)"
+          @focus="handleSummaryFocus($event, previewContent)"
           @blur="hideSummaryTooltip"
-          @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)"
-        >{{ currentContent }}</span>
+          @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
+        >{{ previewContent }}</span>
       </div>
-      <!-- 译文 / 原文模式：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
+      <!-- 译文 / 原文：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
       <div
-        v-else-if="currentContent"
+        v-else
         class="release-body-text"
-        :class="{ clickable: hasLongContent }"
-        :title="hasLongContent ? t('release.read_full') : undefined"
-        @click="handleContentClick"
-        @contextmenu.prevent.stop="handleSummaryContextMenu($event, currentContent)"
+        :title="t('release.read_full')"
+        @click="openDetail"
+        @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
       >
-        <MarkdownContent :content="currentContent" />
+        <MarkdownContent :content="previewContent" />
       </div>
-      <!-- 翻译中占位：译文尚未到达时显示加载提示 -->
-      <div v-else-if="translating && viewMode === 'translated'" class="release-translating-hint">
+      <!-- 翻译中提示：内容保持显示，不打断阅读 -->
+      <div v-if="translating" class="release-translating-hint">
         {{ t('release.translating_hint') }}
       </div>
-      <button v-if="canOpenDetail && viewMode !== 'summary'" class="btn-sm release-expand-btn" @click="openDetail">
+      <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
         {{ t('release.read_full') }}
       </button>
     </div>
@@ -571,36 +523,6 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   margin-top: 4px;
 }
 
-.release-view-tabs {
-  display: inline-flex;
-  gap: 2px;
-  margin-bottom: 6px;
-  padding: 2px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.release-view-tab {
-  padding: 2px 10px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-}
-
-.release-view-tab:hover {
-  color: var(--text);
-}
-
-.release-view-tab.active {
-  background: var(--control-active);
-  color: var(--text);
-  font-weight: 600;
-}
-
 .release-body-text {
   margin-top: 4px;
   color: var(--text);
@@ -609,13 +531,10 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   max-height: 9em;
   overflow: hidden;
   border-radius: 4px;
-}
-
-.release-body-text.clickable {
   cursor: pointer;
 }
 
-.release-body-text.clickable:hover {
+.release-body-text:hover {
   background: var(--bg-subtle);
 }
 

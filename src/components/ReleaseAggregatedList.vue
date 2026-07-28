@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue'
 import ContextMenu from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
-import type { ReleaseContentMode, RepoGroup } from './releaseTypes'
+import type { RepoGroup } from './releaseTypes'
 import { useContextMenu } from '../composables/useContextMenu'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
@@ -16,12 +16,12 @@ const props = defineProps<{
 
 // open-detail 携带导航序列：聚合视图使用当前仓库分组内的版本序列，
 // 保证弹窗「上一版本/下一版本」只在同仓库内导航，不跳到其他仓库
-const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, mode: ReleaseContentMode, sequence: ReleaseInfo[]] }>()
+const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]] }>()
 
-function forwardOpenDetail(release: ReleaseInfo, mode: ReleaseContentMode) {
+function forwardOpenDetail(release: ReleaseInfo) {
   const key = `${release.owner}/${release.repo}`
   const group = repoGroups.value.find(g => g.key === key)
-  emit('open-detail', release, mode, group ? group.releases : [release])
+  emit('open-detail', release, group ? group.releases : [release])
 }
 
 const expandedRepos = ref<Set<string>>(new Set())

@@ -1,12 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
+import { ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
-import { ShowToastKey } from '../injection-keys'
+import MarkdownContent from '../components/common/MarkdownContent.vue'
+import { ShowToastKey, AiEnabledKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../api/releases', () => ({
   setNotificationState: vi.fn(),
   deleteRelease: vi.fn(),
+  translateRelease: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -327,6 +330,107 @@ describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
     const stateOrder = vi.mocked(setNotificationState).mock.invocationCallOrder[0]
     const openOrder = vi.mocked(openReleaseUrl).mock.invocationCallOrder[0]
     expect(stateOrder).toBeLessThan(openOrder)
+  })
+})
+
+describe('ReleaseItem.vue — 内容预览（摘要 > 译文 > 原文）', () => {
+  it('有摘要时显示摘要行；有正文时同时显示「阅读全文」按钮', () => {
+    const wrapper = mountRelease(createRelease({ ai_summary: '修复了关键错误', body: '## Full notes' }))
+
+    expect(wrapper.find('.release-summary-text').exists()).toBe(true)
+    expect(wrapper.find('.release-body-text').exists()).toBe(false)
+    expect(wrapper.find('.release-expand-btn').exists()).toBe(true)
+  })
+
+  it('无摘要时优先显示译文预览', () => {
+    const wrapper = mountRelease(createRelease({ body: '## Original', body_translated: '## 译文' }))
+
+    expect(wrapper.find('.release-summary-line').exists()).toBe(false)
+    expect(wrapper.find('.release-body-text').exists()).toBe(true)
+    // shallowMount 下子组件为 stub，通过 props() 断言传入的预览内容
+    expect((wrapper.findComponent(MarkdownContent).props() as { content: string }).content).toBe('## 译文')
+  })
+
+  it('无摘要无译文时显示原文预览', () => {
+    const wrapper = mountRelease(createRelease({ body: '## Original' }))
+
+    expect((wrapper.findComponent(MarkdownContent).props() as { content: string }).content).toBe('## Original')
+  })
+
+  it('无任何内容时不渲染内容区与「阅读全文」按钮', () => {
+    const wrapper = mountRelease(createRelease())
+
+    expect(wrapper.find('.release-content').exists()).toBe(false)
+    expect(wrapper.find('.release-expand-btn').exists()).toBe(false)
+  })
+
+  it('只有摘要无正文时不显示「阅读全文」按钮', () => {
+    const wrapper = mountRelease(createRelease({ ai_summary: '仅摘要' }))
+
+    expect(wrapper.find('.release-summary-text').exists()).toBe(true)
+    expect(wrapper.find('.release-expand-btn').exists()).toBe(false)
+  })
+
+  it('卡片不再渲染内容切换标签栏（切换集中在详情弹窗）', () => {
+    const wrapper = mountRelease(createRelease({ ai_summary: '摘要', body: 'body', body_translated: '译文' }))
+
+    expect(wrapper.find('.release-view-tabs').exists()).toBe(false)
+  })
+})
+
+describe('ReleaseItem.vue — 打开详情弹窗', () => {
+  it('点击正文预览 → emit open-detail（仅携带 release）', async () => {
+    const release = createRelease({ id: 42, body: '## Body' })
+    const wrapper = mountRelease(release)
+
+    await wrapper.find('.release-body-text').trigger('click')
+
+    const events = wrapper.emitted('open-detail')
+    expect(events).toBeTruthy()
+    expect(events![0]).toEqual([release])
+  })
+
+  it('摘要卡片点击「阅读全文」→ emit open-detail', async () => {
+    const release = createRelease({ id: 43, ai_summary: '摘要', body: '## Body' })
+    const wrapper = mountRelease(release)
+
+    await wrapper.find('.release-expand-btn').trigger('click')
+
+    expect(wrapper.emitted('open-detail')![0]).toEqual([release])
+  })
+})
+
+describe('ReleaseItem.vue — 翻译入口', () => {
+  function mountWithAi(release: ReleaseInfo) {
+    return shallowMount(ReleaseItem, {
+      props: { release },
+      global: {
+        provide: {
+          [ShowToastKey as symbol]: vi.fn(),
+          [AiEnabledKey as symbol]: ref(true),
+        },
+      },
+    })
+  }
+
+  it('有原文无译文且 AI 启用时，右键菜单含「翻译」', () => {
+    const wrapper = mountWithAi(createRelease({ body: '## Body' }))
+
+    expect((wrapper.vm as any).canTranslate).toBe(true)
+    const items = (wrapper.vm as any).summaryMenuItems as { id: string }[]
+    expect(items.map(i => i.id)).toContain('translate')
+  })
+
+  it('已有译文时不提供「翻译」选项', () => {
+    const wrapper = mountWithAi(createRelease({ body: '## Body', body_translated: '译文' }))
+
+    expect((wrapper.vm as any).canTranslate).toBe(false)
+  })
+
+  it('无原文时不提供「翻译」选项', () => {
+    const wrapper = mountWithAi(createRelease({ ai_summary: '仅摘要' }))
+
+    expect((wrapper.vm as any).canTranslate).toBe(false)
   })
 })
 
