@@ -7,6 +7,25 @@ const KEY = 'relwatch.test.drag-resize'
 // 弹窗默认尺寸 760x560，jsdom 视口 1024x768 下居中基座为 (132, 104)
 const DEFAULT_W = 760
 const DEFAULT_H = 560
+// 内容驱动的自动高度（无内联 height 时生效），测试可改模拟内容伸缩
+let autoH = DEFAULT_H
+
+// jsdom 无 ResizeObserver：提供可手动触发的假实现
+class FakeResizeObserver {
+  static instances: FakeResizeObserver[] = []
+  private cb: ResizeObserverCallback
+  constructor(cb: ResizeObserverCallback) {
+    this.cb = cb
+    FakeResizeObserver.instances.push(this)
+  }
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+  fire() {
+    this.cb([], this as unknown as ResizeObserver)
+  }
+}
+vi.stubGlobal('ResizeObserver', FakeResizeObserver)
 
 const Harness = defineComponent({
   setup() {
@@ -36,7 +55,7 @@ const Harness = defineComponent({
 function mockLayout(el: HTMLElement) {
   vi.spyOn(el, 'getBoundingClientRect').mockImplementation(() => {
     const w = el.style.width ? parseFloat(el.style.width) : DEFAULT_W
-    const h = el.style.height ? parseFloat(el.style.height) : DEFAULT_H
+    const h = el.style.height ? parseFloat(el.style.height) : autoH
     const m = /translate\((-?\d+(?:\.\d+)?)px,\s*(-?\d+(?:\.\d+)?)px\)/.exec(el.style.transform || '')
     const dx = m ? parseFloat(m[1]) : 0
     const dy = m ? parseFloat(m[2]) : 0
@@ -69,6 +88,8 @@ function mountHarness() {
 
 beforeEach(() => {
   window.localStorage.clear()
+  autoH = DEFAULT_H
+  FakeResizeObserver.instances = []
 })
 
 afterEach(() => {
@@ -162,6 +183,51 @@ describe('useDragResize', () => {
 
     expect(el.style.transform).toBe('')
     expect(el.style.width).toBe('')
+    wrapper.unmount()
+  })
+
+  it('内容变少时窗口从底部收缩，顶边（标题）位置不变', async () => {
+    const { wrapper, el } = mountHarness()
+    await nextTick()
+
+    autoH = 300 // 模拟切换摘要后内容变短
+    FakeResizeObserver.instances[0].fire()
+    // dh = 300-560 = -260 → offsetY = -130；视觉 top = (768-300)/2 - 130 = 104，与原 top 一致
+    expect(el.style.transform).toBe('translate(0px, -130px)')
+    expect(el.getBoundingClientRect().top).toBe(104)
+    wrapper.unmount()
+  })
+
+  it('内容变长且底部越出视口时，整体上移钳回视口', async () => {
+    const { wrapper, el } = mountHarness()
+    await nextTick()
+
+    // 先向下拖动 100px
+    pointer(wrapper.find('.drag-zone').element, 'pointerdown', { button: 0, clientX: 200, clientY: 120 })
+    pointer(window, 'pointermove', { buttons: 1, clientX: 200, clientY: 220 })
+    pointer(window, 'pointerup', { buttons: 0 })
+    expect(el.style.transform).toBe('translate(0px, 100px)')
+
+    autoH = 700 // 内容变长
+    FakeResizeObserver.instances[0].fire()
+    // 顶边锚定：offsetY = 100 + (700-560)/2 = 170 → top = 34+170 = 204，bottom = 904 越界；
+    // 钳回：top 最大 768-700=68 → offsetY = 170+(68-204) = 34
+    expect(el.style.transform).toBe('translate(0px, 34px)')
+    expect(el.getBoundingClientRect().top).toBe(68)
+    wrapper.unmount()
+  })
+
+  it('手动调整大小不触发顶边锚定补偿', async () => {
+    const { wrapper, el } = mountHarness()
+    await nextTick()
+
+    pointer(wrapper.find('.handle-se').element, 'pointerdown', { button: 0, clientX: 900, clientY: 700 })
+    pointer(window, 'pointermove', { buttons: 1, clientX: 200, clientY: 200 })
+    pointer(window, 'pointerup', { buttons: 0 })
+    expect(el.style.transform).toBe('translate(-180px, -130px)')
+
+    FakeResizeObserver.instances[0].fire() // 手动尺寸已记账，RO 回调应为无操作
+    expect(el.style.transform).toBe('translate(-180px, -130px)')
     wrapper.unmount()
   })
 })

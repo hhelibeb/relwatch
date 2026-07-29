@@ -41,6 +41,8 @@ function isFiniteNumber(v: unknown): v is number {
 // 布局保持 flex 居中不变：拖动只叠加 transform 偏移，避免切换定位方式造成跳动；
 // 调整大小时写入内联 width/height，并按手柄方向修正偏移，使对侧边缘保持不动
 // （纯横向/纵向手柄的另一轴无需修正：居中基座 + 不变偏移 = 中心自动保持）。
+// 内容驱动的自动高度变化（如切换摘要/译文）：补偿偏移使顶边（标题）位置固定，
+// 窗口只从底部伸缩；底部越出视口时整体上移钳回（锚定让位于「完整可见」约束）。
 export function useDragResize(target: Ref<HTMLElement | null>, options: DragResizeOptions = {}) {
   const minWidth = options.minWidth ?? 360
   const minHeight = options.minHeight ?? 240
@@ -50,6 +52,10 @@ export function useDragResize(target: Ref<HTMLElement | null>, options: DragResi
   let offsetY = 0
   let sized = false // 用户是否显式调整过尺寸（决定是否持久化/恢复 w/h）
   let endActiveSession: (() => void) | null = null
+  // 最近一次已知高度：手动 resize 写入尺寸时同步记账，
+  // ResizeObserver 回调中据此区分「内容驱动」与「手动」的高度变化
+  let lastHeight = 0
+  let sizeObserver: ResizeObserver | null = null
 
   function applyTransform() {
     const el = target.value
@@ -163,6 +169,7 @@ export function useDragResize(target: Ref<HTMLElement | null>, options: DragResi
       if (w !== rect.width) el.style.width = `${w}px`
       if (h !== rect.height) el.style.height = `${h}px`
       rect = el.getBoundingClientRect()
+      lastHeight = rect.height // 同步记账，避免被 ResizeObserver 当作内容驱动变化
     }
     const { left, top } = clampedPosition(rect)
     offsetX += left - rect.left
@@ -197,6 +204,28 @@ export function useDragResize(target: Ref<HTMLElement | null>, options: DragResi
     }, persist, 'move')
   }
 
+  // 内容变化（切换摘要/译文、版本导航等）导致弹窗自动伸缩时，按高度差补偿偏移，
+  // 保持顶边（标题）位置不变，窗口只从底部伸缩；手动 resize 的高度已记账，不会进入补偿
+  function anchorTopOnAutoResize() {
+    const el = target.value
+    if (!el) return
+    const rect = el.getBoundingClientRect()
+    const dh = rect.height - lastHeight
+    lastHeight = rect.height
+    if (dh === 0) return
+    // 视觉 top = (视口高 - h)/2 + offsetY，h 变化 dh 后补偿 dh/2 即可还原顶边位置
+    offsetY += dh / 2
+    applyTransform()
+    // 内容变长时底部可能越出视口：整体上移钳回（顶边锚定让位于「完整可见」约束）
+    const after = el.getBoundingClientRect()
+    const { left, top } = clampedPosition(after)
+    if (left !== after.left || top !== after.top) {
+      offsetX += left - after.left
+      offsetY += top - after.top
+      applyTransform()
+    }
+  }
+
   function startResize(e: PointerEvent, dir: ResizeDir) {
     const el = target.value
     if (!el || e.button !== 0) return
@@ -206,6 +235,8 @@ export function useDragResize(target: Ref<HTMLElement | null>, options: DragResi
     sized = true
     // 解除 CSS max-height 上限，尺寸完全交由 JS 约束（已钳制在视口内）
     el.style.maxHeight = 'none'
+    // 解除上限后高度可能立即跳变（内容超出原上限）：同步记账，避免误触发顶边锚定
+    lastHeight = el.getBoundingClientRect().height
     const hasW = dir.includes('w')
     const hasE = dir.includes('e')
     const hasN = dir.includes('n')
@@ -228,16 +259,27 @@ export function useDragResize(target: Ref<HTMLElement | null>, options: DragResi
       if (hasN) offsetY = rect.bottom - h - baseTop
       el.style.width = `${w}px`
       el.style.height = `${h}px`
+      lastHeight = h // 手动 resize 的高度同步记账，ResizeObserver 不再补偿
       applyTransform()
     }, persist, RESIZE_CURSORS[dir])
   }
 
   onMounted(() => {
-    nextTick(restore)
+    nextTick(() => {
+      restore()
+      const el = target.value
+      if (el && typeof ResizeObserver !== 'undefined') {
+        lastHeight = el.getBoundingClientRect().height
+        sizeObserver = new ResizeObserver(anchorTopOnAutoResize)
+        sizeObserver.observe(el)
+      }
+    })
     window.addEventListener('resize', clampIntoViewport)
   })
   onUnmounted(() => {
     endSession()
+    sizeObserver?.disconnect()
+    sizeObserver = null
     window.removeEventListener('resize', clampIntoViewport)
   })
 
