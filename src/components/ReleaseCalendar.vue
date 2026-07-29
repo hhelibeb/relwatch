@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
-import { getLocale } from '../i18n'
+import { getLocale, t } from '../i18n'
 import { toDateKey } from '../utils/dateKey'
 
 const props = defineProps<{
@@ -39,10 +39,11 @@ const calendarMap = computed(() => {
 
 const todayKey = toDateKey(new Date())
 
+// 周起始按语言习惯：中文周一，英文周日
+const weekStartsOnMonday = computed(() => getLocale() === 'zh-CN')
+
 const weekDayHeaders = computed(() => {
-  const locale = getLocale()
-  const isZh = locale === 'zh-CN'
-  if (isZh) return ['日', '一', '二', '三', '四', '五', '六']
+  if (weekStartsOnMonday.value) return ['一', '二', '三', '四', '五', '六', '日']
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
 })
 
@@ -58,7 +59,8 @@ const monthGrid = computed(() => {
   const firstDay = new Date(year, month - 1, 1)
   const lastDay = new Date(year, month, 0)
   const totalDays = lastDay.getDate()
-  const startDow = firstDay.getDay()
+  // getDay() 以周日为 0；周一起始时转换为周一为 0
+  const startDow = weekStartsOnMonday.value ? (firstDay.getDay() + 6) % 7 : firstDay.getDay()
 
   const cells: CalendarCell[] = []
 
@@ -167,7 +169,16 @@ function handleCellClick(cell: CalendarCell) {
       @click="handleCellClick(cell)"
     >
       <span class="cell-date">{{ cell.date }}</span>
+      <span v-if="cell.isCurrentMonth && cell.count > 0" class="cell-count">{{ cell.count }}</span>
     </div>
+  </div>
+  <!-- 热力图例：色阶与当日版本数量的对应关系 -->
+  <div class="calendar-legend">
+    <span class="calendar-legend-label">{{ t('release.calendar_legend') }}</span>
+    <span class="calendar-legend-item"><i class="legend-swatch legend-swatch-1"></i>1</span>
+    <span class="calendar-legend-item"><i class="legend-swatch legend-swatch-2"></i>2</span>
+    <span class="calendar-legend-item"><i class="legend-swatch legend-swatch-3"></i>3</span>
+    <span class="calendar-legend-item"><i class="legend-swatch legend-swatch-4"></i>4+</span>
   </div>
 
   <div
@@ -281,6 +292,50 @@ function handleCellClick(cell: CalendarCell) {
   font-size: 13px;
   line-height: 1;
 }
+
+/* 格内版本数量：配合热力底色让数值一目了然 */
+.calendar-cell .cell-count {
+  margin-top: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--text);
+  opacity: 0.75;
+}
+
+/* 热力图例 */
+.calendar-legend {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.calendar-legend-label {
+  margin-right: 2px;
+}
+
+.calendar-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.legend-swatch {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+
+.legend-swatch-1 { background: var(--heat-1); }
+.legend-swatch-2 { background: var(--heat-2); }
+.legend-swatch-3 { background: var(--heat-3); }
+.legend-swatch-4 { background: var(--heat-4); }
 
 .calendar-cell-count-1 {
   background: var(--heat-1);

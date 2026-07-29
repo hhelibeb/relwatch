@@ -105,10 +105,18 @@ function focusFirstDropdownOption(filter: 'status' | 'importance') {
 }
 
 const importanceDisplayText = computed(() => {
-  if (props.importanceFilter === '大') return '🔴 ' + t('release.importance_high')
-  if (props.importanceFilter === '中') return '🟡 ' + t('release.importance_medium')
-  if (props.importanceFilter === '小') return '🟢 ' + t('release.importance_low')
+  if (props.importanceFilter === '大') return t('release.importance_high')
+  if (props.importanceFilter === '中') return t('release.importance_medium')
+  if (props.importanceFilter === '小') return t('release.importance_low')
   return t('release.filter_all')
+})
+
+// 重要度圆点样式类：用设计系统的语义色替代 emoji，保证跨平台渲染一致
+const importanceDotClass = computed(() => {
+  if (props.importanceFilter === '大') return 'importance-dot-high'
+  if (props.importanceFilter === '中') return 'importance-dot-medium'
+  if (props.importanceFilter === '小') return 'importance-dot-low'
+  return ''
 })
 
 function onSearchEnter() {
@@ -145,14 +153,14 @@ function onSearchEnter() {
       <div class="filter-field" @mouseenter="openFilter = 'importance'; hoverFilterEnter()">
         <button type="button" class="filter-trigger" :aria-expanded="openFilter === 'importance'" aria-haspopup="menu" @click="toggleFilter('importance')" @keydown="handleFilterKeydown($event, 'importance')">
           <span class="filter-label">{{ t('tab.importance') }}</span>
-          <span class="filter-value" :style="{ color: props.importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }">{{ importanceDisplayText }}</span>
+          <span class="filter-value" :style="{ color: props.importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }"><span v-if="importanceDotClass" class="importance-dot" :class="importanceDotClass"></span>{{ importanceDisplayText }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
         <div v-if="openFilter === 'importance'" class="filter-dropdown" role="menu" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()" @keydown="handleDropdownKeydown">
           <button type="button" role="menuitem" :aria-selected="props.importanceFilter === 'all'" :class="{ selected: props.importanceFilter === 'all' }" @click="emit('update:importanceFilter', 'all'); openFilter = null">{{ t('release.filter_all') }}</button>
-          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '大'" :class="{ selected: props.importanceFilter === '大' }" @click="emit('update:importanceFilter', '大'); openFilter = null">🔴 {{ t('release.importance_high') }}</button>
-          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '中'" :class="{ selected: props.importanceFilter === '中' }" @click="emit('update:importanceFilter', '中'); openFilter = null">🟡 {{ t('release.importance_medium') }}</button>
-          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '小'" :class="{ selected: props.importanceFilter === '小' }" @click="emit('update:importanceFilter', '小'); openFilter = null">🟢 {{ t('release.importance_low') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '大'" :class="{ selected: props.importanceFilter === '大' }" @click="emit('update:importanceFilter', '大'); openFilter = null"><span class="importance-dot importance-dot-high"></span>{{ t('release.importance_high') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '中'" :class="{ selected: props.importanceFilter === '中' }" @click="emit('update:importanceFilter', '中'); openFilter = null"><span class="importance-dot importance-dot-medium"></span>{{ t('release.importance_medium') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '小'" :class="{ selected: props.importanceFilter === '小' }" @click="emit('update:importanceFilter', '小'); openFilter = null"><span class="importance-dot importance-dot-low"></span>{{ t('release.importance_low') }}</button>
         </div>
       </div>
     </div>
@@ -264,6 +272,11 @@ function onSearchEnter() {
   color: var(--text-muted);
 }
 
+.filter-value {
+  display: inline-flex;
+  align-items: center;
+}
+
 .filter-arrow {
   width: 12px;
   height: 12px;
@@ -287,7 +300,8 @@ function onSearchEnter() {
 }
 
 .filter-dropdown button {
-  display: block;
+  display: flex;
+  align-items: center;
   width: 100%;
   padding: 5px 14px;
   border: none;
@@ -298,6 +312,28 @@ function onSearchEnter() {
   text-align: left;
   border-radius: 4px;
   transition: background 0.1s;
+}
+
+/* 重要度圆点：与版本卡片徽章同源的语义色，替代 emoji */
+.importance-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.importance-dot-high {
+  background: var(--danger);
+}
+
+.importance-dot-medium {
+  background: var(--warning);
+}
+
+.importance-dot-low {
+  background: var(--success);
 }
 
 .filter-dropdown button:hover {
