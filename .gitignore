@@ -44,3 +44,6 @@ src/__tests__/test-asgn-2.ts
 
 # Security audit output
 piolium/
+
+# Workbuddy scratch space
+.workbuddy/
