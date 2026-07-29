@@ -66,6 +66,13 @@ const unlisteners: (() => void)[] = []
 const toastMessage = ref('')
 const toastVisible = ref(false)
 let toastTimer: ReturnType<typeof setTimeout> | null = null
+// Toast 队列：新消息在当前消息显示期间进入队列，等旧消息消失后依次显示
+const toastQueue: string[] = []
+let toastSwapTimer: ReturnType<typeof setTimeout> | null = null
+let toastHovered = false
+const TOAST_DURATION = 3000
+// 与 .toast-leave-active 过渡时长（0.3s）对齐，离场动画结束后再显示下一条
+const TOAST_SWAP_DELAY = 350
 
 const selectionMenu = ref<{ x: number; y: number } | null>(null)
 const inputContextMenu = ref<{ x: number; y: number; target: HTMLElement } | null>(null)
@@ -118,12 +125,55 @@ async function execInputAction(actionId: string) {
 }
 
 function showToast(msg: string) {
-  toastMessage.value = msg
+  toastQueue.push(msg)
+  // 当前无消息显示且无切换间隙时立即显示；否则排队等旧消息消失
+  if (!toastVisible.value && !toastSwapTimer) {
+    showNextToast()
+  }
+}
+
+function showNextToast() {
+  const next = toastQueue.shift()
+  if (next === undefined) return
+  toastMessage.value = next
   toastVisible.value = true
-  if (toastTimer) clearTimeout(toastTimer)
+  // 鼠标正悬浮在旧消息上时不启动计时，等移开后由 handleToastMouseLeave 补启动
+  if (!toastHovered) startToastTimer()
+}
+
+function startToastTimer() {
+  clearToastTimer()
   toastTimer = setTimeout(() => {
-    toastVisible.value = false
-  }, 3000)
+    toastTimer = null
+    dismissCurrentToast()
+  }, TOAST_DURATION)
+}
+
+function clearToastTimer() {
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+    toastTimer = null
+  }
+}
+
+function dismissCurrentToast() {
+  if (!toastVisible.value) return
+  toastVisible.value = false
+  // 等离场动画结束再显示队列中的下一条，避免新旧消息内容跳变
+  toastSwapTimer = setTimeout(() => {
+    toastSwapTimer = null
+    showNextToast()
+  }, TOAST_SWAP_DELAY)
+}
+
+function handleToastMouseEnter() {
+  toastHovered = true
+  clearToastTimer()
+}
+
+function handleToastMouseLeave() {
+  toastHovered = false
+  if (toastVisible.value) startToastTimer()
 }
 
 provide(ShowToastKey, showToast)
@@ -364,6 +414,10 @@ onUnmounted(() => {
     clearTimeout(toastTimer)
     toastTimer = null
   }
+  if (toastSwapTimer) {
+    clearTimeout(toastSwapTimer)
+    toastSwapTimer = null
+  }
   if (systemThemeMedia) {
     systemThemeMedia.onchange = null
   }
@@ -403,7 +457,7 @@ onUnmounted(() => {
     </main>
 
     <Transition name="toast">
-      <div v-if="toastVisible" class="toast">{{ toastMessage }}</div>
+      <div v-if="toastVisible" class="toast" @mouseenter="handleToastMouseEnter" @mouseleave="handleToastMouseLeave">{{ toastMessage }}</div>
     </Transition>
 
     <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" @close="selectionMenu = null" />
@@ -424,7 +478,6 @@ onUnmounted(() => {
   border-radius: var(--radius);
   font-size: 13px;
   box-shadow: var(--shadow-lg);
-  pointer-events: none;
 }
 
 .toast-enter-active {

@@ -241,7 +241,7 @@ describe('App.vue — Toast 系统', () => {
     vi.useRealTimers()
   })
 
-  it('连续 showToast 重置定时器', async () => {
+  it('连续 showToast 进入队列，旧消息消失后依次显示', async () => {
     vi.useFakeTimers()
     const wrapper = await mountApp()
 
@@ -249,10 +249,38 @@ describe('App.vue — Toast 系统', () => {
     vi.advanceTimersByTime(2000)
 
     ;(wrapper.vm as any).showToast('第二条')
-    // 第一条的 3 秒已过但定时器已重置
-    vi.advanceTimersByTime(2000)
+    // 第二条入队，第一条仍继续显示
+    expect((wrapper.vm as any).toastMessage).toBe('第一条')
+
+    // 第一条满 3 秒后隐藏，经离场间隙后第二条显示
+    vi.advanceTimersByTime(1000)
+    expect((wrapper.vm as any).toastVisible).toBe(false)
+    vi.advanceTimersByTime(350)
+    expect((wrapper.vm as any).toastVisible).toBe(true)
+    expect((wrapper.vm as any).toastMessage).toBe('第二条')
+
+    vi.advanceTimersByTime(3000)
+    expect((wrapper.vm as any).toastVisible).toBe(false)
+    vi.useRealTimers()
+  })
+
+  it('鼠标悬浮时 Toast 不消失，移开后重新计时', async () => {
+    vi.useFakeTimers()
+    const wrapper = await mountApp()
+
+    ;(wrapper.vm as any).showToast('悬浮暂停')
+    await wrapper.vm.$nextTick()
+    vi.advanceTimersByTime(1000)
+
+    await wrapper.find('.toast').trigger('mouseenter')
+    // 悬浮期间远超过 3 秒也不消失
+    vi.advanceTimersByTime(10000)
     expect((wrapper.vm as any).toastVisible).toBe(true)
 
+    await wrapper.find('.toast').trigger('mouseleave')
+    // 移开后重新计时 3 秒
+    vi.advanceTimersByTime(2000)
+    expect((wrapper.vm as any).toastVisible).toBe(true)
     vi.advanceTimersByTime(1000)
     expect((wrapper.vm as any).toastVisible).toBe(false)
     vi.useRealTimers()
