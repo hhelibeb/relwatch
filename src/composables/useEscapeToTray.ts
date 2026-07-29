@@ -8,11 +8,12 @@ import { invoke } from '@tauri-apps/api/core'
  * 所以 `document.querySelector` 可以准确反映当前是否有覆盖层打开。
  */
 const OVERLAY_SELECTORS = [
-  '.context-menu',          // 右键菜单
-  '.filter-dropdown',       // 日志/发布过滤下拉
-  '.theme-select-dropdown', // 设置页语言/主题选择器
-  '.sort-dropdown',         // 监控源排序下拉
-  '.dropdown-more-panel',   // 监控源更多操作面板
+  '.context-menu',           // 右键菜单
+  '.filter-dropdown',        // 日志/发布过滤下拉
+  '.theme-select-dropdown',  // 设置页语言/主题选择器
+  '.sort-dropdown',          // 监控源排序下拉
+  '.dropdown-more-panel',    // 监控源更多操作面板
+  '.release-detail-overlay', // 版本详情弹窗（漏掉会导致弹窗内 Esc 误触最小化到托盘）
 ]
 
 function hasVisibleOverlay(): boolean {
