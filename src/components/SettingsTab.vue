@@ -449,7 +449,15 @@ function discardChanges() {
 async function handleTestDeepseek() {
   testingDeepseek.value = true
   try {
-    const msg = await testDeepseekConnection()
+    // 传入表单当前值（含未保存修改）测试：API Key 留空时后端回退到已保存的 key
+    const msg = await testDeepseekConnection({
+      model: form.deepseek_model.trim(),
+      baseUrl: form.deepseek_base_url.trim(),
+      apiKey: deepseekApiKey.value,
+      proxyBypass: form.deepseek_proxy_bypass,
+      proxyUrl: form.proxy_url.trim(),
+      proxyMode: form.proxy_mode,
+    })
     await message(msg, { title: t('settings.deepseek_test_title'), kind: 'info' })
   } catch (e: unknown) {
     await message(t('settings.connect_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.deepseek_test_title'), kind: 'error' })
@@ -668,6 +676,7 @@ async function handleImportBackup() {
             <button class="btn-secondary" :disabled="testingDeepseek" @click="handleTestDeepseek">
               {{ testingDeepseek ? t('settings.testing') : t('settings.test_connection') }}
             </button>
+            <span class="setting-hint">{{ t('settings.test_connection_hint') }}</span>
           </div>
           </template>
         </div>

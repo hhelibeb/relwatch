@@ -216,22 +216,51 @@ pub fn set_github_token(
     Ok(())
 }
 
+/// 测试连接的可选覆盖参数：前端把表单当前值（含未保存修改）传入，
+/// 留空的项回退到已保存配置，实现"先试后存"。
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestDeepseekPayload {
+    model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+    proxy_bypass: Option<bool>,
+    proxy_url: Option<String>,
+    proxy_mode: Option<String>,
+}
+
 #[tauri::command]
-pub async fn test_deepseek_connection(state: tauri::State<'_, AppState>) -> Result<String, String> {
+pub async fn test_deepseek_connection(
+    state: tauri::State<'_, AppState>,
+    payload: Option<TestDeepseekPayload>,
+) -> Result<String, String> {
     let (model, base_url, api_key, proxy_url, proxy_mode);
     {
         let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
         let config = deepseek::read_config(&conn);
-        model = config.1;
-        base_url = config.2;
-        api_key = config.3;
-        let bypass = get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false)?;
+        let p = payload.as_ref();
+        // 空白字符串视为未提供（如 API Key 输入框留空 = 沿用已保存的 key）
+        let non_empty = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
+
+        model = p.and_then(|p| non_empty(&p.model)).unwrap_or(config.1);
+        base_url = p.and_then(|p| non_empty(&p.base_url)).unwrap_or(config.2);
+        api_key = p.and_then(|p| non_empty(&p.api_key)).or(config.3);
+        let bypass = match p.and_then(|p| p.proxy_bypass) {
+            Some(b) => b,
+            None => get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false)?,
+        };
         if bypass {
             proxy_url = String::new();
             proxy_mode = "none".to_string();
         } else {
-            proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
-            proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
+            proxy_url = match p.and_then(|p| non_empty(&p.proxy_url)) {
+                Some(u) => u,
+                None => get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?,
+            };
+            proxy_mode = match p.and_then(|p| non_empty(&p.proxy_mode)) {
+                Some(m) => m,
+                None => get_setting_str(&conn, KEY_PROXY_MODE, "none")?,
+            };
         }
     }
     let api_key = api_key.ok_or("请先设置 DeepSeek API Key")?;

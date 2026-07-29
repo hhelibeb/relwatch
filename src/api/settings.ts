@@ -64,8 +64,21 @@ export async function setGithubToken(token: string): Promise<void> {
   return invokeI18n('set_github_token', { token })
 }
 
-export async function testDeepseekConnection(): Promise<string> {
-  return invokeI18n<string>('test_deepseek_connection')
+/**
+ * 测试连接的可选覆盖参数：传表单当前值（含未保存修改），
+ * 留空的字段由后端回退到已保存配置，实现"先试后存"。
+ */
+export interface TestDeepseekPayload {
+  model?: string
+  baseUrl?: string
+  apiKey?: string
+  proxyBypass?: boolean
+  proxyUrl?: string
+  proxyMode?: string
+}
+
+export async function testDeepseekConnection(payload?: TestDeepseekPayload): Promise<string> {
+  return invokeI18n<string>('test_deepseek_connection', payload ? { payload } : undefined)
 }
 
 export async function exportBackup(): Promise<string> {

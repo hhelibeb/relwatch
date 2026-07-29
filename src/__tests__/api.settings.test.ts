@@ -118,7 +118,8 @@ describe('testDeepseekConnection', () => {
 
     const result = await testDeepseekConnection()
 
-    expect(invokeI18n).toHaveBeenCalledWith('test_deepseek_connection')
+    // 无 payload 时第二参显式传 undefined（与 invokeI18n 的可选 args 形参一致）
+    expect(invokeI18n).toHaveBeenCalledWith('test_deepseek_connection', undefined)
     expect(result).toBe('ok')
   })
 
@@ -126,6 +127,30 @@ describe('testDeepseekConnection', () => {
     vi.mocked(invokeI18n).mockRejectedValue(new Error('err.deepseek.connection'))
 
     await expect(testDeepseekConnection()).rejects.toThrow('err.deepseek.connection')
+  })
+
+  it('携带表单覆盖参数时透传 payload', async () => {
+    vi.mocked(invokeI18n).mockResolvedValue('ok')
+
+    await testDeepseekConnection({
+      model: 'deepseek-v4',
+      baseUrl: 'https://api.example.com',
+      apiKey: 'sk-new',
+      proxyBypass: true,
+      proxyUrl: 'http://127.0.0.1:7890',
+      proxyMode: 'custom',
+    })
+
+    expect(invokeI18n).toHaveBeenCalledWith('test_deepseek_connection', {
+      payload: {
+        model: 'deepseek-v4',
+        baseUrl: 'https://api.example.com',
+        apiKey: 'sk-new',
+        proxyBypass: true,
+        proxyUrl: 'http://127.0.0.1:7890',
+        proxyMode: 'custom',
+      },
+    })
   })
 })
 
