@@ -1,9 +1,6 @@
-<script setup lang="ts">
-import { computed } from 'vue'
+<script lang="ts">
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
-
-const props = defineProps<{ content: string | null }>()
 
 // marked 配置：关闭 mangle/escaping 由 DOMPurify 统一清洗
 marked.setOptions({
@@ -11,11 +8,18 @@ marked.setOptions({
   gfm: true,         // GitHub Flavored Markdown
 })
 
-const html = computed(() => {
-  if (!props.content) return ''
-  const raw = marked.parse(props.content, { async: false }) as string
+// 渲染结果缓存（模块级共享）：虚拟滚动中行卸载时实例级缓存会随之销毁，
+// 滚动回来是全新实例，模块级缓存才能让"同一 content 复用清洗结果"真正生效，
+// 避免重复 marked.parse + DOMPurify.sanitize
+const CACHE_MAX = 100
+const htmlCache = new Map<string, string>()
+
+function renderMarkdownHtml(content: string): string {
+  const cached = htmlCache.get(content)
+  if (cached !== undefined) return cached
+  const raw = marked.parse(content, { async: false }) as string
   // DOMPurify 清洗：移除 script/事件处理器等危险内容，保留常见 Markdown 渲染产物
-  return DOMPurify.sanitize(raw, {
+  const sanitized = DOMPurify.sanitize(raw, {
     ALLOWED_TAGS: [
       'p', 'br', 'hr', 'strong', 'em', 'del', 'code', 'pre', 'blockquote',
       'ul', 'ol', 'li', 'a', 'img', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
@@ -23,6 +27,24 @@ const html = computed(() => {
     ],
     ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel'],
   })
+  htmlCache.set(content, sanitized)
+  // FIFO 淘汰最旧条目，防止缓存无限增长
+  if (htmlCache.size > CACHE_MAX) {
+    const oldest = htmlCache.keys().next().value
+    if (oldest !== undefined) htmlCache.delete(oldest)
+  }
+  return sanitized
+}
+</script>
+
+<script setup lang="ts">
+import { computed } from 'vue'
+
+const props = defineProps<{ content: string | null }>()
+
+const html = computed(() => {
+  if (!props.content) return ''
+  return renderMarkdownHtml(props.content)
 })
 </script>
 

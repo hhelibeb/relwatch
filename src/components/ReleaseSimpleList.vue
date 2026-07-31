@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
 import ReleaseItem from './ReleaseItem.vue'
+import VirtualList from './common/VirtualList.vue'
 
 const props = defineProps<{
   releases: ReleaseInfo[]
@@ -24,13 +25,19 @@ const sortedReleases = computed(() => {
     <div v-if="sortedReleases.length === 0" class="empty">
       {{ props.isFiltering ? t('release.no_match') : t('release.empty') }}
     </div>
-    <ReleaseItem
-      v-for="release in sortedReleases"
-      :key="release.id"
-      :release="release"
-      @update="emit('update')"
-      @open-detail="(release) => emit('open-detail', release, sortedReleases)"
-    />
+    <VirtualList
+      v-else
+      :items="sortedReleases"
+      :item-key="release => release.id"
+    >
+      <template #default="{ item }">
+        <ReleaseItem
+          :release="item"
+          @update="emit('update')"
+          @open-detail="(release) => emit('open-detail', release, sortedReleases)"
+        />
+      </template>
+    </VirtualList>
   </div>
 </template>
 

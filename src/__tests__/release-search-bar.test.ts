@@ -8,6 +8,7 @@ import ReleaseSimpleList from '../components/ReleaseSimpleList.vue'
 import ReleaseAggregatedList from '../components/ReleaseAggregatedList.vue'
 import ReleaseCalendar from '../components/ReleaseCalendar.vue'
 import ReleaseDateDetail from '../components/ReleaseDateDetail.vue'
+import VirtualList from '../components/common/VirtualList.vue'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../i18n', () => ({
@@ -80,6 +81,8 @@ function createWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTe
         ReleaseAggregatedList: false,
         ReleaseCalendar: false,
         ReleaseDateDetail: false,
+        // 简单视图经 VirtualList 渲染 ReleaseItem，需真实渲染才能统计到子组件
+        VirtualList: false,
       },
     },
   })
