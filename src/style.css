@@ -461,3 +461,137 @@ html {
 .btn-icon-link:hover {
   color: var(--primary);
 }
+
+/* ── 筛选下拉（ReleaseSearchBar / LogTab 共享） ────── */
+.filter-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.filter-field {
+  position: relative;
+}
+
+.filter-field:first-child .filter-trigger {
+  border-radius: 5px 0 0 5px;
+}
+
+.filter-field:last-child .filter-trigger {
+  border-radius: 0 5px 5px 0;
+}
+
+.filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 8px;
+  border: none;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s;
+  height: 100%;
+}
+
+.filter-trigger:hover {
+  background: var(--bg-subtle);
+}
+
+.filter-divider {
+  width: 1px;
+  background: var(--border);
+  align-self: stretch;
+}
+
+.filter-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.filter-value {
+  display: inline-flex;
+  align-items: center;
+}
+
+.filter-arrow {
+  width: 12px;
+  height: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.filter-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 100;
+  min-width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  padding: 4px;
+  white-space: nowrap;
+}
+
+.filter-dropdown button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+  transition: background 0.1s;
+}
+
+.filter-dropdown button:hover {
+  background: var(--bg-subtle);
+}
+
+.filter-dropdown button.selected {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* ── 工具条行（ReleaseSearchBar / LogTab 共享） ────── */
+.log-search-row {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 0;
+  background: var(--bg);
+  transition: top 0.15s ease;
+}
+
+.log-search-row .search-input {
+  flex: 1;
+  max-width: none;
+}
+
+.log-search-row .input-clear-wrap {
+  flex: 1;
+}
+
+.log-search-row .input-clear-wrap .search-input {
+  max-width: none;
+}
+
+/* 滚动后 sticky 元素贴顶 */
+.app-main.is-scrolled .log-search-row {
+  top: calc(-1 * var(--app-padding-y, 16px));
+}

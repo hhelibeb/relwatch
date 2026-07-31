@@ -6,6 +6,7 @@ import { type Source, parseSourceUrl, addSource, removeSource, updateSource } fr
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
+import { useDropdown } from '../composables/useDropdown'
 import ContextMenu from './common/ContextMenu.vue'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
@@ -68,6 +69,30 @@ type HeaderMode = 'add' | 'search'
 const sourceSortField = ref<SourceSortField>(readStoredSourceSortField())
 const sourceSortDirection = ref<SortDirection>(readStoredSourceSortDirection())
 const openSort = ref(false)
+const sortDropdown = useDropdown({
+  openState: openSort,
+  closedKey: false,
+  hoverOpen: false,
+  // 打开时聚焦排序下拉第一个选项；从触发元素就近定位
+  onOpen: (_key, el) => {
+    const dropdown = el.parentElement?.querySelector('.sort-dropdown') as HTMLElement | null
+    const btn = dropdown?.querySelector('button') as HTMLButtonElement | null
+    btn?.focus()
+  },
+})
+
+// 每行"更多"面板：共享 openMoreId，同一时刻只有一个面板打开
+const moreDropdown = useDropdown({
+  openState: openMoreId,
+  closedKey: null,
+  hoverOpen: false,
+  // 打开时聚焦面板第一个可用选项；从触发元素就近定位
+  onOpen: (_key, el) => {
+    const panel = el.parentElement?.querySelector('.dropdown-more-panel') as HTMLElement | null
+    const btn = panel?.querySelector('button:not(:disabled)') as HTMLButtonElement | null
+    btn?.focus()
+  },
+})
 const headerMode = ref<HeaderMode>('add')
 
 const selectionMode = ref(false)
@@ -266,7 +291,7 @@ async function handleToggle(source: Source) {
   } catch (e: unknown) {
     await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
-  openMoreId.value = null
+  moreDropdown.close()
 }
 
 async function handleMuteToggle(source: Source) {
@@ -277,120 +302,12 @@ async function handleMuteToggle(source: Source) {
   } catch (e: unknown) {
     await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
-  openMoreId.value = null
-}
-
-function toggleMore(id: number) {
-  openMoreId.value = openMoreId.value === id ? null : id
-  if (openMoreId.value === id) {
-    focusMorePanel()
-  }
-}
-
-function handleSortTriggerKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    if (openSort.value) {
-      openSort.value = false
-    }
-    return
-  }
-  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
-    e.preventDefault()
-    if (!openSort.value) {
-      openSort.value = true
-      focusSortDropdown()
-    }
-  }
-}
-
-function handleSortDropdownKeydown(e: KeyboardEvent) {
-  const target = e.target as HTMLElement
-  if (!target || target.tagName !== 'BUTTON') return
-  const dropdown = target.closest('.sort-dropdown') as HTMLElement | null
-  if (!dropdown) return
-  const buttons = Array.from(dropdown.querySelectorAll('button')) as HTMLButtonElement[]
-  const index = buttons.indexOf(target as HTMLButtonElement)
-  if (index < 0) return
-  if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    const next = (index + 1) % buttons.length
-    buttons[next].focus()
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    const prev = (index - 1 + buttons.length) % buttons.length
-    buttons[prev].focus()
-  } else if (e.key === 'Escape') {
-    e.preventDefault()
-    openSort.value = false
-  }
-}
-
-function focusSortDropdown() {
-  requestAnimationFrame(() => {
-    const dropdown = document.querySelector('.sort-dropdown') as HTMLElement | null
-    if (!dropdown) return
-    const btn = dropdown.querySelector('button') as HTMLButtonElement | null
-    if (btn) btn.focus()
-  })
-}
-
-function handleMoreKeydown(e: KeyboardEvent, sourceId: number) {
-  if (e.key === 'Escape') {
-    if (openMoreId.value === sourceId) {
-      openMoreId.value = null
-    }
-    return
-  }
-  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
-    e.preventDefault()
-    if (openMoreId.value !== sourceId) {
-      openMoreId.value = sourceId
-      focusMorePanel()
-    }
-  }
-}
-
-function handleMorePanelKeydown(e: KeyboardEvent) {
-  const target = e.target as HTMLElement
-  if (!target || target.tagName !== 'BUTTON') return
-  const panel = target.closest('.dropdown-more-panel') as HTMLElement | null
-  if (!panel) return
-  const buttons = Array.from(panel.querySelectorAll('button')) as HTMLButtonElement[]
-  const index = buttons.indexOf(target as HTMLButtonElement)
-  if (index < 0) return
-  if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    const next = (index + 1) % buttons.length
-    buttons[next].focus()
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    const prev = (index - 1 + buttons.length) % buttons.length
-    buttons[prev].focus()
-  } else if (e.key === 'Escape') {
-    e.preventDefault()
-    openMoreId.value = null
-  }
-}
-
-function focusMorePanel() {
-  requestAnimationFrame(() => {
-    const sourceItems = document.querySelectorAll('.source-item')
-    for (const item of sourceItems) {
-      const panel = item.querySelector(`.dropdown-more-panel`) as HTMLElement | null
-      if (panel) {
-        const btn = panel.querySelector('button:not(:disabled)') as HTMLButtonElement | null
-        if (btn) {
-          btn.focus()
-          return
-        }
-      }
-    }
-  })
+  moreDropdown.close()
 }
 
 function onDocumentClick() {
-  openMoreId.value = null
-  openSort.value = false
+  moreDropdown.close()
+  sortDropdown.close()
 }
 
 onMounted(() => document.addEventListener('click', onDocumentClick))
@@ -561,15 +478,15 @@ function hideHealthTooltip() {
         </div>
         <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
         <div class="sort-group">
-          <button type="button" class="sort-trigger" :aria-expanded="openSort" aria-haspopup="menu" @click.stop="openSort = !openSort; if (openSort) focusSortDropdown()" @keydown="handleSortTriggerKeydown">
+          <button type="button" class="sort-trigger" :aria-expanded="openSort" aria-haspopup="menu" @click.stop="sortDropdown.toggle($event, true)" @keydown="sortDropdown.handleTriggerKeydown($event, true)">
             <span class="sort-direction-icon" aria-hidden="true">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
             <span>{{ sortLabelText }}</span>
             <svg class="sort-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
-          <div v-if="openSort" class="sort-dropdown" role="menu" @click.stop @keydown="handleSortDropdownKeydown">
-            <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="sourceSortField = opt.value; openSort = false">{{ opt.label }}</button>
+          <div v-if="openSort" class="sort-dropdown" role="menu" @click.stop @keydown="sortDropdown.handleDropdownKeydown">
+            <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="sourceSortField = opt.value; sortDropdown.close()">{{ opt.label }}</button>
             <div class="sort-dropdown-divider"></div>
-            <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="sourceSortDirection = opt.value; openSort = false">{{ opt.label }}</button>
+            <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="sourceSortDirection = opt.value; sortDropdown.close()">{{ opt.label }}</button>
           </div>
         </div>
         <button class="btn-select" @click="selectionMode = !selectionMode; if (!selectionMode) clearSelection()">
@@ -676,10 +593,10 @@ function hideHealthTooltip() {
             <svg><use :href="source.enabled ? '/icons.svg#pause-icon' : '/icons.svg#play-icon'"/></svg>
           </button>
           <div class="dropdown-more">
-            <button type="button" class="btn-icon-action btn-more" :aria-expanded="openMoreId === source.id" aria-haspopup="menu" @click.stop="toggleMore(source.id)" @keydown="handleMoreKeydown($event, source.id)" :title="t('source.more')">
+            <button type="button" class="btn-icon-action btn-more" :aria-expanded="openMoreId === source.id" aria-haspopup="menu" @click.stop="moreDropdown.toggle($event, source.id)" @keydown="moreDropdown.handleTriggerKeydown($event, source.id)" :title="t('source.more')">
               <svg><use href="/icons.svg#more-icon"/></svg>
             </button>
-            <div v-if="openMoreId === source.id" class="dropdown-more-panel" role="menu" @click.stop @keydown="handleMorePanelKeydown">
+            <div v-if="openMoreId === source.id" class="dropdown-more-panel" role="menu" @click.stop @keydown="moreDropdown.handleDropdownKeydown">
               <button type="button" role="menuitem" class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
                 <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
                 {{ source.muted ? t('source.unmute') : t('source.mute') }}

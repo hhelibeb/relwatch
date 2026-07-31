@@ -5,6 +5,7 @@ import { type LogEntry, searchLogs, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
 import { translateError } from '../api/client'
 import { formatDate, logLevelClass } from '../utils'
+import { useDropdown } from '../composables/useDropdown'
 
 const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ update: [] }>()
@@ -21,84 +22,16 @@ const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 // 级别过滤下拉
 const openFilter = ref(false)
-let hoverFilterTimer: ReturnType<typeof setTimeout> | null = null
-// 标记当前下拉是否由点击打开：点击打开的不因 hover 离开自动关闭
-let filterOpenedByClick = false
-
-// 下拉关闭时重置 click 标记（覆盖选项点击、Escape、外部点击等所有关闭路径）
-watch(openFilter, (v) => { if (!v) filterOpenedByClick = false })
-
-function hoverFilterEnter() {
-  if (hoverFilterTimer) {
-    clearTimeout(hoverFilterTimer)
-    hoverFilterTimer = null
-  }
-}
-
-function hoverFilterLeave() {
-  // 点击打开的下拉不因 hover 离开自动关闭
-  if (filterOpenedByClick) return
-  hoverFilterTimer = setTimeout(() => {
-    openFilter.value = false
-  }, 120)
-}
-
-function toggleFilter() {
-  if (openFilter.value) {
-    openFilter.value = false
-  } else {
-    openFilter.value = true
-    filterOpenedByClick = true
-    focusFirstDropdownOption()
-  }
-}
-
-function handleFilterKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    if (openFilter.value) {
-      openFilter.value = false
-    }
-    return
-  }
-  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowDown') {
-    e.preventDefault()
-    if (!openFilter.value) {
-      openFilter.value = true
-      focusFirstDropdownOption()
-    }
-  }
-}
-
-function handleDropdownKeydown(e: KeyboardEvent) {
-  const target = e.target as HTMLElement
-  if (!target || target.tagName !== 'BUTTON') return
-  const dropdown = target.closest('.filter-dropdown') as HTMLElement | null
-  if (!dropdown) return
-  const buttons = Array.from(dropdown.querySelectorAll('button')) as HTMLButtonElement[]
-  const index = buttons.indexOf(target as HTMLButtonElement)
-  if (index < 0) return
-  if (e.key === 'ArrowDown') {
-    e.preventDefault()
-    const next = (index + 1) % buttons.length
-    buttons[next].focus()
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    const prev = (index - 1 + buttons.length) % buttons.length
-    buttons[prev].focus()
-  } else if (e.key === 'Escape') {
-    e.preventDefault()
-    openFilter.value = false
-  }
-}
-
-function focusFirstDropdownOption() {
-  requestAnimationFrame(() => {
-    const dropdown = document.querySelector('.filter-dropdown') as HTMLElement | null
-    if (!dropdown) return
-    const btn = dropdown.querySelector('button') as HTMLButtonElement | null
-    if (btn) btn.focus()
-  })
-}
+const levelDropdown = useDropdown({
+  openState: openFilter,
+  closedKey: false,
+  hoverOpen: true,
+  // 打开时聚焦第一个选项；从触发元素就近定位
+  onOpen: (_key, el) => {
+    const dropdown = el.parentElement?.querySelector('.filter-dropdown') as HTMLElement | null
+    dropdown?.querySelector('button')?.focus()
+  },
+})
 
 // 自增标记：用于丢弃并发场景下陈旧响应，避免旧请求结果覆盖新数据
 let loadId = 0
@@ -163,7 +96,7 @@ function clearSearch() {
 
 function setLevelFilter(level: string) {
   levelFilter.value = level
-  openFilter.value = false
+  levelDropdown.close()
   currentPage.value = 1
   loadData()
 }
@@ -211,10 +144,6 @@ onUnmounted(() => {
     clearTimeout(debounceTimer.value)
     debounceTimer.value = null
   }
-  if (hoverFilterTimer) {
-    clearTimeout(hoverFilterTimer)
-    hoverFilterTimer = null
-  }
 })
 </script>
 
@@ -230,14 +159,14 @@ onUnmounted(() => {
         />
         <button v-if="searchKeyword" type="button" class="input-clear-btn" :title="t('input.clear')" @click="clearSearch">✕</button>
       </div>
-      <div class="filter-group" @mouseleave="hoverFilterLeave()">
-        <div class="filter-field" @mouseenter="openFilter = true; hoverFilterEnter()">
-          <button type="button" class="filter-trigger" :aria-expanded="openFilter" aria-haspopup="menu" @click="toggleFilter()" @keydown="handleFilterKeydown">
+      <div class="filter-group" @mouseleave="levelDropdown.hoverLeave()">
+        <div class="filter-field" @mouseenter="levelDropdown.hoverEnter(true)">
+          <button type="button" class="filter-trigger" :aria-expanded="openFilter" aria-haspopup="menu" @click="levelDropdown.toggle($event, true)" @keydown="levelDropdown.handleTriggerKeydown($event, true)">
             <span class="filter-label">{{ t('log.level') }}</span>
             <span class="filter-value" :style="{ color: levelFilter === 'all' ? 'var(--text-muted)' : levelFilter === 'ERROR' ? 'var(--danger)' : levelFilter === 'WARN' ? 'var(--warning)' : 'var(--text-muted)' }">{{ levelFilter === 'all' ? t('log.filter_all') : levelFilter }}</span>
             <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
-          <div v-if="openFilter" class="filter-dropdown" role="menu" @mouseenter="hoverFilterEnter()" @mouseleave="hoverFilterLeave()" @keydown="handleDropdownKeydown">
+          <div v-if="openFilter" class="filter-dropdown" role="menu" @mouseenter="levelDropdown.hoverEnter(true)" @mouseleave="levelDropdown.hoverLeave()" @keydown="levelDropdown.handleDropdownKeydown">
             <button type="button" role="menuitem" :aria-selected="levelFilter === 'all'" :class="{ selected: levelFilter === 'all' }" @click="setLevelFilter('all')">{{ t('log.filter_all') }}</button>
             <button type="button" role="menuitem" :aria-selected="levelFilter === 'INFO'" :class="{ selected: levelFilter === 'INFO' }" @click="setLevelFilter('INFO')" style="color:var(--text-muted)">INFO</button>
             <button type="button" role="menuitem" :aria-selected="levelFilter === 'WARN'" :class="{ selected: levelFilter === 'WARN' }" @click="setLevelFilter('WARN')" style="color:var(--warning)">WARN</button>
@@ -411,132 +340,4 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-/* 筛选下拉框（自定义 hover 展开） */
-.filter-group {
-  display: inline-flex;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: visible;
-  flex-shrink: 0;
-}
-
-.filter-field {
-  position: relative;
-}
-
-.filter-field:first-child .filter-trigger {
-  border-radius: 5px 0 0 5px;
-}
-
-.filter-field:last-child .filter-trigger {
-  border-radius: 0 5px 5px 0;
-}
-
-.filter-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 6px 8px;
-  border: none;
-  background: var(--surface);
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background 0.12s;
-  height: 100%;
-}
-
-.filter-trigger:hover {
-  background: var(--bg-subtle);
-}
-
-.filter-divider {
-  width: 1px;
-  background: var(--border);
-  align-self: stretch;
-}
-
-.filter-label {
-  font-size: 10px;
-  color: var(--text-muted);
-}
-
-.filter-arrow {
-  width: 12px;
-  height: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.filter-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
-  min-width: 100%;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-md);
-  padding: 4px;
-  white-space: nowrap;
-}
-
-.filter-dropdown button {
-  display: block;
-  width: 100%;
-  padding: 5px 14px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-  text-align: left;
-  border-radius: 4px;
-  transition: background 0.1s;
-}
-
-.filter-dropdown button:hover {
-  background: var(--bg-subtle);
-}
-
-.filter-dropdown button.selected {
-  font-weight: 600;
-  color: var(--primary);
-}
-
-
-/* 搜索栏 + 视图切换同行 */
-.log-search-row {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
-  padding: 0;
-  background: var(--bg);
-  transition: top 0.15s ease;
-}
-
-.log-search-row .search-input {
-  flex: 1;
-  max-width: none;
-}
-
-.log-search-row .input-clear-wrap {
-  flex: 1;
-}
-
-.log-search-row .input-clear-wrap .search-input {
-  max-width: none;
-}
-
-/* 滚动后 sticky 元素贴顶 */
-:global(.app-main.is-scrolled .log-search-row) {
-  top: calc(-1 * var(--app-padding-y, 16px));
-}
 </style>
