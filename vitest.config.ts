@@ -23,6 +23,13 @@ export default defineConfig({
         'src/style.css',
         'src/components/releaseTypes.ts',
       ],
+      // 覆盖率回退防线：低于门槛时 vitest 以非零退出，CI 同步执行 pnpm run coverage
+      thresholds: {
+        statements: 75,
+        branches: 70,
+        functions: 72,
+        lines: 78,
+      },
     },
   },
 })

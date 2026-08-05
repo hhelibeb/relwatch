@@ -18,7 +18,15 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test
+      # 覆盖率模式运行全部测试并执行 vitest.config.ts 中的 thresholds 门槛，低于门槛时非零退出
+      - run: pnpm run coverage
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: frontend-coverage
+          path: coverage/lcov-report
+          retention-days: 14
 
   backend:
     runs-on: windows-latest
@@ -28,7 +36,13 @@ jobs:
         with:
           toolchain: stable
           cache: false
-      - run: cargo test
+      - name: install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - run: rustup component add llvm-tools-preview
+      # 覆盖率插桩运行全部测试；低于 70% 行覆盖率时非零退出
+      - run: cargo llvm-cov --all-features --fail-under-lines 70
         working-directory: src-tauri
 
   backend-linux:
