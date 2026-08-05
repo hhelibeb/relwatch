@@ -116,3 +116,161 @@ pub struct AppSettings {
     pub show_source_type_icons: bool,
     pub github_token_set: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn sample_app_settings() -> AppSettings {
+        AppSettings {
+            poll_interval_minutes: 30,
+            proxy_url: "http://127.0.0.1:7890".into(),
+            proxy_mode: "manual".into(),
+            auto_start: true,
+            minimize_to_tray: true,
+            log_retention_days: 7,
+            deepseek_enabled: true,
+            deepseek_model: "deepseek-chat".into(),
+            deepseek_base_url: "https://api.deepseek.com".into(),
+            deepseek_api_key_set: true,
+            deepseek_proxy_bypass: false,
+            deepseek_prompt: "请用中文总结".into(),
+            deepseek_min_importance: "中".into(),
+            deepseek_translate_release: true,
+            check_prereleases: true,
+            fetch_history: false,
+            fetch_history_count: 100,
+            language: "zh-CN".into(),
+            theme: "system".into(),
+            show_source_type_icons: true,
+            github_token_set: true,
+        }
+    }
+
+    #[test]
+    fn app_settings_round_trip_json() {
+        let original = sample_app_settings();
+        let value = serde_json::to_value(&original).unwrap();
+        let restored: AppSettings = serde_json::from_value(value.clone()).unwrap();
+
+        // 序列化结果使用 snake_case 字段名，且反序列化后信息不丢失
+        assert_eq!(serde_json::to_value(&restored).unwrap(), value);
+        assert_eq!(restored.poll_interval_minutes, 30);
+        assert_eq!(restored.language, "zh-CN");
+        assert!(restored.deepseek_api_key_set);
+    }
+
+    #[test]
+    fn app_settings_serializes_snake_case_keys() {
+        let value = serde_json::to_value(sample_app_settings()).unwrap();
+        let obj = value.as_object().unwrap();
+        assert!(obj.contains_key("poll_interval_minutes"));
+        assert!(obj.contains_key("minimize_to_tray"));
+        assert!(obj.contains_key("show_source_type_icons"));
+        assert_eq!(obj["proxy_mode"], "manual");
+        assert_eq!(obj["deepseek_min_importance"], "中");
+    }
+
+    #[test]
+    fn poll_result_serializes_release_list() {
+        let release = ReleaseInfo {
+            id: 1,
+            source_id: 2,
+            source_type: "github".into(),
+            owner: "vuejs".into(),
+            repo: "core".into(),
+            tag_name: "v1.0.0".into(),
+            release_name: "v1.0.0".into(),
+            html_url: "https://github.com/vuejs/core/releases/tag/v1.0.0".into(),
+            published_at: "2025-01-01T00:00:00Z".into(),
+            prerelease: false,
+            body: Some("release body".into()),
+            detected_at: "2025-01-02T00:00:00Z".into(),
+            notification_status: "unread".into(),
+            snooze_until: None,
+            ai_summary: Some("摘要".into()),
+            ai_importance: Some("大".into()),
+            body_translated: None,
+            extra_metadata: None,
+        };
+        let value = serde_json::to_value(PollResult {
+            new_releases: vec![release],
+        })
+        .unwrap();
+
+        assert_eq!(value["new_releases"][0]["owner"], "vuejs");
+        assert_eq!(value["new_releases"][0]["tag_name"], "v1.0.0");
+        assert_eq!(value["new_releases"][0]["ai_importance"], "大");
+        assert_eq!(value["new_releases"][0]["snooze_until"], json!(null));
+    }
+
+    #[test]
+    fn log_search_result_serializes_entries() {
+        let entry = LogEntry {
+            id: 9,
+            level: "error".into(),
+            message: "boom".into(),
+            created_at: "2025-06-01T00:00:00Z".into(),
+            message_key: Some("err.poll_failed".into()),
+            message_args: Some("github|vuejs/core".into()),
+            rendered_message: None,
+        };
+        let value = serde_json::to_value(LogSearchResult {
+            entries: vec![entry],
+            total: 1,
+            page: 1,
+            page_size: 50,
+        })
+        .unwrap();
+
+        assert_eq!(value["total"], 1);
+        assert_eq!(value["page_size"], 50);
+        assert_eq!(value["entries"][0]["message_key"], "err.poll_failed");
+        assert_eq!(value["entries"][0]["rendered_message"], json!(null));
+    }
+
+    #[test]
+    fn release_notify_params_clones_independently() {
+        let params = ReleaseNotifyParams {
+            release_id: 42,
+            html_url: "https://example.com/r".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            tag: "v1".into(),
+            name: "release".into(),
+            importance: Some("小".into()),
+        };
+        let cloned = params.clone();
+
+        assert_eq!(cloned.release_id, 42);
+        assert_eq!(cloned.owner, "o");
+        assert_eq!(cloned.tag, "v1");
+        assert_eq!(cloned.importance, Some("小".into()));
+    }
+
+    #[test]
+    fn noop_emitter_counts_calls() {
+        let emitter = NoopEmitter::new();
+        emitter.notify_release(ReleaseNotifyParams {
+            release_id: 1,
+            html_url: "u".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            tag: "t".into(),
+            name: "n".into(),
+            importance: None,
+        });
+        emitter.notify_release(ReleaseNotifyParams {
+            release_id: 2,
+            html_url: "u".into(),
+            owner: "o".into(),
+            repo: "r".into(),
+            tag: "t".into(),
+            name: "n".into(),
+            importance: None,
+        });
+
+        assert_eq!(emitter.call_count(), 2);
+    }
+}
