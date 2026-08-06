@@ -47,6 +47,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-06
+
+### Added
+- YouTube 频道监控支持 RSS 与 Data API v3 双模式，可按内容类型订阅。
+- 新增版本详情弹窗 — 支持图片复制、外链守卫、拖拽调整大小与上/下一版本导航；内容变化时顶边锚定，底部越出视口自动钳回。
+- Toast 消息排队展示，鼠标悬浮可暂停计时。
+- 日历视图以周一为起始并补热力图例，重要度以 CSS 语义色替代 emoji。
+- DeepSeek 测试连接支持表单覆盖参数，先试后存。
+
+### Changed
+- 卡片内容预览简化，阅读全文集中到详情弹窗。
+
+### Fixed
+- 版本详情弹窗内按 Esc 不再误触最小化到托盘。
+- snoozed 未到期状态下"忽略"按钮不再消失，稍后提醒流程保持可取消。
+
+### Security
+- 分页拉取校验 next URL 与首请求同 host，恶意 Link header 不再把携带 token 的请求导向无关域名。
+- 下载前校验目标为公网地址，拒绝私网/回环/链路本地/保留地址，防止 SSRF 与内网探测。
+
+### Performance
+- 版本列表虚拟滚动，Markdown 渲染模块级缓存。
+
 ## [1.8.0] - 2026-07-27
 
 ### Changed
@@ -241,7 +264,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.8.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/hhelibeb/relwatch/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/hhelibeb/relwatch/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/hhelibeb/relwatch/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/hhelibeb/relwatch/compare/v1.5.1...v1.6.0
