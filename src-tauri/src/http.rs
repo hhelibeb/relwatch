@@ -184,6 +184,13 @@ pub async fn paginated_fetch(
     let mut all = Vec::new();
     let mut url = first_url;
 
+    // 翻页安全：记录首请求的 host，后续 next_url 必须与之同 host。
+    // 防止服务器返回的 Link header 把携带 token 的请求导向任意域名
+    // （见 fetch_page 的按请求 bearer_auth 注入机制）。
+    let first_host = reqwest::Url::parse(&url)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()));
+
     loop {
         let (items, next_url) = fetch_page_with_retry(client, &url, token).await?;
         let count = items.len();
@@ -203,12 +210,119 @@ pub async fn paginated_fetch(
         }
 
         match next_url {
-            Some(next) => url = next,
+            Some(next) => {
+                // 校验 next_url 与首请求同 host；不一致视为不可信（被篡改/恶意
+                // Link header），fail-closed 中断翻页，避免 token 发往无关域名。
+                let same_host = match (&first_host, reqwest::Url::parse(&next).ok()) {
+                    (Some(fh), Some(nu)) => nu.host_str() == Some(fh.as_str()),
+                    _ => false,
+                };
+                if !same_host {
+                    log::warn!(
+                        "分页拉取中断: next_url host 与首请求不一致 (首={:?}, next={})",
+                        first_host,
+                        next
+                    );
+                    return Err((0, "err.invalid_next_url".to_string()));
+                }
+                url = next;
+            }
             None => break,
         }
     }
 
     Ok(all)
+}
+
+/// 判断 IP 是否属于私网/回环/链路本地/保留地址（SSRF 防护用）。
+///
+/// 覆盖：
+/// - IPv4：`0.0.0.0/8`、`10.0.0.0/8`、`100.64.0.0/10`（CGNAT）、`127.0.0.0/8`、
+///   `169.254.0.0/16`（含云元数据 `169.254.169.254`）、`172.16.0.0/12`、`192.168.0.0/16`、
+///   `198.18.0.0/15`、`224.0.0.0/4`（组播）与 `240.0.0.0/4`（保留）
+/// - IPv6：`::`、`::1`、`fc00::/7`（ULA）、`fe80::/10`（链路本地）、`ff00::/8`（组播），
+///   以及 IPv4-mapped（`::ffff:x.x.x.x`，还原为 IPv4 判定）
+pub fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
+    // IPv4-mapped IPv6 还原为 IPv4 判定，避免 `::ffff:192.168.1.1` 绕过
+    let ip = match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(v6),
+        },
+        v4 => v4,
+    };
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            match o[0] {
+                0 => true,                                 // 0.0.0.0/8
+                10 => true,                                // 10.0.0.0/8
+                100 => (64..=127).contains(&o[1]),         // 100.64.0.0/10
+                127 => true,                               // 127.0.0.0/8
+                169 => o[1] == 254,                        // 169.254.0.0/16
+                172 => (16..=31).contains(&o[1]),          // 172.16.0.0/12
+                192 => o[1] == 168,                        // 192.168.0.0/16
+                198 => o[1] == 18 || o[1] == 19,           // 198.18.0.0/15
+                224..=255 => true,                         // 组播 + 保留
+                _ => false,
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_unspecified()
+                || v6.is_loopback()
+                || v6.is_multicast()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 ULA
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 链路本地
+        }
+    }
+}
+
+/// 校验 URL 目标为公网地址，拒绝私网/回环/链路本地/保留地址（SSRF 防护）。
+///
+/// - host 为 IP 字面量：直接 `is_private_or_reserved` 判定；
+/// - host 为域名：DNS 解析**全部**地址，任一落在私网即拒绝（fail-closed）；
+/// - DNS 解析失败（故障/无网络）：**放行**（fail-open），交由后续请求自然失败，
+///   避免 DNS 瞬时抖动误伤正常下载。
+pub async fn ensure_public_url(url: &str) -> Result<(), String> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| "err.invalid_url".to_string())?;
+    // 仅允许 http/https
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("err.invalid_url".to_string());
+    }
+    let Some(host) = parsed.host_str() else {
+        return Err("err.invalid_url".to_string());
+    };
+    // host_str() 对 IPv6 字面量返回带括号形式（如 "[::1]"），去括号后统一判定
+    let host = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    let host = host.to_string(); // owned，避免跨 await 借用 parsed
+    // IP 字面量：无需 DNS
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return if is_private_or_reserved(ip) {
+            Err("err.private_url_blocked".to_string())
+        } else {
+            Ok(())
+        };
+    }
+    // 域名：解析全部地址，任一私网即拒绝（fail-closed）；解析失败放行（fail-open）。
+    // tokio 的 lookup_host 对纯字符串只接受 IP:port 字面量，域名需传 (host, port)
+    // 元组（owned String + u16，无借用）；port 不影响解析结果。
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    let lookup = tokio::net::lookup_host((host, port)).await;
+    match lookup {
+        Ok(addrs) => {
+            for addr in addrs {
+                if is_private_or_reserved(addr.ip()) {
+                    return Err("err.private_url_blocked".to_string());
+                }
+            }
+            Ok(())
+        }
+        // fail-open：解析失败放行
+        Err(_) => Ok(()),
+    }
 }
 
 /// 下载 URL 的原始字节（剪贴板图片等场景），限制最大 `max_bytes` 防止异常响应撑爆内存。
@@ -291,7 +405,7 @@ mod tests {
     // token=None 时请求**不携带** Authorization header（HF 场景）；
     // token=Some 时**携带** Authorization（GitHub 场景），且按请求设置、不依赖 default header。
     use wiremock::{Mock, MockServer, ResponseTemplate};
-    use wiremock::matchers::{method, path, header_exists};
+    use wiremock::matchers::{method, path, header_exists, query_param};
 
     #[tokio::test]
     async fn test_fetch_page_no_token_omits_authorization() {
@@ -375,5 +489,185 @@ mod tests {
         let url = format!("{}/repos/o/r/releases", mock.uri());
         let result = fetch_page_with_retry(&client, &url, Some("ghp_secret")).await;
         assert!(result.is_ok(), "token=Some 时应带 Authorization 命中要求该 header 的 mock");
+    }
+
+    // ── 翻页安全回归测试：next_url 必须与首请求同 host ──
+
+    #[tokio::test]
+    async fn test_paginated_fetch_same_host_follows_next() {
+        let mock = MockServer::start().await;
+        // page1：返回 1 条 + Link rel=next 指向同 host 的 page2
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": 1}]))
+                    .insert_header(
+                        "link",
+                        format!("<{}/api/v1/items?page=2>; rel=\"next\"", mock.uri()),
+                    ),
+            )
+            .mount(&mock)
+            .await;
+        // page2：返回 1 条，无 Link header → 翻页结束
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 2}])))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let first_url = format!("{}/api/v1/items?page=1", mock.uri());
+        let result = paginated_fetch(&client, first_url, None, None).await;
+        let items = result.expect("同 host 翻页应成功");
+        assert_eq!(items.len(), 2, "应拉取 page1+page2 共 2 条");
+    }
+
+    #[tokio::test]
+    async fn test_paginated_fetch_rejects_cross_host_next() {
+        // 恶意场景：server A 的 Link header 指向不同 host 的 server B。
+        // wiremock 只能绑 127.0.0.1，这里用原生 TCP listener 绑 127.0.0.2（回环段）
+        // 充当 evil 地址，靠连接计数断言请求（含 token）从未外发。
+        use std::net::Ipv4Addr;
+        let evil_listener = std::net::TcpListener::bind((Ipv4Addr::new(127, 0, 0, 2), 0)).unwrap();
+        let evil_port = evil_listener.local_addr().unwrap().port();
+        let evil_url = format!("http://127.0.0.2:{}/api/v1/items?page=2", evil_port);
+        let mock = MockServer::start().await;
+        // server A 返回 Link rel=next 指向不同 host 的 evil 地址
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": 1}]))
+                    .insert_header("link", format!("<{}>; rel=\"next\"", evil_url)),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let first_url = format!("{}/api/v1/items?page=1", mock.uri());
+        let result = paginated_fetch(&client, first_url, None, Some("ghp_secret")).await;
+        assert!(result.is_err(), "跨 host next_url 应 fail-closed 返回错误");
+
+        // 关键断言：evil 地址未收到任何连接（token 未随恶意 next_url 外发）
+        evil_listener.set_nonblocking(true).unwrap();
+        match evil_listener.accept() {
+            Ok(_) => panic!("evil 地址不应收到任何连接"),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => panic!("accept 出错: {}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_paginated_fetch_rejects_unparseable_next() {
+        let mock = MockServer::start().await;
+        // Link header 里的 next 不是合法 URL
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": 1}]))
+                    .insert_header("link", "<not-a-url>; rel=\"next\""),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let first_url = format!("{}/api/v1/items?page=1", mock.uri());
+        let result = paginated_fetch(&client, first_url, None, Some("ghp_secret")).await;
+        assert!(result.is_err(), "无法解析的 next_url 应 fail-closed 返回错误");
+    }
+
+    // ── SSRF 防护：私网/回环/链路本地/保留地址判定 ──
+
+    #[test]
+    fn test_is_private_or_reserved() {
+        use std::net::{IpAddr, Ipv4Addr};
+
+        let private: &[IpAddr] = &[
+            IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),          // CGNAT 下界
+            IpAddr::V4(Ipv4Addr::new(100, 127, 255, 254)),     // CGNAT 上界
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 169, 254)),     // 云元数据
+            IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0)),          // 172.16/12 下界
+            IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255)),      // 172.16/12 上界
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(198, 18, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(224, 0, 0, 1)),           // 组播
+            IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),     // 保留
+            "::1".parse().unwrap(),
+            "::".parse().unwrap(),
+            "fc00::1".parse().unwrap(),
+            "fd12:3456::1".parse().unwrap(),
+            "fe80::1".parse().unwrap(),
+            "ff02::1".parse().unwrap(),
+            // IPv4-mapped 私网应被还原为 IPv4 判定
+            "::ffff:192.168.1.1".parse().unwrap(),
+            "::ffff:10.0.0.1".parse().unwrap(),
+        ];
+        for ip in private {
+            assert!(is_private_or_reserved(*ip), "应判为私网/保留: {}", ip);
+        }
+
+        let public: &[IpAddr] = &[
+            IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+            IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(104, 16, 1, 1)),
+            IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+            "2606:4700::1111".parse().unwrap(),
+            "2001:4860:4860::8888".parse().unwrap(),
+            "::ffff:8.8.8.8".parse().unwrap(),
+        ];
+        for ip in public {
+            assert!(!is_private_or_reserved(*ip), "不应判为私网: {}", ip);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_public_url_blocks_private() {
+        let blocked = [
+            "http://127.0.0.1:8080/x",
+            "http://10.0.0.5/x",
+            "http://192.168.1.1/x",
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]:443/x",
+            "https://[::ffff:192.168.1.1]/x",
+            "http://localhost:8080/x",
+        ];
+        for url in blocked {
+            match ensure_public_url(url).await {
+                Err(e) => assert!(
+                    e.contains("err.private_url_blocked"),
+                    "{} 错误码不正确: {}",
+                    url,
+                    e
+                ),
+                Ok(()) => panic!("{} 应被拒绝", url),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_public_url_allows_public() {
+        let allowed = [
+            "https://example.com/a.png", // 域名：解析到公网 IP；无网环境解析失败按 fail-open 放行
+            "https://8.8.8.8/x",
+            "https://104.16.1.1/x",
+        ];
+        for url in allowed {
+            assert!(ensure_public_url(url).await.is_ok(), "{} 应放行", url);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_public_url_rejects_invalid() {
+        let invalid = ["not-a-url", "ftp://example.com/x", "file:///etc/passwd"];
+        for url in invalid {
+            assert!(ensure_public_url(url).await.is_err(), "{} 应拒绝", url);
+        }
     }
 }

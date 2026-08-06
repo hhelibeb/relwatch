@@ -317,6 +317,7 @@ export default {
   'err.request_failed': 'Request failed: {0}',
   'err.invalid_url': 'Invalid URL',
   'err.download_failed': 'Download failed: {0}',
+  'err.private_url_blocked': 'Private or internal network addresses are blocked',
   'err.image_decode': 'Failed to decode image: {0}',
   'err.api_error': 'API request failed: HTTP {0} {1}',
   'err.parse_failed': 'Failed to parse response: {0}',

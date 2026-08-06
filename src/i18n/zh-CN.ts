@@ -317,6 +317,7 @@ export default {
   'err.request_failed': '网络请求失败: {0}',
   'err.invalid_url': '无效的链接地址',
   'err.download_failed': '下载失败: {0}',
+  'err.private_url_blocked': '禁止访问内网/私网地址',
   'err.image_decode': '图片解码失败: {0}',
   'err.api_error': 'API 请求失败: HTTP {0} {1}',
   'err.parse_failed': '解析响应失败: {0}',

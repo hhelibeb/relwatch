@@ -16,6 +16,10 @@ pub async fn fetch_url_bytes(
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("err.invalid_url".to_string());
     }
+    // SSRF 防护：拒绝私网/回环/链路本地/保留地址（含云元数据 169.254.169.254），
+    // 防止通过下载命令探测内网。校验在命令层而非 download_bytes 内（后者被
+    // wiremock 测试以 127.0.0.1 直连，且下载函数本身保持通用）。
+    http::ensure_public_url(&url).await?;
     let (proxy_url, proxy_mode);
     {
         let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
