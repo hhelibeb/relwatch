@@ -12,6 +12,7 @@ import {
   updateSettings,
   setDeepseekApiKey,
   setGithubToken,
+  setYoutubeApiKey,
   testDeepseekConnection,
   exportBackup,
   importBackup,
@@ -109,6 +110,16 @@ describe('setGithubToken', () => {
     await setGithubToken('ghp_xxxx')
 
     expect(invokeI18n).toHaveBeenCalledWith('set_github_token', { token: 'ghp_xxxx' })
+  })
+})
+
+describe('setYoutubeApiKey', () => {
+  it('调起 set_youtube_api_key 命令', async () => {
+    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+
+    await setYoutubeApiKey('AIzaSy_xxx')
+
+    expect(invokeI18n).toHaveBeenCalledWith('set_youtube_api_key', { apiKey: 'AIzaSy_xxx' })
   })
 })
 

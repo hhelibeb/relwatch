@@ -8,6 +8,7 @@ import {
   updateSettings,
   setDeepseekApiKey,
   setGithubToken,
+  setYoutubeApiKey,
   testDeepseekConnection,
   exportBackup,
   importBackup,
@@ -23,6 +24,7 @@ const settingsTab = ref<'general' | 'data' | 'appearance' | 'ai'>('general')
 const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
+const youtubeApiKey = ref('')
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
 
@@ -387,6 +389,11 @@ async function handleSave() {
       githubToken.value = ''
       form.github_token_set = true
     }
+    if (youtubeApiKey.value) {
+      await setYoutubeApiKey(youtubeApiKey.value)
+      youtubeApiKey.value = ''
+      form.youtube_api_key_set = true
+    }
     showToast(t('settings.saved'))
     const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
@@ -420,6 +427,7 @@ const dirtyFields = computed(() => {
   }
   if (deepseekApiKey.value) dirty.add('deepseek_api_key')
   if (githubToken.value) dirty.add('github_token')
+  if (youtubeApiKey.value) dirty.add('youtube_api_key')
   return dirty
 })
 
@@ -428,7 +436,7 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'youtube_api_key', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'].filter(k => f.has(k)).length,
     ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
   }
@@ -444,6 +452,7 @@ function discardChanges() {
   if (themeDirty) clearThemePreview()
   deepseekApiKey.value = ''
   githubToken.value = ''
+  youtubeApiKey.value = ''
 }
 
 async function handleTestDeepseek() {
@@ -568,6 +577,16 @@ async function handleImportBackup() {
               class="setting-input"
             />
             <span class="setting-note">{{ t('settings.github_token_note') }}</span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('youtube_api_key') || null">{{ t('settings.youtube_api_key') }}</span>
+            <input
+              type="password"
+              v-model="youtubeApiKey"
+              :placeholder="form.youtube_api_key_set ? t('settings.youtube_api_key_set') : t('settings.youtube_api_key_input')"
+              class="setting-input"
+            />
+            <span class="setting-note">{{ t('settings.youtube_api_key_note') }}</span>
           </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('log_retention_days') || null">{{ t('settings.log_retention') }}</span>

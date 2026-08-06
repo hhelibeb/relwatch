@@ -3619,6 +3619,7 @@ dependencies = [
  "keyring",
  "log",
  "notify-rust",
+ "quick-xml 0.39.4",
  "r2d2",
  "r2d2_sqlite",
  "rand 0.8.6",

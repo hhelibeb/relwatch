@@ -13,7 +13,7 @@ use crate::db::settings::{
     KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
-    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
+    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
@@ -55,6 +55,10 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
         theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
         show_source_type_icons: get_setting_bool(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, true)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
+            .chars()
+            .next()
+            .is_some(),
+        youtube_api_key_set: get_setting_str(&conn, KEY_YOUTUBE_API_KEY, "")?
             .chars()
             .next()
             .is_some(),
@@ -213,6 +217,22 @@ pub fn set_github_token(
         settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted)?;
     }
     db::logs::write_log_key(&conn, "INFO", "setting.github_token_updated", &json!({}).to_string());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_youtube_api_key(
+    state: tauri::State<AppState>,
+    api_key: String,
+) -> Result<(), String> {
+    let conn = state.db.get().map_err(|e| e.to_string())?;
+    if api_key.is_empty() {
+        settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, "")?;
+    } else {
+        let encrypted = crypto::encrypt(&api_key);
+        settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, &encrypted)?;
+    }
+    db::logs::write_log_key(&conn, "INFO", "setting.youtube_key_updated", &json!({}).to_string());
     Ok(())
 }
 

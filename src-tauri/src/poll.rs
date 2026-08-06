@@ -9,7 +9,7 @@ const MAX_CONSECUTIVE_FAILURES: i64 = 3;
 use crate::db;
 use crate::db::settings::{
     KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
-    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
+    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT, KEY_YOUTUBE_API_KEY,
 };
 use crate::crypto;
 use crate::github;
@@ -62,6 +62,21 @@ fn get_github_token(conn: &rusqlite::Connection) -> Option<String> {
     Some(plain)
 }
 
+/// 读取解密后的 YouTube Data API Key（含 v1→v2 加密迁移回写）。
+fn get_youtube_api_key(conn: &rusqlite::Connection) -> Option<String> {
+    let encrypted = db::settings::get_setting(conn, KEY_YOUTUBE_API_KEY).ok()??;
+    if encrypted.is_empty() {
+        return None;
+    }
+    let (plain, new_v2) = crypto::decrypt_with_migration(&encrypted)?;
+    if let Some(new_val) = new_v2 {
+        if let Err(e) = db::settings::set_setting(conn, KEY_YOUTUBE_API_KEY, &new_val) {
+            log::warn!("迁移 v1→v2 YouTube API Key 回写失败: {}", e);
+        }
+    }
+    Some(plain)
+}
+
 /// 根据 fetch_history 配置计算分页参数。
 ///
 /// 返回 `(max_count, per_page, needs_pagination)`：
@@ -81,7 +96,10 @@ fn compute_fetch_plan(
         // 小数量，单次 API 调用即可
         (Some(fetch_history_count), (fetch_history_count + 5).clamp(10, 100), false)
     } else {
-        (Some(fetch_history_count), 10, false)
+        // 增量模式：max_count=0（“拉取全部”）时 save 不截断（None），
+        // 避免 fetch_history_count=0 导致 save 阶段只保存 1 条。
+        let max_count = if fetch_history_count == 0 { None } else { Some(fetch_history_count) };
+        (max_count, 10, false)
     }
 }
 
@@ -92,6 +110,7 @@ struct PollSettings {
     proxy_url: String,
     proxy_mode: String,
     github_token: Option<String>,
+    youtube_api_key: Option<String>,
     fetch_history: bool,
     fetch_history_count: usize,
 }
@@ -102,6 +121,7 @@ impl Default for PollSettings {
             proxy_url: String::new(),
             proxy_mode: "none".to_string(),
             github_token: None,
+            youtube_api_key: None,
             fetch_history: false,
             fetch_history_count: 1,
         }
@@ -119,6 +139,7 @@ fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, Strin
         }
     });
     let github_token = get_github_token(conn);
+    let youtube_api_key = get_youtube_api_key(conn);
     let fetch_history =
         db::settings::get_setting_bool(conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
     let fetch_history_count =
@@ -129,6 +150,7 @@ fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, Strin
         proxy_url,
         proxy_mode,
         github_token,
+        youtube_api_key,
         fetch_history,
         fetch_history_count,
     })
@@ -176,6 +198,34 @@ fn post_save_mark_record(
     (ids, saved.to_vec())
 }
 
+/// 过滤掉无需 AI 摘要/翻译的源（youtube）的 saved 条目。
+/// 用户明确要求 YouTube 监控不生成 DeepSeek 摘要，这里在调用
+/// generate_summaries_for_new / generate_translations_for_new 前做过滤。
+///
+/// fail-closed：DB 错误或 spawn panic 返回 Err，由调用方跳过本轮 AI 生成并记日志，
+/// 绝不因过滤失败而把 youtube 条目放行给 DeepSeek。
+async fn filter_ai_eligible(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    saved: &[(i64, Option<String>)],
+) -> Result<Vec<(i64, Option<String>)>, String> {
+    if saved.is_empty() {
+        return Ok(vec![]);
+    }
+    let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
+    let pool = db_pool.clone();
+    let youtube_ids: std::collections::HashSet<i64> = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("err.db_lock|{}", e))?;
+        db::releases::youtube_release_ids(&conn, &ids)
+    })
+    .await
+    .map_err(|e| format!("err.filter_ai_eligible_panic|{}", e))??;
+    Ok(saved
+        .iter()
+        .filter(|(id, _)| !youtube_ids.contains(id))
+        .cloned()
+        .collect())
+}
+
 pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
     do_trigger_poll_async(app).await
@@ -191,18 +241,27 @@ async fn do_poll_core(
     proxy_url: &str,
     proxy_mode: &str,
     github_token: Option<&str>,
+    youtube_api_key: Option<&str>,
     fetch_history: bool,
     fetch_history_count: usize,
     is_manual: bool,
 ) -> (Vec<i64>, Vec<db::releases::ReleaseInfo>) {
     let (all_new_ids, all_saved) = poll_all_sources_async(
-        db_pool, sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count,
+        db_pool, sources, proxy_url, proxy_mode, github_token, youtube_api_key,
+        fetch_history, fetch_history_count,
     )
     .await;
 
-    if !all_saved.is_empty() {
-        deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &all_saved).await;
-        deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &all_saved, false).await;
+    // 跳过 youtube 源（无需 AI 摘要/翻译）后生成摘要与译文。
+    // fail-closed：过滤失败（DB 错误/panic）时跳过本轮 AI 并记日志，
+    // 宁可下轮重试也不放行 youtube 条目给 DeepSeek。
+    match filter_ai_eligible(db_pool, &all_saved).await {
+        Ok(ai_saved) if !ai_saved.is_empty() => {
+            deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &ai_saved).await;
+            deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &ai_saved, false).await;
+        }
+        Ok(_) => {}
+        Err(e) => log::error!("err.filter_ai_eligible|{}", e),
     }
 
     let (_, new_releases) = collect_pending_and_notify(db_pool, emitter, &all_new_ids, is_manual).await;
@@ -241,7 +300,7 @@ async fn do_poll_core(
 }
 
 async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
-    let (sources, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count);
+    let (sources, proxy_url, proxy_mode, github_token, youtube_api_key, fetch_history, fetch_history_count);
 
     {
         let state = app.state::<AppState>();
@@ -254,6 +313,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         proxy_url = settings.proxy_url;
         proxy_mode = settings.proxy_mode;
         github_token = settings.github_token;
+        youtube_api_key = settings.youtube_api_key;
         fetch_history = settings.fetch_history;
         fetch_history_count = settings.fetch_history_count;
     }
@@ -265,7 +325,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
     let emitter: &dyn crate::types::Emitter = &app;
     let (_, new_releases) = do_poll_core(
         &db_pool, &deepseek_semaphore, emitter, &sources, &proxy_url, &proxy_mode,
-        github_token.as_deref(), fetch_history, fetch_history_count, true,
+        github_token.as_deref(), youtube_api_key.as_deref(), fetch_history, fetch_history_count, true,
     ).await;
 
     // 手动触发特有逻辑：更新 next_poll_at
@@ -296,7 +356,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
-    let (source_obj, proxy_url, proxy_mode, github_token, fetch_history, fetch_history_count);
+    let (source_obj, proxy_url, proxy_mode, github_token, youtube_api_key, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
@@ -309,6 +369,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         proxy_url = settings.proxy_url;
         proxy_mode = settings.proxy_mode;
         github_token = settings.github_token;
+        youtube_api_key = settings.youtube_api_key;
         fetch_history = settings.fetch_history;
         fetch_history_count = settings.fetch_history_count;
         source_obj = source;
@@ -316,7 +377,11 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     let is_first_query = source_obj.last_checked_at.is_none()
         || source_obj.last_checked_at.as_deref() == Some("");
-    let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, is_first_query, fetch_history_count);
+    // YouTube 源开启历史拉取时，每次检查都按 fetch_history_count 拉取历史：
+    // save 阶段按 UNIQUE(source_id, tag_name) 去重跳过已存在条目，因此
+    // 重新配置 Data API Key 后无需删除源即可补拉历史视频。RSS 模式单页拉取，不受影响。
+    let history_query = fetch_history && (is_first_query || source_obj.source_type == "youtube");
+    let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, fetch_history_count);
 
     // 从 AppHandle 提取依赖，注入提纯后的核心函数
     let (db_pool, deepseek_semaphore) = {
@@ -352,10 +417,16 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         Ok(a) => a,
         Err((_, msg)) => return Err(msg),
     };
-    let releases = match if needs_pagination {
-        adapter.fetch_all(&client, &source_obj, max_count, github_token.as_deref()).await
+    // YouTube 源用 Data API Key（配置时），其余源用各自的鉴权 token。
+    let token = if source_obj.source_type == "youtube" {
+        youtube_api_key.as_deref()
     } else {
-        adapter.fetch(&client, &source_obj, per_page, github_token.as_deref()).await
+        github_token.as_deref()
+    };
+    let releases = match if needs_pagination {
+        adapter.fetch_all(&client, &source_obj, max_count, token).await
+    } else {
+        adapter.fetch(&client, &source_obj, per_page, token).await
     } {
         Ok(releases) => releases,
         Err((status, msg)) => {
@@ -420,9 +491,33 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     }
 
-    if !saved.is_empty() {
-        deepseek::generate_summaries_for_new(&db_pool, &deepseek_semaphore, &saved).await;
-        deepseek::generate_translations_for_new(&db_pool, &deepseek_semaphore, &saved, false).await;
+    // YouTube：手动检查时刷新频道名（RSS 标题是播放列表名，频道页 og:title 才是真名；
+    // API 模式直接用 channels.list 的 snippet.title）
+    if source_obj.source_type == "youtube" {
+        if let Ok(desc) = adapter
+            .verify_and_describe(&client, &source_obj.owner, &source_obj.repo, youtube_api_key.as_deref())
+            .await
+        {
+            let db_pool_blk = db_pool.clone();
+            let source_id = source_obj.id;
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = db_pool_blk.get() {
+                    let _ = db::sources::update_source_description(&conn, source_id, &desc);
+                }
+            })
+            .await;
+        }
+    }
+
+    // 跳过 youtube 源（无需 AI 摘要/翻译）后生成摘要与译文。
+    // fail-closed：过滤失败（DB 错误/panic）时跳过本轮 AI 并记日志。
+    match filter_ai_eligible(&db_pool, &saved).await {
+        Ok(ai_saved) if !ai_saved.is_empty() => {
+            deepseek::generate_summaries_for_new(&db_pool, &deepseek_semaphore, &ai_saved).await;
+            deepseek::generate_translations_for_new(&db_pool, &deepseek_semaphore, &ai_saved, false).await;
+        }
+        Ok(_) => {}
+        Err(e) => log::error!("err.filter_ai_eligible|{}", e),
     }
 
     let (_, new_releases) = collect_pending_and_notify(&db_pool, emitter, &new_ids, false).await;
@@ -456,7 +551,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (sources, proxy_url, proxy_mode, retention_days, github_token, fetch_history, fetch_history_count);
+    let (sources, proxy_url, proxy_mode, retention_days, github_token, youtube_api_key, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = match state.db.get() {
@@ -471,6 +566,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         proxy_url = settings.proxy_url;
         proxy_mode = settings.proxy_mode;
         github_token = settings.github_token;
+        youtube_api_key = settings.youtube_api_key;
         fetch_history = settings.fetch_history;
         fetch_history_count = settings.fetch_history_count;
         retention_days = db::settings::get_setting(&conn, KEY_LOG_RETENTION)
@@ -534,19 +630,21 @@ async fn do_poll_async(app: tauri::AppHandle) {
         let emitter: &dyn crate::types::Emitter = &app;
         do_poll_core(
             &db_pool, &semaphore, emitter, &enabled, &proxy_url, &proxy_mode,
-            github_token.as_deref(), fetch_history, fetch_history_count, false,
+            github_token.as_deref(), youtube_api_key.as_deref(), fetch_history, fetch_history_count, false,
         ).await;
     }
 
     let _ = app.emit("poll-completed", ());
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn poll_all_sources_async(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     sources: &[db::sources::Source],
     proxy_url: &str,
     proxy_mode: &str,
     github_token: Option<&str>,
+    youtube_api_key: Option<&str>,
     fetch_history: bool,
     fetch_history_count: usize,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
@@ -579,13 +677,20 @@ async fn poll_all_sources_async(
         let client = client.clone();
         let source = source.clone();
         let db_pool = pool.clone();
-        // github_token 是 Option<&str>（来自 do_poll_core 的借用），spawn 需要 'static，
-        // 先克隆为 owned。仅 github 源会使用它做 per-request 鉴权；HF 源忽略。
-        let token = github_token.map(|s| s.to_string());
+        // 按源类型选择鉴权 token：YouTube 源用 Data API Key（配置时），
+        // 其余源用 GitHub Token（HF 源忽略）。spawn 需要 'static，先克隆为 owned。
+        let token = if source.source_type == "youtube" {
+            youtube_api_key.map(|s| s.to_string())
+        } else {
+            github_token.map(|s| s.to_string())
+        };
 
         let is_first_query = source.last_checked_at.is_none()
             || source.last_checked_at.as_deref() == Some("");
-        let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, is_first_query, fetch_history_count);
+        // 同 check_single_source：YouTube 源开启历史拉取时每次检查都按 count 拉历史
+        // （API 模式翻页拉取 + save 去重，支持配 key 后补拉历史；RSS 模式单页不受影响）
+        let history_query = fetch_history && (is_first_query || source.source_type == "youtube");
+        let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, fetch_history_count);
 
         handles.push(tokio::spawn(async move {
             // 背压信号量获取改为 graceful：不再 expect 后被 handle.await 静默吞掉
@@ -1489,5 +1594,67 @@ mod tests {
         assert_eq!(emitter.call_count(), 2, "通知派发对全部 pending 触发，与 new_ids 无关");
         assert_eq!(new_releases.len(), 1, "new_releases 按 new_ids 子集过滤后仅含 v2");
         assert_eq!(new_releases[0].tag_name, "v2");
+    }
+
+    // ── filter_ai_eligible：跳过 youtube 源的 AI 摘要/翻译 ──
+
+    #[tokio::test]
+    async fn test_filter_ai_eligible_keeps_only_non_youtube() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let (gh_id, yt_id) = {
+            let conn = pool.get().unwrap();
+            let gh = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+            let yt = db::sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
+            let gh_id = db::releases::insert_release(&conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh")).unwrap();
+            let yt_id = db::releases::insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt")).unwrap();
+            (gh_id, yt_id)
+        };
+
+        let saved = vec![(gh_id, Some("gh".into())), (yt_id, Some("yt".into()))];
+        let filtered = filter_ai_eligible(&pool, &saved).await.unwrap();
+        assert_eq!(filtered.len(), 1, "youtube 源条目应被过滤掉");
+        assert_eq!(filtered[0].0, gh_id);
+    }
+
+    #[tokio::test]
+    async fn test_filter_ai_eligible_all_youtube_empty() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let yt_id = {
+            let conn = pool.get().unwrap();
+            let yt = db::sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
+            db::releases::insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-01T00:00:00Z", false, Some("yt")).unwrap()
+        };
+        let filtered = filter_ai_eligible(&pool, &[(yt_id, Some("yt".into()))])
+            .await
+            .unwrap();
+        assert!(filtered.is_empty(), "纯 youtube 条目应全部过滤");
+    }
+
+    #[tokio::test]
+    async fn test_filter_ai_eligible_empty_input() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        assert!(filter_ai_eligible(&pool, &[]).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_filter_ai_eligible_db_error_fails_closed() {
+        // 占住唯一连接使后续 get() 超时失败 → 必须返回 Err（fail-closed），
+        // 绝不能降级为空集把 youtube 条目放行给 DeepSeek。
+        use r2d2_sqlite::SqliteConnectionManager;
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .connection_timeout(std::time::Duration::from_millis(5))
+            .build(manager)
+            .unwrap();
+        let _held = pool.get().unwrap(); // 占用唯一连接
+        let err = filter_ai_eligible(&pool, &[(1, Some("x".into()))])
+            .await
+            .expect_err("DB 连接失败应返回 Err（fail-closed）");
+        assert!(
+            err.contains("err.db_lock"),
+            "错误应含 err.db_lock，实际: {}",
+            err
+        );
     }
 }

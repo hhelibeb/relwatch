@@ -103,6 +103,10 @@ pub async fn translate_release(
             if r.body_translated.is_some() {
                 return Ok(());
             }
+            // youtube 源不生成 AI 翻译（与 poll 侧摘要/翻译排除策略一致，见 poll.rs filter_ai_eligible）
+            if r.source_type == "youtube" {
+                return Err(format!("err.youtube_no_ai|{}", release_id));
+            }
         }
         existing
             .ok_or_else(|| format!("err.release_not_found|{}", release_id))? // 安全地构造错误字符串

@@ -67,6 +67,7 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     ai_importance: null,
     body_translated: null,
     extra_metadata: null,
+    source_description: null,
     ...overrides,
   }
 }
@@ -451,5 +452,114 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
     expect((wrapper.vm as any).summaryMenuItems).toEqual([
       { id: 'copyContent', label: 'EN:context.copy_content' },
     ])
+  })
+})
+
+// ============ YouTube 源展示 ============
+
+describe('ReleaseItem.vue — YouTube 源', () => {
+  function ytRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
+    return createRelease({
+      source_type: 'youtube',
+      owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      repo: '',
+      tag_name: 'abc123',
+      release_name: '一段很长的视频标题：用于验证长标题在两行内截断显示的效果测试',
+      html_url: 'https://www.youtube.com/watch?v=abc123',
+      extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'https://i.ytimg.com/vi/abc123/hqdefault.jpg' }),
+      ...overrides,
+    })
+  }
+
+  it('显示频道名而非 channel_id，且不显示 videoId 标签', () => {
+    const wrapper = mountRelease(ytRelease({ source_description: '时局眼' }))
+    expect(wrapper.text()).toContain('时局眼')
+    expect(wrapper.text()).not.toContain('UCXuqSBlHAE6Xw')
+    expect(wrapper.text()).not.toContain('abc123')
+  })
+
+  it('兼容旧版 "YouTube channel: " 前缀描述', () => {
+    const wrapper = mountRelease(ytRelease({ source_description: 'YouTube channel: Videos' }))
+    expect(wrapper.text()).toContain('Videos')
+    expect(wrapper.text()).not.toContain('YouTube channel: Videos')
+  })
+
+  it('无频道名时回退 owner', () => {
+    const wrapper = mountRelease(ytRelease({ source_description: null }))
+    expect(wrapper.text()).toContain('UCXuqSBlHAE6Xw-yeJA0Tunw')
+  })
+
+  it('显示视频封面图与直播徽标', () => {
+    const wrapper = mountRelease(ytRelease({ extra_metadata: JSON.stringify({ kind: 'live', thumbnail: 'https://i.ytimg.com/vi/abc123/mqdefault.jpg' }) }))
+    const img = wrapper.find('img.yt-thumb')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe('https://i.ytimg.com/vi/abc123/mqdefault.jpg')
+    expect(wrapper.find('.yt-live-badge').exists()).toBe(true)
+  })
+
+  it('显示视频时长角标（ISO 8601 → MM:SS / H:MM:SS）', () => {
+    // PT12M34S → 12:34
+    const short = mountRelease(ytRelease({ extra_metadata: JSON.stringify({ kind: 'video', duration: 'PT12M34S' }) }))
+    expect(short.find('.yt-duration-badge').exists()).toBe(true)
+    expect(short.find('.yt-duration-badge').text()).toBe('12:34')
+    // PT1H2M3S → 1:02:03
+    const long = mountRelease(ytRelease({ extra_metadata: JSON.stringify({ kind: 'video', duration: 'PT1H2M3S' }) }))
+    expect(long.find('.yt-duration-badge').text()).toBe('1:02:03')
+  })
+
+  it('无时长（RSS 模式）时不显示时长角标', () => {
+    const wrapper = mountRelease(ytRelease({ extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'https://i.ytimg.com/vi/abc123/hqdefault.jpg' }) }))
+    expect(wrapper.find('.yt-duration-badge').exists()).toBe(false)
+  })
+
+  it('视频标题使用两行截断样式', () => {
+    const wrapper = mountRelease(ytRelease())
+    expect(wrapper.find('.release-title-yt').exists()).toBe(true)
+  })
+})
+
+// ============ YouTube B 站风格布局 ============
+
+describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
+  function yt(overrides: Partial<ReleaseInfo> = {}) {
+    return createRelease({
+      source_type: 'youtube',
+      owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      repo: '',
+      tag_name: 'abc123',
+      release_name: '视频标题',
+      html_url: 'https://www.youtube.com/watch?v=abc123',
+      source_description: '时局眼',
+      body: '这是视频简介内容，用于测试阅读全文。',
+      extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'https://i.ytimg.com/vi/abc123/hqdefault.jpg' }),
+      ...overrides,
+    })
+  }
+
+  it('左封面 + 右标题/简介的横排布局', () => {
+    const wrapper = mountRelease(yt())
+    const layout = wrapper.find('.yt-layout')
+    expect(layout.exists()).toBe(true)
+    // 封面按钮与信息区并存
+    expect(layout.find('.yt-thumb-btn').exists()).toBe(true)
+    expect(layout.find('.yt-info').exists()).toBe(true)
+    // 标题在信息区
+    expect(layout.find('.yt-info .release-title-yt').text()).toBe('视频标题')
+    // 简介在信息区且可点击
+    expect(layout.find('.yt-info .yt-desc').exists()).toBe(true)
+  })
+
+  it('点击简介或阅读全文打开详情弹窗', async () => {
+    const wrapper = mountRelease(yt())
+    await wrapper.find('.yt-info .yt-desc').trigger('click')
+    expect(wrapper.emitted('open-detail')).toBeTruthy()
+  })
+
+  it('无简介时只显示封面，无阅读全文按钮', () => {
+    const wrapper = mountRelease(yt({ body: null }))
+    const layout = wrapper.find('.yt-layout')
+    expect(layout.find('.yt-thumb-btn').exists()).toBe(true)
+    expect(layout.find('.yt-desc').exists()).toBe(false)
+    expect(wrapper.find('.release-expand-btn').exists()).toBe(false)
   })
 })

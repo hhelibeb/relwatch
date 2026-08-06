@@ -222,7 +222,7 @@ pub fn save_releases(
         {
             if id > 0 {
                 saved.push((id, body.map(|s| s.to_string())));
-                if saved.len() >= max_count {
+                if max_count > 0 && saved.len() >= max_count {
                     return saved;
                 }
                 continue;

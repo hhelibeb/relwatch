@@ -21,6 +21,8 @@ export interface ReleaseInfo {
   ai_importance: string | null
   body_translated: string | null
   extra_metadata: string | null
+  /** 所属源的描述（YouTube 源存频道名）。 */
+  source_description: string | null
 }
 
 export interface PollResult {

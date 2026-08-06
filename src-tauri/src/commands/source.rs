@@ -1,8 +1,9 @@
 use crate::db;
 use crate::types::AppState;
 use crate::{crypto, http, source};
-use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE};
+use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_YOUTUBE_API_KEY};
 use serde_json::json;
+use tauri::Emitter;
 
 #[tauri::command]
 pub async fn add_source(
@@ -10,13 +11,12 @@ pub async fn add_source(
     source_type: String,
     owner: String,
     repo: String,
+    config: Option<String>,
 ) -> Result<i64, String> {
     let description: String;
+    let resolved_owner: String;
     {
         let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-        if db::sources::source_exists(&conn, &source_type, &owner, &repo)? {
-            return Ok(0);
-        }
         let proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         let proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
             if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
@@ -30,6 +30,20 @@ pub async fn add_source(
                 if let Some(new_val) = &new_v2 {
                     if let Err(e) = db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, new_val) {
                         log::warn!("迁移 v1→v2 GitHub Token 回写失败: {}", e);
+                    }
+                }
+                Some(plain)
+            });
+        // YouTube Data API Key（加密存储，解密后传给 youtube adapter 走 API 模式）
+        let youtube_api_key = get_setting(&conn, KEY_YOUTUBE_API_KEY)
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| {
+                let (plain, new_v2) = crypto::decrypt_with_migration(&s)?;
+                if let Some(new_val) = &new_v2 {
+                    if let Err(e) = db::settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, new_val) {
+                        log::warn!("迁移 v1→v2 YouTube API Key 回写失败: {}", e);
                     }
                 }
                 Some(plain)
@@ -62,7 +76,23 @@ pub async fn add_source(
                 return Err(msg);
             }
         };
-        description = match adapter.verify_and_describe(&client, &owner, &repo, github_token.as_deref()).await {
+        // 先把用户输入归一化为标准 owner（YouTube：@handle/链接 → channel_id），
+        // 再查重与验证，保证去重与 RSS 拉取都基于统一的 channel_id。
+        resolved_owner = match adapter.resolve_owner(&client, &owner, youtube_api_key.as_deref()).await {
+            Ok(o) => o,
+            Err((status, msg)) => {
+                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+                db::logs::write_log_key(
+                    &conn, level, "source.add_failed",
+                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
+                );
+                return Err(msg);
+            }
+        };
+        if db::sources::source_exists(&conn, &source_type, &resolved_owner, &repo)? {
+            return Ok(0);
+        }
+        description = match adapter.verify_and_describe(&client, &resolved_owner, &repo, if source_type == "youtube" { youtube_api_key.as_deref() } else { github_token.as_deref() }).await {
             Ok(d) => d,
             Err((status, msg)) => {
                 let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
@@ -75,7 +105,9 @@ pub async fn add_source(
         };
     }
     let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
-    let id = db::sources::add_source(&conn, &source_type, &owner, &repo, &description)?;
+    let id = db::sources::add_source_with_config(
+        &conn, &source_type, &resolved_owner, &repo, &description, config.as_deref(),
+    )?;
     if id == 0 {
         return Ok(0);
     }
@@ -83,13 +115,13 @@ pub async fn add_source(
         &conn,
         "INFO",
         "source.added",
-        &json!({"source_type": &source_type, "owner": &owner, "repo": &repo}).to_string(),
+        &json!({"source_type": &source_type, "owner": &resolved_owner, "repo": &repo}).to_string(),
     );
     Ok(id)
 }
 
 #[tauri::command]
-pub fn remove_source(state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     db::sources::remove_source(&conn, id)?;
@@ -97,6 +129,8 @@ pub fn remove_source(state: tauri::State<AppState>, id: i64) -> Result<(), Strin
         Some(s) => db::logs::write_log_key(&conn, "INFO", "source.removed", &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string()),
         None => db::logs::write_log_key(&conn, "INFO", "source.removed_unknown", &json!({"id": id}).to_string()),
     }
+    // 删除源会级联删除其 releases（未读计数变化），通知托盘刷新角标
+    let _ = app.emit("release-state-changed", id);
     Ok(())
 }
 
@@ -107,11 +141,13 @@ pub fn update_source(
     enabled: bool,
     poll_interval_minutes: i64,
     muted: Option<bool>,
+    config: Option<String>,
 ) -> Result<(), String> {
     let mut conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     let old_enabled = source.as_ref().map(|s| s.enabled);
     let old_muted = source.as_ref().map(|s| s.muted);
+    let old_config = source.as_ref().and_then(|s| s.config.clone());
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -119,6 +155,9 @@ pub fn update_source(
 
     if let Some(m) = muted {
         db::sources::set_source_muted(&tx, id, m)?;
+    }
+    if let Some(c) = &config {
+        db::sources::update_source_config(&tx, id, c)?;
     }
 
     match source {
@@ -148,6 +187,15 @@ pub fn update_source(
                         db::logs::write_log_key(&tx, "INFO", "source.log_unmuted",
                             &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
                     }
+                }
+            }
+
+            // config 变化 → 订阅内容调整
+            if let Some(c) = &config {
+                if old_config.as_deref() != Some(c.as_str()) {
+                    logged = true;
+                    db::logs::write_log_key(&tx, "INFO", "source.log_config_updated",
+                        &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
                 }
             }
 

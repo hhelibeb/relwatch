@@ -237,3 +237,18 @@ describe('statusClass', () => {
   it('unknown → status-unknown', () => { expect(statusClass('unknown')).toBe('status-unknown') })
   it('空字符串 → status-unknown', () => { expect(statusClass('')).toBe('status-unknown') })
 })
+
+// ============ releaseMatchesSearch — source_description ============
+
+describe('releaseMatchesSearch — source_description', () => {
+  it('YouTube 频道名可被搜索命中', () => {
+    const release = makeRelease({ owner: 'UCXuqSBlHAE6Xw', repo: '', source_description: '时局眼' })
+    expect(releaseMatchesSearch(release, '时局眼')).toBe(true)
+    expect(releaseMatchesSearch(release, '局眼')).toBe(true)
+  })
+
+  it('无 source_description 时不影响其它字段匹配', () => {
+    const release = makeRelease({ owner: 'UCXuqSBlHAE6Xw', repo: '' })
+    expect(releaseMatchesSearch(release, 'UCXuqSBlHAE6Xw')).toBe(true)
+  })
+})

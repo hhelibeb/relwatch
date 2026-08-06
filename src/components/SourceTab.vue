@@ -2,7 +2,7 @@
 import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { type Source, parseSourceUrl, addSource, removeSource, updateSource } from '../api/sources'
+import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
@@ -26,6 +26,10 @@ const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const openMoreId = ref<number | null>(null)
 const showToast = inject(ShowToastKey, () => {})
+// 新增 YouTube 源时的订阅内容复选框（帖子恒 false，暂不支持）
+const subscribeVideos = ref(true)
+const subscribeLive = ref(true)
+const subscribePosts = ref(false)
 // 新增源高亮动画的定时器句柄；连续添加时先 clear 旧定时器，避免旧回调截断新源高亮
 let highlightTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -208,12 +212,63 @@ const sortDirectionOptions = computed(() => [
 const { contextMenu, closeContextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
 function openSourceUrl(source: Source) {
-  if (source.source_type === 'huggingface') {
+  if (source.source_type === 'youtube') {
+    openReleaseUrl(`https://www.youtube.com/channel/${source.owner}`)
+  } else if (source.source_type === 'huggingface') {
     openReleaseUrl(`https://huggingface.co/${source.owner}`)
   } else {
     openReleaseUrl(`https://github.com/${source.owner}/${source.repo}`)
   }
 }
+
+function sourceTypeIcon(type: string): string {
+  switch (type) {
+    case 'huggingface': return '/icons.svg#huggingface-icon'
+    case 'youtube': return '/icons.svg#youtube-icon'
+    default: return '/icons.svg#github-mark'
+  }
+}
+
+function sourceTypeTitle(type: string): string {
+  switch (type) {
+    case 'huggingface': return t('source.type_huggingface')
+    case 'youtube': return t('source.type_youtube')
+    default: return t('source.type_github')
+  }
+}
+
+/** 解析源的 YouTube 订阅配置（缺失字段回退默认：视频/直播勾选、帖子不勾选）。 */
+function parseYtConfig(source: Source): { videos: boolean; live: boolean; posts: boolean } {
+  try {
+    const cfg = source.config ? JSON.parse(source.config) : {}
+    return {
+      videos: cfg.videos !== false,
+      live: cfg.live !== false,
+      posts: !!cfg.posts,
+    }
+  } catch {
+    return { videos: true, live: true, posts: false }
+  }
+}
+
+/** 切换 YouTube 源的订阅内容类型（即时保存）。 */
+async function handleYtConfigToggle(source: Source, key: 'videos' | 'live', value: boolean) {
+  const cfg = parseYtConfig(source)
+  cfg[key] = value
+  const config = buildYoutubeConfig(cfg.videos, cfg.live, cfg.posts)
+  try {
+    await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
+    emit('update')
+  } catch (e: unknown) {
+    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
+  }
+}
+
+/** 输入为 YouTube 频道时，展开订阅内容复选框行。 */
+const isYoutubeInput = computed(() => {
+  if (headerMode.value !== 'add') return false
+  return parseSourceUrl(urlInput.value)?.type === 'youtube'
+})
 
 function sourceQuery(source: Source): string {
   return `${source.owner}/${source.repo}`
@@ -223,16 +278,31 @@ function sourceKey(source: Source): string {
   return sourceQuery(source).toLowerCase()
 }
 
+/** 源显示名：YouTube 显示频道名（description），兼容旧版 "YouTube channel: " 前缀。 */
+function sourceDisplayName(source: Source): string {
+  if (source.source_type === 'youtube') {
+    const d = (source.description ?? '').trim()
+    if (d.startsWith('YouTube channel: ')) return d.slice('YouTube channel: '.length)
+    return d || source.owner
+  }
+  return source.repo ? `${source.owner}/${source.repo}` : source.owner
+}
+
 function unreadReleaseCount(source: Source): number {
   return props.unreadReleaseCounts[sourceKey(source)] || 0
 }
 
 function openSourceReleases(source: Source) {
-  emit('openReleases', sourceQuery(source))
+  emit('openReleases', sourceSearchQuery(source))
 }
 
 function openSourceUnreadReleases(source: Source) {
-  emit('openUnreadReleases', sourceQuery(source))
+  emit('openUnreadReleases', sourceSearchQuery(source))
+}
+
+/** 跳转版本列表时的搜索关键词：YouTube 用频道名（channel_id 无阅读意义）。 */
+function sourceSearchQuery(source: Source): string {
+  return source.source_type === 'youtube' ? sourceDisplayName(source) : sourceQuery(source)
 }
 
 function sourceExists(owner: string, repo: string): boolean {
@@ -256,12 +326,25 @@ async function handleAdd() {
   }
   loading.value = true
   try {
-    const id = await addSource(parsed.type, parsed.owner, parsed.repo)
+    const config = parsed.type === 'youtube'
+      ? buildYoutubeConfig(subscribeVideos.value, subscribeLive.value, subscribePosts.value)
+      : undefined
+    if (parsed.type === 'youtube' && !subscribeVideos.value && !subscribeLive.value) {
+      await message(t('source.require_subscribe'), { title: t('source.input_invalid'), kind: 'warning' })
+      return
+    }
+    const id = parsed.type === 'youtube'
+      ? await addSource(parsed.type, parsed.owner, parsed.repo, config)
+      : await addSource(parsed.type, parsed.owner, parsed.repo)
     if (id === 0) {
       showToast?.(t('source.exists'))
       return
     }
     urlInput.value = ''
+    // 复位订阅复选框为默认值（下次添加 YouTube 频道时用默认勾选）
+    subscribeVideos.value = true
+    subscribeLive.value = true
+    subscribePosts.value = false
     highlightedId.value = id
     clearTimeout(highlightTimer)
     highlightTimer = setTimeout(() => { highlightedId.value = null }, 2200)
@@ -506,6 +589,18 @@ function hideHealthTooltip() {
           <span v-if="headerMode === 'add' && hasActiveSourceSearch" class="mode-toggle-dot" aria-hidden="true"></span>
         </button>
       </div>
+      <div v-if="headerMode === 'add' && isYoutubeInput" class="yt-subscribe-row">
+        <span class="yt-subscribe-label">{{ t('source.subscribe_title') }}</span>
+        <label class="yt-subscribe-option">
+          <input type="checkbox" v-model="subscribeVideos" />{{ t('source.subscribe_videos') }}
+        </label>
+        <label class="yt-subscribe-option">
+          <input type="checkbox" v-model="subscribeLive" />{{ t('source.subscribe_live') }}
+        </label>
+        <label class="yt-subscribe-option yt-subscribe-disabled" :title="t('source.posts_unsupported')">
+          <input type="checkbox" v-model="subscribePosts" disabled />{{ t('source.subscribe_posts') }}
+        </label>
+      </div>
       <div v-if="selectionMode" class="bulk-bar">
         <span class="bulk-count">{{ t('source.bulk_count', String(selectedCount)) }}</span>
         <button class="btn-sm" @click="selectAllVisible()">
@@ -547,10 +642,10 @@ function hideHealthTooltip() {
       </div>
         <div class="source-main">
           <div class="source-info">
-            <span v-if="props.showSourceTypeIcons" class="source-type-badge" :class="source.source_type" :title="source.source_type === 'huggingface' ? t('source.type_huggingface') : t('source.type_github')">
-              <svg><use :href="source.source_type === 'huggingface' ? '/icons.svg#huggingface-icon' : '/icons.svg#github-mark'"/></svg>
+            <span v-if="props.showSourceTypeIcons" class="source-type-badge" :class="source.source_type" :title="sourceTypeTitle(source.source_type)">
+              <svg><use :href="sourceTypeIcon(source.source_type)"/></svg>
             </span>
-            <span class="source-name">{{ source.repo ? `${source.owner}/${source.repo}` : source.owner }}</span>
+            <span class="source-name">{{ sourceDisplayName(source) }}</span>
             <button class="btn-icon-link" @click="openSourceUrl(source)" @contextmenu.prevent.stop="handleContextMenu($event, source.source_type === 'huggingface' ? `https://huggingface.co/${source.owner}` : `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
               <svg><use href="/icons.svg#link-icon"/></svg>
             </button>
@@ -597,6 +692,19 @@ function hideHealthTooltip() {
               <svg><use href="/icons.svg#more-icon"/></svg>
             </button>
             <div v-if="openMoreId === source.id" class="dropdown-more-panel" role="menu" @click.stop @keydown="moreDropdown.handleDropdownKeydown">
+              <template v-if="source.source_type === 'youtube'">
+                <div class="dropdown-section-label">{{ t('source.subscribe_title') }}</div>
+                <label class="yt-menu-option">
+                  <input type="checkbox" :checked="parseYtConfig(source).videos" @change="handleYtConfigToggle(source, 'videos', ($event.target as HTMLInputElement).checked)" />{{ t('source.subscribe_videos') }}
+                </label>
+                <label class="yt-menu-option">
+                  <input type="checkbox" :checked="parseYtConfig(source).live" @change="handleYtConfigToggle(source, 'live', ($event.target as HTMLInputElement).checked)" />{{ t('source.subscribe_live') }}
+                </label>
+                <label class="yt-menu-option yt-subscribe-disabled" :title="t('source.posts_unsupported')">
+                  <input type="checkbox" :checked="false" disabled />{{ t('source.subscribe_posts') }}
+                </label>
+                <div class="sort-dropdown-divider"></div>
+              </template>
               <button type="button" role="menuitem" class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
                 <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
                 {{ source.muted ? t('source.unmute') : t('source.mute') }}
@@ -819,6 +927,11 @@ function hideHealthTooltip() {
   background: #ffffff;
   color: #ffd21e;
   border: 1px solid var(--border);
+}
+
+.source-type-badge.youtube {
+  background: #ff0000;
+  color: #ffffff;
 }
 
 .source-name {
@@ -1188,6 +1301,85 @@ function hideHealthTooltip() {
 .btn-select:hover {
   background: var(--bg-subtle);
   border-color: var(--border-strong);
+}
+
+/* YouTube 订阅内容复选框行（添加源时显示） */
+.yt-subscribe-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 8px 2px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.yt-subscribe-label {
+  font-weight: 500;
+  color: var(--text);
+}
+
+.yt-subscribe-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+  color: var(--text);
+  user-select: none;
+}
+
+.yt-subscribe-option input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.yt-subscribe-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.yt-subscribe-disabled input[type="checkbox"] {
+  cursor: not-allowed;
+}
+
+/* 更多菜单内的订阅配置 */
+.dropdown-section-label {
+  padding: 7px 14px 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.yt-menu-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.yt-menu-option:hover {
+  background: var(--bg-subtle);
+}
+
+.yt-menu-option input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: var(--primary);
+}
+
+.yt-menu-option.yt-subscribe-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* 选择模式复选框 */

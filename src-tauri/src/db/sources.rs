@@ -18,6 +18,8 @@ pub struct Source {
     pub created_at: String,
     pub updated_at: String,
     pub description: Option<String>,
+    /// 源级附加配置（JSON）。目前用于 YouTube 订阅内容类型（视频/直播/帖子）。
+    pub config: Option<String>,
 }
 
 pub fn add_source(
@@ -27,12 +29,24 @@ pub fn add_source(
     repo: &str,
     description: &str,
 ) -> Result<i64, String> {
+    add_source_with_config(conn, source_type, owner, repo, description, None)
+}
+
+/// 带源级配置的添加（config 为 JSON 字符串，如 YouTube 订阅内容类型）。
+pub fn add_source_with_config(
+    conn: &Connection,
+    source_type: &str,
+    owner: &str,
+    repo: &str,
+    description: &str,
+    config: Option<&str>,
+) -> Result<i64, String> {
     let now = chrono::Utc::now().to_rfc3339();
     let desc = if description.is_empty() { None } else { Some(description) };
     conn.execute(
-        "INSERT OR IGNORE INTO sources (source_type, owner, repo, description, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![source_type, owner, repo, desc, now, now],
+        "INSERT OR IGNORE INTO sources (source_type, owner, repo, description, config, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![source_type, owner, repo, desc, config, now, now],
     )
     .map_err(|e| e.to_string())?;
     if conn.changes() == 0 {
@@ -70,7 +84,7 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
             "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
                     last_checked_at, last_check_status, last_check_message,
                     consecutive_failures, last_new_count, muted, created_at, updated_at,
-                    description
+                    description, config
              FROM sources WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -93,6 +107,7 @@ pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> 
                 created_at: row.get(12)?,
                 updated_at: row.get(13)?,
                 description: row.get(14)?,
+                config: row.get(15)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -125,6 +140,15 @@ pub fn update_source(
         )
         .map_err(|e| e.to_string())?;
     }
+    Ok(())
+}
+
+pub fn update_source_config(conn: &Connection, id: i64, config: &str) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sources SET config = ?1, updated_at = ?2 WHERE id = ?3",
+        params![config, chrono::Utc::now().to_rfc3339(), id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -204,7 +228,7 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
             "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
                     last_checked_at, last_check_status, last_check_message,
                     consecutive_failures, last_new_count, muted, created_at, updated_at,
-                    description
+                    description, config
              FROM sources ORDER BY id DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -227,6 +251,7 @@ pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
                 created_at: row.get(12)?,
                 updated_at: row.get(13)?,
                 description: row.get(14)?,
+                config: row.get(15)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -409,6 +434,44 @@ mod tests {
         assert_eq!(id2, 0);
         let sources = list_sources(&conn).unwrap();
         assert_eq!(sources.len(), 1);
+    }
+
+    #[test]
+    fn test_add_source_config_default_none() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "o", "r", "").unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert!(s.config.is_none(), "普通源 config 应为 None");
+    }
+
+    #[test]
+    fn test_add_source_with_config_roundtrip() {
+        let conn = init_memory_db().unwrap();
+        let cfg = r#"{"videos":true,"live":true,"posts":false}"#;
+        let id = add_source_with_config(&conn, "youtube", "UCtest123", "", "", Some(cfg)).unwrap();
+        assert!(id > 0);
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert_eq!(s.config.as_deref(), Some(cfg));
+        // list_sources 也应带出 config
+        let listed = list_sources(&conn).unwrap();
+        assert_eq!(listed[0].config.as_deref(), Some(cfg));
+    }
+
+    #[test]
+    fn test_update_source_config() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "youtube", "UCtest123", "", "").unwrap();
+        let cfg = r#"{"videos":false,"live":true,"posts":false}"#;
+        update_source_config(&conn, id, cfg).unwrap();
+        let s = get_source(&conn, id).unwrap().unwrap();
+        assert_eq!(s.config.as_deref(), Some(cfg));
+    }
+
+    #[test]
+    fn test_update_source_config_nonexistent_id_is_noop() {
+        let conn = init_memory_db().unwrap();
+        let result = update_source_config(&conn, 999, "{}");
+        assert!(result.is_ok());
     }
 
     // ── 断路器端到端：连续失败达阈值后触发禁用 ──────────────

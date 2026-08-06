@@ -35,6 +35,7 @@ function makeRelease(body: string | null): ReleaseInfo {
     ai_importance: null,
     body_translated: null,
     extra_metadata: null,
+    source_description: null,
   }
 }
 

@@ -104,10 +104,11 @@ function closeMenus() {
 }
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
-// 「翻译」选项仅在：有原文、无译文、AI 已启用 时出现
+// 「翻译」选项仅在：有原文、无译文、非 youtube 源、AI 已启用 时出现
 const canTranslate = computed(() =>
   !!props.release.body
   && !props.release.body_translated
+  && props.release.source_type !== 'youtube'
   && aiEnabled.value
 )
 // 使用 computed 保证语言切换后右键菜单 label 实时更新
@@ -322,7 +323,55 @@ function hideHfTooltip() {
 }
 
 // HF 源 tag_name 已含组织名（如 moonshotai/Kimi-K2.7-Code），不重复显示 release-repo 前缀
-const showReleaseRepo = computed(() => props.release.source_type !== 'huggingface')
+const showReleaseRepo = computed(() => props.release.source_type !== 'huggingface' && props.release.source_type !== 'youtube')
+
+// YouTube 源：channel_id 无展示意义，tag_name（videoId）同样隐藏；
+// 显示真实频道名（source_description，兼容旧版 "YouTube channel: " 前缀）
+const isYoutube = computed(() => props.release.source_type === 'youtube')
+const showReleaseTag = computed(() => props.release.source_type !== 'youtube')
+const youtubeChannelName = computed(() => {
+  const d = (props.release.source_description ?? '').trim()
+  if (d.startsWith('YouTube channel: ')) return d.slice('YouTube channel: '.length)
+  return d || props.release.owner
+})
+
+// YouTube 视频元数据（封面缩略图 / 类型 / 时长）
+interface YoutubeMeta {
+  thumbnail: string | null
+  kind: 'video' | 'live' | null
+  duration: string | null
+}
+
+const youtubeMeta = computed<YoutubeMeta | null>(() => {
+  if (!isYoutube.value || !props.release.extra_metadata) return null
+  try {
+    const obj = JSON.parse(props.release.extra_metadata)
+    return {
+      thumbnail: typeof obj.thumbnail === 'string' ? obj.thumbnail : null,
+      kind: obj.kind === 'live' ? 'live' : obj.kind === 'video' ? 'video' : null,
+      duration: typeof obj.duration === 'string' && obj.duration ? obj.duration : null,
+    }
+  } catch {
+    return null
+  }
+})
+
+const youtubeThumb = computed(() => youtubeMeta.value?.thumbnail ?? null)
+const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
+
+// Data API 的 ISO 8601 时长（PT1H2M3S / PT12M34S）→ 人类可读（1:02:03 / 12:34）；RSS 模式无时长返回空
+function formatYoutubeDuration(iso: string | null): string {
+  if (!iso) return ''
+  const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/)
+  if (!m) return ''
+  const h = m[1] ? parseInt(m[1], 10) : 0
+  const min = m[2] ? parseInt(m[2], 10) : 0
+  const sec = m[3] ? parseInt(m[3], 10) : 0
+  if (h > 0) return `${h}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+  return `${min}:${String(sec).padStart(2, '0')}`
+}
+
+const youtubeDuration = computed(() => formatYoutubeDuration(youtubeMeta.value?.duration ?? null))
 
 // ai_importance 存的是中文枚举（大/中/小），展示时映射到 i18n 文案，兼容英文界面
 function releaseImportanceText(release: ReleaseInfo): string {
@@ -350,7 +399,8 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     <div class="release-header">
       <div class="release-heading">
         <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
-        <span class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
+        <span v-else-if="isYoutube" class="release-repo release-repo-yt" :title="youtubeChannelName">{{ youtubeChannelName }}</span>
+        <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
         <!-- 版本固有属性（重要性/预发布）贴版本号；状态（圆点+文字）放在分隔符后自成一体，避免圆点被误读为重要性指示 -->
         <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
         <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
@@ -366,39 +416,71 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
       </div>
     </div>
-    <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
-    <div v-if="previewContent" class="release-content">
-      <!-- 摘要：2 行 clamp + 悬浮提示 -->
-      <div v-if="previewKind === 'summary'" class="release-summary-line">
-        <span
-          class="release-summary-text"
-          tabindex="0"
-          @mouseenter="handleSummaryEnter($event, previewContent)"
-          @mousemove="handleSummaryMove"
-          @mouseleave="hideSummaryTooltip"
-          @focus="handleSummaryFocus($event, previewContent)"
-          @blur="hideSummaryTooltip"
-          @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
-        >{{ previewContent }}</span>
-      </div>
-      <!-- 译文 / 原文：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
-      <div
-        v-else
-        class="release-body-text"
-        :title="t('release.read_full')"
-        @click="openDetail"
-        @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
+    <!-- YouTube：B 站风格（左封面 + 右标题/简介），阅读全文进详情弹窗 -->
+    <div v-if="isYoutube" class="yt-layout">
+      <button
+        class="yt-thumb-btn"
+        :disabled="isUpdating"
+        :title="t('release.open_link')"
+        @click="handleGoRelease(release)"
+        @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)"
       >
-        <MarkdownContent :content="previewContent" />
-      </div>
-      <!-- 翻译中提示：内容保持显示，不打断阅读 -->
-      <div v-if="translating" class="release-translating-hint">
-        {{ t('release.translating_hint') }}
-      </div>
-      <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
-        {{ t('release.read_full') }}
+        <img v-if="youtubeThumb" class="yt-thumb" :src="youtubeThumb" alt="" loading="lazy" />
+        <span v-if="youtubeDuration" class="yt-duration-badge">{{ youtubeDuration }}</span>
+        <span v-if="youtubeIsLive" class="yt-live-badge">{{ t('release.yt_live') }}</span>
       </button>
+      <div class="yt-info">
+        <div v-if="releaseDisplayTitle(release)" class="release-title release-title-yt">{{ releaseDisplayTitle(release) }}</div>
+        <div
+          v-if="previewContent"
+          class="yt-desc"
+          :title="t('release.read_full')"
+          @click="openDetail"
+          @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
+        >
+          <MarkdownContent :content="previewContent" />
+        </div>
+        <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
+          {{ t('release.read_full') }}
+        </button>
+      </div>
     </div>
+    <!-- 其它源：标题 + 摘要/原文预览 -->
+    <template v-else>
+      <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
+      <div v-if="previewContent" class="release-content">
+        <!-- 摘要：2 行 clamp + 悬浮提示 -->
+        <div v-if="previewKind === 'summary'" class="release-summary-line">
+          <span
+            class="release-summary-text"
+            tabindex="0"
+            @mouseenter="handleSummaryEnter($event, previewContent)"
+            @mousemove="handleSummaryMove"
+            @mouseleave="hideSummaryTooltip"
+            @focus="handleSummaryFocus($event, previewContent)"
+            @blur="hideSummaryTooltip"
+            @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
+          >{{ previewContent }}</span>
+        </div>
+        <!-- 译文 / 原文：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
+        <div
+          v-else
+          class="release-body-text"
+          :title="t('release.read_full')"
+          @click="openDetail"
+          @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
+        >
+          <MarkdownContent :content="previewContent" />
+        </div>
+        <!-- 翻译中提示：内容保持显示，不打断阅读 -->
+        <div v-if="translating" class="release-translating-hint">
+          {{ t('release.translating_hint') }}
+        </div>
+        <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
+          {{ t('release.read_full') }}
+        </button>
+      </div>
+    </template>
   </div>
 
   <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="releaseMenuItems" @action="handleReleaseMenuAction" @close="closeMenus" />
@@ -481,6 +563,116 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   font-size: 13px;
   color: var(--text);
   margin: 2px 0 4px;
+}
+
+/* YouTube 视频标题：长标题最多两行截断 */
+.release-title-yt {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.release-repo-yt {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+/* YouTube B 站风格布局：左封面 + 右标题/简介 */
+.yt-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-top: 6px;
+  min-width: 0;
+}
+
+.yt-thumb-btn {
+  position: relative;
+  flex-shrink: 0;
+  width: 200px;
+  max-width: 42%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  line-height: 0;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.yt-thumb-btn:disabled {
+  cursor: default;
+}
+
+.yt-thumb {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+
+.yt-thumb-btn:hover .yt-thumb {
+  border-color: var(--border-strong);
+}
+
+.yt-live-badge {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-xs);
+  background: #ff0000;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 14px;
+}
+
+/* 视频时长角标：左下角（B 站风格），仅 Data API 模式有 duration 时显示 */
+.yt-duration-badge {
+  position: absolute;
+  left: 6px;
+  bottom: 6px;
+  padding: 1px 5px;
+  border-radius: var(--radius-xs);
+  background: rgba(0, 0, 0, 0.75);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 14px;
+}
+
+.yt-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.yt-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.yt-desc:hover {
+  color: var(--text);
+  background: var(--bg-subtle);
 }
 
 .release-date {

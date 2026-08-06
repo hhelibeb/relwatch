@@ -264,6 +264,18 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // ── Migration 11: config on sources ──
+    // 源级附加配置（JSON），目前用于 YouTube 订阅内容类型（视频/直播/帖子）。
+    let has_source_config: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='config'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_source_config {
+        conn.execute_batch(
+            "ALTER TABLE sources ADD COLUMN config TEXT;",
+        )?;
+    }
+
     Ok(())
 }
 
@@ -323,6 +335,9 @@ mod tests {
 
         // Migration 10: releases.extra_metadata
         assert!(has_column(&conn, "releases", "extra_metadata"));
+
+        // Migration 11: sources.config
+        assert!(has_column(&conn, "sources", "config"));
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> bool {

@@ -69,6 +69,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     theme: 'light',
     show_source_type_icons: true,
     github_token_set: false,
+    youtube_api_key_set: false,
     ...overrides,
   }
 }

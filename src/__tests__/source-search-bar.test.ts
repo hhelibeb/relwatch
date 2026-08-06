@@ -26,6 +26,7 @@ interface TestSource {
   last_checked_at: string | null
   last_check_status: string
   created_at: string
+  config: string | null
 }
 
 function createSource(overrides: Partial<TestSource> = {}): TestSource {
@@ -39,6 +40,7 @@ function createSource(overrides: Partial<TestSource> = {}): TestSource {
     last_checked_at: '2025-06-01T00:00:00Z',
     last_check_status: 'ok',
     created_at: '2025-06-01T00:00:00Z',
+    config: null,
     ...overrides,
   }
 }
@@ -53,6 +55,7 @@ function createComponentSource(overrides: Record<string, unknown> = {}) {
     last_new_count: 0,
     created_at: '2025-06-01T00:00:00Z',
     updated_at: '2025-06-01T00:00:00Z',
+    config: null,
     ...overrides,
   }
 }

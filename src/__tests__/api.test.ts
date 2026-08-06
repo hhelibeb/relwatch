@@ -22,7 +22,7 @@ vi.mock('../i18n', () => ({
   t: vi.fn((key: string) => key),
 }))
 
-import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl } from '../api/sources'
+import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl, parseYoutubeUrl, buildYoutubeConfig } from '../api/sources'
 import { translateError } from '../api/client'
 
 describe('parseGitHubUrl', () => {
@@ -143,6 +143,61 @@ describe('parseSourceUrl', () => {
 
   it('明确 HF 链接优先于 GitHub 短格式', () => {
     expect(parseSourceUrl('https://huggingface.co/microsoft/vscode')?.type).toBe('huggingface')
+  })
+
+  it('YouTube 链接识别为 youtube 类型', () => {
+    expect(parseSourceUrl('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')).toEqual({ type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '' })
+    expect(parseSourceUrl('https://www.youtube.com/@Fireship')?.type).toBe('youtube')
+    expect(parseSourceUrl('@Fireship')?.type).toBe('youtube')
+  })
+
+  it('youtube.com 视频链接不是有效频道输入，返回 null', () => {
+    expect(parseSourceUrl('https://www.youtube.com/watch?v=abc')).toBeNull()
+  })
+})
+
+// ── parseYoutubeUrl / buildYoutubeConfig ─────────────────────────
+
+describe('parseYoutubeUrl', () => {
+  it('直接接受 channel_id', () => {
+    expect(parseYoutubeUrl('UCXuqSBlHAE6Xw-yeJA0Tunw')).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+  })
+
+  it('从 channel 链接提取 channel_id', () => {
+    expect(parseYoutubeUrl('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+    expect(parseYoutubeUrl('youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw/featured')).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+  })
+
+  it('@handle 与纯 handle 归一化为 @handle', () => {
+    expect(parseYoutubeUrl('@Fireship')).toBe('@Fireship')
+    expect(parseYoutubeUrl('Fireship')).toBe('@Fireship')
+    expect(parseYoutubeUrl('https://www.youtube.com/@Fireship')).toBe('@Fireship')
+    expect(parseYoutubeUrl('https://www.youtube.com/c/SomeName')).toBe('@SomeName')
+    expect(parseYoutubeUrl('https://www.youtube.com/user/OldName')).toBe('@OldName')
+  })
+
+  it('非法输入返回 null', () => {
+    expect(parseYoutubeUrl('')).toBeNull()
+    expect(parseYoutubeUrl('not a valid input!')).toBeNull()
+    expect(parseYoutubeUrl('UC-short')).toBeNull()
+  })
+
+  it('支持 URL 编码的中文 handle', () => {
+    expect(parseYoutubeUrl('https://www.youtube.com/@%E6%81%8B%E4%B8%8A%E9%BB%98%E7%99%BD')).toBe('@恋上默白')
+    expect(parseYoutubeUrl('@%E6%81%8B%E4%B8%8A%E9%BB%98%E7%99%BD')).toBe('@恋上默白')
+  })
+
+  it('支持中文 handle 直输', () => {
+    expect(parseYoutubeUrl('@恋上默白')).toBe('@恋上默白')
+    expect(parseYoutubeUrl('https://www.youtube.com/@恋上默白')).toBe('@恋上默白')
+  })
+})
+
+describe('buildYoutubeConfig', () => {
+  it('序列化为 videos/live/posts JSON', () => {
+    expect(buildYoutubeConfig(true, true)).toBe(JSON.stringify({ videos: true, live: true, posts: false }))
+    expect(buildYoutubeConfig(false, true)).toBe(JSON.stringify({ videos: false, live: true, posts: false }))
+    expect(buildYoutubeConfig(true, false, true)).toBe(JSON.stringify({ videos: true, live: false, posts: true }))
   })
 })
 

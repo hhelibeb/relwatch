@@ -23,6 +23,7 @@ export interface AppSettings {
   theme: string
   show_source_type_icons: boolean
   github_token_set: boolean
+  youtube_api_key_set: boolean
 }
 
 export interface UpdateSettingsPayload {
@@ -62,6 +63,10 @@ export async function setDeepseekApiKey(apiKey: string): Promise<void> {
 
 export async function setGithubToken(token: string): Promise<void> {
   return invokeI18n('set_github_token', { token })
+}
+
+export async function setYoutubeApiKey(apiKey: string): Promise<void> {
+  return invokeI18n('set_youtube_api_key', { apiKey })
 }
 
 /**

@@ -216,6 +216,7 @@ watch(() => props.release.id, () => {
 const canTranslate = computed(() =>
   viewMode.value === 'full'
   && !props.release.body_translated
+  && props.release.source_type !== 'youtube'
   && aiEnabled.value
 )
 

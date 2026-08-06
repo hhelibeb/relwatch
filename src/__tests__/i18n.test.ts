@@ -155,12 +155,12 @@ describe('i18n 核心函数', () => {
     })
 
     it('err.api_error 多参数', () => {
-      expect(i18n.t('err.api_error', '403', 'rate limit')).toBe('GitHub API 返回 403 rate limit')
+      expect(i18n.t('err.api_error', '403', 'rate limit')).toBe('API 请求失败: HTTP 403 rate limit')
     })
 
     it('err.api_error 多参数 — en-US', () => {
       i18n.setLocale('en-US')
-      expect(i18n.t('err.api_error', '403', 'rate limit')).toBe('GitHub API returned 403 rate limit')
+      expect(i18n.t('err.api_error', '403', 'rate limit')).toBe('API request failed: HTTP 403 rate limit')
     })
 
     it('err.parse_failed 带参数', () => {

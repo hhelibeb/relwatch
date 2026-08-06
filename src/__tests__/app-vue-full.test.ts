@@ -84,6 +84,7 @@ const defaultSettings = {
   theme: 'system',
   show_source_type_icons: true,
   github_token_set: false,
+  youtube_api_key_set: false,
 }
 
 beforeEach(() => {

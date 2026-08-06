@@ -40,6 +40,7 @@ fn zh_cn() -> &'static HashMap<&'static str, &'static str> {
     m.insert("setting.updated",           "更新设置: {changes}");
     m.insert("setting.deepseek_key_updated", "已更新 DeepSeek API Key");
     m.insert("setting.github_token_updated", "已更新 GitHub Token");
+    m.insert("setting.youtube_key_updated", "已更新 YouTube API Key");
     // backup
     m.insert("backup.exported",           "导出备份到 {path}");
     m.insert("backup.imported",           "从 {path} 恢复备份");
@@ -73,10 +74,13 @@ fn zh_cn() -> &'static HashMap<&'static str, &'static str> {
     m.insert("err.repo_verify_failed", "验证仓库失败: {0}");
     m.insert("err.repo_api_error",     "GitHub API 返回 {0}");
     m.insert("err.request_failed",     "网络请求失败: {0}");
-    m.insert("err.api_error",          "GitHub API 返回 {0} {1}");
+    m.insert("err.api_error",          "API 请求失败: HTTP {0} {1}");
     m.insert("err.parse_failed",       "解析响应失败: {0}");
     m.insert("err.poll_in_progress",   "轮询正在进行中，请稍后再试");
     m.insert("err.unsupported_source", "不支持的监控源类型: {0}");
+    m.insert("err.youtube_no_ai", "YouTube 源不生成 AI 摘要/翻译");
+    m.insert("err.youtube_api_key_invalid", "YouTube API Key 无效或未授权该请求: {0}");
+    m.insert("err.youtube_api_quota", "YouTube API 配额已用尽: {0}");
     m.insert("err.source_not_found",   "监控源不存在");
         m
     })
@@ -118,6 +122,7 @@ fn en_us() -> &'static HashMap<&'static str, &'static str> {
     m.insert("setting.updated",           "Setting updated: {changes}");
     m.insert("setting.deepseek_key_updated", "DeepSeek API Key updated");
     m.insert("setting.github_token_updated", "GitHub Token updated");
+    m.insert("setting.youtube_key_updated", "YouTube API Key updated");
     // backup
     m.insert("backup.exported",           "Exported backup to {path}");
     m.insert("backup.imported",           "Restored backup from {path}");
@@ -151,10 +156,13 @@ fn en_us() -> &'static HashMap<&'static str, &'static str> {
     m.insert("err.repo_verify_failed", "Failed to verify repo: {0}");
     m.insert("err.repo_api_error",     "GitHub API returned {0}");
     m.insert("err.request_failed",     "Request failed: {0}");
-    m.insert("err.api_error",          "GitHub API returned {0} {1}");
+    m.insert("err.api_error",          "API request failed: HTTP {0} {1}");
     m.insert("err.parse_failed",       "Failed to parse response: {0}");
     m.insert("err.poll_in_progress",   "Poll in progress, please try again later");
     m.insert("err.unsupported_source", "Unsupported source type: {0}");
+    m.insert("err.youtube_no_ai", "YouTube sources are excluded from AI summary/translation");
+    m.insert("err.youtube_api_key_invalid", "YouTube API Key invalid or not authorized for this request: {0}");
+    m.insert("err.youtube_api_quota", "YouTube API quota exceeded: {0}");
     m.insert("err.source_not_found",   "Source not found");
         m
     })
@@ -413,6 +421,12 @@ mod tests {
     }
 
     #[test]
+    fn test_render_youtube_key_updated() {
+        let r = render("setting.youtube_key_updated", &json!({}), "zh-CN");
+        assert_eq!(r, "已更新 YouTube API Key");
+    }
+
+    #[test]
     fn test_render_release_go() {
         let r = render("release.go", &json!({"owner":"user","repo":"repo","tag":"v2.0","id":"10"}), "zh-CN");
         assert_eq!(r, "前往版本 user/repo v2.0 id=10");
@@ -535,13 +549,13 @@ mod tests {
     #[test]
     fn test_translate_error_str_api_error() {
         let dict = zh_cn();
-        assert_eq!(translate_error_str("err.api_error|403|rate limit", dict), "GitHub API 返回 403 rate limit");
+        assert_eq!(translate_error_str("err.api_error|403|rate limit", dict), "API 请求失败: HTTP 403 rate limit");
     }
 
     #[test]
     fn test_translate_error_str_api_error_en() {
         let dict = en_us();
-        assert_eq!(translate_error_str("err.api_error|403|rate limit", dict), "GitHub API returned 403 rate limit");
+        assert_eq!(translate_error_str("err.api_error|403|rate limit", dict), "API request failed: HTTP 403 rate limit");
     }
 
     #[test]

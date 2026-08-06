@@ -6,6 +6,7 @@ interface SearchableRelease {
   tag_name: string
   release_name: string
   body: string | null
+  source_description?: string | null
 }
 
 export function importanceLabel(imp: string | null): string {
@@ -35,7 +36,8 @@ export function releaseMatchesSearch(release: SearchableRelease, query: string):
     release.repo.toLowerCase().includes(q) ||
     release.tag_name.toLowerCase().includes(q) ||
     release.release_name.toLowerCase().includes(q) ||
-    (release.body || '').toLowerCase().includes(q)
+    (release.body || '').toLowerCase().includes(q) ||
+    (release.source_description || '').toLowerCase().includes(q)
 }
 
 export function logLevelClass(level: string): string {

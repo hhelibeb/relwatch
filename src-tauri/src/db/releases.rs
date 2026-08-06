@@ -23,6 +23,8 @@ pub struct ReleaseInfo {
     pub ai_importance: Option<String>,
     pub body_translated: Option<String>,
     pub extra_metadata: Option<String>,
+    /// 所属源的描述（YouTube 源存频道名），前端用于展示可读名称。
+    pub source_description: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -64,12 +66,17 @@ pub fn insert_release(
 
 /// Returns (id, body) tuples for releases where AI summary generation is missing.
 /// Used by the poll cycle to retry failed summaries.
+/// 排除不需要 AI 摘要的源（如 youtube）。
 pub fn get_releases_without_summary(
     conn: &Connection,
 ) -> Result<Vec<(i64, Option<String>)>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, body FROM releases WHERE ai_summary IS NULL AND body IS NOT NULL AND body != '' AND (retry_count IS NULL OR retry_count < 5)",
+            "SELECT r.id, r.body FROM releases r
+             JOIN sources s ON s.id = r.source_id
+             WHERE r.ai_summary IS NULL AND r.body IS NOT NULL AND r.body != ''
+               AND (r.retry_count IS NULL OR r.retry_count < 5)
+               AND s.source_type != 'youtube'",
         )
         .map_err(|e| e.to_string())?;
 
@@ -84,12 +91,17 @@ pub fn get_releases_without_summary(
 
 /// 返回需要翻译但尚未翻译的 (id, body) 列表。
 /// 条件：body 非空、body_translated 为空、翻译重试次数 < 5。
+/// 排除不需要 AI 翻译的源（如 youtube）。
 pub fn get_releases_without_translation(
     conn: &Connection,
 ) -> Result<Vec<(i64, Option<String>)>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, body FROM releases WHERE body_translated IS NULL AND body IS NOT NULL AND body != '' AND (translate_retry_count IS NULL OR translate_retry_count < 5)",
+            "SELECT r.id, r.body FROM releases r
+             JOIN sources s ON s.id = r.source_id
+             WHERE r.body_translated IS NULL AND r.body IS NOT NULL AND r.body != ''
+               AND (r.translate_retry_count IS NULL OR r.translate_retry_count < 5)
+               AND s.source_type != 'youtube'",
         )
         .map_err(|e| e.to_string())?;
     let releases = stmt
@@ -98,6 +110,32 @@ pub fn get_releases_without_translation(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(releases)
+}
+
+/// 返回给定 release id 中属于 youtube 源的 id 集合。
+/// 用于 poll 编排层在生成 AI 摘要/翻译前过滤掉 youtube 源（用户要求无需摘要）。
+pub fn youtube_release_ids(
+    conn: &Connection,
+    ids: &[i64],
+) -> Result<std::collections::HashSet<i64>, String> {
+    use std::collections::HashSet;
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let placeholders = vec!["?"; ids.len()].join(",");
+    let sql = format!(
+        "SELECT r.id FROM releases r JOIN sources s ON s.id = r.source_id
+         WHERE s.source_type = 'youtube' AND r.id IN ({})",
+        placeholders
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+            row.get::<_, i64>(0)
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<HashSet<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 pub fn set_body_translated(
@@ -223,7 +261,8 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                     r.tag_name, r.release_name, r.html_url, r.published_at,
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata
+                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
+                s.description
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -252,6 +291,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                 ai_importance: row.get(15)?,
                 body_translated: row.get(16)?,
                 extra_metadata: row.get(17)?,
+                source_description: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -270,7 +310,8 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                     r.tag_name, r.release_name, r.html_url, r.published_at,
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata
+                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
+                s.description
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -300,6 +341,7 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                 ai_importance: row.get(15)?,
                 body_translated: row.get(16)?,
                 extra_metadata: row.get(17)?,
+                source_description: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -347,7 +389,8 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 r.tag_name, r.release_name, r.html_url, r.published_at,
                 r.prerelease, r.body, r.detected_at,
                 COALESCE(ns.status, 'pending'), ns.snooze_until,
-                r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata
+                r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
+                s.description
          FROM releases r
          JOIN sources s ON r.source_id = s.id
          LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -379,6 +422,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 ai_importance: row.get(15)?,
                 body_translated: row.get(16)?,
                 extra_metadata: row.get(17)?,
+                source_description: row.get(18)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -775,5 +819,58 @@ mod tests {
     fn test_importance_ge_unknown_falls_back_to_xiao() {
         assert!(importance_ge("未知", "小"));
         assert!(!importance_ge("未知", "中"));
+    }
+
+    // ── YouTube 源跳过 AI 摘要/翻译 ──
+
+    /// 同时插入 github 与 youtube 源各一条带 body 的 release，
+    /// 验证摘要/翻译候选列表排除 youtube 源。
+    fn seed_gh_and_yt_releases(conn: &rusqlite::Connection) -> (i64, i64) {
+        let gh = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let yt = sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
+        let gh_id = insert_release(&conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh body")).unwrap();
+        let yt_id = insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt body")).unwrap();
+        (gh_id, yt_id)
+    }
+
+    #[test]
+    fn test_get_releases_without_summary_excludes_youtube() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, _yt_id) = seed_gh_and_yt_releases(&conn);
+        let pending = get_releases_without_summary(&conn).unwrap();
+        assert_eq!(pending.len(), 1, "youtube 源不应进入待摘要列表");
+        assert_eq!(pending[0].0, gh_id);
+    }
+
+    #[test]
+    fn test_get_releases_without_translation_excludes_youtube() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, _yt_id) = seed_gh_and_yt_releases(&conn);
+        let pending = get_releases_without_translation(&conn).unwrap();
+        assert_eq!(pending.len(), 1, "youtube 源不应进入待翻译列表");
+        assert_eq!(pending[0].0, gh_id);
+    }
+
+    #[test]
+    fn test_youtube_release_ids_returns_only_yt() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, yt_id) = seed_gh_and_yt_releases(&conn);
+        let ids = youtube_release_ids(&conn, &[gh_id, yt_id]).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains(&yt_id), "只应包含 youtube 源的 release id");
+    }
+
+    #[test]
+    fn test_youtube_release_ids_empty_input() {
+        let conn = init_memory_db().unwrap();
+        assert!(youtube_release_ids(&conn, &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_youtube_release_ids_non_yt_only_empty() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, _) = seed_gh_and_yt_releases(&conn);
+        let ids = youtube_release_ids(&conn, &[gh_id]).unwrap();
+        assert!(ids.is_empty(), "github 源不应被标记为 youtube");
     }
 }

@@ -69,6 +69,19 @@ pub trait SourceAdapter: Send + Sync {
         repo: &str,
         token: Option<&str>,
     ) -> Result<String, (u16, String)>;
+
+    /// 将用户输入归一化为该源类型的标准 owner（默认原样返回）。
+    /// YouTube 用它把 @handle / 频道链接解析为 channel_id，保证 RSS 拉取与
+    /// 去重（UNIQUE(source_type, owner, repo)）都基于统一的 channel_id。
+    /// `token` 为该 source 对应的鉴权 token（无鉴权源可忽略）。
+    async fn resolve_owner(
+        &self,
+        _client: &reqwest::Client,
+        owner: &str,
+        _token: Option<&str>,
+    ) -> Result<String, (u16, String)> {
+        Ok(owner.to_string())
+    }
 }
 
 /// 根据 source_type 字符串取得对应适配器。
@@ -79,6 +92,7 @@ pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, St
     match source_type {
         "github" => Ok(Box::new(crate::github::GithubAdapter)),
         "huggingface" => Ok(Box::new(crate::huggingface::HuggingFaceAdapter)),
+        "youtube" => Ok(Box::new(crate::youtube::YoutubeAdapter)),
         other => Err((0, format!("err.unsupported_source|{}", other))),
     }
 }

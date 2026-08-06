@@ -45,6 +45,7 @@ tauri-plugin-prevent-default = "5"
 arboard = "3.6"
 sys-locale = "0.3"
 async-trait = "0.1"
+quick-xml = "0.39"
 
 [dev-dependencies]
 wiremock = "0.6"

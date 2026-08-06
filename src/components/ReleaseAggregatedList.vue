@@ -14,6 +14,17 @@ const props = defineProps<{
   isFiltering: boolean
 }>()
 
+/** 分组显示名：YouTube 用频道名（channel_id 无阅读意义），其余用 owner/repo。 */
+function repoGroupName(group: RepoGroup): string {
+  const first = group.releases[0]
+  if (first.source_type === 'youtube') {
+    const d = (first.source_description ?? '').trim()
+    if (d.startsWith('YouTube channel: ')) return d.slice('YouTube channel: '.length)
+    return d || `${first.owner}/${first.repo}`
+  }
+  return group.key
+}
+
 // open-detail 携带导航序列：聚合视图使用当前仓库分组内的版本序列，
 // 保证弹窗「上一版本/下一版本」只在同仓库内导航，不跳到其他仓库
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]] }>()
@@ -98,7 +109,7 @@ function handleOpenUrl(url: string) {
       <button class="repo-group-toggle" :class="{ expanded: expandedRepos.has(group.key) }" @click.stop="toggleRepo(group.key)">
         <svg><use href="/icons.svg#chevron-down-icon"/></svg>
       </button>
-      <span class="repo-name">{{ group.key }}</span>
+      <span class="repo-name">{{ repoGroupName(group) }}</span>
       <span class="repo-latest-tag">{{ group.releases[0].tag_name }}</span>
       <button class="btn-icon-link" @click.stop="handleOpenUrl(group.releases[0].html_url)" @contextmenu.prevent.stop="handleRepoContextMenu($event, group.releases[0].html_url)" :title="t('release.open_link')">
         <svg><use href="/icons.svg#link-icon"/></svg>

@@ -81,6 +81,7 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     ai_importance: null,
     body_translated: null,
     extra_metadata: null,
+    source_description: null,
     ...overrides,
   }
 }

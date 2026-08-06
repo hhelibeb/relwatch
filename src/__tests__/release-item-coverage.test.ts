@@ -69,6 +69,7 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     ai_importance: null,
     body_translated: null,
     extra_metadata: null,
+    source_description: null,
     ...overrides,
   }
 }
@@ -368,6 +369,7 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
       ai_importance: null,
     body_translated: null,
     extra_metadata: null,
+    source_description: null,
     }))
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(false)

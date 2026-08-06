@@ -115,6 +115,7 @@ pub struct AppSettings {
     pub theme: String,
     pub show_source_type_icons: bool,
     pub github_token_set: bool,
+    pub youtube_api_key_set: bool,
 }
 
 #[cfg(test)]
@@ -145,6 +146,7 @@ mod tests {
             theme: "system".into(),
             show_source_type_icons: true,
             github_token_set: true,
+            youtube_api_key_set: true,
         }
     }
 
@@ -193,6 +195,7 @@ mod tests {
             ai_importance: Some("大".into()),
             body_translated: None,
             extra_metadata: None,
+            source_description: None,
         };
         let value = serde_json::to_value(PollResult {
             new_releases: vec![release],

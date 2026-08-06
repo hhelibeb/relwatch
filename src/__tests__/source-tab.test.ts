@@ -17,6 +17,7 @@ vi.mock('../api/sources', () => ({
   addSource: vi.fn(),
   removeSource: vi.fn(),
   updateSource: vi.fn(),
+  buildYoutubeConfig: vi.fn((videos: boolean, live: boolean, posts = false) => JSON.stringify({ videos, live, posts })),
 }))
 
 vi.mock('../api/releases', () => ({
@@ -59,6 +60,7 @@ interface TestSource {
   description: string | null
   created_at: string
   updated_at: string
+  config: string | null
 }
 
 function createSource(overrides: Partial<TestSource> = {}): TestSource {
@@ -78,6 +80,7 @@ function createSource(overrides: Partial<TestSource> = {}): TestSource {
     description: null,
     created_at: '2025-06-01T00:00:00Z',
     updated_at: '2025-06-01T00:00:00Z',
+    config: null,
     ...overrides,
   }
 }
@@ -143,6 +146,55 @@ describe('SourceTab — 添加 Source', () => {
     expect(parseSourceUrlMock).toHaveBeenCalledWith('https://github.com/vuejs/core')
     expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core')
     expect((input.element as HTMLInputElement).value).toBe('')
+  })
+
+  it('输入 YouTube 频道时显示订阅内容复选框行，添加时携带 config', async () => {
+    const { wrapper } = mountSourceTab([])
+    parseSourceUrlMock.mockReturnValue({ type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '' })
+    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const addButton = wrapper.get('.btn-add-source')
+
+    await input.setValue('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')
+    await flushPromises()
+
+    // 复选框行应可见（视频/直播勾选、帖子禁用）
+    const row = wrapper.get('.yt-subscribe-row')
+    const boxes = row.findAll('input[type="checkbox"]')
+    expect(boxes.length).toBe(3)
+    expect((boxes[0].element as HTMLInputElement).checked).toBe(true)
+    expect((boxes[1].element as HTMLInputElement).checked).toBe(true)
+    expect((boxes[2].element as HTMLInputElement).disabled).toBe(true)
+
+    // 取消勾选视频 → 添加时 config 只含直播
+    await boxes[0].setValue(false)
+    await addButton.trigger('click')
+    await flushPromises()
+
+    expect(addSourceMock).toHaveBeenCalledWith(
+      'youtube',
+      'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      '',
+      JSON.stringify({ videos: false, live: true, posts: false }),
+    )
+  })
+
+  it('YouTube 源视频直播均未勾选时阻止添加并提示', async () => {
+    const { wrapper } = mountSourceTab([])
+    parseSourceUrlMock.mockReturnValue({ type: 'youtube', owner: '@handle', repo: '' })
+    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const addButton = wrapper.get('.btn-add-source')
+
+    await input.setValue('@handle')
+    await flushPromises()
+    const row = wrapper.get('.yt-subscribe-row')
+    const boxes = row.findAll('input[type="checkbox"]')
+    await boxes[0].setValue(false)
+    await boxes[1].setValue(false)
+    await addButton.trigger('click')
+    await flushPromises()
+
+    expect(addSourceMock).not.toHaveBeenCalled()
+    expect(messageMock).toHaveBeenCalledWith('source.require_subscribe', expect.any(Object))
   })
 
   it('输入无效 URL 时，显示错误对话框而不调用 addSource', async () => {
@@ -398,7 +450,7 @@ describe('SourceTab — 检查单个 Source 更新', () => {
           tag_name: 'v3.3.0', release_name: '3.3.0', html_url: 'https://github.com/vuejs/core/releases/tag/v3.3.0',
           published_at: '2025-06-01T00:00:00Z', prerelease: false, body: null,
           detected_at: '2025-06-01T00:00:00Z', notification_status: 'pending',
-          snooze_until: null, ai_summary: null, ai_importance: null, body_translated: null, extra_metadata: null },
+          snooze_until: null, ai_summary: null, ai_importance: null, body_translated: null, extra_metadata: null, source_description: null },
       ],
     })
     const source = createSource({ id: 11 })
@@ -484,6 +536,26 @@ describe('SourceTab — 打开 Source 链接和发布页', () => {
     await viewReleasesButton.trigger('click')
 
     expect(wrapper.emitted('openReleases')?.[0]).toEqual(['vuejs/core'])
+  })
+
+  it('YouTube 源点击查看发布，emit 频道名而非 channel_id', async () => {
+    const source = createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: '时局眼' })
+    const { wrapper } = mountSourceTab([source])
+
+    const viewReleasesButton = wrapper.findAll('.btn-icon-link')[1]
+    await viewReleasesButton.trigger('click')
+
+    expect(wrapper.emitted('openReleases')?.[0]).toEqual(['时局眼'])
+  })
+
+  it('YouTube 源无频道名时，查看发布回退 channel_id', async () => {
+    const source = createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: null })
+    const { wrapper } = mountSourceTab([source])
+
+    const viewReleasesButton = wrapper.findAll('.btn-icon-link')[1]
+    await viewReleasesButton.trigger('click')
+
+    expect(wrapper.emitted('openReleases')?.[0]).toEqual(['UCXuqSBlHAE6Xw-yeJA0Tunw'])
   })
 
   it('有未读 release 时，显示待更新链接并点击 emit openUnreadReleases', async () => {
@@ -995,5 +1067,29 @@ describe('SourceTab — 更多菜单切换', () => {
 
     await moreButton.trigger('click')
     expect(wrapper.find('.dropdown-more-panel').exists()).toBe(false)
+  })
+})
+
+// ============ YouTube 源显示名 ============
+
+describe('SourceTab — YouTube 源显示名', () => {
+  it('youtube 源显示频道名（description）而非 channel_id', () => {
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: 'Videos' })])
+    expect(wrapper.get('.source-name').text()).toBe('Videos')
+  })
+
+  it('youtube 源兼容旧版 "YouTube channel: " 前缀描述', () => {
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: 'YouTube channel: Videos' })])
+    expect(wrapper.get('.source-name').text()).toBe('Videos')
+  })
+
+  it('youtube 源无描述时回退 owner', () => {
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: null })])
+    expect(wrapper.get('.source-name').text()).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+  })
+
+  it('github 源仍显示 owner/repo', () => {
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'github', owner: 'vuejs', repo: 'core' })])
+    expect(wrapper.get('.source-name').text()).toBe('vuejs/core')
   })
 })
