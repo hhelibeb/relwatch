@@ -27,6 +27,7 @@ const heights = shallowRef(new Map<string, number>())
 
 let scrollParent: HTMLElement | null = null
 let ro: ResizeObserver | null = null
+let roSelf: ResizeObserver | null = null
 
 const virtualizing = computed(() => props.items.length > props.virtualizeThreshold)
 
@@ -85,6 +86,23 @@ function recordRow(row: { item: T; index: number }, el: unknown) {
   }
 }
 
+// v-show 场景：容器被隐藏（display:none）时挂载的行 offsetHeight 恒为 0，
+// 行高测量被跳过，所有行回退 estimatedHeight 摆位（间距虚大）。
+// 从隐藏变为可见（尺寸 0→非0）时 ResizeObserver 触发本回调，
+// 重新测量已挂载的行并写回缓存，布局随 measured/visibleRows 重算收敛。
+function remeasureVisibleRows() {
+  const root = containerEl.value
+  if (!root || root.offsetHeight === 0) return
+  for (const el of root.querySelectorAll<HTMLElement>('.virtual-item')) {
+    const key = el.dataset.vkey
+    if (!key) continue
+    const h = el.offsetHeight
+    if (h > 0 && heights.value.get(key) !== h) {
+      heights.value = new Map(heights.value).set(key, h)
+    }
+  }
+}
+
 function findScrollParent(el: HTMLElement): HTMLElement | null {
   let cur: HTMLElement | null = el.parentElement
   while (cur) {
@@ -114,6 +132,9 @@ async function setupScroll() {
       viewport.value = parent.clientHeight
     })
     ro.observe(parent)
+    // 观察容器自身：v-show 隐藏→可见时尺寸 0→非0 触发，重新测量行高
+    roSelf = new ResizeObserver(remeasureVisibleRows)
+    roSelf.observe(root)
   }
 }
 
@@ -124,6 +145,8 @@ function teardownScroll() {
   }
   ro?.disconnect()
   ro = null
+  roSelf?.disconnect()
+  roSelf = null
 }
 
 watch(virtualizing, (v) => {
