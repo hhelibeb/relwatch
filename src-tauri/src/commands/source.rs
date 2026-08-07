@@ -78,7 +78,11 @@ pub async fn add_source(
         };
         // 先把用户输入归一化为标准 owner（YouTube：@handle/链接 → channel_id），
         // 再查重与验证，保证去重与 RSS 拉取都基于统一的 channel_id。
-        resolved_owner = match adapter.resolve_owner(&client, &owner, youtube_api_key.as_deref()).await {
+        // token 按适配器声明的 auth_kind 选取（YouTube → Data API Key，GitHub → PAT）。
+        resolved_owner = match adapter
+            .resolve_owner(&client, &owner, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref()))
+            .await
+        {
             Ok(o) => o,
             Err((status, msg)) => {
                 let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
@@ -92,7 +96,10 @@ pub async fn add_source(
         if db::sources::source_exists(&conn, &source_type, &resolved_owner, &repo)? {
             return Ok(0);
         }
-        description = match adapter.verify_and_describe(&client, &resolved_owner, &repo, if source_type == "youtube" { youtube_api_key.as_deref() } else { github_token.as_deref() }).await {
+        description = match adapter
+            .verify_and_describe(&client, &resolved_owner, &repo, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref()))
+            .await
+        {
             Ok(d) => d,
             Err((status, msg)) => {
                 let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
@@ -111,11 +118,12 @@ pub async fn add_source(
     if id == 0 {
         return Ok(0);
     }
+    let (log_owner, log_repo) = db::logs::source_log_ident(&source_type, &resolved_owner, &repo, Some(&description));
     db::logs::write_log_key(
         &conn,
         "INFO",
         "source.added",
-        &json!({"source_type": &source_type, "owner": &resolved_owner, "repo": &repo}).to_string(),
+        &json!({"source_type": &source_type, "owner": &log_owner, "repo": &log_repo}).to_string(),
     );
     Ok(id)
 }
@@ -126,7 +134,10 @@ pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i
     let source = db::sources::get_source(&conn, id)?;
     db::sources::remove_source(&conn, id)?;
     match source {
-        Some(s) => db::logs::write_log_key(&conn, "INFO", "source.removed", &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string()),
+        Some(s) => {
+            let (log_owner, log_repo) = db::logs::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
+            db::logs::write_log_key(&conn, "INFO", "source.removed", &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string())
+        }
         None => db::logs::write_log_key(&conn, "INFO", "source.removed_unknown", &json!({"id": id}).to_string()),
     }
     // 删除源会级联删除其 releases（未读计数变化），通知托盘刷新角标
@@ -164,15 +175,17 @@ pub fn update_source(
         Some(s) => {
             let mut logged = false;
 
+            let (log_owner, log_repo) = db::logs::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
+
             // enabled 变化 → 暂停/恢复
             if old_enabled != Some(enabled) {
                 logged = true;
                 if enabled {
                     db::logs::write_log_key(&tx, "INFO", "source.log_resumed",
-                        &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                        &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
                 } else {
                     db::logs::write_log_key(&tx, "INFO", "source.log_paused",
-                        &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                        &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
                 }
             }
 
@@ -182,10 +195,10 @@ pub fn update_source(
                     logged = true;
                     if m {
                         db::logs::write_log_key(&tx, "INFO", "source.log_muted",
-                            &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                            &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
                     } else {
                         db::logs::write_log_key(&tx, "INFO", "source.log_unmuted",
-                            &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                            &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
                     }
                 }
             }
@@ -195,14 +208,14 @@ pub fn update_source(
                 if old_config.as_deref() != Some(c.as_str()) {
                     logged = true;
                     db::logs::write_log_key(&tx, "INFO", "source.log_config_updated",
-                        &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                        &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
                 }
             }
 
             // 没有具体变更被记录时，回退到通用 updated
             if !logged {
                 db::logs::write_log_key(&tx, "INFO", "source.updated",
-                    &json!({"owner": &s.owner, "repo": &s.repo, "id": id}).to_string());
+                    &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
             }
         }
         None => {

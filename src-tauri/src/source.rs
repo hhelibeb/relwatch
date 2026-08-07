@@ -18,6 +18,46 @@ use async_trait::async_trait;
 
 use crate::db::sources::Source;
 
+/// 源类型的鉴权方式：决定编排层从 settings 中取哪个 token 传给适配器。
+///
+/// 新增源类型只需在适配器中声明 `auth_kind`，编排层（poll.rs / commands）
+/// 通过 `token_for` 统一取 token，无需再按 source_type 字符串匹配。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthKind {
+    /// 无需鉴权（匿名请求）。
+    None,
+    /// GitHub Personal Access Token（KEY_GITHUB_TOKEN）。
+    GitHubToken,
+    /// YouTube Data API Key（KEY_YOUTUBE_API_KEY）。
+    YouTubeApiKey,
+}
+
+/// 根据适配器声明的鉴权方式，从 settings 中选出对应 token。
+/// 无鉴权源返回 None（适配器实现忽略 token 即可）。
+pub fn token_for<'a>(
+    adapter: &dyn SourceAdapter,
+    github_token: Option<&'a str>,
+    youtube_api_key: Option<&'a str>,
+) -> Option<&'a str> {
+    match adapter.auth_kind() {
+        AuthKind::None => None,
+        AuthKind::GitHubToken => github_token,
+        AuthKind::YouTubeApiKey => youtube_api_key,
+    }
+}
+
+/// 返回所有已注册的适配器。
+///
+/// 用于按能力枚举（如 filter_ai_eligible 收集不参与 AI 摘要的源类型），
+/// 新增源类型在此登记后自动生效，无需在编排层逐个特判。
+pub fn list_adapters() -> Vec<Box<dyn SourceAdapter>> {
+    vec![
+        Box::new(crate::github::GithubAdapter),
+        Box::new(crate::huggingface::HuggingFaceAdapter),
+        Box::new(crate::youtube::YoutubeAdapter),
+    ]
+}
+
 /// 监控源适配器 trait：把 fetch / save / verify / description 收敛为统一接口。
 ///
 /// `fetch` / `fetch_all` / `verify_and_describe` 接收的 `client` **不携带 default
@@ -29,6 +69,29 @@ use crate::db::sources::Source;
 pub trait SourceAdapter: Send + Sync {
     /// 该适配器处理的 source_type 字符串（如 "github" / "huggingface"）。
     fn source_type(&self) -> &'static str;
+
+    /// 该适配器的鉴权方式（决定编排层传哪个 token）。默认无鉴权。
+    fn auth_kind(&self) -> AuthKind {
+        AuthKind::None
+    }
+
+    /// 是否每次检查都按 fetch_history 数量拉历史（YouTube 频道用：
+    /// 重新配置 Data API Key 后可补拉历史视频）。默认 false：仅首次查询时全量拉历史。
+    fn always_fetch_history(&self) -> bool {
+        false
+    }
+
+    /// 该源类型是否参与 AI 摘要/翻译。返回 false 的源（如 YouTube 视频）
+    /// 在生成摘要前被编排层过滤。默认 true。
+    fn ai_eligible(&self) -> bool {
+        true
+    }
+
+    /// 检查成功后是否用 `verify_and_describe` 刷新 description
+    /// （GitHub 仓库描述 / YouTube 真实频道名）。默认 false。
+    fn refresh_description_after_check(&self) -> bool {
+        false
+    }
 
     /// 单页拉取（非翻页模式）。`token` 为该 source 对应的鉴权 token（可忽略）。
     async fn fetch(
@@ -94,5 +157,77 @@ pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, St
         "huggingface" => Ok(Box::new(crate::huggingface::HuggingFaceAdapter)),
         "youtube" => Ok(Box::new(crate::youtube::YoutubeAdapter)),
         other => Err((0, format!("err.unsupported_source|{}", other))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_get_adapter_known_types() {
+        for t in ["github", "huggingface", "youtube"] {
+            assert!(get_adapter(t).is_ok(), "{} 应注册适配器", t);
+        }
+    }
+
+    #[test]
+    fn test_get_adapter_unknown_type() {
+        match get_adapter("gitlab") {
+            Err((0, msg)) => assert!(msg.contains("unsupported_source")),
+            other => panic!("预期失败，实际返回 Ok: {}", other.is_ok()),
+        }
+    }
+
+    #[test]
+    fn test_token_for_picks_by_auth_kind() {
+        let github = get_adapter("github").unwrap();
+        let hf = get_adapter("huggingface").unwrap();
+        let yt = get_adapter("youtube").unwrap();
+
+        // GitHub：取 github token
+        assert_eq!(
+            token_for(github.as_ref(), Some("ghp"), Some("yt-key")),
+            Some("ghp")
+        );
+        // HuggingFace：无鉴权 → None（即使配置了 token 也不传）
+        assert_eq!(token_for(hf.as_ref(), Some("ghp"), Some("yt-key")), None);
+        // YouTube：取 Data API Key
+        assert_eq!(
+            token_for(yt.as_ref(), Some("ghp"), Some("yt-key")),
+            Some("yt-key")
+        );
+        // 未配置对应 token → None
+        assert_eq!(token_for(yt.as_ref(), None, None), None);
+    }
+
+    #[test]
+    fn test_list_adapters_capabilities() {
+        let adapters = list_adapters();
+        assert_eq!(adapters.len(), 3);
+
+        // AI 排除集合应只含 youtube（filter_ai_eligible 依赖此枚举）
+        let ineligible: Vec<&str> = adapters
+            .iter()
+            .filter(|a| !a.ai_eligible())
+            .map(|a| a.source_type())
+            .collect();
+        assert_eq!(ineligible, vec!["youtube"]);
+
+        // 每次检查都拉历史的只有 youtube
+        let always: Vec<&str> = adapters
+            .iter()
+            .filter(|a| a.always_fetch_history())
+            .map(|a| a.source_type())
+            .collect();
+        assert_eq!(always, vec!["youtube"]);
+
+        // 检查后刷新描述的：github + youtube
+        let refresh: Vec<&str> = adapters
+            .iter()
+            .filter(|a| a.refresh_description_after_check())
+            .map(|a| a.source_type())
+            .collect();
+        assert_eq!(refresh, vec!["github", "youtube"]);
     }
 }

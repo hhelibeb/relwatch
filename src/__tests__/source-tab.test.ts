@@ -144,7 +144,7 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(parseSourceUrlMock).toHaveBeenCalledWith('https://github.com/vuejs/core')
-    expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core')
+    expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core', undefined)
     expect((input.element as HTMLInputElement).value).toBe('')
   })
 
@@ -288,7 +288,7 @@ describe('SourceTab — 添加 Source', () => {
     await input.trigger('keyup.enter')
     await flushPromises()
 
-    expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core')
+    expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core', undefined)
   })
 
   it('清空按钮清空输入框', async () => {
@@ -561,7 +561,7 @@ describe('SourceTab — 打开 Source 链接和发布页', () => {
   it('有未读 release 时，显示待更新链接并点击 emit openUnreadReleases', async () => {
     const source = createSource({ id: 5, owner: 'vuejs', repo: 'core', enabled: true, last_check_status: 'ok' })
     const { wrapper } = mountSourceTab([source], {
-      unreadReleaseCounts: { 'vuejs/core': 3 },
+      unreadReleaseCounts: { 'github|vuejs|core': 3 },
     })
 
     const pendingLink = wrapper.get('.source-pending-link')
@@ -868,7 +868,7 @@ describe('SourceTab — Tooltip', () => {
       description: 'A JavaScript framework',
     })
     const { wrapper } = mountSourceTab([source], {
-      totalReleaseCounts: { 'vuejs/core': 50 },
+      totalReleaseCounts: { 'github|vuejs|core': 50 },
     })
 
     const healthDot = wrapper.get('.health-dot')

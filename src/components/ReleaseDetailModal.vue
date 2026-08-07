@@ -10,6 +10,7 @@ import { registerCloser, unregisterCloser, closeAllContextMenus } from '../compo
 import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel } from '../utils'
 import type { ReleaseContentMode } from './releaseTypes'
+import { getSourceTypeDef } from '../api/source-registry'
 
 // 版本详情弹窗：卡片只展示单一预览（摘要 > 译文 > 原文），点击后进入弹窗完整阅读，
 // 摘要/译文/原文的内容切换集中在弹窗内进行（卡片不再提供标签）。
@@ -216,7 +217,7 @@ watch(() => props.release.id, () => {
 const canTranslate = computed(() =>
   viewMode.value === 'full'
   && !props.release.body_translated
-  && props.release.source_type !== 'youtube'
+  && getSourceTypeDef(props.release.source_type)?.aiSummary !== false
   && aiEnabled.value
 )
 
@@ -280,8 +281,8 @@ function releaseDisplayTitle(release: ReleaseInfo): string {
   return name && name !== release.tag_name ? name : ''
 }
 
-// HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀
-const showReleaseRepo = computed(() => props.release.source_type !== 'huggingface')
+// HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）
+const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_type)?.showRepoInDetail !== false)
 
 function releaseImportanceText(release: ReleaseInfo): string {
   switch (release.ai_importance) {

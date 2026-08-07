@@ -1065,6 +1065,25 @@ impl SourceAdapter for YoutubeAdapter {
         "youtube"
     }
 
+    fn auth_kind(&self) -> crate::source::AuthKind {
+        crate::source::AuthKind::YouTubeApiKey
+    }
+
+    /// YouTube：每次检查都按 fetch_history_count 拉历史（配 key 后无需删源即可补拉）。
+    fn always_fetch_history(&self) -> bool {
+        true
+    }
+
+    /// YouTube 视频不生成 AI 摘要/翻译（用户明确要求，与 filter_ai_eligible 对应）。
+    fn ai_eligible(&self) -> bool {
+        false
+    }
+
+    /// 手动检查后刷新真实频道名（RSS 标题是播放列表名，频道页 og:title 才是真名）。
+    fn refresh_description_after_check(&self) -> bool {
+        true
+    }
+
     async fn fetch(
         &self,
         client: &reqwest::Client,
@@ -1913,7 +1932,7 @@ mod tests {
         // 这里直接验证 extract + page fetch 的核心逻辑：用 mock URL 走 fetch 分支。
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         // 通过内部函数模拟：先构造页面 URL（mock.uri() 充当频道页）
-        let resp = client.get(&format!("{}/@somehandle", mock.uri())).send().await.unwrap();
+        let resp = client.get(format!("{}/@somehandle", mock.uri())).send().await.unwrap();
         assert!(resp.status().is_success());
         let body = resp.text().await.unwrap();
         assert_eq!(

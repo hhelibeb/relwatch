@@ -17,6 +17,15 @@ impl SourceAdapter for GithubAdapter {
         "github"
     }
 
+    fn auth_kind(&self) -> crate::source::AuthKind {
+        crate::source::AuthKind::GitHubToken
+    }
+
+    /// GitHub 检查成功后刷新仓库描述。
+    fn refresh_description_after_check(&self) -> bool {
+        true
+    }
+
     async fn fetch(
         &self,
         client: &reqwest::Client,

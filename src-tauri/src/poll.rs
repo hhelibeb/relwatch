@@ -12,7 +12,6 @@ use crate::db::settings::{
     KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT, KEY_YOUTUBE_API_KEY,
 };
 use crate::crypto;
-use crate::github;
 use crate::http;
 use crate::deepseek;
 use crate::source;
@@ -211,17 +210,28 @@ async fn filter_ai_eligible(
     if saved.is_empty() {
         return Ok(vec![]);
     }
+    // 按注册表能力枚举不参与 AI 摘要/翻译的源类型（当前：youtube），
+    // 新增源类型在 list_adapters 登记并声明 ai_eligible=false 后自动生效，
+    // 无需在 DB 层或此处逐个 source_type 特判。
+    let ineligible_types: Vec<&'static str> = source::list_adapters()
+        .iter()
+        .filter(|a| !a.ai_eligible())
+        .map(|a| a.source_type())
+        .collect();
+    if ineligible_types.is_empty() {
+        return Ok(saved.to_vec());
+    }
     let ids: Vec<i64> = saved.iter().map(|(id, _)| *id).collect();
     let pool = db_pool.clone();
-    let youtube_ids: std::collections::HashSet<i64> = tokio::task::spawn_blocking(move || {
+    let excluded_ids: std::collections::HashSet<i64> = tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("err.db_lock|{}", e))?;
-        db::releases::youtube_release_ids(&conn, &ids)
+        db::releases::ai_ineligible_release_ids(&conn, &ids, &ineligible_types)
     })
     .await
     .map_err(|e| format!("err.filter_ai_eligible_panic|{}", e))??;
     Ok(saved
         .iter()
-        .filter(|(id, _)| !youtube_ids.contains(id))
+        .filter(|(id, _)| !excluded_ids.contains(id))
         .cloned()
         .collect())
 }
@@ -377,10 +387,24 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     let is_first_query = source_obj.last_checked_at.is_none()
         || source_obj.last_checked_at.as_deref() == Some("");
+    // 日志展示标识：YouTube 源用频道名替代 channel_id（repo 置空），避免 `owner/` 残废格式
+    let (log_owner, log_repo) = db::logs::source_log_ident(
+        &source_obj.source_type,
+        &source_obj.owner,
+        &source_obj.repo,
+        source_obj.description.as_deref(),
+    );
+    // source 分发收敛为 trait 调用；token 按适配器声明的 auth_kind 选取
+    // （YouTube → Data API Key，GitHub → PAT，HF → None），无需逐个 source_type 特判。
+    let adapter = match source::get_adapter(&source_obj.source_type) {
+        Ok(a) => a,
+        Err((_, msg)) => return Err(msg),
+    };
+    let token = source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref());
     // YouTube 源开启历史拉取时，每次检查都按 fetch_history_count 拉取历史：
     // save 阶段按 UNIQUE(source_id, tag_name) 去重跳过已存在条目，因此
     // 重新配置 Data API Key 后无需删除源即可补拉历史视频。RSS 模式单页拉取，不受影响。
-    let history_query = fetch_history && (is_first_query || source_obj.source_type == "youtube");
+    let history_query = fetch_history && (is_first_query || adapter.always_fetch_history());
     let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, fetch_history_count);
 
     // 从 AppHandle 提取依赖，注入提纯后的核心函数
@@ -406,23 +430,13 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
                     &conn,
                     "WARN",
                     "check.failed",
-                    &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &e}).to_string(),
+                    &json!({"owner": &log_owner, "repo": &log_repo, "error": &e}).to_string(),
                 );
             }
             return Err(e);
         }
     };
 
-    let adapter = match source::get_adapter(&source_obj.source_type) {
-        Ok(a) => a,
-        Err((_, msg)) => return Err(msg),
-    };
-    // YouTube 源用 Data API Key（配置时），其余源用各自的鉴权 token。
-    let token = if source_obj.source_type == "youtube" {
-        youtube_api_key.as_deref()
-    } else {
-        github_token.as_deref()
-    };
     let releases = match if needs_pagination {
         adapter.fetch_all(&client, &source_obj, max_count, token).await
     } else {
@@ -438,7 +452,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
                     &conn,
                     level,
                     "check.failed",
-                    &json!({"owner": &source_obj.owner, "repo": &source_obj.repo, "error": &msg}).to_string(),
+                    &json!({"owner": &log_owner, "repo": &log_repo, "error": &msg}).to_string(),
                 );
             }
             return Err(msg);
@@ -449,8 +463,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
     let db_pool_blk = db_pool.clone();
     let source_id = source_obj.id;
-    let owner = source_obj.owner.clone();
-    let repo = source_obj.repo.clone();
+    let owner = log_owner;
+    let repo = log_repo;
     let result = tokio::task::spawn_blocking(move || {
         let conn = match db_pool_blk.get() {
             Ok(c) => c,
@@ -478,24 +492,11 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     };
 
-    if source_obj.source_type == "github" {
-        if let Ok(desc) = github::fetch_repo_info(&client, &source_obj.owner, &source_obj.repo, github_token.as_deref()).await {
-            let db_pool_blk = db_pool.clone();
-            let source_id = source_obj.id;
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Ok(conn) = db_pool_blk.get() {
-                    let _ = db::sources::update_source_description(&conn, source_id, &desc);
-                }
-            })
-            .await;
-        }
-    }
-
-    // YouTube：手动检查时刷新频道名（RSS 标题是播放列表名，频道页 og:title 才是真名；
-    // API 模式直接用 channels.list 的 snippet.title）
-    if source_obj.source_type == "youtube" {
+    // 检查成功后按源类型能力刷新描述（GitHub 仓库描述 / YouTube 真实频道名），
+    // 统一走 adapter.verify_and_describe，无需逐个 source_type 特判。
+    if adapter.refresh_description_after_check() {
         if let Ok(desc) = adapter
-            .verify_and_describe(&client, &source_obj.owner, &source_obj.repo, youtube_api_key.as_deref())
+            .verify_and_describe(&client, &source_obj.owner, &source_obj.repo, token)
             .await
         {
             let db_pool_blk = db_pool.clone();
@@ -587,11 +588,12 @@ async fn do_poll_async(app: tauri::AppHandle) {
             for source in &sources {
                 if source.enabled && source.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     let _ = db::sources::update_source(&conn, source.id, false, source.poll_interval_minutes);
+                    let (log_owner, log_repo) = db::logs::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
                     db::logs::write_log_key(
                         &conn,
                         "WARN",
                         "source.log_auto_disabled",
-                        &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": source.id}).to_string(),
+                        &serde_json::json!({"owner": &log_owner, "repo": &log_repo, "id": source.id}).to_string(),
                     );
                     log::warn!(
                         "自动禁用 {}/{} (id={})：连续失败 {} 次",
@@ -677,19 +679,23 @@ async fn poll_all_sources_async(
         let client = client.clone();
         let source = source.clone();
         let db_pool = pool.clone();
-        // 按源类型选择鉴权 token：YouTube 源用 Data API Key（配置时），
-        // 其余源用 GitHub Token（HF 源忽略）。spawn 需要 'static，先克隆为 owned。
-        let token = if source.source_type == "youtube" {
-            youtube_api_key.map(|s| s.to_string())
-        } else {
-            github_token.map(|s| s.to_string())
+        // source 分发收敛为 trait 调用；token 按适配器声明的 auth_kind 选取
+        // （YouTube → Data API Key，GitHub → PAT，HF → None）。
+        // spawn 需要 'static，先克隆为 owned。
+        let adapter = match source::get_adapter(&source.source_type) {
+            Ok(a) => a,
+            Err((_, msg)) => {
+                log::error!("{}", msg);
+                continue;
+            }
         };
+        let token = source::token_for(adapter.as_ref(), github_token, youtube_api_key).map(|s| s.to_string());
 
         let is_first_query = source.last_checked_at.is_none()
             || source.last_checked_at.as_deref() == Some("");
         // 同 check_single_source：YouTube 源开启历史拉取时每次检查都按 count 拉历史
         // （API 模式翻页拉取 + save 去重，支持配 key 后补拉历史；RSS 模式单页不受影响）
-        let history_query = fetch_history && (is_first_query || source.source_type == "youtube");
+        let history_query = fetch_history && (is_first_query || adapter.always_fetch_history());
         let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, fetch_history_count);
 
         handles.push(tokio::spawn(async move {
@@ -698,14 +704,6 @@ async fn poll_all_sources_async(
                 Ok(p) => p,
                 Err(e) => {
                     log::error!("err.sem_closed|{}", e);
-                    return (vec![], vec![]);
-                }
-            };
-            // source 分发收敛为 trait 调用，消除原裸 `if source_type == "huggingface"` 分叉
-            let adapter = match source::get_adapter(&source.source_type) {
-                Ok(a) => a,
-                Err((_, msg)) => {
-                    log::error!("{}", msg);
                     return (vec![], vec![]);
                 }
             };
@@ -721,8 +719,7 @@ async fn poll_all_sources_async(
                     // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
                     let db_pool_blk = db_pool.clone();
                     let source_id = source.id;
-                    let owner = source.owner.clone();
-                    let repo = source.repo.clone();
+                    let (owner, repo) = db::logs::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
                     let result = tokio::task::spawn_blocking(move || {
                         let conn = match db_pool_blk.get() {
                             Ok(c) => c,
@@ -753,8 +750,7 @@ async fn poll_all_sources_async(
                 Err((status, msg)) => {
                     let db_pool_blk = db_pool.clone();
                     let source_id = source.id;
-                    let owner = source.owner.clone();
-                    let repo = source.repo.clone();
+                    let (owner, repo) = db::logs::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
                     let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = db_pool_blk.get() {
@@ -926,6 +922,7 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github;
 
     #[test]
     fn test_poll_lock_acquire_and_release() {

@@ -39,7 +39,10 @@ pub fn set_notification_state(
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
     match rel {
-        Some(r) => db::logs::write_log_key(&conn, "INFO", "release.status_changed", &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": release_id, "action": &status}).to_string()),
+        Some(r) => {
+            let (log_owner, log_repo, log_tag) = db::logs::release_log_ident(&r);
+            db::logs::write_log_key(&conn, "INFO", "release.status_changed", &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": release_id, "action": &status}).to_string())
+        }
         None => db::logs::write_log_key(&conn, "INFO", "release.status_changed_unknown", &json!({"id": release_id, "action": &status}).to_string()),
     }
 
@@ -103,9 +106,12 @@ pub async fn translate_release(
             if r.body_translated.is_some() {
                 return Ok(());
             }
-            // youtube 源不生成 AI 翻译（与 poll 侧摘要/翻译排除策略一致，见 poll.rs filter_ai_eligible）
-            if r.source_type == "youtube" {
-                return Err(format!("err.youtube_no_ai|{}", release_id));
+            // 不参与 AI 摘要/翻译的源类型（如 youtube）不生成翻译，
+            // 与 poll 侧 filter_ai_eligible 的排除策略一致，统一由适配器能力声明驱动。
+            if let Ok(adapter) = crate::source::get_adapter(&r.source_type) {
+                if !adapter.ai_eligible() {
+                    return Err(format!("err.youtube_no_ai|{}", release_id));
+                }
             }
         }
         existing

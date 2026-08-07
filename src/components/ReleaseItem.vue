@@ -8,6 +8,7 @@ import { openReleaseUrl } from '../api/client'
 import { t } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
+import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 
 const props = defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
@@ -108,7 +109,7 @@ const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(nu
 const canTranslate = computed(() =>
   !!props.release.body
   && !props.release.body_translated
-  && props.release.source_type !== 'youtube'
+  && getSourceTypeDef(props.release.source_type)?.aiSummary !== false
   && aiEnabled.value
 )
 // 使用 computed 保证语言切换后右键菜单 label 实时更新
@@ -265,28 +266,11 @@ function releaseDisplayTitle(release: ReleaseInfo): string {
 
 // ========== HuggingFace 模型元数据 ==========
 // HF 源的 release.extra_metadata 存储模型元数据 JSON（pipeline_tag/downloads/likes/gated/tags）
-// body 列存模型 README（人类可读内容）
-interface HfMeta {
-  pipeline_tag: string | null
-  downloads: number | null
-  likes: number | null
-  gated: boolean | null
-}
+// body 列存模型 README（人类可读内容）；解析逻辑收敛在 source-registry 的 renderMeta。
 
-const hfMeta = computed<HfMeta | null>(() => {
-  if (props.release.source_type !== 'huggingface' || !props.release.extra_metadata) return null
-  try {
-    const obj = JSON.parse(props.release.extra_metadata)
-    return {
-      pipeline_tag: typeof obj.pipeline_tag === 'string' ? obj.pipeline_tag : null,
-      downloads: typeof obj.downloads === 'number' ? obj.downloads : null,
-      likes: typeof obj.likes === 'number' ? obj.likes : null,
-      gated: typeof obj.gated === 'boolean' ? obj.gated : null,
-    }
-  } catch {
-    return null
-  }
-})
+const hfMeta = computed<HfMetaView | null>(() =>
+  getSourceTypeDef(props.release.source_type)?.renderMeta?.(props.release) ?? null
+)
 
 function formatCount(n: number): string {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
@@ -322,17 +306,17 @@ function hideHfTooltip() {
   hfHoverTooltip.value = null
 }
 
-// HF 源 tag_name 已含组织名（如 moonshotai/Kimi-K2.7-Code），不重复显示 release-repo 前缀
-const showReleaseRepo = computed(() => props.release.source_type !== 'huggingface' && props.release.source_type !== 'youtube')
+// 展示行为按源类型注册表能力决定（github 显示 owner/repo 前缀；HF/YT 隐藏）
+const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_type)?.showRepoPrefix === true)
 
 // YouTube 源：channel_id 无展示意义，tag_name（videoId）同样隐藏；
 // 显示真实频道名（source_description，兼容旧版 "YouTube channel: " 前缀）
-const isYoutube = computed(() => props.release.source_type === 'youtube')
-const showReleaseTag = computed(() => props.release.source_type !== 'youtube')
+const isYoutube = computed(() => getSourceTypeDef(props.release.source_type)?.youtubeLayout === true)
+const showReleaseTag = computed(() => getSourceTypeDef(props.release.source_type)?.showTag !== false)
 const youtubeChannelName = computed(() => {
-  const d = (props.release.source_description ?? '').trim()
-  if (d.startsWith('YouTube channel: ')) return d.slice('YouTube channel: '.length)
-  return d || props.release.owner
+  const def = getSourceTypeDef(props.release.source_type)
+  return def?.displayName?.(props.release.owner, props.release.repo, props.release.source_description)
+    ?? `${props.release.owner}/${props.release.repo}`
 })
 
 // YouTube 视频元数据（封面缩略图 / 类型 / 时长）

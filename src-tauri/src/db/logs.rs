@@ -12,6 +12,37 @@ pub struct LogEntry {
     pub rendered_message: Option<String>,
 }
 
+/// 日志展示标识：YouTube 源用频道名（description）替代 channel_id，repo 置空；
+/// 其余源保持 owner/repo 原样（GitHub 的 `{owner}/{repo}` 模板才能正常渲染）。
+pub fn source_log_ident(
+    source_type: &str,
+    owner: &str,
+    repo: &str,
+    description: Option<&str>,
+) -> (String, String) {
+    if source_type == "youtube" {
+        let name = description.filter(|d| !d.is_empty()).unwrap_or(owner);
+        (name.to_string(), String::new())
+    } else {
+        (owner.to_string(), repo.to_string())
+    }
+}
+
+/// release 级日志展示标识：YouTube 源额外用视频标题（release_name）替代 video_id。
+/// 返回 (owner, repo, tag) 三元组，供 `{owner}/{repo} {tag}` 类模板渲染。
+pub fn release_log_ident(r: &crate::db::releases::ReleaseInfo) -> (String, String, String) {
+    if r.source_type == "youtube" {
+        let owner = r
+            .source_description
+            .clone()
+            .filter(|d| !d.is_empty())
+            .unwrap_or_else(|| r.owner.clone());
+        (owner, String::new(), r.release_name.clone())
+    } else {
+        (r.owner.clone(), r.repo.clone(), r.tag_name.clone())
+    }
+}
+
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
     let now = chrono::Utc::now().to_rfc3339();
     let _ = conn.execute(

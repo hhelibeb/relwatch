@@ -7,6 +7,7 @@ import { useContextMenu } from '../composables/useContextMenu'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
 import { openReleaseUrl } from '../api/client'
+import { getSourceTypeDef, sourceRepoKey } from '../api/source-registry'
 import ReleaseItem from './ReleaseItem.vue'
 
 const props = defineProps<{
@@ -14,15 +15,12 @@ const props = defineProps<{
   isFiltering: boolean
 }>()
 
-/** 分组显示名：YouTube 用频道名（channel_id 无阅读意义），其余用 owner/repo。 */
+/** 分组显示名：按注册表 displayName（YouTube 频道名），其余 owner/repo。 */
 function repoGroupName(group: RepoGroup): string {
   const first = group.releases[0]
-  if (first.source_type === 'youtube') {
-    const d = (first.source_description ?? '').trim()
-    if (d.startsWith('YouTube channel: ')) return d.slice('YouTube channel: '.length)
-    return d || `${first.owner}/${first.repo}`
-  }
-  return group.key
+  const name = getSourceTypeDef(first.source_type)?.displayName?.(first.owner, first.repo, first.source_description)
+  if (name) return name
+  return `${first.owner}/${first.repo}`
 }
 
 // open-detail 携带导航序列：聚合视图使用当前仓库分组内的版本序列，
@@ -30,7 +28,7 @@ function repoGroupName(group: RepoGroup): string {
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]] }>()
 
 function forwardOpenDetail(release: ReleaseInfo) {
-  const key = `${release.owner}/${release.repo}`
+  const key = sourceRepoKey(release.source_type, release.owner, release.repo)
   const group = repoGroups.value.find(g => g.key === key)
   emit('open-detail', release, group ? group.releases : [release])
 }
@@ -40,7 +38,8 @@ const expandedRepos = ref<Set<string>>(new Set())
 const repoGroups = computed(() => {
   const map = new Map<string, ReleaseInfo[]>()
   for (const release of props.releases) {
-    const key = `${release.owner}/${release.repo}`
+    // 分组键含 source_type，避免不同类型同 owner/repo 串源
+    const key = sourceRepoKey(release.source_type, release.owner, release.repo)
     if (!map.has(key)) map.set(key, [])
     map.get(key)!.push(release)
   }

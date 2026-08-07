@@ -57,6 +57,10 @@ export function tm(key: string, args: Record<string, string>): string {
     const ak = actionKeys[args.action] || args.action
     args = { ...args, action: t(ak) }
   }
+  // 空 repo 兜底：GitHub 风格模板 {owner}/{repo} 在 repo 为空时省略斜杠（YouTube 源）
+  if (args.repo === '') {
+    text = text!.replace('/{repo}', '')
+  }
   Object.entries(args).forEach(([k, v]) => {
     text = text!.replace(`{${k}}`, v)
   })

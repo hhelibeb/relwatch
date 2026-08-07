@@ -112,25 +112,32 @@ pub fn get_releases_without_translation(
     Ok(releases)
 }
 
-/// 返回给定 release id 中属于 youtube 源的 id 集合。
-/// 用于 poll 编排层在生成 AI 摘要/翻译前过滤掉 youtube 源（用户要求无需摘要）。
-pub fn youtube_release_ids(
+/// 返回给定 release id 中属于“不参与 AI 摘要/翻译”源类型（如 youtube）的 id 集合。
+///
+/// 类型集合由调用方（poll 编排层）从 `source::list_adapters()` 能力声明收集，
+/// 新增源类型声明 `ai_eligible=false` 后自动生效，此处不硬编码具体类型。
+pub fn ai_ineligible_release_ids(
     conn: &Connection,
     ids: &[i64],
+    ineligible_types: &[&str],
 ) -> Result<std::collections::HashSet<i64>, String> {
     use std::collections::HashSet;
-    if ids.is_empty() {
+    if ids.is_empty() || ineligible_types.is_empty() {
         return Ok(HashSet::new());
     }
-    let placeholders = vec!["?"; ids.len()].join(",");
+    let id_placeholders = vec!["?"; ids.len()].join(",");
+    let type_placeholders = vec!["?"; ineligible_types.len()].join(",");
     let sql = format!(
         "SELECT r.id FROM releases r JOIN sources s ON s.id = r.source_id
-         WHERE s.source_type = 'youtube' AND r.id IN ({})",
-        placeholders
+         WHERE s.source_type IN ({}) AND r.id IN ({})",
+        type_placeholders, id_placeholders
     );
+    let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
+    params.extend(ineligible_types.iter().map(|t| t as &dyn rusqlite::ToSql));
+    params.extend(ids.iter().map(|id| id as &dyn rusqlite::ToSql));
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(rusqlite::params_from_iter(ids.iter()), |row| {
+        .query_map(rusqlite::params_from_iter(params), |row| {
             row.get::<_, i64>(0)
         })
         .map_err(|e| e.to_string())?;
@@ -826,10 +833,10 @@ mod tests {
     /// 同时插入 github 与 youtube 源各一条带 body 的 release，
     /// 验证摘要/翻译候选列表排除 youtube 源。
     fn seed_gh_and_yt_releases(conn: &rusqlite::Connection) -> (i64, i64) {
-        let gh = sources::add_source(&conn, "github", "o", "r", "").unwrap();
-        let yt = sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
-        let gh_id = insert_release(&conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh body")).unwrap();
-        let yt_id = insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt body")).unwrap();
+        let gh = sources::add_source(conn, "github", "o", "r", "").unwrap();
+        let yt = sources::add_source(conn, "youtube", "UCabc123", "", "").unwrap();
+        let gh_id = insert_release(conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh body")).unwrap();
+        let yt_id = insert_release(conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt body")).unwrap();
         (gh_id, yt_id)
     }
 
@@ -852,25 +859,45 @@ mod tests {
     }
 
     #[test]
-    fn test_youtube_release_ids_returns_only_yt() {
+    fn test_ai_ineligible_release_ids_returns_only_ineligible() {
         let conn = init_memory_db().unwrap();
         let (gh_id, yt_id) = seed_gh_and_yt_releases(&conn);
-        let ids = youtube_release_ids(&conn, &[gh_id, yt_id]).unwrap();
+        let ids = ai_ineligible_release_ids(&conn, &[gh_id, yt_id], &["youtube"]).unwrap();
         assert_eq!(ids.len(), 1);
         assert!(ids.contains(&yt_id), "只应包含 youtube 源的 release id");
     }
 
     #[test]
-    fn test_youtube_release_ids_empty_input() {
+    fn test_ai_ineligible_release_ids_empty_input() {
         let conn = init_memory_db().unwrap();
-        assert!(youtube_release_ids(&conn, &[]).unwrap().is_empty());
+        assert!(ai_ineligible_release_ids(&conn, &[], &["youtube"])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
-    fn test_youtube_release_ids_non_yt_only_empty() {
+    fn test_ai_ineligible_release_ids_empty_types_skips() {
         let conn = init_memory_db().unwrap();
         let (gh_id, _) = seed_gh_and_yt_releases(&conn);
-        let ids = youtube_release_ids(&conn, &[gh_id]).unwrap();
-        assert!(ids.is_empty(), "github 源不应被标记为 youtube");
+        // 无排除类型 → 直接返回空集（不生成无效 IN () SQL）
+        assert!(ai_ineligible_release_ids(&conn, &[gh_id], &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_ai_ineligible_release_ids_other_type_returns_only_matched() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, yt_id) = seed_gh_and_yt_releases(&conn);
+        // 传入的排除类型为 github 时，只返回 github 源 id
+        let ids = ai_ineligible_release_ids(&conn, &[gh_id, yt_id], &["github"]).unwrap();
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains(&gh_id));
+    }
+
+    #[test]
+    fn test_ai_ineligible_release_ids_non_ineligible_only_empty() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, _) = seed_gh_and_yt_releases(&conn);
+        let ids = ai_ineligible_release_ids(&conn, &[gh_id], &["youtube"]).unwrap();
+        assert!(ids.is_empty(), "github 源不应被标记为排除类型");
     }
 }

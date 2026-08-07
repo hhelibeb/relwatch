@@ -392,17 +392,17 @@ describe('App.vue — 版本统计 computed', () => {
   it('repoKey 统一小写', async () => {
     const wrapper = await mountApp()
 
-    expect((wrapper.vm as any).repoKey('Tauri-Apps', 'Tauri')).toBe('tauri-apps/tauri')
-    expect((wrapper.vm as any).repoKey('VueJS', 'Core')).toBe('vuejs/core')
+    expect((wrapper.vm as any).repoKey('github', 'Tauri-Apps', 'Tauri')).toBe('github|tauri-apps|tauri')
+    expect((wrapper.vm as any).repoKey('github', 'VueJS', 'Core')).toBe('github|vuejs|core')
   })
 
   it('unreadReleaseCounts 按 repo 统计未读', async () => {
     const { isUnreadStatus } = await import('../utils')
     vi.mocked(isUnreadStatus).mockImplementation((status: string) => status === 'pending')
     vi.mocked(getReleases).mockResolvedValue([
-      { id: 1, owner: 'tauri-apps', repo: 'tauri', notification_status: 'pending', snooze_until: null } as never,
-      { id: 2, owner: 'tauri-apps', repo: 'tauri', notification_status: 'pending', snooze_until: null } as never,
-      { id: 3, owner: 'vuejs', repo: 'core', notification_status: 'clicked', snooze_until: null } as never,
+      { id: 1, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', notification_status: 'pending', snooze_until: null } as never,
+      { id: 2, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', notification_status: 'pending', snooze_until: null } as never,
+      { id: 3, source_type: 'github', owner: 'vuejs', repo: 'core', notification_status: 'clicked', snooze_until: null } as never,
     ])
 
     const wrapper = await mountApp()
@@ -411,15 +411,15 @@ describe('App.vue — 版本统计 computed', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
 
     const counts = (wrapper.vm as any).unreadReleaseCounts
-    expect(counts['tauri-apps/tauri']).toBe(2)
-    expect(counts['vuejs/core']).toBeUndefined()
+    expect(counts['github|tauri-apps|tauri']).toBe(2)
+    expect(counts['github|vuejs|core']).toBeUndefined()
   })
 
   it('totalReleaseCounts 按 repo 统计总数', async () => {
     vi.mocked(getReleases).mockResolvedValue([
-      { id: 1, owner: 'a', repo: 'b', notification_status: 'pending' } as never,
-      { id: 2, owner: 'a', repo: 'b', notification_status: 'clicked' } as never,
-      { id: 3, owner: 'c', repo: 'd', notification_status: 'ignored' } as never,
+      { id: 1, source_type: 'github', owner: 'a', repo: 'b', notification_status: 'pending' } as never,
+      { id: 2, source_type: 'github', owner: 'a', repo: 'b', notification_status: 'clicked' } as never,
+      { id: 3, source_type: 'github', owner: 'c', repo: 'd', notification_status: 'ignored' } as never,
     ])
 
     const wrapper = await mountApp()
@@ -427,8 +427,8 @@ describe('App.vue — 版本统计 computed', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
 
     const counts = (wrapper.vm as any).totalReleaseCounts
-    expect(counts['a/b']).toBe(2)
-    expect(counts['c/d']).toBe(1)
+    expect(counts['github|a|b']).toBe(2)
+    expect(counts['github|c|d']).toBe(1)
   })
 })
 

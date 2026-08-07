@@ -91,12 +91,15 @@ mod inner {
                                     &conn, rid, "clicked", None,
                                 );
                                 match rel {
-                                    Some(r) => crate::db::logs::write_log_key(
-                                        &conn,
-                                        "INFO",
-                                        "release.go",
-                                        &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                    ),
+                                    Some(r) => {
+                                        let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                        crate::db::logs::write_log_key(
+                                            &conn,
+                                            "INFO",
+                                            "release.go",
+                                            &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                        )
+                                    }
                                     None => crate::db::logs::write_log_key(
                                         &conn,
                                         "INFO",
@@ -121,12 +124,15 @@ mod inner {
                                     &conn, rid, "ignored", None,
                                 );
                                 match rel {
-                                    Some(r) => crate::db::logs::write_log_key(
-                                        &conn,
-                                        "INFO",
-                                        "release.ignored",
-                                        &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                    ),
+                                    Some(r) => {
+                                        let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                        crate::db::logs::write_log_key(
+                                            &conn,
+                                            "INFO",
+                                            "release.ignored",
+                                            &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                        )
+                                    }
                                     None => crate::db::logs::write_log_key(
                                         &conn,
                                         "INFO",
@@ -148,12 +154,15 @@ mod inner {
                                     Some(&until.to_rfc3339()),
                                 );
                                 match rel {
-                                    Some(r) => crate::db::logs::write_log_key(
-                                        &conn,
-                                        "INFO",
-                                        "release.snoozed",
-                                        &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                    ),
+                                    Some(r) => {
+                                        let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                        crate::db::logs::write_log_key(
+                                            &conn,
+                                            "INFO",
+                                            "release.snoozed",
+                                            &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                        )
+                                    }
                                     None => crate::db::logs::write_log_key(
                                         &conn,
                                         "INFO",
@@ -256,12 +265,15 @@ mod inner {
                                 &conn, rid, "clicked", None,
                             );
                             match rel {
-                                Some(r) => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.go",
-                                    &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                ),
+                                Some(r) => {
+                                    let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                    crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.go",
+                                        &serde_json::json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                    )
+                                }
                                 None => crate::db::logs::write_log_key(
                                     &conn,
                                     "INFO",
@@ -291,12 +303,15 @@ mod inner {
                                 &conn, rid, "ignored", None,
                             );
                             match rel {
-                                Some(r) => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.ignored",
-                                    &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                ),
+                                Some(r) => {
+                                    let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                    crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.ignored",
+                                        &serde_json::json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                    )
+                                }
                                 None => crate::db::logs::write_log_key(
                                     &conn,
                                     "INFO",
@@ -323,12 +338,15 @@ mod inner {
                                 Some(&until.to_rfc3339()),
                             );
                             match rel {
-                                Some(r) => crate::db::logs::write_log_key(
-                                    &conn,
-                                    "INFO",
-                                    "release.snoozed",
-                                    &serde_json::json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": rid}).to_string(),
-                                ),
+                                Some(r) => {
+                                    let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                    crate::db::logs::write_log_key(
+                                        &conn,
+                                        "INFO",
+                                        "release.snoozed",
+                                        &serde_json::json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                    )
+                                }
                                 None => crate::db::logs::write_log_key(
                                     &conn,
                                     "INFO",

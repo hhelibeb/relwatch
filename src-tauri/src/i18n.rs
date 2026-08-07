@@ -264,6 +264,12 @@ pub fn render(key: &str, args: &Value, locale: &str) -> String {
         text = resolve_action(&text, action_val, dict);
     }
 
+    // 3.0 空 repo 兜底：GitHub 风格模板 `{owner}/{repo}` 在 repo 为空时省略斜杠
+    // （YouTube 源 repo 为空，显示为 `频道名` 而非 `频道名/`）
+    if raw_map.get("repo").is_some_and(|v| v.as_str().is_some_and(|s| s.is_empty())) {
+        text = text.replace("/{repo}", "");
+    }
+
     // 3. 替换其他占位符（所有值类型都转成字符串）
     for (k, v) in raw_map.iter() {
         if k == "action" {
@@ -376,6 +382,38 @@ mod tests {
     fn test_render_source_removed() {
         let r = render("source.removed", &json!({"owner":"user","repo":"repo","id":"5"}), "zh-CN");
         assert_eq!(r, "移除监控源 user/repo id=5");
+    }
+
+    #[test]
+    fn test_render_youtube_source_removed_empty_repo() {
+        // YouTube 源 repo 为空：展示频道名，且 `{owner}/{repo}` 模板应省略斜杠
+        let r = render("source.removed", &json!({"owner":"Fireship","repo":"","id":"71"}), "zh-CN");
+        assert_eq!(r, "移除监控源 Fireship id=71");
+    }
+
+    #[test]
+    fn test_render_youtube_check_manual_empty_repo() {
+        let r = render("check.manual", &json!({"owner":"Fireship","repo":"","count":232}), "zh-CN");
+        assert_eq!(r, "[手动] 检查 Fireship: 232 个新版本");
+    }
+
+    #[test]
+    fn test_render_youtube_status_changed_uses_release_name() {
+        let r = render("release.status_changed", &json!({"owner":"Fireship","repo":"","tag":"The Future of Web Dev","id":95900,"action":"ignored"}), "zh-CN");
+        assert_eq!(r, "Fireship The Future of Web Dev 已忽略(id=95900)");
+    }
+
+    #[test]
+    fn test_render_youtube_status_changed_empty_repo_en() {
+        let r = render("release.status_changed", &json!({"owner":"Fireship","repo":"","tag":"The Future of Web Dev","id":95900,"action":"ignored"}), "en-US");
+        assert_eq!(r, "Fireship The Future of Web Dev - Ignored (id=95900)");
+    }
+
+    #[test]
+    fn test_render_non_youtube_unchanged_with_empty_repo_field() {
+        // GitHub 源即使 repo 字段为空（异常数据），斜杠同样被省略，不产生 `user/` 残废格式
+        let r = render("source.removed", &json!({"owner":"user","repo":"","id":"5"}), "zh-CN");
+        assert_eq!(r, "移除监控源 user id=5");
     }
 
     #[test]

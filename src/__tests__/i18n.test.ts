@@ -123,6 +123,37 @@ describe('i18n 核心函数', () => {
       const result = i18n.tm('source.never_checked', {})
       expect(result).toBe('从未检查')
     })
+
+    it('repo 为空时省略 {owner}/{repo} 中的斜杠（YouTube 源日志）', () => {
+      expect(i18n.tm('check.manual', { owner: 'Fireship', repo: '', count: '232' })).toBe('[手动] 检查 Fireship: 232 个新版本')
+      expect(i18n.tm('source.removed', { owner: 'Fireship', repo: '', id: '71' })).toBe('移除监控源 Fireship id=71')
+      expect(i18n.tm('source.added', { source_type: 'youtube', owner: 'Fireship', repo: '' })).toBe('添加监控源: youtube Fireship')
+    })
+
+    it('repo 为空时 status_changed 用视频标题替代 tag（YouTube 源）', () => {
+      expect(
+        i18n.tm('release.status_changed', {
+          owner: 'Fireship',
+          repo: '',
+          tag: 'The Future of Web Dev',
+          id: '95900',
+          action: 'ignored',
+        }),
+      ).toBe('Fireship The Future of Web Dev 已忽略(id=95900)')
+    })
+
+    it('repo 非空时保持 owner/repo 原样（GitHub 源）', () => {
+      expect(i18n.tm('check.manual', { owner: 'user', repo: 'myapp', count: '3' })).toBe('[手动] 检查 user/myapp: 3 个新版本')
+      expect(
+        i18n.tm('release.status_changed', {
+          owner: 'user',
+          repo: 'myapp',
+          tag: 'v1.0',
+          id: '123',
+          action: 'pending',
+        }),
+      ).toBe('user/myapp v1.0 未读(id=123)')
+    })
   })
 
   // ── translateError（与 Rust translate_error_str 保持一致）─────

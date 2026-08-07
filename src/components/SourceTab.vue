@@ -3,6 +3,8 @@ import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from '
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig } from '../api/sources'
+// 源类型展示/解析统一走注册表（真实模块，避免被测试 mock 的 '../api/sources' 遮蔽）
+import { getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey } from '../api/source-registry'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
@@ -212,29 +214,22 @@ const sortDirectionOptions = computed(() => [
 const { contextMenu, closeContextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
 function openSourceUrl(source: Source) {
-  if (source.source_type === 'youtube') {
-    openReleaseUrl(`https://www.youtube.com/channel/${source.owner}`)
-  } else if (source.source_type === 'huggingface') {
-    openReleaseUrl(`https://huggingface.co/${source.owner}`)
-  } else {
-    openReleaseUrl(`https://github.com/${source.owner}/${source.repo}`)
-  }
+  openReleaseUrl(sourceHomeUrl(source))
+}
+
+/** 源主页 URL（未知类型回退 GitHub）。 */
+function sourceHomeUrl(source: Source): string {
+  return getSourceTypeDef(source.source_type)?.homeUrl(source.owner, source.repo)
+    ?? `https://github.com/${source.owner}/${source.repo}`
 }
 
 function sourceTypeIcon(type: string): string {
-  switch (type) {
-    case 'huggingface': return '/icons.svg#huggingface-icon'
-    case 'youtube': return '/icons.svg#youtube-icon'
-    default: return '/icons.svg#github-mark'
-  }
+  return getSourceTypeDef(type)?.icon ?? '/icons.svg#github-mark'
 }
 
 function sourceTypeTitle(type: string): string {
-  switch (type) {
-    case 'huggingface': return t('source.type_huggingface')
-    case 'youtube': return t('source.type_youtube')
-    default: return t('source.type_github')
-  }
+  const def = getSourceTypeDef(type)
+  return def ? t(def.titleKey) : t('source.type_github')
 }
 
 /** 解析源的 YouTube 订阅配置（缺失字段回退默认：视频/直播勾选、帖子不勾选）。 */
@@ -267,25 +262,13 @@ async function handleYtConfigToggle(source: Source, key: 'videos' | 'live', valu
 /** 输入为 YouTube 频道时，展开订阅内容复选框行。 */
 const isYoutubeInput = computed(() => {
   if (headerMode.value !== 'add') return false
-  return parseSourceUrl(urlInput.value)?.type === 'youtube'
+  const parsed = parseSourceUrl(urlInput.value)
+  return parsed ? !!getSourceTypeDef(parsed.type)?.hasConfigInput : false
 })
 
-function sourceQuery(source: Source): string {
-  return `${source.owner}/${source.repo}`
-}
-
+/** 计数键统一为 source_type|owner|repo，避免不同类型同 owner/repo 串源。 */
 function sourceKey(source: Source): string {
-  return sourceQuery(source).toLowerCase()
-}
-
-/** 源显示名：YouTube 显示频道名（description），兼容旧版 "YouTube channel: " 前缀。 */
-function sourceDisplayName(source: Source): string {
-  if (source.source_type === 'youtube') {
-    const d = (source.description ?? '').trim()
-    if (d.startsWith('YouTube channel: ')) return d.slice('YouTube channel: '.length)
-    return d || source.owner
-  }
-  return source.repo ? `${source.owner}/${source.repo}` : source.owner
+  return sourceRepoKey(source.source_type, source.owner, source.repo)
 }
 
 function unreadReleaseCount(source: Source): number {
@@ -300,15 +283,12 @@ function openSourceUnreadReleases(source: Source) {
   emit('openUnreadReleases', sourceSearchQuery(source))
 }
 
-/** 跳转版本列表时的搜索关键词：YouTube 用频道名（channel_id 无阅读意义）。 */
-function sourceSearchQuery(source: Source): string {
-  return source.source_type === 'youtube' ? sourceDisplayName(source) : sourceQuery(source)
-}
-
-function sourceExists(owner: string, repo: string): boolean {
+/** 查重：与后端 UNIQUE(source_type, owner, repo) 对齐，含 source_type。 */
+function sourceExists(parsed: { type: string; owner: string; repo: string }): boolean {
   return props.sources.some(source =>
-    source.owner.toLowerCase() === owner.toLowerCase() &&
-    source.repo.toLowerCase() === repo.toLowerCase()
+    source.source_type === parsed.type &&
+    source.owner.toLowerCase() === parsed.owner.toLowerCase() &&
+    source.repo.toLowerCase() === parsed.repo.toLowerCase()
   )
 }
 
@@ -320,22 +300,22 @@ async function handleAdd() {
     await message(t('source.invalid_url'), { title: t('source.input_invalid'), kind: 'warning' })
     return
   }
-  if (sourceExists(parsed.owner, parsed.repo)) {
+  if (sourceExists(parsed)) {
     showToast?.(t('source.exists'))
     return
   }
   loading.value = true
   try {
-    const config = parsed.type === 'youtube'
+    const def = getSourceTypeDef(parsed.type)
+    // 有专属配置 UI 的类型（YouTube 订阅复选框）才携带 config
+    const config = def?.hasConfigInput
       ? buildYoutubeConfig(subscribeVideos.value, subscribeLive.value, subscribePosts.value)
       : undefined
-    if (parsed.type === 'youtube' && !subscribeVideos.value && !subscribeLive.value) {
+    if (def?.hasConfigInput && !subscribeVideos.value && !subscribeLive.value) {
       await message(t('source.require_subscribe'), { title: t('source.input_invalid'), kind: 'warning' })
       return
     }
-    const id = parsed.type === 'youtube'
-      ? await addSource(parsed.type, parsed.owner, parsed.repo, config)
-      : await addSource(parsed.type, parsed.owner, parsed.repo)
+    const id = await addSource(parsed.type, parsed.owner, parsed.repo, config)
     if (id === 0) {
       showToast?.(t('source.exists'))
       return
@@ -646,7 +626,7 @@ function hideHealthTooltip() {
               <svg><use :href="sourceTypeIcon(source.source_type)"/></svg>
             </span>
             <span class="source-name">{{ sourceDisplayName(source) }}</span>
-            <button class="btn-icon-link" @click="openSourceUrl(source)" @contextmenu.prevent.stop="handleContextMenu($event, source.source_type === 'huggingface' ? `https://huggingface.co/${source.owner}` : `https://github.com/${source.owner}/${source.repo}`)" :title="t('source.visit')">
+            <button class="btn-icon-link" @click="openSourceUrl(source)" @contextmenu.prevent.stop="handleContextMenu($event, sourceHomeUrl(source))" :title="t('source.visit')">
               <svg><use href="/icons.svg#link-icon"/></svg>
             </button>
             <button class="btn-icon-link" @click="openSourceReleases(source)" :title="t('source.view_releases')">
@@ -692,7 +672,7 @@ function hideHealthTooltip() {
               <svg><use href="/icons.svg#more-icon"/></svg>
             </button>
             <div v-if="openMoreId === source.id" class="dropdown-more-panel" role="menu" @click.stop @keydown="moreDropdown.handleDropdownKeydown">
-              <template v-if="source.source_type === 'youtube'">
+              <template v-if="getSourceTypeDef(source.source_type)?.hasConfigInput">
                 <div class="dropdown-section-label">{{ t('source.subscribe_title') }}</div>
                 <label class="yt-menu-option">
                   <input type="checkbox" :checked="parseYtConfig(source).videos" @change="handleYtConfigToggle(source, 'videos', ($event.target as HTMLInputElement).checked)" />{{ t('source.subscribe_videos') }}

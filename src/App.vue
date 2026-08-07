@@ -5,6 +5,8 @@ import ContextMenu, { type ContextMenuItem } from './components/common/ContextMe
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { listen } from '@tauri-apps/api/event'
 import { type Source, listSources } from './api/sources'
+// 计数键含 source_type，避免不同类型同 owner/repo 串源（走注册表真实模块）
+import { sourceRepoKey } from './api/source-registry'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
 import { type AppSettings, getSettings } from './api/settings'
 import { t, setLocale } from './i18n'
@@ -180,8 +182,8 @@ function handleToastMouseLeave() {
 provide(ShowToastKey, showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
 
-function repoKey(owner: string, repo: string): string {
-  return `${owner}/${repo}`.toLowerCase()
+function repoKey(sourceType: string, owner: string, repo: string): string {
+  return sourceRepoKey(sourceType, owner, repo)
 }
 
 function refreshLogs() {
@@ -192,7 +194,7 @@ const unreadReleaseCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
   for (const release of releases.value) {
     if (!isUnreadStatus(release.notification_status, release.snooze_until)) continue
-    const key = repoKey(release.owner, release.repo)
+    const key = repoKey(release.source_type, release.owner, release.repo)
     counts[key] = (counts[key] || 0) + 1
   }
   return counts
@@ -201,7 +203,7 @@ const unreadReleaseCounts = computed<Record<string, number>>(() => {
 const totalReleaseCounts = computed<Record<string, number>>(() => {
   const counts: Record<string, number> = {}
   for (const release of releases.value) {
-    const key = repoKey(release.owner, release.repo)
+    const key = repoKey(release.source_type, release.owner, release.repo)
     counts[key] = (counts[key] || 0) + 1
   }
   return counts
