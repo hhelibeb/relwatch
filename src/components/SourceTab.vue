@@ -914,6 +914,11 @@ function hideHealthTooltip() {
   color: #ffffff;
 }
 
+.source-type-badge.bilibili {
+  background: #fb7299;
+  color: #ffffff;
+}
+
 .source-name {
   font-weight: 500;
   overflow: hidden;

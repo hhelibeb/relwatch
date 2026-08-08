@@ -30,19 +30,24 @@ pub enum AuthKind {
     GitHubToken,
     /// YouTube Data API Key（KEY_YOUTUBE_API_KEY）。
     YouTubeApiKey,
+    /// B 站登录 Cookie SESSDATA（KEY_BILIBILI_COOKIE，可选，降低风控）。
+    BilibiliCookie,
 }
 
 /// 根据适配器声明的鉴权方式，从 settings 中选出对应 token。
 /// 无鉴权源返回 None（适配器实现忽略 token 即可）。
+#[allow(clippy::too_many_arguments)]
 pub fn token_for<'a>(
     adapter: &dyn SourceAdapter,
     github_token: Option<&'a str>,
     youtube_api_key: Option<&'a str>,
+    bilibili_cookie: Option<&'a str>,
 ) -> Option<&'a str> {
     match adapter.auth_kind() {
         AuthKind::None => None,
         AuthKind::GitHubToken => github_token,
         AuthKind::YouTubeApiKey => youtube_api_key,
+        AuthKind::BilibiliCookie => bilibili_cookie,
     }
 }
 
@@ -55,6 +60,7 @@ pub fn list_adapters() -> Vec<Box<dyn SourceAdapter>> {
         Box::new(crate::github::GithubAdapter),
         Box::new(crate::huggingface::HuggingFaceAdapter),
         Box::new(crate::youtube::YoutubeAdapter),
+        Box::new(crate::bilibili::BilibiliAdapter),
     ]
 }
 
@@ -156,6 +162,7 @@ pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, St
         "github" => Ok(Box::new(crate::github::GithubAdapter)),
         "huggingface" => Ok(Box::new(crate::huggingface::HuggingFaceAdapter)),
         "youtube" => Ok(Box::new(crate::youtube::YoutubeAdapter)),
+        "bilibili" => Ok(Box::new(crate::bilibili::BilibiliAdapter)),
         other => Err((0, format!("err.unsupported_source|{}", other))),
     }
 }
@@ -166,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_get_adapter_known_types() {
-        for t in ["github", "huggingface", "youtube"] {
+        for t in ["github", "huggingface", "youtube", "bilibili"] {
             assert!(get_adapter(t).is_ok(), "{} 应注册适配器", t);
         }
     }
@@ -184,35 +191,45 @@ mod tests {
         let github = get_adapter("github").unwrap();
         let hf = get_adapter("huggingface").unwrap();
         let yt = get_adapter("youtube").unwrap();
+        let bili = get_adapter("bilibili").unwrap();
 
         // GitHub：取 github token
         assert_eq!(
-            token_for(github.as_ref(), Some("ghp"), Some("yt-key")),
+            token_for(github.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
             Some("ghp")
         );
         // HuggingFace：无鉴权 → None（即使配置了 token 也不传）
-        assert_eq!(token_for(hf.as_ref(), Some("ghp"), Some("yt-key")), None);
+        assert_eq!(
+            token_for(hf.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
+            None
+        );
         // YouTube：取 Data API Key
         assert_eq!(
-            token_for(yt.as_ref(), Some("ghp"), Some("yt-key")),
+            token_for(yt.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
             Some("yt-key")
         );
+        // Bilibili：取 SESSDATA cookie
+        assert_eq!(
+            token_for(bili.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
+            Some("sess")
+        );
         // 未配置对应 token → None
-        assert_eq!(token_for(yt.as_ref(), None, None), None);
+        assert_eq!(token_for(yt.as_ref(), None, None, None), None);
+        assert_eq!(token_for(bili.as_ref(), None, None, None), None);
     }
 
     #[test]
     fn test_list_adapters_capabilities() {
         let adapters = list_adapters();
-        assert_eq!(adapters.len(), 3);
+        assert_eq!(adapters.len(), 4);
 
-        // AI 排除集合应只含 youtube（filter_ai_eligible 依赖此枚举）
+        // AI 排除集合应只含 youtube + bilibili（filter_ai_eligible 依赖此枚举）
         let ineligible: Vec<&str> = adapters
             .iter()
             .filter(|a| !a.ai_eligible())
             .map(|a| a.source_type())
             .collect();
-        assert_eq!(ineligible, vec!["youtube"]);
+        assert_eq!(ineligible, vec!["youtube", "bilibili"]);
 
         // 每次检查都拉历史的只有 youtube
         let always: Vec<&str> = adapters
@@ -222,12 +239,12 @@ mod tests {
             .collect();
         assert_eq!(always, vec!["youtube"]);
 
-        // 检查后刷新描述的：github + youtube
+        // 检查后刷新描述的：github + youtube + bilibili
         let refresh: Vec<&str> = adapters
             .iter()
             .filter(|a| a.refresh_description_after_check())
             .map(|a| a.source_type())
             .collect();
-        assert_eq!(refresh, vec!["github", "youtube"]);
+        assert_eq!(refresh, vec!["github", "youtube", "bilibili"]);
     }
 }

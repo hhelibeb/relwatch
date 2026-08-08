@@ -24,6 +24,8 @@ pub const KEY_SHOW_SOURCE_TYPE_ICONS: &str = "show_source_type_icons";
 pub const KEY_AUTO_START: &str = "auto_start";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
 pub const KEY_YOUTUBE_API_KEY: &str = "youtube_api_key";
+/// B 站登录 Cookie（SESSDATA，可选，加密存储，降低风控概率）。
+pub const KEY_BILIBILI_COOKIE: &str = "bilibili_cookie";
 pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 
 // ── 默认值常量 ──────────────────────────────────────

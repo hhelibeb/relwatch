@@ -7,6 +7,9 @@ pub mod setting;
 pub mod poll;
 pub mod download;
 pub mod clipboard;
+pub mod bilibili_login;
+
+pub use bilibili_login::*;
 
 pub use source::*;
 pub use release::*;

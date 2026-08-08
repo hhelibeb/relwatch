@@ -77,6 +77,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     show_source_type_icons: true,
     github_token_set: false,
     youtube_api_key_set: false,
+    bilibili_cookie_set: false,
     ...overrides,
   }
 }

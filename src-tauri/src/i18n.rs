@@ -77,10 +77,18 @@ fn zh_cn() -> &'static HashMap<&'static str, &'static str> {
     m.insert("err.api_error",          "API 请求失败: HTTP {0} {1}");
     m.insert("err.parse_failed",       "解析响应失败: {0}");
     m.insert("err.poll_in_progress",   "轮询正在进行中，请稍后再试");
+    m.insert("err.source_timeout",     "源拉取超时（{0} 秒），已跳过本轮，下轮自动重试");
     m.insert("err.unsupported_source", "不支持的监控源类型: {0}");
-    m.insert("err.youtube_no_ai", "YouTube 源不生成 AI 摘要/翻译");
+    m.insert("err.source_no_ai", "该源类型不生成 AI 摘要/翻译: {0}");
     m.insert("err.youtube_api_key_invalid", "YouTube API Key 无效或未授权该请求: {0}");
     m.insert("err.youtube_api_quota", "YouTube API 配额已用尽: {0}");
+    m.insert("err.bili_risk", "B 站风控校验失败，请求被拦截。可稍后重试，或在设置中配置 B 站 Cookie（SESSDATA）降低风控概率");
+    m.insert("err.bili_rate_limit", "B 站请求过于频繁，请稍后再试");
+    m.insert("err.bili_up_not_found", "B 站用户不存在或空间不可访问: {0}");
+    m.insert("err.bili_invalid_uid", "无效的 B 站 UID（请输入数字 UID 或 space.bilibili.com 链接）: {0}");
+    m.insert("err.bili_invalid_params", "B 站接口参数错误: {0}");
+    m.insert("err.bili_api_error", "B 站接口错误: code={0} {1}");
+    m.insert("err.bili_wbi_keys", "获取 B 站签名密钥失败: {0}");
     m.insert("err.source_not_found",   "监控源不存在");
         m
     })
@@ -159,8 +167,16 @@ fn en_us() -> &'static HashMap<&'static str, &'static str> {
     m.insert("err.api_error",          "API request failed: HTTP {0} {1}");
     m.insert("err.parse_failed",       "Failed to parse response: {0}");
     m.insert("err.poll_in_progress",   "Poll in progress, please try again later");
+    m.insert("err.source_timeout",     "Source fetch timed out after {0}s, skipped this round (will retry)");
     m.insert("err.unsupported_source", "Unsupported source type: {0}");
-    m.insert("err.youtube_no_ai", "YouTube sources are excluded from AI summary/translation");
+    m.insert("err.source_no_ai", "This source type is excluded from AI summary/translation: {0}");
+    m.insert("err.bili_risk", "Bilibili risk control blocked the request. Retry later, or configure Bilibili Cookie (SESSDATA) in settings to reduce risk");
+    m.insert("err.bili_rate_limit", "Bilibili rate limited, retry later");
+    m.insert("err.bili_up_not_found", "Bilibili user not found or space unavailable: {0}");
+    m.insert("err.bili_invalid_uid", "Invalid Bilibili UID (enter numeric UID or space.bilibili.com link): {0}");
+    m.insert("err.bili_invalid_params", "Bilibili API invalid params: {0}");
+    m.insert("err.bili_api_error", "Bilibili API error: code={0} {1}");
+    m.insert("err.bili_wbi_keys", "Failed to get Bilibili WBI keys: {0}");
     m.insert("err.youtube_api_key_invalid", "YouTube API Key invalid or not authorized for this request: {0}");
     m.insert("err.youtube_api_quota", "YouTube API quota exceeded: {0}");
     m.insert("err.source_not_found",   "Source not found");

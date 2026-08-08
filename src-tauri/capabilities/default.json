@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "enables the default permissions",
+  "description": "enables the default permissions for local app windows",
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
+    "core:webview:allow-create-webview-window",
     "notification:default",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",

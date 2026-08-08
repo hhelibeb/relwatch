@@ -22,7 +22,7 @@ vi.mock('../i18n', () => ({
   t: vi.fn((key: string) => key),
 }))
 
-import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl, parseYoutubeUrl, buildYoutubeConfig } from '../api/sources'
+import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl, parseYoutubeUrl, parseBilibiliUrl, buildYoutubeConfig } from '../api/sources'
 import { translateError } from '../api/client'
 
 describe('parseGitHubUrl', () => {
@@ -153,6 +153,43 @@ describe('parseSourceUrl', () => {
 
   it('youtube.com 视频链接不是有效频道输入，返回 null', () => {
     expect(parseSourceUrl('https://www.youtube.com/watch?v=abc')).toBeNull()
+  })
+})
+
+// ── Bilibili 解析 ─────────────────────────────────────────
+
+describe('parseBilibiliUrl', () => {
+  it('纯数字 UID 直接接受', () => {
+    expect(parseBilibiliUrl('476599099')).toBe('476599099')
+    expect(parseBilibiliUrl(' 546195 ')).toBe('546195')
+    // 16 位新式 UID（新注册用户）
+    expect(parseBilibiliUrl('3546715770588065')).toBe('3546715770588065')
+  })
+
+  it('从空间链接提取 UID', () => {
+    expect(parseBilibiliUrl('https://space.bilibili.com/476599099/video')).toBe('476599099')
+    expect(parseBilibiliUrl('space.bilibili.com/476599099?from=search')).toBe('476599099')
+    expect(parseBilibiliUrl('https://bilibili.com/space/546195')).toBe('546195')
+    // 16 位新式 UID 空间链接
+    expect(parseBilibiliUrl('https://space.bilibili.com/3546715770588065')).toBe('3546715770588065')
+  })
+
+  it('非 UID 输入返回 null', () => {
+    expect(parseBilibiliUrl('@someuser')).toBeNull()
+    expect(parseBilibiliUrl('https://www.bilibili.com/video/BV1xx')).toBeNull()
+    expect(parseBilibiliUrl('')).toBeNull()
+  })
+})
+
+describe('parseSourceUrl bilibili', () => {
+  it('空间链接识别为 bilibili 类型', () => {
+    expect(parseSourceUrl('https://space.bilibili.com/476599099')).toEqual({ type: 'bilibili', owner: '476599099', repo: '' })
+    expect(parseSourceUrl('bilibili.com/space/546195')?.type).toBe('bilibili')
+  })
+
+  it('纯数字 UID 识别为 bilibili 类型', () => {
+    expect(parseSourceUrl('476599099')?.type).toBe('bilibili')
+    expect(parseSourceUrl('546195')).toEqual({ type: 'bilibili', owner: '546195', repo: '' })
   })
 })
 

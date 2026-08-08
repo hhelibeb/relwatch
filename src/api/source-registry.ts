@@ -81,6 +81,21 @@ export function parseYoutubeUrl(raw: string): string | null {
   return null
 }
 
+/** 解析 B 站 UP 主输入，返回 UID：纯数字 UID / space.bilibili.com 链接。
+ * 注意：B 站新注册用户使用 16 位新式 UID（space.bilibili.com/{mid} 的 mid 即 UID）。 */
+export function parseBilibiliUrl(raw: string): string | null {
+  const input = raw.trim()
+  // 纯数字 UID（2~16 位：旧式 6~10 位、新式 16 位）
+  if (/^\d{2,16}$/.test(input)) return input
+  // space.bilibili.com/{uid} / bilibili.com/space/{uid}
+  const spaceMatch = input.match(/(?:space\.bilibili\.com|bilibili\.com\/space)\/(\d+)/)
+  if (spaceMatch) return spaceMatch[1]
+  // bilibili.com/{uid} 跳转形式（排除 video/space 等保留路径）
+  const biliMatch = input.match(/bilibili\.com\/(\d+)/)
+  if (biliMatch) return biliMatch[1]
+  return null
+}
+
 /** 去掉旧版 "YouTube channel: " 前缀。 */
 function stripYtChannelPrefix(d: string): string {
   return d.startsWith('YouTube channel: ') ? d.slice('YouTube channel: '.length) : d
@@ -198,6 +213,32 @@ export const sourceTypeDefs: SourceTypeDef[] = [
     // tag 是 videoId，隐藏；显示频道名
     showTag: false,
     // B 站风格封面布局
+    youtubeLayout: true,
+  },
+  {
+    type: 'bilibili',
+    titleKey: 'source.type_bilibili',
+    icon: '/icons.svg#bilibili-icon',
+    homeUrl: owner => `https://space.bilibili.com/${owner}`,
+    parse: input => {
+      const uid = parseBilibiliUrl(input)
+      return uid ? { owner: uid, repo: '' } : null
+    },
+    matches: input => input.includes('bilibili.com') || /^\d{2,16}$/.test(input),
+    // 显示 UP 主名（description，UID 无阅读意义）
+    displayName: (owner, _repo, description) => {
+      const d = (description ?? '').trim()
+      return d || owner
+    },
+    searchQuery: (owner, _repo, description) => {
+      const d = (description ?? '').trim()
+      return d || owner
+    },
+    // 视频不生成 AI 摘要/翻译（标题简介均为中文，与后端 ai_eligible=false 对应）
+    aiSummary: false,
+    // tag 是 bvid，隐藏；显示 UP 主名
+    showTag: false,
+    // B 站视频封面布局（复用 YouTube 的封面 + 标题卡片）
     youtubeLayout: true,
   },
 ]

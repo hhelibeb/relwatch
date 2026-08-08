@@ -14,6 +14,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   invokeI18n,
+  InvokeI18nError,
   openReleaseUrl,
   copyTextToClipboard,
   copyImageToClipboard,
@@ -89,14 +90,17 @@ describe('invokeI18n', () => {
     expect(invoke).toHaveBeenCalledWith('some_command', undefined)
   })
 
-  it('Error 且带 err. 前缀时翻译消息并保留堆栈', async () => {
+  it('Error 且带 err. 前缀时抛 InvokeI18nError（携带原始 key/args，翻译消息并保留堆栈）', async () => {
     const original = new Error('Error: err.add_failed|microsoft/vscode')
     vi.mocked(invoke).mockRejectedValue(original)
 
     await expect(invokeI18n('some_command')).rejects.toThrow('err.add_failed|microsoft/vscode')
-    // 复用原始 Error：message 被改写，但堆栈引用保持不变
-    const err = (await invokeI18n('some_command').catch(e => e)) as Error
-    expect(err).toBe(original)
+    // 抛 InvokeI18nError：message 已翻译，且携带原始错误 key 与参数供调用方分支判断
+    const err = (await invokeI18n('some_command').catch(e => e)) as InvokeI18nError
+    expect(err).toBeInstanceOf(InvokeI18nError)
+    expect(err.key).toBe('err.add_failed')
+    expect(err.args).toEqual(['microsoft/vscode'])
+    // 保留原始错误调用堆栈
     expect(err.stack).toBe(original.stack)
   })
 

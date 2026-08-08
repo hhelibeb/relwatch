@@ -53,6 +53,7 @@ const settings = ref<AppSettings>({
   show_source_type_icons: true,
   github_token_set: false,
   youtube_api_key_set: false,
+  bilibili_cookie_set: false,
 })
 
 const countdown = ref('')

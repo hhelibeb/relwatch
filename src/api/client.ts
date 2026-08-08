@@ -11,13 +11,37 @@ export function translateError(raw: string): string {
   return t(key, ...args)
 }
 
+/**
+ * invokeI18n 抛出的后端错误：保留原始错误 key 与 `|` 分隔参数，
+ * 供调用方做程序化分支（如登录轮询按 key 判断窗口已关闭），
+ * message 仍为翻译后的用户可读文案。
+ */
+export class InvokeI18nError extends Error {
+  constructor(
+    public readonly key: string,
+    public readonly args: string[],
+    message: string,
+  ) {
+    super(message)
+    this.name = 'InvokeI18nError'
+  }
+}
+
 export async function invokeI18n<T>(cmd: string, args?: InvokeArgs): Promise<T> {
   try {
     return await invoke<T>(cmd, args)
   } catch (e: unknown) {
     const raw = e instanceof Error ? e.message : String(e)
     const msg = translateError(raw)
-    // 复用原始 Error 以保留调用堆栈
+    const clean = raw.replace(/^Error:\s*/, '')
+    if (clean.startsWith('err.')) {
+      const parts = clean.split('|')
+      const err = new InvokeI18nError(parts[0], parts.slice(1), msg)
+      // 保留原始错误调用堆栈，便于定位抛出点
+      if (e instanceof Error && e.stack) err.stack = e.stack
+      throw err
+    }
+    // 非 err.* 错误：复用原始 Error 以保留调用堆栈
     const err = e instanceof Error ? e : new Error(raw)
     err.message = msg
     throw err

@@ -116,6 +116,7 @@ pub struct AppSettings {
     pub show_source_type_icons: bool,
     pub github_token_set: bool,
     pub youtube_api_key_set: bool,
+    pub bilibili_cookie_set: bool,
 }
 
 #[cfg(test)]
@@ -147,6 +148,7 @@ mod tests {
             show_source_type_icons: true,
             github_token_set: true,
             youtube_api_key_set: true,
+            bilibili_cookie_set: true,
         }
     }
 

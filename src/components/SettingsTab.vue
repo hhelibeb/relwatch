@@ -9,11 +9,15 @@ import {
   setDeepseekApiKey,
   setGithubToken,
   setYoutubeApiKey,
+  setBilibiliCookie,
+  readBilibiliLoginCookie,
+  closeBilibiliLoginWindow,
   testDeepseekConnection,
   exportBackup,
   importBackup,
 } from '../api/settings'
-import { openReleaseUrl } from '../api/client'
+import { openReleaseUrl, InvokeI18nError } from '../api/client'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { t, setLocale, languages } from '../i18n'
 
 const props = defineProps<{ settings: AppSettings }>()
@@ -25,6 +29,160 @@ const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
 const youtubeApiKey = ref('')
+const bilibiliCookie = ref('')
+
+// ── B 站一键登录（应用内 WebView 扫码，自动读取 SESSDATA） ────────
+const biliLoginBusy = ref(false)
+let biliLoginPollTimer: ReturnType<typeof setInterval> | null = null
+let biliLoginTimeout: ReturnType<typeof setTimeout> | null = null
+/** 单调代次令牌：每次发起登录尝试递增，回调（轮询/超时）校验令牌后才生效，
+ *  避免旧流程残留的异步回调误操作新流程（F3）。 */
+let biliLoginAttempt = 0
+let biliLoginSettled = false
+const BILI_LOGIN_WINDOW_LABEL = 'bilibili-login'
+
+function stopBiliLoginPolling() {
+  if (biliLoginPollTimer) {
+    clearInterval(biliLoginPollTimer)
+    biliLoginPollTimer = null
+  }
+  if (biliLoginTimeout) {
+    clearTimeout(biliLoginTimeout)
+    biliLoginTimeout = null
+  }
+}
+
+/** 登录成功收尾：停止轮询、关窗、更新表单并提示。 */
+async function settleBiliLoginSuccess() {
+  biliLoginSettled = true
+  stopBiliLoginPolling()
+  biliLoginBusy.value = false
+  await closeBilibiliLoginWindow(BILI_LOGIN_WINDOW_LABEL)
+  form.bilibili_cookie_set = true
+  bilibiliCookie.value = ''
+  showToast(t('settings.bilibili_login_success'))
+}
+
+/** 清除已保存的 B 站 Cookie（SESSDATA）：过期后回退匿名模式的唯一入口（F2）。
+ *  命令层 `set_bilibili_cookie('')` 本就支持空值清除，但此前没有任何 UI 触发点。 */
+async function handleClearBilibiliCookie() {
+  try {
+    await setBilibiliCookie('')
+    form.bilibili_cookie_set = false
+    bilibiliCookie.value = ''
+    showToast(t('settings.bilibili_cookie_cleared'))
+  } catch (e: unknown) {
+    showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+/** 等待窗口创建结果：created 到达 resolve、error 到达 reject（避免 error 先触发时 await 永久挂起）。 */
+function waitBiliWindowCreated(win: WebviewWindow): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    win.once('tauri://error', () => {
+      if (!settled) { settled = true; reject(new Error('bilibili login window create failed')) }
+    })
+    win.once('tauri://created', () => {
+      if (!settled) { settled = true; resolve() }
+    })
+  })
+}
+
+/** 启动登录态轮询（每 2 秒检测一次，直到登录成功或窗口关闭）。 */
+function startBiliLoginPolling() {
+  stopBiliLoginPolling()
+  biliLoginPollTimer = setInterval(async () => {
+    if (biliLoginSettled) return
+    try {
+      const ok = await readBilibiliLoginCookie(BILI_LOGIN_WINDOW_LABEL)
+      if (ok) await settleBiliLoginSuccess()
+    } catch (e: unknown) {
+      const key = e instanceof InvokeI18nError ? e.key : null
+      // 窗口已关闭 → 用户手动放弃，停止轮询（按原始错误 key 判断，不依赖翻译文案）
+      if (key === 'err.bili_login_window_missing') {
+        biliLoginSettled = true
+        stopBiliLoginPolling()
+        biliLoginBusy.value = false
+      } else if (key === 'err.bili_login_not_logged_in') {
+        // 未登录：继续轮询等待扫码完成
+      } else {
+        // 持续性错误（cookie 读取失败/网络失败等）：停止轮询并提示，
+        // 避免进入 60 秒死循环（期间按钮锁死且无法提前解除）
+        biliLoginSettled = true
+        stopBiliLoginPolling()
+        biliLoginBusy.value = false
+        showToast(t('settings.bilibili_login_failed') + (e instanceof Error ? e.message : String(e)))
+      }
+    }
+  }, 2000)
+}
+
+/** 创建（或复用已存在的）登录窗口并轮询检测登录态；成功后自动保存 SESSDATA 并关窗。 */
+async function handleBilibiliLogin() {
+  if (biliLoginBusy.value) return
+  const attempt = ++biliLoginAttempt
+  biliLoginBusy.value = true
+  biliLoginSettled = false
+  stopBiliLoginPolling()
+  try {
+    // 先探测已有窗口（如上次轮询已因 60 秒超时停止、但窗口仍保留的场景）：
+    // 窗口存在则直接恢复轮询，避免同 label 重复创建失败导致无法重试
+    let needCreate = true
+    try {
+      await readBilibiliLoginCookie(BILI_LOGIN_WINDOW_LABEL)
+      // 窗口存在且已登录：cookie 已由命令加密入库，直接收尾
+      if (attempt !== biliLoginAttempt) return
+      await settleBiliLoginSuccess()
+      return
+    } catch (e: unknown) {
+      if (attempt !== biliLoginAttempt) return
+      const key = e instanceof InvokeI18nError ? e.key : null
+      // 窗口已不存在 → 需要创建；未登录 → 窗口存在，恢复轮询即可；
+      // 其它持续性错误（cookie 读取失败等）→ 提示并停止，不无限重试
+      if (key !== null && key !== 'err.bili_login_window_missing' && key !== 'err.bili_login_not_logged_in') {
+        biliLoginBusy.value = false
+        showToast(t('settings.bilibili_login_failed') + (e instanceof Error ? e.message : String(e)))
+        return
+      }
+      needCreate = key === 'err.bili_login_window_missing'
+    }
+    if (needCreate) {
+      const win = new WebviewWindow(BILI_LOGIN_WINDOW_LABEL, {
+        title: t('settings.bilibili_login_title'),
+        url: 'https://passport.bilibili.com/login',
+        width: 460,
+        height: 640,
+        center: true,
+        resizable: false,
+      })
+      try {
+        await waitBiliWindowCreated(win)
+      } catch {
+        if (attempt !== biliLoginAttempt) return
+        biliLoginBusy.value = false
+        showToast(t('settings.bilibili_login_window_failed'))
+        return
+      }
+    }
+    startBiliLoginPolling()
+    // 超时保护：60 秒未登录则停止轮询（窗口保留；再次点击会恢复轮询，不会重复建窗）。
+    // 句柄被保存并在收尾/卸载/超时自身处清理，避免定时器跨挂载存活、多次尝试累积（F3）。
+    biliLoginTimeout = setTimeout(() => {
+      // 单调代次令牌：仅当仍是本次尝试且未成功收尾时才停止，
+      // 旧流程残留的闭包（已发起新登录/已收尾）不再误改状态
+      if (attempt === biliLoginAttempt && !biliLoginSettled) {
+        stopBiliLoginPolling()
+        biliLoginBusy.value = false
+      }
+    }, 60000)
+  } catch (e: unknown) {
+    if (attempt !== biliLoginAttempt) return
+    stopBiliLoginPolling()
+    biliLoginBusy.value = false
+    showToast(t('settings.bilibili_login_window_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
 
@@ -74,6 +232,7 @@ watch(themeDropdownOpen, (isOpen) => {
 })
 
 onUnmounted(() => {
+  stopBiliLoginPolling()
   if (outsideClickHandler) {
     document.removeEventListener('click', outsideClickHandler)
     outsideClickHandler = null
@@ -394,6 +553,11 @@ async function handleSave() {
       youtubeApiKey.value = ''
       form.youtube_api_key_set = true
     }
+    if (bilibiliCookie.value) {
+      await setBilibiliCookie(bilibiliCookie.value)
+      bilibiliCookie.value = ''
+      form.bilibili_cookie_set = true
+    }
     showToast(t('settings.saved'))
     const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
@@ -428,6 +592,7 @@ const dirtyFields = computed(() => {
   if (deepseekApiKey.value) dirty.add('deepseek_api_key')
   if (githubToken.value) dirty.add('github_token')
   if (youtubeApiKey.value) dirty.add('youtube_api_key')
+  if (bilibiliCookie.value) dirty.add('bilibili_cookie')
   return dirty
 })
 
@@ -436,7 +601,7 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'youtube_api_key', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'youtube_api_key', 'bilibili_cookie', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'].filter(k => f.has(k)).length,
     ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
   }
@@ -453,6 +618,7 @@ function discardChanges() {
   deepseekApiKey.value = ''
   githubToken.value = ''
   youtubeApiKey.value = ''
+  bilibiliCookie.value = ''
 }
 
 async function handleTestDeepseek() {
@@ -587,6 +753,28 @@ async function handleImportBackup() {
               class="setting-input"
             />
             <span class="setting-note">{{ t('settings.youtube_api_key_note') }}</span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('bilibili_cookie') || null">{{ t('settings.bilibili_cookie') }}</span>
+            <div class="bili-cookie-row">
+              <input
+                type="password"
+                v-model="bilibiliCookie"
+                :placeholder="form.bilibili_cookie_set ? t('settings.bilibili_cookie_set') : t('settings.bilibili_cookie_input')"
+                class="setting-input"
+              />
+              <button class="btn-secondary bili-login-btn" :disabled="biliLoginBusy" @click="handleBilibiliLogin">
+                {{ biliLoginBusy ? t('settings.bilibili_login_waiting') : t('settings.bilibili_login_btn') }}
+              </button>
+              <button
+                v-if="form.bilibili_cookie_set && !bilibiliCookie"
+                class="btn-secondary bili-clear-btn"
+                @click="handleClearBilibiliCookie"
+              >
+                {{ t('settings.bilibili_cookie_clear') }}
+              </button>
+            </div>
+            <span class="setting-note">{{ t('settings.bilibili_cookie_note') }}</span>
           </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('log_retention_days') || null">{{ t('settings.log_retention') }}</span>
@@ -917,6 +1105,22 @@ async function handleImportBackup() {
 
 .setting-input-narrow {
   width: 14ch;
+}
+
+.bili-cookie-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bili-cookie-row .setting-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.bili-login-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .setting-textarea {

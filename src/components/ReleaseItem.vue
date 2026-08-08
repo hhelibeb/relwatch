@@ -330,8 +330,11 @@ const youtubeMeta = computed<YoutubeMeta | null>(() => {
   if (!isYoutube.value || !props.release.extra_metadata) return null
   try {
     const obj = JSON.parse(props.release.extra_metadata)
+    // B 站旧数据封面可能是 http://，升级为 https 兼容 CSP（img-src 仅允许 https）
+    const rawThumb = typeof obj.thumbnail === 'string' ? obj.thumbnail : null
+    const thumbnail = rawThumb?.startsWith('http://') ? rawThumb.replace(/^http:\/\//, 'https://') : rawThumb
     return {
-      thumbnail: typeof obj.thumbnail === 'string' ? obj.thumbnail : null,
+      thumbnail,
       kind: obj.kind === 'live' ? 'live' : obj.kind === 'video' ? 'video' : null,
       duration: typeof obj.duration === 'string' && obj.duration ? obj.duration : null,
     }
@@ -346,13 +349,19 @@ const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
 // Data API 的 ISO 8601 时长（PT1H2M3S / PT12M34S）→ 人类可读（1:02:03 / 12:34）；RSS 模式无时长返回空
 function formatYoutubeDuration(iso: string | null): string {
   if (!iso) return ''
-  const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/)
-  if (!m) return ''
-  const h = m[1] ? parseInt(m[1], 10) : 0
-  const min = m[2] ? parseInt(m[2], 10) : 0
-  const sec = m[3] ? parseInt(m[3], 10) : 0
-  if (h > 0) return `${h}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
-  return `${min}:${String(sec).padStart(2, '0')}`
+  const m = iso.match(/^PT(?:\d+H)?(?:\d+M)?(?:\d+S)?$/)
+  if (m) {
+    const parts = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/)
+    if (!parts) return ''
+    const h = parts[1] ? parseInt(parts[1], 10) : 0
+    const min = parts[2] ? parseInt(parts[2], 10) : 0
+    const sec = parts[3] ? parseInt(parts[3], 10) : 0
+    if (h > 0) return `${h}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
+    return `${min}:${String(sec).padStart(2, '0')}`
+  }
+  // 非 ISO 格式（如 B 站 duration_text "12:34" / "1:02:33"）原样展示
+  if (/^(?:\d+:)?\d{1,2}:\d{2}$/.test(iso)) return iso
+  return ''
 }
 
 const youtubeDuration = computed(() => formatYoutubeDuration(youtubeMeta.value?.duration ?? null))
@@ -409,7 +418,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         @click="handleGoRelease(release)"
         @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)"
       >
-        <img v-if="youtubeThumb" class="yt-thumb" :src="youtubeThumb" alt="" loading="lazy" />
+        <img v-if="youtubeThumb" class="yt-thumb" :src="youtubeThumb" alt="" loading="lazy" referrerpolicy="no-referrer" />
         <span v-if="youtubeDuration" class="yt-duration-badge">{{ youtubeDuration }}</span>
         <span v-if="youtubeIsLive" class="yt-live-badge">{{ t('release.yt_live') }}</span>
       </button>

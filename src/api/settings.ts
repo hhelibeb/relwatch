@@ -24,6 +24,7 @@ export interface AppSettings {
   show_source_type_icons: boolean
   github_token_set: boolean
   youtube_api_key_set: boolean
+  bilibili_cookie_set: boolean
 }
 
 export interface UpdateSettingsPayload {
@@ -67,6 +68,19 @@ export async function setGithubToken(token: string): Promise<void> {
 
 export async function setYoutubeApiKey(apiKey: string): Promise<void> {
   return invokeI18n('set_youtube_api_key', { apiKey })
+}
+
+export async function setBilibiliCookie(cookie: string): Promise<void> {
+  return invokeI18n('set_bilibili_cookie', { cookie })
+}
+
+/** 从登录 WebView 读取 SESSDATA（成功返回 true，未登录抛 err.bili_login_not_logged_in）。 */
+export async function readBilibiliLoginCookie(windowLabel: string): Promise<boolean> {
+  return invokeI18n<boolean>('read_bilibili_login_cookie', { windowLabel })
+}
+
+export async function closeBilibiliLoginWindow(windowLabel: string): Promise<void> {
+  return invokeI18n('close_bilibili_login_window', { windowLabel })
 }
 
 /**

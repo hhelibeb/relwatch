@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "bilibili-login-window",
+  "description": "restricted capability for the remote Bilibili login window (https://passport.bilibili.com/login): zero invoke permissions so remote content cannot call any Tauri command",
+  "windows": [
+    "bilibili-login"
+  ],
+  "permissions": []
+}

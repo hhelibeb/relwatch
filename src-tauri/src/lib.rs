@@ -10,6 +10,7 @@ mod http;
 mod github;
 mod huggingface;
 mod youtube;
+mod bilibili;
 pub mod source;
 mod deepseek;
 mod poll;
@@ -115,6 +116,9 @@ pub fn run() {
             commands::set_deepseek_api_key,
             commands::set_github_token,
             commands::set_youtube_api_key,
+            commands::set_bilibili_cookie,
+            commands::read_bilibili_login_cookie,
+            commands::close_bilibili_login_window,
             commands::test_deepseek_connection,
             commands::search_logs,
             commands::export_backup,

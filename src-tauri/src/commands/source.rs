@@ -1,7 +1,7 @@
 use crate::db;
 use crate::types::AppState;
 use crate::{crypto, http, source};
-use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_YOUTUBE_API_KEY};
+use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE};
 use serde_json::json;
 use tauri::Emitter;
 
@@ -48,6 +48,20 @@ pub async fn add_source(
                 }
                 Some(plain)
             });
+        // B 站登录 Cookie（SESSDATA，加密存储，可选；降低风控概率）
+        let bilibili_cookie = get_setting(&conn, KEY_BILIBILI_COOKIE)
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .and_then(|s| {
+                let (plain, new_v2) = crypto::decrypt_with_migration(&s)?;
+                if let Some(new_val) = &new_v2 {
+                    if let Err(e) = db::settings::set_setting(&conn, KEY_BILIBILI_COOKIE, new_val) {
+                        log::warn!("迁移 v1→v2 B 站 Cookie 回写失败: {}", e);
+                    }
+                }
+                Some(plain)
+            });
         // client 不携带 default Authorization——github token 由 adapter 按请求设置，
         // 避免 HF 请求泄露 GitHub Token
         let client = match http::build_http_client(http::HttpClientConfig {
@@ -80,7 +94,7 @@ pub async fn add_source(
         // 再查重与验证，保证去重与 RSS 拉取都基于统一的 channel_id。
         // token 按适配器声明的 auth_kind 选取（YouTube → Data API Key，GitHub → PAT）。
         resolved_owner = match adapter
-            .resolve_owner(&client, &owner, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref()))
+            .resolve_owner(&client, &owner, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref()))
             .await
         {
             Ok(o) => o,
@@ -97,7 +111,7 @@ pub async fn add_source(
             return Ok(0);
         }
         description = match adapter
-            .verify_and_describe(&client, &resolved_owner, &repo, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref()))
+            .verify_and_describe(&client, &resolved_owner, &repo, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref()))
             .await
         {
             Ok(d) => d,

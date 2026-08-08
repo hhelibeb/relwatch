@@ -494,6 +494,8 @@ describe('ReleaseItem.vue — YouTube 源', () => {
     const img = wrapper.find('img.yt-thumb')
     expect(img.exists()).toBe(true)
     expect(img.attributes('src')).toBe('https://i.ytimg.com/vi/abc123/mqdefault.jpg')
+    // no-referrer：B 站 CDN（hdslb.com）对非 bilibili 域名 Referer 返回 403，封面必须裸 Referer 加载
+    expect(img.attributes('referrerpolicy')).toBe('no-referrer')
     expect(wrapper.find('.yt-live-badge').exists()).toBe(true)
   })
 
@@ -561,5 +563,12 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     expect(layout.find('.yt-thumb-btn').exists()).toBe(true)
     expect(layout.find('.yt-desc').exists()).toBe(false)
     expect(wrapper.find('.release-expand-btn').exists()).toBe(false)
+  })
+
+  it('http 封面自动升级为 https（兼容 CSP img-src 限制与 B 站旧数据）', () => {
+    const wrapper = mountRelease(yt({ extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'http://i0.hdslb.com/bfs/archive/abc.jpg' }) }))
+    const img = wrapper.find('img.yt-thumb')
+    expect(img.exists()).toBe(true)
+    expect(img.attributes('src')).toBe('https://i0.hdslb.com/bfs/archive/abc.jpg')
   })
 })

@@ -64,24 +64,44 @@ pub fn insert_release(
     Ok(release_id)
 }
 
+/// 根据排除集合动态构建 `NOT IN (...)` 条件子句与参数。
+/// 排除集合为空时不附加条件（不排除任何源类型）。
+fn exclusion_clause<'a>(
+    excluded_types: &'a [&'a str],
+) -> (String, Vec<&'a dyn rusqlite::ToSql>) {
+    if excluded_types.is_empty() {
+        return (String::new(), Vec::new());
+    }
+    let placeholders = vec!["?"; excluded_types.len()].join(",");
+    let sql = format!(" AND s.source_type NOT IN ({})", placeholders);
+    let params: Vec<&dyn rusqlite::ToSql> =
+        excluded_types.iter().map(|t| t as &dyn rusqlite::ToSql).collect();
+    (sql, params)
+}
+
 /// Returns (id, body) tuples for releases where AI summary generation is missing.
 /// Used by the poll cycle to retry failed summaries.
-/// 排除不需要 AI 摘要的源（如 youtube）。
+///
+/// `excluded_types`：不参与 AI 摘要的源类型集合（如 youtube/bilibili），
+/// 由 poll 编排层从 `list_adapters()` 的能力声明动态收集，
+/// 新增源类型声明 `ai_eligible=false` 后自动生效，不在此硬编码具体类型。
 pub fn get_releases_without_summary(
     conn: &Connection,
+    excluded_types: &[&str],
 ) -> Result<Vec<(i64, Option<String>)>, String> {
+    let (exclude_sql, params) = exclusion_clause(excluded_types);
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT r.id, r.body FROM releases r
              JOIN sources s ON s.id = r.source_id
              WHERE r.ai_summary IS NULL AND r.body IS NOT NULL AND r.body != ''
-               AND (r.retry_count IS NULL OR r.retry_count < 5)
-               AND s.source_type != 'youtube'",
-        )
+               AND (r.retry_count IS NULL OR r.retry_count < 5){}",
+            exclude_sql
+        ))
         .map_err(|e| e.to_string())?;
 
     let releases = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(rusqlite::params_from_iter(params), |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -91,21 +111,25 @@ pub fn get_releases_without_summary(
 
 /// 返回需要翻译但尚未翻译的 (id, body) 列表。
 /// 条件：body 非空、body_translated 为空、翻译重试次数 < 5。
-/// 排除不需要 AI 翻译的源（如 youtube）。
+///
+/// `excluded_types`：不参与 AI 翻译的源类型集合（如 youtube/bilibili），
+/// 由 poll 编排层从 `list_adapters()` 的能力声明动态收集，与摘要路径共用同一份能力声明。
 pub fn get_releases_without_translation(
     conn: &Connection,
+    excluded_types: &[&str],
 ) -> Result<Vec<(i64, Option<String>)>, String> {
+    let (exclude_sql, params) = exclusion_clause(excluded_types);
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT r.id, r.body FROM releases r
              JOIN sources s ON s.id = r.source_id
              WHERE r.body_translated IS NULL AND r.body IS NOT NULL AND r.body != ''
-               AND (r.translate_retry_count IS NULL OR r.translate_retry_count < 5)
-               AND s.source_type != 'youtube'",
-        )
+               AND (r.translate_retry_count IS NULL OR r.translate_retry_count < 5){}",
+            exclude_sql
+        ))
         .map_err(|e| e.to_string())?;
     let releases = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map(rusqlite::params_from_iter(params), |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -322,7 +346,12 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
-             ORDER BY r.published_at DESC
+             ORDER BY CASE
+                 -- published_at 异常（0 时间戳/1970 脏数据）时按检测时间兑底，
+                 -- 避免被 LIMIT 截断后完全不可见（如 bilibili pub_ts 解析失败历史数据）
+                 WHEN r.published_at LIKE '1970%' THEN r.detected_at
+                 ELSE r.published_at
+             END DESC
              LIMIT 200",
         )
         .map_err(|e| e.to_string())?;
@@ -730,7 +759,7 @@ mod tests {
         assert!(rid > 0);
 
         // 有 body 且未翻译 → 出现在待翻译列表
-        let pending = get_releases_without_translation(&conn).unwrap();
+        let pending = get_releases_without_translation(&conn, &[]).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, rid);
 
@@ -739,7 +768,7 @@ mod tests {
         let releases = get_releases_with_state(&conn).unwrap();
         assert_eq!(releases[0].body_translated.as_deref(), Some("发布说明译文"));
         // 翻译完成后不再出现在待翻译列表
-        assert!(get_releases_without_translation(&conn).unwrap().is_empty());
+        assert!(get_releases_without_translation(&conn, &[]).unwrap().is_empty());
     }
 
     #[test]
@@ -748,11 +777,11 @@ mod tests {
         let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         // body 为空 → 不应进入待翻译列表
         let _rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
-        assert!(get_releases_without_translation(&conn).unwrap().is_empty());
+        assert!(get_releases_without_translation(&conn, &[]).unwrap().is_empty());
 
         // body 非空 → 进入待翻译列表
         let rid2 = insert_release(&conn, sid, "v2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, Some("body")).unwrap();
-        let pending = get_releases_without_translation(&conn).unwrap();
+        let pending = get_releases_without_translation(&conn, &[]).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].0, rid2);
     }
@@ -767,7 +796,7 @@ mod tests {
         for _ in 0..5 {
             increment_translate_retry_count(&conn, rid).unwrap();
         }
-        assert!(get_releases_without_translation(&conn).unwrap().is_empty());
+        assert!(get_releases_without_translation(&conn, &[]).unwrap().is_empty());
 
         // set_body_translated 会重置 retry_count
         set_body_translated(&conn, rid, "译文").unwrap();
@@ -828,34 +857,56 @@ mod tests {
         assert!(!importance_ge("未知", "中"));
     }
 
-    // ── YouTube 源跳过 AI 摘要/翻译 ──
+    // ── ai_eligible=false 源类型跳过 AI 摘要/翻译（youtube + bilibili）──
 
-    /// 同时插入 github 与 youtube 源各一条带 body 的 release，
-    /// 验证摘要/翻译候选列表排除 youtube 源。
-    fn seed_gh_and_yt_releases(conn: &rusqlite::Connection) -> (i64, i64) {
+    /// 同时插入 github / youtube / bilibili 源各一条带 body 的 release，
+    /// 验证摘要/翻译候选列表排除 youtube 与 bilibili 源。
+    fn seed_gh_yt_bili_releases(conn: &rusqlite::Connection) -> (i64, i64, i64) {
         let gh = sources::add_source(conn, "github", "o", "r", "").unwrap();
         let yt = sources::add_source(conn, "youtube", "UCabc123", "", "").unwrap();
+        let bl = sources::add_source(conn, "bilibili", "476599099", "", "").unwrap();
         let gh_id = insert_release(conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh body")).unwrap();
         let yt_id = insert_release(conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt body")).unwrap();
+        let bl_id = insert_release(conn, bl, "BV1a1b2c3d4e5f", "V", "https://b", "2024-01-03T00:00:00Z", false, Some("bili body")).unwrap();
+        (gh_id, yt_id, bl_id)
+    }
+
+    #[test]
+    fn test_get_releases_without_summary_excludes_ineligible_types() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, _yt_id, _bl_id) = seed_gh_yt_bili_releases(&conn);
+        // 与 poll 编排层一致：排除集合由 list_adapters 的 ai_eligible() 动态收集
+        let excluded = ["youtube", "bilibili"];
+        let pending = get_releases_without_summary(&conn, &excluded).unwrap();
+        assert_eq!(pending.len(), 1, "youtube/bilibili 源不应进入待摘要列表");
+        assert_eq!(pending[0].0, gh_id);
+    }
+
+    #[test]
+    fn test_get_releases_without_translation_excludes_ineligible_types() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, _yt_id, _bl_id) = seed_gh_yt_bili_releases(&conn);
+        let excluded = ["youtube", "bilibili"];
+        let pending = get_releases_without_translation(&conn, &excluded).unwrap();
+        assert_eq!(pending.len(), 1, "youtube/bilibili 源不应进入待翻译列表");
+        assert_eq!(pending[0].0, gh_id);
+    }
+
+    #[test]
+    fn test_get_releases_without_summary_empty_exclusion_keeps_all() {
+        let conn = init_memory_db().unwrap();
+        let (gh_id, yt_id, bl_id) = seed_gh_yt_bili_releases(&conn);
+        // 排除集合为空（未收集到能力声明）时不附加 NOT IN 条件，全部进入候选
+        let pending = get_releases_without_summary(&conn, &[]).unwrap();
+        let ids: Vec<i64> = pending.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&gh_id) && ids.contains(&yt_id) && ids.contains(&bl_id));
+    }
+
+    /// 旧辅助：只关心 github/youtube 的测试仍可用（内部复用新 seed）。
+    fn seed_gh_and_yt_releases(conn: &rusqlite::Connection) -> (i64, i64) {
+        let (gh_id, yt_id, _) = seed_gh_yt_bili_releases(conn);
         (gh_id, yt_id)
-    }
-
-    #[test]
-    fn test_get_releases_without_summary_excludes_youtube() {
-        let conn = init_memory_db().unwrap();
-        let (gh_id, _yt_id) = seed_gh_and_yt_releases(&conn);
-        let pending = get_releases_without_summary(&conn).unwrap();
-        assert_eq!(pending.len(), 1, "youtube 源不应进入待摘要列表");
-        assert_eq!(pending[0].0, gh_id);
-    }
-
-    #[test]
-    fn test_get_releases_without_translation_excludes_youtube() {
-        let conn = init_memory_db().unwrap();
-        let (gh_id, _yt_id) = seed_gh_and_yt_releases(&conn);
-        let pending = get_releases_without_translation(&conn).unwrap();
-        assert_eq!(pending.len(), 1, "youtube 源不应进入待翻译列表");
-        assert_eq!(pending[0].0, gh_id);
     }
 
     #[test]

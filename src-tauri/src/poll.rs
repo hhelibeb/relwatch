@@ -9,7 +9,7 @@ const MAX_CONSECUTIVE_FAILURES: i64 = 3;
 use crate::db;
 use crate::db::settings::{
     KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
-    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT, KEY_YOUTUBE_API_KEY,
+    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE,
 };
 use crate::crypto;
 use crate::http;
@@ -21,6 +21,10 @@ use crate::types::{AppState, PollResult, ReleaseNotifyParams};
 static POLL_LOCK: AtomicBool = AtomicBool::new(false);
 static POLL_RUNNING: AtomicBool = AtomicBool::new(true);
 const MAX_CONCURRENCY: usize = 10;
+/// 单源网络拉取超时（秒）：约束每个源的 fetch（含适配器内部重试）总耗时，
+/// 防止某源接口异常（如 B 站 offset 死循环的兜底）无限挂起、占用信号量 permit
+/// 拖住整轮轮询（F5）。超时按临时故障处理：记 check.failed 后跳过本轮，下轮重试。
+const SOURCE_FETCH_TIMEOUT_SECS: u64 = 300;
 
 pub fn is_poll_running() -> bool {
     POLL_RUNNING.load(Ordering::Relaxed)
@@ -76,6 +80,21 @@ fn get_youtube_api_key(conn: &rusqlite::Connection) -> Option<String> {
     Some(plain)
 }
 
+/// 读取解密后的 B 站登录 Cookie（SESSDATA，含 v1→v2 加密迁移回写）。
+fn get_bilibili_cookie(conn: &rusqlite::Connection) -> Option<String> {
+    let encrypted = db::settings::get_setting(conn, KEY_BILIBILI_COOKIE).ok()??;
+    if encrypted.is_empty() {
+        return None;
+    }
+    let (plain, new_v2) = crypto::decrypt_with_migration(&encrypted)?;
+    if let Some(new_val) = new_v2 {
+        if let Err(e) = db::settings::set_setting(conn, KEY_BILIBILI_COOKIE, &new_val) {
+            log::warn!("迁移 v1→v2 B 站 Cookie 回写失败: {}", e);
+        }
+    }
+    Some(plain)
+}
+
 /// 根据 fetch_history 配置计算分页参数。
 ///
 /// 返回 `(max_count, per_page, needs_pagination)`：
@@ -110,6 +129,7 @@ struct PollSettings {
     proxy_mode: String,
     github_token: Option<String>,
     youtube_api_key: Option<String>,
+    bilibili_cookie: Option<String>,
     fetch_history: bool,
     fetch_history_count: usize,
 }
@@ -121,6 +141,7 @@ impl Default for PollSettings {
             proxy_mode: "none".to_string(),
             github_token: None,
             youtube_api_key: None,
+            bilibili_cookie: None,
             fetch_history: false,
             fetch_history_count: 1,
         }
@@ -139,6 +160,7 @@ fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, Strin
     });
     let github_token = get_github_token(conn);
     let youtube_api_key = get_youtube_api_key(conn);
+    let bilibili_cookie = get_bilibili_cookie(conn);
     let fetch_history =
         db::settings::get_setting_bool(conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
     let fetch_history_count =
@@ -150,6 +172,7 @@ fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, Strin
         proxy_mode,
         github_token,
         youtube_api_key,
+        bilibili_cookie,
         fetch_history,
         fetch_history_count,
     })
@@ -197,12 +220,25 @@ fn post_save_mark_record(
     (ids, saved.to_vec())
 }
 
-/// 过滤掉无需 AI 摘要/翻译的源（youtube）的 saved 条目。
-/// 用户明确要求 YouTube 监控不生成 DeepSeek 摘要，这里在调用
+/// 收集不参与 AI 摘要/翻译的源类型（如 youtube/bilibili）。
+///
+/// 由 `list_adapters()` 的能力声明 `ai_eligible()=false` 动态枚举，
+/// 新增源类型在适配器登记后自动生效，即时路径与重试路径共用同一份能力声明，
+/// 避免 SQL 硬编码排除集合遗漏新类型（如 bilibili）。
+fn ai_excluded_types() -> Vec<&'static str> {
+    source::list_adapters()
+        .iter()
+        .filter(|a| !a.ai_eligible())
+        .map(|a| a.source_type())
+        .collect()
+}
+
+/// 过滤掉无需 AI 摘要/翻译的源（youtube/bilibili）的 saved 条目。
+/// 用户明确要求此类源不生成 DeepSeek 摘要，这里在调用
 /// generate_summaries_for_new / generate_translations_for_new 前做过滤。
 ///
 /// fail-closed：DB 错误或 spawn panic 返回 Err，由调用方跳过本轮 AI 生成并记日志，
-/// 绝不因过滤失败而把 youtube 条目放行给 DeepSeek。
+/// 绝不因过滤失败而把不参与 AI 的条目放行给 DeepSeek。
 async fn filter_ai_eligible(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     saved: &[(i64, Option<String>)],
@@ -210,14 +246,10 @@ async fn filter_ai_eligible(
     if saved.is_empty() {
         return Ok(vec![]);
     }
-    // 按注册表能力枚举不参与 AI 摘要/翻译的源类型（当前：youtube），
+    // 按注册表能力枚举不参与 AI 摘要/翻译的源类型（当前：youtube/bilibili），
     // 新增源类型在 list_adapters 登记并声明 ai_eligible=false 后自动生效，
     // 无需在 DB 层或此处逐个 source_type 特判。
-    let ineligible_types: Vec<&'static str> = source::list_adapters()
-        .iter()
-        .filter(|a| !a.ai_eligible())
-        .map(|a| a.source_type())
-        .collect();
+    let ineligible_types: Vec<&'static str> = ai_excluded_types();
     if ineligible_types.is_empty() {
         return Ok(saved.to_vec());
     }
@@ -252,17 +284,18 @@ async fn do_poll_core(
     proxy_mode: &str,
     github_token: Option<&str>,
     youtube_api_key: Option<&str>,
+    bilibili_cookie: Option<&str>,
     fetch_history: bool,
     fetch_history_count: usize,
     is_manual: bool,
 ) -> (Vec<i64>, Vec<db::releases::ReleaseInfo>) {
     let (all_new_ids, all_saved) = poll_all_sources_async(
-        db_pool, sources, proxy_url, proxy_mode, github_token, youtube_api_key,
+        db_pool, sources, proxy_url, proxy_mode, github_token, youtube_api_key, bilibili_cookie,
         fetch_history, fetch_history_count,
     )
     .await;
 
-    // 跳过 youtube 源（无需 AI 摘要/翻译）后生成摘要与译文。
+    // 跳过 ai_eligible=false 的源（youtube/bilibili）后生成摘要与译文。
     // fail-closed：过滤失败（DB 错误/panic）时跳过本轮 AI 并记日志，
     // 宁可下轮重试也不放行 youtube 条目给 DeepSeek。
     match filter_ai_eligible(db_pool, &all_saved).await {
@@ -278,13 +311,16 @@ async fn do_poll_core(
 
     // 重试之前失败的 AI 摘要 / 译文：两份失败名单读取合并到一次 spawn_blocking，
     // 避免在 async fn 内同步 DB 调用阻塞 tokio worker（与 Phase 2 的 spawn_blocking 改造一致）。
+    // 重试查询与即时路径共用同一份能力声明（ai_excluded_types），
+    // 保证 youtube/bilibili 等 ai_eligible=false 的源绝不进入 DeepSeek 重试队列。
     let retry_pool = db_pool.clone();
+    let excluded_types = ai_excluded_types();
     let (retry_releases, retry_translations) =
         tokio::task::spawn_blocking(move || {
             match retry_pool.get() {
                 Ok(conn) => (
-                    db::releases::get_releases_without_summary(&conn).unwrap_or_default(),
-                    db::releases::get_releases_without_translation(&conn).unwrap_or_default(),
+                    db::releases::get_releases_without_summary(&conn, &excluded_types).unwrap_or_default(),
+                    db::releases::get_releases_without_translation(&conn, &excluded_types).unwrap_or_default(),
                 ),
                 Err(e) => {
                     log::error!("err.db_lock|{}", e);
@@ -310,7 +346,7 @@ async fn do_poll_core(
 }
 
 async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
-    let (sources, proxy_url, proxy_mode, github_token, youtube_api_key, fetch_history, fetch_history_count);
+    let (sources, proxy_url, proxy_mode, github_token, youtube_api_key, bilibili_cookie, fetch_history, fetch_history_count);
 
     {
         let state = app.state::<AppState>();
@@ -324,6 +360,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         proxy_mode = settings.proxy_mode;
         github_token = settings.github_token;
         youtube_api_key = settings.youtube_api_key;
+        bilibili_cookie = settings.bilibili_cookie;
         fetch_history = settings.fetch_history;
         fetch_history_count = settings.fetch_history_count;
     }
@@ -335,7 +372,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
     let emitter: &dyn crate::types::Emitter = &app;
     let (_, new_releases) = do_poll_core(
         &db_pool, &deepseek_semaphore, emitter, &sources, &proxy_url, &proxy_mode,
-        github_token.as_deref(), youtube_api_key.as_deref(), fetch_history, fetch_history_count, true,
+        github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref(), fetch_history, fetch_history_count, true,
     ).await;
 
     // 手动触发特有逻辑：更新 next_poll_at
@@ -366,7 +403,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
-    let (source_obj, proxy_url, proxy_mode, github_token, youtube_api_key, fetch_history, fetch_history_count);
+    let (source_obj, proxy_url, proxy_mode, github_token, youtube_api_key, bilibili_cookie, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
@@ -380,6 +417,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         proxy_mode = settings.proxy_mode;
         github_token = settings.github_token;
         youtube_api_key = settings.youtube_api_key;
+        bilibili_cookie = settings.bilibili_cookie;
         fetch_history = settings.fetch_history;
         fetch_history_count = settings.fetch_history_count;
         source_obj = source;
@@ -400,7 +438,12 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         Ok(a) => a,
         Err((_, msg)) => return Err(msg),
     };
-    let token = source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref());
+    let token = source::token_for(
+        adapter.as_ref(),
+        github_token.as_deref(),
+        youtube_api_key.as_deref(),
+        bilibili_cookie.as_deref(),
+    );
     // YouTube 源开启历史拉取时，每次检查都按 fetch_history_count 拉取历史：
     // save 阶段按 UNIQUE(source_id, tag_name) 去重跳过已存在条目，因此
     // 重新配置 Data API Key 后无需删除源即可补拉历史视频。RSS 模式单页拉取，不受影响。
@@ -437,11 +480,21 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     };
 
-    let releases = match if needs_pagination {
-        adapter.fetch_all(&client, &source_obj, max_count, token).await
-    } else {
-        adapter.fetch(&client, &source_obj, per_page, token).await
-    } {
+    // 单源超时保护：与轮询路径一致，fetch（含适配器内部重试）整体约束在
+    // SOURCE_FETCH_TIMEOUT_SECS 内，超时转临时故障错误走统一失败分支。
+    let releases = match tokio::time::timeout(
+        std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
+        async {
+            if needs_pagination {
+                adapter.fetch_all(&client, &source_obj, max_count, token).await
+            } else {
+                adapter.fetch(&client, &source_obj, per_page, token).await
+            }
+        },
+    )
+    .await
+    .unwrap_or_else(|_| Err((0, format!("err.source_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS))))
+    {
         Ok(releases) => releases,
         Err((status, msg)) => {
             if let Ok(conn) = db_pool.get() {
@@ -510,7 +563,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     }
 
-    // 跳过 youtube 源（无需 AI 摘要/翻译）后生成摘要与译文。
+    // 跳过 ai_eligible=false 的源（youtube/bilibili）后生成摘要与译文。
     // fail-closed：过滤失败（DB 错误/panic）时跳过本轮 AI 并记日志。
     match filter_ai_eligible(&db_pool, &saved).await {
         Ok(ai_saved) if !ai_saved.is_empty() => {
@@ -552,7 +605,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (sources, proxy_url, proxy_mode, retention_days, github_token, youtube_api_key, fetch_history, fetch_history_count);
+    let (sources, proxy_url, proxy_mode, retention_days, github_token, youtube_api_key, bilibili_cookie, fetch_history, fetch_history_count);
     {
         let state = app.state::<AppState>();
         let conn = match state.db.get() {
@@ -568,6 +621,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         proxy_mode = settings.proxy_mode;
         github_token = settings.github_token;
         youtube_api_key = settings.youtube_api_key;
+        bilibili_cookie = settings.bilibili_cookie;
         fetch_history = settings.fetch_history;
         fetch_history_count = settings.fetch_history_count;
         retention_days = db::settings::get_setting(&conn, KEY_LOG_RETENTION)
@@ -632,7 +686,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         let emitter: &dyn crate::types::Emitter = &app;
         do_poll_core(
             &db_pool, &semaphore, emitter, &enabled, &proxy_url, &proxy_mode,
-            github_token.as_deref(), youtube_api_key.as_deref(), fetch_history, fetch_history_count, false,
+            github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref(), fetch_history, fetch_history_count, false,
         ).await;
     }
 
@@ -647,6 +701,7 @@ async fn poll_all_sources_async(
     proxy_mode: &str,
     github_token: Option<&str>,
     youtube_api_key: Option<&str>,
+    bilibili_cookie: Option<&str>,
     fetch_history: bool,
     fetch_history_count: usize,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
@@ -689,7 +744,8 @@ async fn poll_all_sources_async(
                 continue;
             }
         };
-        let token = source::token_for(adapter.as_ref(), github_token, youtube_api_key).map(|s| s.to_string());
+        let token = source::token_for(adapter.as_ref(), github_token, youtube_api_key, bilibili_cookie)
+            .map(|s| s.to_string());
 
         let is_first_query = source.last_checked_at.is_none()
             || source.last_checked_at.as_deref() == Some("");
@@ -707,11 +763,20 @@ async fn poll_all_sources_async(
                     return (vec![], vec![]);
                 }
             };
-            let fetch_result = if needs_pagination {
-                adapter.fetch_all(&client, &source, max_count, token.as_deref()).await
-            } else {
-                adapter.fetch(&client, &source, per_page, token.as_deref()).await
-            };
+            // 单源超时保护：fetch（含适配器内部重试）整体约束在 SOURCE_FETCH_TIMEOUT_SECS 内，
+            // 超时后转成临时故障错误走统一的失败分支（记 check.failed），下轮自动重试。
+            let fetch_result = tokio::time::timeout(
+                std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
+                async {
+                    if needs_pagination {
+                        adapter.fetch_all(&client, &source, max_count, token.as_deref()).await
+                    } else {
+                        adapter.fetch(&client, &source, per_page, token.as_deref()).await
+                    }
+                },
+            )
+            .await
+            .unwrap_or_else(|_| Err((0, format!("err.source_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS))));
             match fetch_result {
                 Ok(releases) => {
                     // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
@@ -1593,23 +1658,29 @@ mod tests {
         assert_eq!(new_releases[0].tag_name, "v2");
     }
 
-    // ── filter_ai_eligible：跳过 youtube 源的 AI 摘要/翻译 ──
+    // ── filter_ai_eligible：跳过 ai_eligible=false 源（youtube/bilibili）的 AI 摘要/翻译 ──
 
     #[tokio::test]
-    async fn test_filter_ai_eligible_keeps_only_non_youtube() {
+    async fn test_filter_ai_eligible_keeps_only_eligible_types() {
         let pool = crate::db::init::init_memory_pool().unwrap();
-        let (gh_id, yt_id) = {
+        let (gh_id, yt_id, bl_id) = {
             let conn = pool.get().unwrap();
             let gh = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
             let yt = db::sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
+            let bl = db::sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
             let gh_id = db::releases::insert_release(&conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh")).unwrap();
             let yt_id = db::releases::insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt")).unwrap();
-            (gh_id, yt_id)
+            let bl_id = db::releases::insert_release(&conn, bl, "BV1xx", "V", "https://b", "2024-01-03T00:00:00Z", false, Some("bili")).unwrap();
+            (gh_id, yt_id, bl_id)
         };
 
-        let saved = vec![(gh_id, Some("gh".into())), (yt_id, Some("yt".into()))];
+        let saved = vec![
+            (gh_id, Some("gh".into())),
+            (yt_id, Some("yt".into())),
+            (bl_id, Some("bili".into())),
+        ];
         let filtered = filter_ai_eligible(&pool, &saved).await.unwrap();
-        assert_eq!(filtered.len(), 1, "youtube 源条目应被过滤掉");
+        assert_eq!(filtered.len(), 1, "youtube/bilibili 源条目应被过滤掉");
         assert_eq!(filtered[0].0, gh_id);
     }
 

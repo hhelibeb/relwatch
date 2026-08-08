@@ -13,7 +13,7 @@ use crate::db::settings::{
     KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
-    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_NEXT_POLL_AT,
+    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
@@ -59,6 +59,10 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
             .next()
             .is_some(),
         youtube_api_key_set: get_setting_str(&conn, KEY_YOUTUBE_API_KEY, "")?
+            .chars()
+            .next()
+            .is_some(),
+        bilibili_cookie_set: get_setting_str(&conn, KEY_BILIBILI_COOKIE, "")?
             .chars()
             .next()
             .is_some(),
@@ -233,6 +237,22 @@ pub fn set_youtube_api_key(
         settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, &encrypted)?;
     }
     db::logs::write_log_key(&conn, "INFO", "setting.youtube_key_updated", &json!({}).to_string());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_bilibili_cookie(
+    state: tauri::State<AppState>,
+    cookie: String,
+) -> Result<(), String> {
+    let conn = state.db.get().map_err(|e| e.to_string())?;
+    if cookie.is_empty() {
+        settings::set_setting(&conn, KEY_BILIBILI_COOKIE, "")?;
+    } else {
+        let encrypted = crypto::encrypt(&cookie);
+        settings::set_setting(&conn, KEY_BILIBILI_COOKIE, &encrypted)?;
+    }
+    db::logs::write_log_key(&conn, "INFO", "setting.bilibili_cookie_updated", &json!({}).to_string());
     Ok(())
 }
 

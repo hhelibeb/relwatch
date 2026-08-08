@@ -6,6 +6,7 @@ export {
   parseGitHubUrl,
   parseHFOrgUrl,
   parseYoutubeUrl,
+  parseBilibiliUrl,
   getSourceTypeDef,
   sourceTypeDefs,
   sourceRepoKey,

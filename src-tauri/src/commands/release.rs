@@ -106,11 +106,11 @@ pub async fn translate_release(
             if r.body_translated.is_some() {
                 return Ok(());
             }
-            // 不参与 AI 摘要/翻译的源类型（如 youtube）不生成翻译，
+            // 不参与 AI 摘要/翻译的源类型（如 youtube / bilibili）不生成翻译，
             // 与 poll 侧 filter_ai_eligible 的排除策略一致，统一由适配器能力声明驱动。
             if let Ok(adapter) = crate::source::get_adapter(&r.source_type) {
                 if !adapter.ai_eligible() {
-                    return Err(format!("err.youtube_no_ai|{}", release_id));
+                    return Err(format!("err.source_no_ai|{}", r.source_type));
                 }
             }
         }
