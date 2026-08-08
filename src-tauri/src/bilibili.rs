@@ -81,6 +81,8 @@ struct BiliEntry {
     thumbnail: String,
     /// 时长文本（如 "12:34"）。
     duration: String,
+    /// 播放量（archive.stat.view）；字段缺失/异常时为 None，前端隐藏显示。
+    view_count: Option<i64>,
     /// UP 主昵称（module_author.name，用于 verify/刷新描述）。
     up_name: String,
 }
@@ -101,6 +103,7 @@ impl BiliEntry {
             "kind": "video",
             "thumbnail": thumbnail,
             "duration": self.duration,
+            "view_count": self.view_count,
         })
         .to_string()
     }
@@ -461,6 +464,24 @@ async fn fetch_wbi_keys(
     Ok(keys)
 }
 
+/// 解析 B 站 stat.play 展示文本为数字播放量（"23.4万" → 234000，"1.2亿" → 120000000）。
+/// 播放量被 UP 主隐藏（stat_hidden，play 为空/"--"）或格式异常时返回 None。
+fn parse_play_count(play: &str) -> Option<i64> {
+    let s = play.trim();
+    if s.is_empty() || s == "--" {
+        return None;
+    }
+    let (num, unit): (&str, f64) = if let Some(rest) = s.strip_suffix("万") {
+        (rest, 10_000.0)
+    } else if let Some(rest) = s.strip_suffix("亿") {
+        (rest, 100_000_000.0)
+    } else {
+        (s, 1.0)
+    };
+    let n = (num.parse::<f64>().ok()? * unit).round() as i64;
+    (n > 0).then_some(n)
+}
+
 /// 拉取一页空间动态，返回（条目, 下一页 offset）。
 async fn fetch_dynamic_page(
     client: &reqwest::Client,
@@ -508,6 +529,11 @@ async fn fetch_dynamic_page(
         let description = archive["desc"].as_str().unwrap_or("").to_string();
         let thumbnail = archive["cover"].as_str().unwrap_or("").to_string();
         let duration = archive["duration_text"].as_str().unwrap_or("").to_string();
+        // 播放量：web-dynamic 接口无 stat.view，实际为 stat.play 展示文本
+        // （如 "23.4万"/"1.2亿"/"1000"）；stat_hidden 时 play 为空/"--"
+        let view_count = archive["stat"]["play"]
+            .as_str()
+            .and_then(parse_play_count);
         let up_name = it["modules"]["module_author"]["name"]
             .as_str()
             .unwrap_or("")
@@ -531,6 +557,7 @@ async fn fetch_dynamic_page(
             description,
             thumbnail,
             duration,
+            view_count,
             up_name,
         });
     }
@@ -656,7 +683,7 @@ pub fn save_entries(
         }
         let html_url = entry.html_url();
         let metadata = entry.metadata_json();
-        if let Ok(id) = releases::insert_release(
+        match releases::insert_release(
             conn,
             source_id,
             &entry.bvid,
@@ -666,7 +693,7 @@ pub fn save_entries(
             false,
             Some(&entry.description),
         ) {
-            if id > 0 {
+            Ok(id) if id > 0 => {
                 let _ = releases::set_release_body_and_metadata(
                     conn,
                     id,
@@ -678,6 +705,16 @@ pub fn save_entries(
                     return saved;
                 }
                 continue;
+            }
+            // 已入库（去重命中）：刷新元数据（播放量/封面/时长随轮询更新）
+            _ => {
+                let _ = releases::update_release_metadata(
+                    conn,
+                    source_id,
+                    &entry.bvid,
+                    Some(&entry.description),
+                    Some(&metadata),
+                );
             }
         }
         // 已入库且普通模式（max_count=1）时，说明不是新内容，停止
@@ -998,7 +1035,8 @@ mod tests {
                             "title": title,
                             "desc": "简介",
                             "cover": "https://i0.hdslb.com/bfs/archive/xxx.jpg",
-                            "duration_text": "12:34"
+                            "duration_text": "12:34",
+                            "stat": {"danmaku": "2506", "play": "23.4万", "vt": ""}
                         }
                     }
                 }
@@ -1035,6 +1073,8 @@ mod tests {
             let archive = &it["modules"]["module_dynamic"]["major"]["archive"];
             let bvid = archive["bvid"].as_str().unwrap().to_string();
             let pub_ts = it["modules"]["module_author"]["pub_ts"].as_i64().unwrap();
+            // 与 fetch_dynamic_page 一致的 view_count 解析（stat.play 展示文本）
+            let view_count = archive["stat"]["play"].as_str().and_then(parse_play_count);
             entries.push(BiliEntry {
                 bvid,
                 title: archive["title"].as_str().unwrap().to_string(),
@@ -1044,6 +1084,7 @@ mod tests {
                 description: archive["desc"].as_str().unwrap().to_string(),
                 thumbnail: archive["cover"].as_str().unwrap().to_string(),
                 duration: archive["duration_text"].as_str().unwrap().to_string(),
+                view_count,
                 up_name: it["modules"]["module_author"]["name"].as_str().unwrap().to_string(),
             });
         }
@@ -1052,6 +1093,26 @@ mod tests {
         assert_eq!(entries[0].up_name, "某UP主");
         assert!(entries[0].published.starts_with("2024-08-18"));
         assert_eq!(entries[0].html_url(), "https://www.bilibili.com/video/BV1a1b2c3d4e5f");
+        assert_eq!(entries[0].view_count, Some(234000), "stat.play \"23.4万\" → 234000");
+    }
+
+    // ── stat.play 播放量解析 ──
+
+    #[test]
+    fn test_parse_play_count_variants() {
+        // 纯数字
+        assert_eq!(parse_play_count("1000"), Some(1000));
+        assert_eq!(parse_play_count("999"), Some(999));
+        // 万 / 亿（B 站展示格式）
+        assert_eq!(parse_play_count("23.4万"), Some(234000));
+        assert_eq!(parse_play_count("1.2亿"), Some(120000000));
+        assert_eq!(parse_play_count("1万"), Some(10000));
+        // 播放量隐藏（stat_hidden）
+        assert_eq!(parse_play_count(""), None);
+        assert_eq!(parse_play_count("--"), None);
+        // 非法格式
+        assert_eq!(parse_play_count("abc"), None);
+        assert_eq!(parse_play_count("万"), None);
     }
 
     #[test]
@@ -1078,6 +1139,7 @@ mod tests {
             description: "简介".to_string(),
             thumbnail: "https://i0.hdslb.com/bfs/archive/xxx.jpg".to_string(),
             duration: "12:34".to_string(),
+            view_count: Some(123456),
             up_name: "UP".to_string(),
         };
         let items = entries_to_json(vec![entry]);
@@ -1217,12 +1279,14 @@ mod tests {
             description: "d".to_string(),
             thumbnail: "https://x.jpg".to_string(),
             duration: "10:00".to_string(),
+            view_count: Some(9999),
             up_name: "up".to_string(),
         };
         let json = entries_to_json(vec![e.clone()]);
         let back: BiliEntry = serde_json::from_value(json[0].clone()).unwrap();
         assert_eq!(back.bvid, e.bvid);
         assert_eq!(back.up_name, "up");
+        assert_eq!(back.view_count, Some(9999));
     }
 
     #[test]
@@ -1236,10 +1300,12 @@ mod tests {
             description: "d".to_string(),
             thumbnail: "http://i0.hdslb.com/bfs/archive/abc.jpg".to_string(),
             duration: "10:00".to_string(),
+            view_count: Some(123456),
             up_name: "up".to_string(),
         };
         let meta: serde_json::Value = serde_json::from_str(&e.metadata_json()).unwrap();
         assert_eq!(meta["thumbnail"], "https://i0.hdslb.com/bfs/archive/abc.jpg");
+        assert_eq!(meta["view_count"], 123456);
         // 已是 https 的不重复处理
         let e2 = BiliEntry {
             thumbnail: "https://i0.hdslb.com/bfs/archive/def.jpg".to_string(),

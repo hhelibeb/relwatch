@@ -209,6 +209,7 @@ export default {
   'release.collapse_all': 'Collapse All',
   'release.read_full': 'Read full note',
   'release.yt_live': 'LIVE',
+  'release.yt_views': '{0} views',
   'release.prev_release': 'Newer',
   'release.next_release': 'Older',
   'release.detail_close': 'Close',

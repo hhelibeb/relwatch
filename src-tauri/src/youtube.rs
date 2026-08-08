@@ -117,6 +117,8 @@ struct FeedEntry {
     kind: FeedKind,
     /// Data API 模式的视频时长（ISO 8601，如 `PT12M34S`）；RSS 模式无此字段。
     duration: Option<String>,
+    /// Data API 模式的播放量（statistics.viewCount）；RSS 模式无此字段。
+    view_count: Option<i64>,
 }
 
 impl FeedEntry {
@@ -129,6 +131,7 @@ impl FeedEntry {
             "kind": self.kind.as_str(),
             "thumbnail": self.thumbnail,
             "duration": self.duration,
+            "view_count": self.view_count,
         })
         .to_string()
     }
@@ -235,6 +238,7 @@ fn parse_feed(xml: &str, kind: FeedKind) -> Result<FeedParseResult, String> {
                         thumbnail: None,
                         kind,
                         duration: None,
+                        view_count: None,
                     });
                 }
                 b"group" if in_entry => in_media_group = true,
@@ -860,6 +864,7 @@ fn entry_from_api_item(item: &serde_json::Value, kind: FeedKind) -> Option<FeedE
         thumbnail,
         kind,
         duration: None,
+        view_count: None,
     })
 }
 
@@ -870,9 +875,11 @@ struct VideoDetail {
     live: Option<String>,
     /// `contentDetails.duration`（ISO 8601，如 `PT1H2M3S`）
     duration: Option<String>,
+    /// `statistics.viewCount`（API 返回字符串，如 "123456"）
+    view_count: Option<i64>,
 }
 
-/// 批量查询视频详情（videos.list `part=snippet,contentDetails`，每请求最多 50 个 id）。
+/// 批量查询视频详情（videos.list `part=snippet,contentDetails,statistics`，每请求最多 50 个 id）。
 /// 返回 `video_id → VideoDetail`。
 async fn api_get_videos_details(
     client: &reqwest::Client,
@@ -883,7 +890,7 @@ async fn api_get_videos_details(
     let mut map = std::collections::HashMap::new();
     for chunk in video_ids.chunks(YT_API_PAGE_SIZE) {
         let url = format!(
-            "{}/videos?part=snippet,contentDetails&id={}&key={}",
+            "{}/videos?part=snippet,contentDetails,statistics&id={}&key={}",
             api_base,
             chunk.join(","),
             api_key
@@ -907,6 +914,14 @@ async fn api_get_videos_details(
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(|s| s.to_string());
+                }
+                if let Some(st) = it.get("statistics") {
+                    detail.view_count = st.get("viewCount").and_then(|v| {
+                        // API 返回字符串；数字形态（测试/异常）也兼容
+                        v.as_str()
+                            .and_then(|s| s.parse::<i64>().ok())
+                            .or_else(|| v.as_i64())
+                    }).filter(|&n| n > 0);
                 }
                 map.insert(id.to_string(), detail);
             }
@@ -984,13 +999,16 @@ async fn fetch_via_api(
                 if let Some(dur) = &d.duration {
                     e.duration = Some(dur.clone());
                 }
+                if let Some(vc) = d.view_count {
+                    e.view_count = Some(vc);
+                }
                 if d.live.as_deref().map(|s| s != "none").unwrap_or(false) {
                     e.kind = FeedKind::Live;
                 }
             }
         }
     } else {
-        // 两种类型都勾选（默认）：仍拉 videos.list 补全时长（+ 精确标注类型），
+        // 两种类型都勾选（默认）：仍拉 videos.list 补全时长（+ 精确标注类型 + 播放量），
         // 每 50 个视频额外 1 unit 配额。
         let ids: Vec<String> = entries.iter().map(|e| e.video_id.clone()).collect();
         let details = api_get_videos_details(client, &ids, api_key, api_base).await?;
@@ -998,6 +1016,9 @@ async fn fetch_via_api(
             if let Some(d) = details.get(&e.video_id) {
                 if let Some(dur) = &d.duration {
                     e.duration = Some(dur.clone());
+                }
+                if let Some(vc) = d.view_count {
+                    e.view_count = Some(vc);
                 }
                 if d.live.as_deref().map(|s| s != "none").unwrap_or(false) {
                     e.kind = FeedKind::Live;
@@ -1212,7 +1233,7 @@ pub fn save_entries(
         }
         let html_url = entry.html_url();
         let metadata = entry.metadata_json();
-        if let Ok(id) = releases::insert_release(
+        match releases::insert_release(
             conn,
             source_id,
             &entry.video_id,
@@ -1222,7 +1243,7 @@ pub fn save_entries(
             false,
             entry.description.as_deref(),
         ) {
-            if id > 0 {
+            Ok(id) if id > 0 => {
                 let _ = releases::set_release_body_and_metadata(
                     conn,
                     id,
@@ -1234,6 +1255,16 @@ pub fn save_entries(
                     return saved;
                 }
                 continue;
+            }
+            // 已入库（去重命中）：刷新元数据（播放量/封面/时长随轮询更新）
+            _ => {
+                let _ = releases::update_release_metadata(
+                    conn,
+                    source_id,
+                    &entry.video_id,
+                    entry.description.as_deref(),
+                    Some(&metadata),
+                );
             }
         }
         // 已入库且普通模式（max_count=1）时，说明不是新内容，停止
@@ -1432,8 +1463,8 @@ mod tests {
             .and(path("/videos"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": [
-                    {"id": "v3", "snippet": {"liveBroadcastContent": "none"}, "contentDetails": {"duration": "PT3M21S"}},
-                    {"id": "v2", "snippet": {"liveBroadcastContent": "none"}, "contentDetails": {"duration": "PT1H2M3S"}},
+                    {"id": "v3", "snippet": {"liveBroadcastContent": "none"}, "contentDetails": {"duration": "PT3M21S"}, "statistics": {"viewCount": "123456"}},
+                    {"id": "v2", "snippet": {"liveBroadcastContent": "none"}, "contentDetails": {"duration": "PT1H2M3S"}, "statistics": {"viewCount": "987654"}},
                 ]
             })))
             .mount(&mock)
@@ -1448,6 +1479,8 @@ mod tests {
         assert_eq!(entries[0].video_id, "v3");
         assert_eq!(entries[0].kind, FeedKind::Video);
         assert_eq!(entries[0].duration.as_deref(), Some("PT3M21S"));
+        assert_eq!(entries[0].view_count, Some(123456));
+        assert_eq!(entries[1].view_count, Some(987654));
         assert_eq!(entries[1].duration.as_deref(), Some("PT1H2M3S"));
         assert_eq!(
             entries[1].thumbnail.as_deref(),
@@ -1455,6 +1488,7 @@ mod tests {
         );
         let meta = serde_json::from_str::<serde_json::Value>(&entries[0].metadata_json()).unwrap();
         assert_eq!(meta["duration"], "PT3M21S");
+        assert_eq!(meta["view_count"], 123456);
     }
 
     #[tokio::test]
@@ -1583,6 +1617,7 @@ mod tests {
                     thumbnail: None,
                     kind,
                     duration: None,
+                    view_count: None,
                 }]),
                 // 直播 feed 404（频道无直播）→ 应跳过，不阻断
                 FeedKind::Live => Err((404, "err.api_error|404|Not Found".into())),

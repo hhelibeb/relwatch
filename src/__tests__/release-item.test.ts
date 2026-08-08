@@ -18,6 +18,7 @@ vi.mock('../api/client', () => ({
 
 vi.mock('../i18n', () => ({
   t: vi.fn((key: string) => key),
+  getLocale: vi.fn(() => 'zh-CN'),
 }))
 
 vi.mock('../utils', () => ({
@@ -563,6 +564,46 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     expect(layout.find('.yt-thumb-btn').exists()).toBe(true)
     expect(layout.find('.yt-desc').exists()).toBe(false)
     expect(wrapper.find('.release-expand-btn').exists()).toBe(false)
+  })
+
+  it('播放量与阅读全文按钮同行（底部行，不额外占行）', async () => {
+    const { t } = await import('../i18n')
+    const wrapper = mountRelease(yt({ extra_metadata: JSON.stringify({ kind: 'video', view_count: 1234567 }) }))
+    const footer = wrapper.find('.yt-footer-row')
+    expect(footer.exists()).toBe(true)
+    // 标题独占标题行，播放量不挤占标题空间
+    expect(wrapper.find('.yt-title-row').exists()).toBe(false)
+    expect(wrapper.find('.release-title-yt').exists()).toBe(true)
+    // 播放量与按钮在同一底部行
+    expect(footer.find('.yt-view-count').exists()).toBe(true)
+    expect(footer.find('.release-expand-btn').exists()).toBe(true)
+    // 中文环境：1234567 → 123.5万，走 i18n key release.yt_views
+    expect(vi.mocked(t)).toHaveBeenCalledWith('release.yt_views', '123.5万')
+  })
+
+  it('无播放量（YouTube RSS 模式）时底部行只有阅读全文按钮', () => {
+    const wrapper = mountRelease(yt())
+    expect(wrapper.find('.yt-view-count').exists()).toBe(false)
+    // 按钮仍存在（左对齐，不因缺播放量丢失）
+    expect(wrapper.find('.yt-footer-row .release-expand-btn').exists()).toBe(true)
+  })
+
+  it('B 站播放量同样显示在底部行', async () => {
+    const { t } = await import('../i18n')
+    const wrapper = mountRelease(createRelease({
+      source_type: 'bilibili',
+      owner: '476599099',
+      repo: '',
+      tag_name: 'BV1xx',
+      release_name: 'B 站视频',
+      html_url: 'https://www.bilibili.com/video/BV1xx',
+      source_description: '某UP主',
+      extra_metadata: JSON.stringify({ kind: 'video', view_count: 99999999 }),
+    }))
+    const view = wrapper.find('.yt-view-count')
+    expect(view.exists()).toBe(true)
+    // 中文环境：99999999 → 1亿，走 i18n key release.yt_views
+    expect(vi.mocked(t)).toHaveBeenCalledWith('release.yt_views', '1亿')
   })
 
   it('http 封面自动升级为 https（兼容 CSP img-src 限制与 B 站旧数据）', () => {

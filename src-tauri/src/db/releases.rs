@@ -200,6 +200,26 @@ pub fn set_release_body_and_metadata(
     Ok(())
 }
 
+/// 更新已存在 release 的 body + extra_metadata（按 source_id + tag_name 定位）。
+///
+/// 用于视频源（YouTube/B 站）轮询去重命中时刷新封面/时长/播放量等元数据：
+/// insert_release 对已存在条目返回 0（拿不到 id），需按业务键定位更新；
+/// 新增条目仍走 set_release_body_and_metadata。
+pub fn update_release_metadata(
+    conn: &Connection,
+    source_id: i64,
+    tag_name: &str,
+    body: Option<&str>,
+    extra_metadata: Option<&str>,
+) -> Result<(), String> {
+    conn.execute(
+        "UPDATE releases SET body = ?1, extra_metadata = ?2 WHERE source_id = ?3 AND tag_name = ?4",
+        rusqlite::params![body, extra_metadata, source_id, tag_name],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn increment_translate_retry_count(conn: &Connection, release_id: i64) -> Result<(), String> {
     conn.execute(
         "UPDATE releases SET translate_retry_count = COALESCE(translate_retry_count, 0) + 1 WHERE id = ?1",
@@ -536,6 +556,32 @@ mod tests {
         let releases = get_releases_with_state(&conn).unwrap();
         assert_eq!(releases.len(), 1);
         assert_eq!(releases[0].release_name, "R1");
+    }
+
+    #[test]
+    fn test_update_release_metadata_refreshes_existing() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
+        // 首次插入
+        let rid = insert_release(&conn, sid, "BV1xx", "T", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        assert!(rid > 0);
+        // 轮询去重命中（返回 0）：按 source_id + tag_name 刷新元数据
+        let dup = insert_release(&conn, sid, "BV1xx", "T", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        assert_eq!(dup, 0);
+        update_release_metadata(&conn, sid, "BV1xx", Some("简介"), Some(r#"{"kind":"video","view_count":123456}"#)).unwrap();
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].body.as_deref(), Some("简介"));
+        assert_eq!(
+            releases[0].extra_metadata.as_deref(),
+            Some(r#"{"kind":"video","view_count":123456}"#)
+        );
+        // 其它 source_id 的同名 tag 不受影响
+        let sid2 = sources::add_source(&conn, "bilibili", "888888", "", "").unwrap();
+        update_release_metadata(&conn, sid2, "BV1xx", Some("别的"), None).unwrap();
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases.len(), 1);
+        assert_eq!(releases[0].body.as_deref(), Some("简介"), "其它源的同名 tag 不应被误更新");
     }
 
     #[test]

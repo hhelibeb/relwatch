@@ -5,7 +5,7 @@ import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, translateRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
-import { t } from '../i18n'
+import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
@@ -319,11 +319,12 @@ const youtubeChannelName = computed(() => {
     ?? `${props.release.owner}/${props.release.repo}`
 })
 
-// YouTube 视频元数据（封面缩略图 / 类型 / 时长）
+// YouTube 视频元数据（封面缩略图 / 类型 / 时长 / 播放量）
 interface YoutubeMeta {
   thumbnail: string | null
   kind: 'video' | 'live' | null
   duration: string | null
+  viewCount: number | null
 }
 
 const youtubeMeta = computed<YoutubeMeta | null>(() => {
@@ -337,6 +338,7 @@ const youtubeMeta = computed<YoutubeMeta | null>(() => {
       thumbnail,
       kind: obj.kind === 'live' ? 'live' : obj.kind === 'video' ? 'video' : null,
       duration: typeof obj.duration === 'string' && obj.duration ? obj.duration : null,
+      viewCount: typeof obj.view_count === 'number' ? obj.view_count : null,
     }
   } catch {
     return null
@@ -365,6 +367,35 @@ function formatYoutubeDuration(iso: string | null): string {
 }
 
 const youtubeDuration = computed(() => formatYoutubeDuration(youtubeMeta.value?.duration ?? null))
+
+// 播放量格式化：中文环境用万/亿（123.4万 / 1.2亿），英文环境用 K/M（1.2M / 123K）。
+// 阈值取“四舍五入后不溢出当前单位”的下限（如 99,950,000 → 1亿，而非 10000万）
+function trimZero(v: number): string {
+  return v.toFixed(1).replace(/\.0$/, '')
+}
+
+function formatViewCount(n: number): string {
+  if (getLocale() === 'zh-CN') {
+    if (n >= 99_950_000) return trimZero(n / 100_000_000) + '亿'
+    if (n >= 9_950) return trimZero(n / 10_000) + '万'
+    return String(n)
+  }
+  if (n >= 999_500) return trimZero(n / 1_000_000) + 'M'
+  if (n >= 995) return trimZero(n / 1_000) + 'K'
+  return String(n)
+}
+
+const youtubeViewCount = computed(() => youtubeMeta.value?.viewCount ?? null)
+// 播放量文案（如“123.4万次播放”）；无数据（YouTube RSS 模式）返回 null 整行隐藏
+const youtubeViewText = computed(() => {
+  const n = youtubeViewCount.value
+  if (n == null) return null
+  return t('release.yt_views', formatViewCount(n))
+})
+// 悬浮提示显示精确数字（格式化后的 123.4万 不便精确阅读）
+const youtubeViewTitle = computed(() =>
+  youtubeViewCount.value != null ? String(youtubeViewCount.value) : ''
+)
 
 // ai_importance 存的是中文枚举（大/中/小），展示时映射到 i18n 文案，兼容英文界面
 function releaseImportanceText(release: ReleaseInfo): string {
@@ -433,9 +464,15 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         >
           <MarkdownContent :content="previewContent" />
         </div>
-        <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
-          {{ t('release.read_full') }}
-        </button>
+        <!-- 底部行：播放量（左）+ 阅读全文（右），复用按钮行不额外占高 -->
+        <div v-if="youtubeViewText || canOpenDetail" class="yt-footer-row">
+          <span v-if="youtubeViewText" class="yt-view-count" :title="youtubeViewTitle">
+            <svg><use href="/icons.svg#play-icon"/></svg>{{ youtubeViewText }}
+          </span>
+          <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
+            {{ t('release.read_full') }}
+          </button>
+        </div>
       </div>
     </div>
     <!-- 其它源：标题 + 摘要/原文预览 -->
@@ -558,7 +595,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   margin: 2px 0 4px;
 }
 
-/* YouTube 视频标题：长标题最多两行截断 */
+/* YouTube 视频标题：14px 半粗（与版本号 tag 同重量级），长标题最多两行截断 */
 .release-title-yt {
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -566,6 +603,42 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   overflow: hidden;
   line-height: 1.5;
   margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  width: 100%;
+}
+
+.yt-view-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  cursor: default;
+  /* 把阅读全文按钮推到右侧（无播放量时按钮回退左对齐） */
+  margin-right: auto;
+}
+
+.yt-view-count svg {
+  width: 11px;
+  height: 11px;
+}
+
+/* 底部行：播放量（左）+ 阅读全文（右），复用按钮行不额外占高 */
+.yt-footer-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.yt-footer-row .release-expand-btn {
+  margin-top: 0;
+  flex-shrink: 0;
 }
 
 .release-repo-yt {
@@ -649,6 +722,8 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  /* 子元素收缩到内容宽：阅读全文按钮不再被 stretch 拉满整行 */
+  align-items: flex-start;
 }
 
 .yt-desc {
@@ -661,6 +736,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   line-height: 1.6;
   cursor: pointer;
   border-radius: 4px;
+  width: 100%;
 }
 
 .yt-desc:hover {

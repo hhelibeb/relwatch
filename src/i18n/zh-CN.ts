@@ -209,6 +209,7 @@ export default {
   'release.collapse_all': '收起全部',
   'release.read_full': '阅读全文',
   'release.yt_live': '直播',
+  'release.yt_views': '{0}次播放',
   'release.prev_release': '上一版本',
   'release.next_release': '下一版本',
   'release.detail_close': '关闭',
