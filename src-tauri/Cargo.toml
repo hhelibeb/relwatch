@@ -1,6 +1,6 @@
 [package]
 name = "relwatch"
-version = "1.9.0"
+version = "1.10.0"
 description = "RelWatch - Monitor GitHub releases"
 authors = ["hhelibeb <hhelibeb@foxmail.com>"]
 license = ""

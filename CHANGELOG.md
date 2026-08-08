@@ -47,6 +47,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-08
+
+### Added
+- 新增 B 站 UP 主监控 — 基于 web-dynamic 接口拉取动态更新（WBI 签名），支持 Cookie 一键登录。
+- 视频卡片显示播放量（B 站 stat.play / YouTube Data API viewCount），无数据时自动隐藏。
+- 轮询去重命中时自动刷新存量视频的播放量、封面与时长。
+
+### Changed
+- 视频卡片标题半粗强调，播放量与「阅读全文」同行显示，不额外占行。
+
+### Fixed
+- 修复不同类型监控源相同 owner/repo 时互相串源的问题。
+
 ## [1.9.0] - 2026-08-06
 
 ### Added
@@ -264,7 +277,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.9.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/hhelibeb/relwatch/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/hhelibeb/relwatch/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/hhelibeb/relwatch/compare/v1.7.0...v1.8.0
 [1.7.0]: https://github.com/hhelibeb/relwatch/compare/v1.6.0...v1.7.0
