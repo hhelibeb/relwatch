@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { nextTick, ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
@@ -611,5 +611,105 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     const img = wrapper.find('img.yt-thumb')
     expect(img.exists()).toBe(true)
     expect(img.attributes('src')).toBe('https://i0.hdslb.com/bfs/archive/abc.jpg')
+  })
+})
+
+describe('ReleaseItem.vue — 摘要截断测量（窗口缩放回归）', () => {
+  // 伪布局引擎：每行 10 字符、每字符 10px、最多渲染 3 行（模拟 -webkit-line-clamp: 3，
+  // 超出部分不渲染；clamp 生效时第三行尾部被省略号占据，文本少渲染 1 字符）。
+  // 模拟真实浏览器的关键行为：setEnd 偏移超过文本节点长度时抛 IndexSizeError。
+  const CHARS_PER_LINE = 10
+  const CHAR_W = 10
+  const MAX_LINES = 3
+  const CLAMP_RENDER_LIMIT = MAX_LINES * CHARS_PER_LINE - 1
+  const BTN_W = 62 // 模拟「阅读全文」按钮真实宽度（jsdom 中 getBoundingClientRect 恒为 0）
+
+  function createFakeRange() {
+    let start = 0
+    let end = 0
+    let len = 0
+    return {
+      setStart(_node: Node, offset: number) { start = offset },
+      setEnd(node: Node, offset: number) {
+        len = node.textContent?.length ?? 0
+        if (offset > len) throw new DOMException('Index or size is out of bounds', 'IndexSizeError')
+        end = offset
+      },
+      getClientRects() {
+        const cap = len > MAX_LINES * CHARS_PER_LINE ? CLAMP_RENDER_LIMIT : len
+        const effEnd = Math.min(end, cap)
+        if (effEnd <= start) return []
+        const firstLine = Math.floor(start / CHARS_PER_LINE)
+        const lastLine = Math.floor((effEnd - 1) / CHARS_PER_LINE)
+        const rects: { width: number }[] = []
+        for (let line = firstLine; line <= lastLine; line++) {
+          const lineStart = Math.max(start, line * CHARS_PER_LINE)
+          const lineEnd = Math.min(effEnd, (line + 1) * CHARS_PER_LINE)
+          rects.push({ width: (lineEnd - lineStart) * CHAR_W })
+        }
+        return rects
+      },
+    }
+  }
+
+  function setClientWidth(el: Element, w: number) {
+    Object.defineProperty(el, 'clientWidth', { configurable: true, value: w })
+  }
+
+  it('窗口缩窄触发截断后，重复测量不会在两态间振荡（按钮闪现/盖字回归）', async () => {
+    let roCallback: (() => void) | null = null
+    class FakeResizeObserver {
+      constructor(cb: () => void) { roCallback = cb }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    vi.spyOn(document, 'createRange').mockImplementation(createFakeRange as unknown as () => Range)
+
+    try {
+      // 35 字符 → 伪布局下 4 行，需要截断
+      const wrapper = mountRelease(createRelease({ ai_summary: 'a'.repeat(35), body: '## Body' }))
+      await nextTick()
+
+      const line = () => wrapper.find('.release-summary-line')
+      const textEl = () => wrapper.find('.release-summary-text').element as HTMLElement
+      expect(line().exists()).toBe(true)
+      expect(roCallback).toBeTruthy()
+      // 按钮宽度 stub 为 62px（avail = 行宽 - 62 - 8）
+      Object.defineProperty(wrapper.find('.release-expand-btn').element, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ width: BTN_W }),
+      })
+
+      // jsdom 无布局：初始测量 clientWidth=0 → 回退「按钮独立成行」
+      expect(line().classes()).not.toContain('has-third-line')
+
+      // 模拟窗口缩窄到行宽 100：触发 RO → 截断生效，按钮悬浮第三行右侧
+      // avail = 100 - 62 - 8 = 30 → 第三行最多再放 3 字符（20~22）
+      setClientWidth(textEl(), 100)
+      roCallback!()
+      await nextTick()
+      expect(line().classes()).toContain('has-third-line')
+      expect(textEl().textContent).toBe('a'.repeat(23) + '…')
+
+      // 宽度未变时 RO 回调被守卫跳过，状态保持稳定（不随高度变化反复重测）
+      roCallback!()
+      await nextTick()
+      expect(line().classes()).toContain('has-third-line')
+      expect(textEl().textContent).toBe('a'.repeat(23) + '…')
+
+      // 继续缩窄到 92：此时 DOM 渲染的是截断文本，再次测量必须基于完整文本。
+      // 回归点：克隆若带走截断文本，setEnd 越界抛异常 → catch 重置 → has-third-line 丢失
+      // avail = 92 - 62 - 8 = 22 → 第三行最多再放 2 字符（20~21）
+      setClientWidth(textEl(), 92)
+      roCallback!()
+      await nextTick()
+      expect(line().classes()).toContain('has-third-line')
+      expect(textEl().textContent).toBe('a'.repeat(22) + '…')
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
   })
 })

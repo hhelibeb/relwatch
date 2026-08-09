@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
@@ -74,7 +74,8 @@ function placeSummaryTooltip(x: number, y: number, text: string) {
 function handleSummaryEnter(e: MouseEvent, summary: string | null) {
   if (!summary) return
   const el = e.currentTarget as HTMLElement
-  if (!isSummaryTruncated(el)) return
+  // 手动截断（summaryDisplay 非空）或 line-clamp 截断时都提供全文悬浮提示
+  if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
   placeSummaryTooltip(e.clientX, e.clientY, summary)
 }
 
@@ -86,7 +87,7 @@ function handleSummaryMove(e: MouseEvent) {
 function handleSummaryFocus(e: FocusEvent, summary: string | null) {
   if (!summary) return
   const el = e.currentTarget as HTMLElement
-  if (!isSummaryTruncated(el)) return
+  if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
   const rect = el.getBoundingClientRect()
   placeSummaryTooltip(rect.left, rect.bottom, summary)
 }
@@ -94,6 +95,154 @@ function handleSummaryFocus(e: FocusEvent, summary: string | null) {
 function hideSummaryTooltip() {
   summaryTooltip.value = null
 }
+
+// ========== 摘要行级截断与按钮定位 ==========
+// 摘要超过两行时：前两行满行，第三行在按钮左侧精确截断（自带省略号），按钮悬浮其右侧，
+// 两者不重叠（截断仅作用于显示层，tooltip/右键菜单仍用完整摘要）；
+// 不足两行时按钮独立成行，避免悬浮遮挡正文。
+const summaryTextRef = ref<HTMLElement | null>(null)
+const summaryDisplay = ref<string | null>(null)
+const summaryHasThirdLine = ref(false)
+const EXPAND_GAP = 8
+let summaryResizeObserver: ResizeObserver | null = null
+// 上次测量时的行宽：ResizeObserver 仅在宽度变化时重测（行数/截断点只受宽度影响），
+// 避免「截断状态切换 → 容器高度变化 → 触发观察 → 再切换」的自激振荡回路
+let lastSummaryWidth = -1
+
+function rangeLineCount(node: Node, end: number): number {
+  const range = document.createRange()
+  range.setStart(node, 0)
+  range.setEnd(node, end)
+  return range.getClientRects().length
+}
+
+// 第 3 行起始字符：text[0..i] 恰好排满两行的最小 i
+function findThirdLineStart(node: Node, text: string): number {
+  let lo = 0
+  let hi = text.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (rangeLineCount(node, mid) >= 3) hi = mid
+    else lo = mid + 1
+  }
+  return lo
+}
+
+function measureTextWidth(font: string, s: string): number {
+  const probe = document.createElement('span')
+  probe.style.cssText = `position:absolute;visibility:hidden;font:${font}`
+  probe.textContent = s
+  document.body.appendChild(probe)
+  const w = probe.getBoundingClientRect().width
+  document.body.removeChild(probe)
+  return w
+}
+
+function measureSummaryLayout() {
+  const el = summaryTextRef.value
+  const text = previewContent.value
+  lastSummaryWidth = el?.clientWidth ?? -1
+  if (!el || !text) {
+    summaryHasThirdLine.value = false
+    summaryDisplay.value = null
+    return
+  }
+  // 用隐藏克隆测量完整文本，不干扰显示。两个关键点：
+  // 1) 克隆后必须重写为完整文本——cloneNode 会带走当前渲染的截断文本，
+  //    后续 range.setEnd(node, text.length) 越界抛 IndexSizeError，状态被 catch 重置，
+  //    与 ResizeObserver 形成「截断 ↔ 重置」振荡（窗口缩窄时按钮闪烁、跳动、盖住文字）。
+  // 2) 克隆挂到同一父节点下，保证字体/行高等继承的排版上下文与真实元素一致。
+  const clone = el.cloneNode(true) as HTMLElement
+  clone.textContent = text
+  clone.style.cssText = `position:absolute;visibility:hidden;left:0;top:0;width:${el.clientWidth}px;pointer-events:none`
+  ;(el.parentElement ?? document.body).appendChild(clone)
+  try {
+    const node = clone.firstChild
+    if (!node) {
+      summaryHasThirdLine.value = false
+      summaryDisplay.value = null
+      return
+    }
+    const totalLines = rangeLineCount(node, text.length)
+    if (totalLines <= 2) {
+      summaryHasThirdLine.value = false
+      summaryDisplay.value = null
+      return
+    }
+    // 第三行可用宽度 = 行宽 - 按钮宽 - 间距
+    const btn = el.parentElement?.querySelector<HTMLElement>('.release-expand-btn')
+    const btnWidth = btn?.getBoundingClientRect().width ?? 0
+    const avail = el.clientWidth - btnWidth - EXPAND_GAP
+    if (avail <= 0) {
+      // 行宽连按钮都放不下：回退「按钮独立成行」，避免悬浮按钮盖住第三行文字
+      summaryHasThirdLine.value = false
+      summaryDisplay.value = null
+      return
+    }
+    summaryHasThirdLine.value = true
+    const start = findThirdLineStart(node, text)
+    // 第三行剩余文字是否超出可用区：未超出则自然结束（省略号由 line-clamp 生成），无需截断。
+    // 注意从 start-1 开始：start 是「text[0..i] 达到 3 行」的最小偏移，第三行首字符是 start-1
+    const thirdRange = document.createRange()
+    thirdRange.setStart(node, start - 1)
+    thirdRange.setEnd(node, text.length)
+    const thirdRects = thirdRange.getClientRects()
+    const thirdWidth = thirdRects.length ? thirdRects[0].width : 0
+    if (thirdWidth <= avail) {
+      summaryDisplay.value = null
+      return
+    }
+    // 二分找最大 end：slice(0, end) + '…' 的最后一行宽度 <= 可用宽
+    const ellipsis = '…'
+    const ellipsisW = measureTextWidth(getComputedStyle(el).font, ellipsis)
+    let lo = start
+    let hi = text.length
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2)
+      const r = document.createRange()
+      r.setStart(node, 0)
+      r.setEnd(node, mid)
+      const rects = r.getClientRects()
+      const lastW = rects.length ? rects[rects.length - 1].width : 0
+      if (lastW + ellipsisW <= avail) lo = mid
+      else hi = mid - 1
+    }
+    let end = lo
+    // 尽量在词边界截断（英文场景），中文不受影响
+    if (end < text.length) {
+      const ws = text.lastIndexOf(' ', end - 1)
+      if (ws > start) end = ws
+    }
+    summaryDisplay.value = text.slice(0, end) + ellipsis
+  } catch {
+    // 测量环境不支持（如测试环境无布局引擎）时回退：按钮独立成行、显示原文
+    summaryHasThirdLine.value = false
+    summaryDisplay.value = null
+  } finally {
+    clone.remove()
+  }
+}
+
+function refreshSummaryLayout() {
+  void nextTick(measureSummaryLayout)
+  // ResizeObserver 监听容器宽度变化（窗口缩放 → 行数/截断点变化）
+  summaryResizeObserver?.disconnect()
+  summaryResizeObserver = null
+  const parent = summaryTextRef.value?.parentElement
+  if (parent && typeof ResizeObserver !== 'undefined') {
+    summaryResizeObserver = new ResizeObserver(() => {
+      // 仅宽度变化才重测：截断状态切换本身会改变容器高度，不过滤会形成振荡回路
+      const w = summaryTextRef.value?.clientWidth ?? -1
+      if (w === lastSummaryWidth) return
+      measureSummaryLayout()
+    })
+    summaryResizeObserver.observe(parent)
+  }
+}
+
+watch(previewContent, refreshSummaryLayout)
+onMounted(refreshSummaryLayout)
+onUnmounted(() => summaryResizeObserver?.disconnect())
 
 // ========== 右键菜单 ==========
 const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number } | null>(null)
@@ -479,9 +628,10 @@ function releaseImportanceClass(release: ReleaseInfo): string {
     <template v-else>
       <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
       <div v-if="previewContent" class="release-content">
-        <!-- 摘要：2 行 clamp + 悬浮提示 -->
-        <div v-if="previewKind === 'summary'" class="release-summary-line">
+        <!-- 摘要：3 行 clamp + 悬浮提示；前两行满行，阅读全文按钮悬浮第三行右侧（不足两行时独立成行） -->
+        <div v-if="previewKind === 'summary'" class="release-summary-line" :class="{ 'has-third-line': summaryHasThirdLine }">
           <span
+            ref="summaryTextRef"
             class="release-summary-text"
             tabindex="0"
             @mouseenter="handleSummaryEnter($event, previewContent)"
@@ -490,7 +640,10 @@ function releaseImportanceClass(release: ReleaseInfo): string {
             @focus="handleSummaryFocus($event, previewContent)"
             @blur="hideSummaryTooltip"
             @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
-          >{{ previewContent }}</span>
+          >{{ summaryDisplay ?? previewContent }}</span>
+          <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
+            {{ t('release.read_full') }}
+          </button>
         </div>
         <!-- 译文 / 原文：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
         <div
@@ -506,7 +659,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
         <div v-if="translating" class="release-translating-hint">
           {{ t('release.translating_hint') }}
         </div>
-        <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
+        <button v-if="canOpenDetail && previewKind !== 'summary'" class="btn-sm release-expand-btn" @click="openDetail">
           {{ t('release.read_full') }}
         </button>
       </div>
@@ -618,8 +771,6 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   color: var(--text-muted);
   white-space: nowrap;
   cursor: default;
-  /* 把阅读全文按钮推到右侧（无播放量时按钮回退左对齐） */
-  margin-right: auto;
 }
 
 .yt-view-count svg {
@@ -636,8 +787,10 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   margin-top: 4px;
 }
 
+/* 阅读全文按钮恒定右对齐（无播放量时也保持右侧，不再回退左对齐） */
 .yt-footer-row .release-expand-btn {
   margin-top: 0;
+  margin-left: auto;
   flex-shrink: 0;
 }
 
@@ -771,17 +924,26 @@ function releaseImportanceClass(release: ReleaseInfo): string {
   white-space: nowrap;
 }
 
+/* 摘要行：文字 3 行截断；前两行满行，阅读全文按钮悬浮第三行右侧（不足两行时独立成行） */
 .release-summary-line {
+  position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  flex-direction: column;
+  align-items: flex-end;
   margin-top: 4px;
   color: var(--text);
   line-height: 1.55;
 }
 
+/* 内容左对齐、阅读全文按钮右对齐（与视频卡片统一） */
 .release-content {
+  display: flex;
+  flex-direction: column;
   margin-top: 4px;
+}
+
+.release-content .release-expand-btn {
+  align-self: flex-end;
 }
 
 .release-body-text {
@@ -802,6 +964,22 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 .release-expand-btn {
   margin-top: 4px;
   font-size: 11px;
+}
+
+/* 摘要行内按钮：默认独立成行右对齐 */
+.release-summary-line .release-expand-btn {
+  margin-top: 4px;
+  flex-shrink: 0;
+}
+
+/* 摘要超过两行时：按钮悬浮在第三行右侧（盖住行尾，视觉上第三行在按钮处截断） */
+.release-summary-line.has-third-line .release-expand-btn {
+  position: absolute;
+  right: 0;
+  /* 按钮高（约 28px）大于行高（约 20px）：下移半个差值使其相对第三行垂直居中，
+     上缘只进入上一行的行盒留白，不与文字重叠 */
+  bottom: -4px;
+  margin-top: 0;
 }
 
 .release-translating-hint {
@@ -843,8 +1021,9 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 
 .release-summary-text {
   min-width: 0;
+  width: 100%;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
   border-radius: 4px;
