@@ -1,4 +1,4 @@
-import { invokeI18n, openReleaseUrl } from './client'
+import { invokeI18n } from './client'
 
 export type NotificationStatus = 'pending' | 'snoozed' | 'clicked' | 'ignored'
 
@@ -62,5 +62,3 @@ export async function checkSingleSource(id: number): Promise<PollResult> {
 export async function getPollCountdown(): Promise<number> {
   return invokeI18n<number>('get_poll_countdown')
 }
-
-export { openReleaseUrl }

@@ -24,7 +24,7 @@ function hasVisibleOverlay(): boolean {
  * Escape 逐层退出——最外层最小化到托盘
  *
  * 配合各组件的内置 Escape 处理器工作：
- * - 右键菜单 Escape → @close 关闭菜单（I1 修复）
+ * - 右键菜单 Escape → @close 关闭菜单
  * - 各下拉面板 Escape → 各自的 handle*Keydown 关闭面板
  * - 无覆盖层 + 已开启最小化到托盘 → 隐藏窗口到系统托盘
  */

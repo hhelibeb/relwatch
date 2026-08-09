@@ -10,12 +10,3 @@ export interface RepoGroup {
   key: string
   releases: ReleaseInfo[]
 }
-
-export interface CalendarCell {
-  date: number
-  key: string
-  count: number
-  isCurrentMonth: boolean
-  isToday: boolean
-  releases: ReleaseInfo[]
-}

@@ -9,16 +9,6 @@ interface SearchableRelease {
   source_description?: string | null
 }
 
-export function importanceLabel(imp: string | null): string {
-  if (!imp) return ''
-  switch (imp) {
-    case '大': return '重要度: 🔴 大'
-    case '中': return '重要度: 🟡 中'
-    case '小': return '重要度: 🟢 小'
-    default: return imp
-  }
-}
-
 export function formatDate(dateStr: string): string {
   if (!dateStr) return ''
   const d = new Date(dateStr)

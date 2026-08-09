@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
-  importanceLabel,
   formatDate,
   releaseMatchesSearch,
   logLevelClass,
@@ -74,35 +73,6 @@ describe('releaseMatchesSearch', () => {
   it('无匹配返回 false', () => {
     expect(releaseMatchesSearch(makeRelease(), 'nonexistent')).toBe(false)
     expect(releaseMatchesSearch(makeRelease(), 'v2.0.0')).toBe(false)
-  })
-})
-
-// ── importanceLabel ───────────────────────────────────────────────
-
-describe('importanceLabel', () => {
-  it('返回空字符串当输入为 null', () => {
-    expect(importanceLabel(null)).toBe('')
-  })
-
-  it('返回空字符串当输入为空字符串', () => {
-    expect(importanceLabel('')).toBe('')
-  })
-
-  it('格式化"大"', () => {
-    expect(importanceLabel('大')).toBe('重要度: 🔴 大')
-  })
-
-  it('格式化"中"', () => {
-    expect(importanceLabel('中')).toBe('重要度: 🟡 中')
-  })
-
-  it('格式化"小"', () => {
-    expect(importanceLabel('小')).toBe('重要度: 🟢 小')
-  })
-
-  it('未知值直接返回', () => {
-    expect(importanceLabel('未知')).toBe('未知')
-    expect(importanceLabel('critical')).toBe('critical')
   })
 })
 
