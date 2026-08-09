@@ -845,7 +845,7 @@ async function handleImportBackup() {
             <input
               type="text"
               v-model="form.deepseek_model"
-              placeholder="deepseek-v4-flash"
+              :placeholder="t('settings.deepseek_model_placeholder')"
               class="setting-input"
             />
           </label>
@@ -854,7 +854,7 @@ async function handleImportBackup() {
             <input
               type="text"
               v-model="form.deepseek_base_url"
-              placeholder="https://api.deepseek.com"
+              :placeholder="t('settings.deepseek_base_url_placeholder')"
               class="setting-input"
             />
           </label>
