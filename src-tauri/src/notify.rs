@@ -40,10 +40,6 @@ mod inner {
         COM_CTX.with(|_| {});
     }
 
-    /// 保留以保持 API 兼容，不再需要显式调用——thread_local! 在线程退出时自动清理。
-    #[allow(dead_code)]
-    pub fn uninit_com() {}
-
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
         app: &AppHandle,
@@ -197,12 +193,6 @@ mod inner {
 mod inner {
     use tauri::{AppHandle, Emitter, Manager};
     use tauri_plugin_opener::OpenerExt;
-
-    #[allow(dead_code)]
-    pub fn uninit_com() {}
-
-    #[allow(dead_code)]
-    pub fn ensure_com() {}
 
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
@@ -376,12 +366,6 @@ mod inner {
 mod inner {
     use tauri::AppHandle;
 
-    #[allow(dead_code)]
-    pub fn uninit_com() {}
-
-    #[allow(dead_code)]
-    pub fn ensure_com() {}
-
     /// 使用 osascript display notification 发送 macOS 通知。
     ///
     /// 注意: osascript 不支持动作按钮，因此与 Windows/Linux 不同，
@@ -447,10 +431,6 @@ mod inner {
 mod inner {
     use tauri::AppHandle;
 
-    pub fn uninit_com() {}
-
-    pub fn ensure_com() {}
-
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
         _app: &AppHandle,
@@ -467,45 +447,7 @@ mod inner {
 }
 
 // ── Re-export ─────────────────────────────────────────
-// uninit_com 保留以保持外部兼容
-#[allow(unused_imports)]
-pub use inner::{send_release_notification, uninit_com, ensure_com};
+pub use inner::send_release_notification;
 
 // ── 权限请求（跨平台空操作）─────────────────────────
 pub fn request_permission(_app: &tauri::AppHandle) {}
-
-// ── 测试 ────────────────────────────────────────────
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_ensure_com_called_once() {
-        // 确保 ensure_com 可以被首次调用而不 panic
-        ensure_com();
-    }
-
-    #[test]
-    fn test_ensure_com_is_idempotent() {
-        // 多次调用 ensure_com 应该安全（线程级 COM ref-counting）
-        ensure_com();
-        ensure_com();
-        ensure_com();
-    }
-
-    #[test]
-    fn test_uninit_com_noop() {
-        // uninit_com 在所有平台上都应安全调用
-        uninit_com();
-        uninit_com();
-    }
-
-    #[test]
-    fn test_ensure_com_then_uninit_com() {
-        // ensure_com 和 uninit_com 交替调用不应 panic
-        ensure_com();
-        uninit_com();
-        ensure_com();
-        uninit_com();
-    }
-}

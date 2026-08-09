@@ -103,7 +103,7 @@ pub fn parse_next_link(link_header: &str) -> Option<String> {
 
 /// 获取单页，返回 (items, 下一页 URL)。`token` 按请求设置 Authorization（仅作用于
 /// 本次请求的 URL，不会泄露给其它域名）。HuggingFace 等无需鉴权的源传 `None`。
-/// 与 `github::fetch_releases_page` / `huggingface::fetch_models_page` 行为一致。
+/// 与 `huggingface::fetch_models_page` 行为一致。
 async fn fetch_page(
     client: &reqwest::Client,
     url: &str,

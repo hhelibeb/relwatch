@@ -22,6 +22,8 @@ pub struct Source {
     pub config: Option<String>,
 }
 
+/// 仅测试使用的便捷封装（生产统一走 `add_source_with_config`）。
+#[cfg(test)]
 pub fn add_source(
     conn: &Connection,
     source_type: &str,

@@ -72,16 +72,10 @@ impl SourceAdapter for HuggingFaceAdapter {
 }
 
 /// 解析后的 HuggingFace 模型元数据。
-///
-/// `sort=createdAt` 实测时 `last_modified` 字段为 None，但保留字段以兼容其他排序场景。
 #[derive(Debug, Clone)]
 struct HfModel {
     id: String,
-    #[allow(dead_code)]
-    author: Option<String>,
     created_at: String,
-    #[allow(dead_code)]
-    last_modified: Option<String>,
     pipeline_tag: Option<String>,
     downloads: i64,
     likes: i64,
@@ -97,9 +91,7 @@ impl HfModel {
         let created_at = value["createdAt"].as_str()?.to_string();
         Some(Self {
             id,
-            author: value["author"].as_str().map(|s| s.to_string()),
             created_at,
-            last_modified: value["lastModified"].as_str().map(|s| s.to_string()),
             pipeline_tag: value["pipeline_tag"].as_str().map(|s| s.to_string()),
             downloads: value["downloads"].as_i64().unwrap_or(0),
             likes: value["likes"].as_i64().unwrap_or(0),
@@ -142,14 +134,6 @@ async fn fetch_models_page(
 ) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
     // HF 公开 API 无需鉴权，显式传 None，绝不携带 Authorization header
     http::fetch_page_with_retry(client, url, None).await
-}
-
-async fn fetch_models_page_with_retry(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
-    // http::fetch_page_with_retry 已含重试，保留此函数供现有测试调用。
-    fetch_models_page(client, url).await
 }
 
 /// 构造按 createdAt 降序的单页请求 URL。
@@ -200,21 +184,21 @@ async fn save_huggingface_models(
 
 /// 获取组织的模型列表（单页，按 createdAt 降序）。
 ///
-/// 对应 `poll.rs::fetch_for_source_async` 的 huggingface 分支。
+/// 供 HuggingFaceAdapter 的 fetch 流程调用的单页拉取入口。
 pub async fn fetch_org_models(
     client: &reqwest::Client,
     org: &str,
     limit: usize,
 ) -> Result<Vec<serde_json::Value>, (u16, String)> {
     let url = build_page_url(org, limit);
-    let (models, _) = fetch_models_page_with_retry(client, &url).await?;
+    let (models, _) = fetch_models_page(client, &url).await?;
     Ok(models)
 }
 
 /// 首次全量分页拉取（fetch_history 开启时）。
 ///
 /// 复用 `http::paginated_fetch` 的 Link header 翻页模式，按 createdAt 降序翻页直到达到 `max_count` 或无下一页。
-/// 对应 `poll.rs::fetch_all_for_source_async` 的 huggingface 分支。
+/// 供 HuggingFaceAdapter 首次全量分页拉取（fetch_history 开启时）使用。
 pub async fn fetch_all_org_models_with_limit(
     client: &reqwest::Client,
     org: &str,

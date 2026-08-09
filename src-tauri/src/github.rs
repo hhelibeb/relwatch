@@ -275,11 +275,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let url = format!("{}/repos/{}/{}/releases?per_page={}", mock.uri(), "owner", "repo", 10);
-        let raw_resp = client.get(&url).send().await;
-        eprintln!("DEBUG raw_resp: {:?}", raw_resp);
         let result = fetch_releases_inner(&client, "owner", "repo", &mock.uri(), 10, None).await;
-        eprintln!("DEBUG result err: {:?}", result.as_ref().map_err(|e| &e.1));
         assert!(result.is_ok());
         let releases = result.unwrap();
         assert_eq!(releases.len(), 1);

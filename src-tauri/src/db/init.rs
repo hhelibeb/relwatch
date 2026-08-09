@@ -11,6 +11,8 @@ pub fn db_path() -> PathBuf {
     app_data_dir().join("database.db")
 }
 
+/// 仅测试使用的内存库（生产走 `db_path` + 连接池）。
+#[cfg(test)]
 pub fn init_memory_db() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     conn.execute_batch("PRAGMA foreign_keys=ON;")?;
@@ -19,6 +21,8 @@ pub fn init_memory_db() -> Result<Connection> {
     Ok(conn)
 }
 
+/// 仅测试使用的内存连接池。
+#[cfg(test)]
 pub fn init_memory_pool(
 ) -> Result<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, String> {
     use std::sync::atomic::{AtomicU64, Ordering};
