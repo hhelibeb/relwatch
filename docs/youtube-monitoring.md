@@ -1,6 +1,6 @@
 # YouTube 频道监控功能规划
 
-> 状态：规划稿（v2）
+> 状态：**已实现**（v1.9.0 发布；v1.10.0 起配套 B 站 UP 主监控，实现思路见 `bilibili.rs` 与 `commands/bilibili_login.rs`）
 > 范围：新增 YouTube 频道监控源；每个源通过复选框配置订阅内容（视频/直播）；不接入 DeepSeek 摘要；前端融入现有设计。
 > v2 变更：新增 **Data API v3 双模式**——配置 `youtube_api_key` 后走官方 API（规避 RSS 风控），未配置时降级 RSS。
 

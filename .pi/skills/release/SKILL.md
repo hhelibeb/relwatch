@@ -139,7 +139,7 @@ npm install --package-lock-only
 使用 changelog skill 更新 `[Unreleased]` 区块：基于 `$latest..HEAD` 的 commit 按 Conventional Commit 前缀分类（feat / fix / refactor / chore / docs），遵守 Keep a Changelog 1.1.0 格式。
 
 ```bash
-# 调用 changelog skill（参见 .pi/skills/changelog/SKILL.md）
+# 调用全局 changelog skill 更新 [Unreleased] 区块
 ```
 
 ### 4.2 创建版本条目

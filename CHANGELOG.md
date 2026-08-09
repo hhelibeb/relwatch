@@ -5,47 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0] - 2026-06-11
-
-### Added
-- 开机自启动设置 — Windows（注册表）和 Linux（.desktop 文件）支持，
-  启动时自动最小化到系统托盘。
-- 监控源搜索增加结果计数、空结果提示和模式切换按钮状态指示。
-
-### Changed
-- 安全策略加固 — 收紧 CSP 限制，移除不必要的 shell 权限。
-- 将 `db.get().unwrap()` 等潜在 panic 调用替换为优雅错误处理，
-  提升运行时健壮性。
-
-## [1.4.1] - 2026-06-08
-
-### Added
-- Escape 键逐层退出到系统托盘 — 右键菜单、搜索框、设置页统一退出链，长按或顶层退出系统托盘。
-
-### Fixed
-- 托盘红点改为基于未读计数(而非待通知计数)，已通知未点击的 release 不再导致红点消失。
-- 前端未读状态函数增加 `snooze_until` 参数，未到提醒时间的已 snooze 条目不再计入未读。
-
-### Changed
-- 忽略 Windows 保留设备名 `nul`，优化筛选栏响应式布局。
-- AGENTS.md 补充 Commit 工作流说明。
-
-## [1.5.1] - 2026-06-16
-
-### Added
-- macOS 通知支持（osascript），发现新版本时弹出系统通知。
-- macOS 开机自启动支持（launchd），启动时自动最小化到系统托盘。
-
-### Fixed
-- 修复 TypeScript 构建时的 setProps 类型断言错误。
-
-### Changed
-- 从 npm 迁移至 pnpm，提升依赖安装性能与磁盘效率。
-- 配置 vitest 前端测试覆盖率工具，优化 ReleaseSearchBar。
-- pre-commit 增加 TypeScript 类型检查，提前捕获构建级错误。
-- README 功能表标注 macOS 支持状态。
-
 ## [Unreleased]
+
+### Changed
+- 版本卡片「阅读全文」按钮统一右对齐（含视频卡片无播放量时），不再因来源类型左右漂移。
+- 摘要卡片摘要显示 3 行截断（前两行满行，第三行在按钮处截断），「阅读全文」按钮悬浮嵌入第三行右侧；不足两行时按钮独立成行不遮挡正文。
 
 ## [1.10.0] - 2026-08-08
 
@@ -124,6 +88,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 保存设置失败时回滚 UI 语言到已持久化语言。
 - 月份导航增加下限保护；点击打开的下拉不再因鼠标移出而自动关闭。
 
+## [1.5.1] - 2026-06-16
+
+### Added
+- macOS 通知支持（osascript），发现新版本时弹出系统通知。
+- macOS 开机自启动支持（launchd），启动时自动最小化到系统托盘。
+
+### Fixed
+- 修复 TypeScript 构建时的 setProps 类型断言错误。
+
+### Changed
+- 从 npm 迁移至 pnpm，提升依赖安装性能与磁盘效率。
+- 配置 vitest 前端测试覆盖率工具，优化 ReleaseSearchBar。
+- pre-commit 增加 TypeScript 类型检查，提前捕获构建级错误。
+- README 功能表标注 macOS 支持状态。
+
+## [1.5.0] - 2026-06-11
+
+### Added
+- 开机自启动设置 — Windows（注册表）和 Linux（.desktop 文件）支持，
+  启动时自动最小化到系统托盘。
+- 监控源搜索增加结果计数、空结果提示和模式切换按钮状态指示。
+
+### Changed
+- 安全策略加固 — 收紧 CSP 限制，移除不必要的 shell 权限。
+- 将 `db.get().unwrap()` 等潜在 panic 调用替换为优雅错误处理，
+  提升运行时健壮性。
+
+## [1.4.1] - 2026-06-08
+
+### Added
+- Escape 键逐层退出到系统托盘 — 右键菜单、搜索框、设置页统一退出链，长按或顶层退出系统托盘。
+
+### Fixed
+- 托盘红点改为基于未读计数(而非待通知计数)，已通知未点击的 release 不再导致红点消失。
+- 前端未读状态函数增加 `snooze_until` 参数，未到提醒时间的已 snooze 条目不再计入未读。
+
+### Changed
+- 忽略 Windows 保留设备名 `nul`，优化筛选栏响应式布局。
+- AGENTS.md 补充 Commit 工作流说明。
+
 ## [1.4.0] - 2026-06-06
 
 ### Added
@@ -184,6 +188,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Discard changes only resets preview when language or theme has unsaved changes.
 - Release search bar TypeScript type error.
 - Browser keyboard shortcuts (Ctrl+S, F5, F12, etc.) no longer interfere with the application.
+
+## [1.2.6] - 2026-05-28
+
+### Added
+- 监控源静音功能 — 静音后抑制该源的新版本通知。
+
+## [1.2.5] - 2026-05-27
+
+### Added
+- 日志搜索支持分页。
+- 自定义 AI 提示词、通知重要度阈值与条件式 AI 设置 UI。
+- DeepSeek API 代理绕过开关。
 
 ## [1.2.4] - 2026-04-27
 
@@ -291,6 +307,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 [1.3.3]: https://github.com/hhelibeb/relwatch/compare/v1.3.1...v1.3.3
 [1.3.1]: https://github.com/hhelibeb/relwatch/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/hhelibeb/relwatch/compare/v1.2.6...v1.3.0
+[1.2.6]: https://github.com/hhelibeb/relwatch/compare/v1.2.5...v1.2.6
+[1.2.5]: https://github.com/hhelibeb/relwatch/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/hhelibeb/relwatch/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/hhelibeb/relwatch/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/hhelibeb/relwatch/compare/v1.2.1...v1.2.2
