@@ -21,22 +21,15 @@ vi.mock('../i18n', () => ({
   getLocale: vi.fn(() => 'zh-CN'),
 }))
 
-vi.mock('../utils', () => ({
-  formatDate: vi.fn(() => '2024-06-15'),
-  isReadStatus: vi.fn((status: string) => status === 'clicked' || status === 'ignored'),
-  isUnreadStatus: vi.fn((status: string, snoozeUntil?: string | null) => {
-    if (status === 'snoozed' && snoozeUntil) {
-      const until = new Date(snoozeUntil)
-      return isNaN(until.getTime()) || until.getTime() <= Date.now()
-    }
-    return status === 'pending' || status === 'snoozed'
-  }),
-  statusClass: vi.fn((status: string) => {
-    if (status === 'pending' || status === 'snoozed') return 'status-unread'
-    return 'status-read'
-  }),
-  statusLabel: vi.fn((status: string) => status),
-}))
+// 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
+// 必须引用 utils 真实实现——曾在此处复制实现，utils 语义变化时测试按旧语义放行（见阶段 2-4）
+vi.mock('../utils', async importOriginal => {
+  const actual = await importOriginal<typeof import('../utils')>()
+  return {
+    ...actual,
+    formatDate: vi.fn(() => '2024-06-15'),
+  }
+})
 
 vi.mock('../composables/contextMenuBus', () => ({
   registerCloser: vi.fn(),

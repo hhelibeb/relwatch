@@ -1,4 +1,46 @@
 // ═══════════════════════════════════════════════════════════════
+// 跨平台纯函数（三平台实现共用，独立于桌面通知 API，可直接单测）
+// ═══════════════════════════════════════════════════════════════
+
+/// 通知正文：`tag - name`；带重要度时追加中文 label（后端 ai_importance 存中文枚举）。
+/// 此前 Windows/Linux/macOS 三份实现各复制一份，语义漂移风险高（见阶段 2-2）。
+pub(crate) fn notification_body(tag: &str, name: &str, importance: Option<&str>) -> String {
+    match importance {
+        Some(imp) => {
+            let label = match imp {
+                "大" => "重要度: 🔴 大",
+                "中" => "重要度: 🟡 中",
+                _ => "重要度: 🟢 小",
+            };
+            format!("{} - {}  |  {}", tag, name, label)
+        }
+        None => format!("{} - {}", tag, name),
+    }
+}
+
+/// Windows 通知按钮动作（toast 按钮回调字符串格式 `go:<rid>` 等）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WinNotificationAction {
+    Go,
+    Ignore,
+    Snooze,
+}
+
+/// 解析 Windows 按钮动作字符串；rid 解析失败回退 0（与原 `unwrap_or(0)` 行为一致）。
+pub(crate) fn parse_win_action(action: &str) -> Option<(WinNotificationAction, i64)> {
+    let (kind, rest) = if let Some(rest) = action.strip_prefix("go:") {
+        (WinNotificationAction::Go, rest)
+    } else if let Some(rest) = action.strip_prefix("ignore:") {
+        (WinNotificationAction::Ignore, rest)
+    } else if let Some(rest) = action.strip_prefix("snooze:") {
+        (WinNotificationAction::Snooze, rest)
+    } else {
+        return None;
+    };
+    Some((kind, rest.parse().unwrap_or(0)))
+}
+
+// ═══════════════════════════════════════════════════════════════
 // Windows 实现 (WinRT Toast 通知)
 // ═══════════════════════════════════════════════════════════════
 #[cfg(windows)]
@@ -58,16 +100,7 @@ mod inner {
 
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             let title = format!("{} / {}", owner, repo);
-            let body = if let Some(ref imp) = importance {
-                let label = match imp.as_str() {
-                    "大" => "重要度: 🔴 大",
-                    "中" => "重要度: 🟡 中",
-                    _ => "重要度: 🟢 小",
-                };
-                format!("{} - {}  |  {}", tag, name, label)
-            } else {
-                format!("{} - {}", tag, name)
-            };
+            let body = crate::notify::notification_body(&tag, &name, importance.as_deref());
             let toast = Toast::new(Toast::POWERSHELL_APP_ID)
                 .title(&title)
                 .text1(&body)
@@ -77,96 +110,102 @@ mod inner {
                 .on_activated(move |action| {
                     log::info!("通知按钮回调: {:?}", action);
                     if let Some(action) = action {
+                        let (kind, rid) = match crate::notify::parse_win_action(&action) {
+                            Some(p) => p,
+                            // 未知动作（如系统关闭回调）不处理
+                            None => return Ok(()),
+                        };
                         let app = app_handle.clone();
                         let state = app.state::<crate::types::AppState>();
                         if let Ok(conn) = state.db.get() {
-                            if let Some(rest) = action.strip_prefix("go:") {
-                                let rid: i64 = rest.parse().unwrap_or(0);
-                                let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
-                                let _ = crate::db::releases::set_notification_state(
-                                    &conn, rid, "clicked", None,
-                                );
-                                match rel {
-                                    Some(r) => {
-                                        let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
-                                        crate::db::logs::write_log_key(
+                            match kind {
+                                crate::notify::WinNotificationAction::Go => {
+                                    let rel = crate::db::releases::get_release(&conn, rid).ok().flatten();
+                                    let _ = crate::db::releases::set_notification_state(
+                                        &conn, rid, "clicked", None,
+                                    );
+                                    match rel {
+                                        Some(r) => {
+                                            let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                            crate::db::logs::write_log_key(
+                                                &conn,
+                                                "INFO",
+                                                "release.go",
+                                                &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                            )
+                                        }
+                                        None => crate::db::logs::write_log_key(
                                             &conn,
                                             "INFO",
-                                            "release.go",
-                                            &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
-                                        )
+                                            "release.go_unknown",
+                                            &json!({"id": rid}).to_string(),
+                                        ),
                                     }
-                                    None => crate::db::logs::write_log_key(
-                                        &conn,
-                                        "INFO",
-                                        "release.go_unknown",
-                                        &json!({"id": rid}).to_string(),
-                                    ),
-                                }
-                                let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
-                                drop(conn);
-                                if !go_url.is_empty() {
-                                    if let Err(e) = app.opener().open_url(&go_url, None::<&str>) {
-                                        log::error!("打开浏览器失败: {}", e);
-                                    } else {
-                                        log::info!("打开浏览器: {}", go_url);
+                                    let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
+                                    drop(conn);
+                                    if !go_url.is_empty() {
+                                        if let Err(e) = app.opener().open_url(&go_url, None::<&str>) {
+                                            log::error!("打开浏览器失败: {}", e);
+                                        } else {
+                                            log::info!("打开浏览器: {}", go_url);
+                                        }
                                     }
                                 }
-                            } else if let Some(rest) = action.strip_prefix("ignore:") {
-                                let rid: i64 = rest.parse().unwrap_or(0);
-                                let rel =
-                                    crate::db::releases::get_release(&conn, rid).ok().flatten();
-                                let _ = crate::db::releases::set_notification_state(
-                                    &conn, rid, "ignored", None,
-                                );
-                                match rel {
-                                    Some(r) => {
-                                        let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
-                                        crate::db::logs::write_log_key(
+                                crate::notify::WinNotificationAction::Ignore => {
+                                    let rel =
+                                        crate::db::releases::get_release(&conn, rid).ok().flatten();
+                                    let _ = crate::db::releases::set_notification_state(
+                                        &conn, rid, "ignored", None,
+                                    );
+                                    match rel {
+                                        Some(r) => {
+                                            let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                            crate::db::logs::write_log_key(
+                                                &conn,
+                                                "INFO",
+                                                "release.ignored",
+                                                &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                            )
+                                        }
+                                        None => crate::db::logs::write_log_key(
                                             &conn,
                                             "INFO",
-                                            "release.ignored",
-                                            &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
-                                        )
+                                            "release.ignored_unknown",
+                                            &json!({"id": rid}).to_string(),
+                                        ),
                                     }
-                                    None => crate::db::logs::write_log_key(
-                                        &conn,
-                                        "INFO",
-                                        "release.ignored_unknown",
-                                        &json!({"id": rid}).to_string(),
-                                    ),
+                                    let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                                 }
-                                let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
-                            } else if let Some(rest) = action.strip_prefix("snooze:") {
-                                let rid: i64 = rest.parse().unwrap_or(0);
-                                let rel =
-                                    crate::db::releases::get_release(&conn, rid).ok().flatten();
-                                let until =
-                                    chrono::Utc::now() + chrono::Duration::hours(24);
-                                let _ = crate::db::releases::set_notification_state(
-                                    &conn,
-                                    rid,
-                                    "snoozed",
-                                    Some(&until.to_rfc3339()),
-                                );
-                                match rel {
-                                    Some(r) => {
-                                        let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
-                                        crate::db::logs::write_log_key(
+                                crate::notify::WinNotificationAction::Snooze => {
+                                    let rel =
+                                        crate::db::releases::get_release(&conn, rid).ok().flatten();
+                                    let until =
+                                        chrono::Utc::now() + chrono::Duration::hours(24);
+                                    let _ = crate::db::releases::set_notification_state(
+                                        &conn,
+                                        rid,
+                                        "snoozed",
+                                        Some(&until.to_rfc3339()),
+                                    );
+                                    match rel {
+                                        Some(r) => {
+                                            let (log_owner, log_repo, log_tag) = crate::db::logs::release_log_ident(&r);
+                                            crate::db::logs::write_log_key(
+                                                &conn,
+                                                "INFO",
+                                                "release.snoozed",
+                                                &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
+                                            )
+                                        }
+                                        None => crate::db::logs::write_log_key(
                                             &conn,
                                             "INFO",
-                                            "release.snoozed",
-                                            &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": rid}).to_string(),
-                                        )
+                                            "release.snoozed_unknown",
+                                            &json!({"id": rid}).to_string(),
+                                        ),
                                     }
-                                    None => crate::db::logs::write_log_key(
-                                        &conn,
-                                        "INFO",
-                                        "release.snoozed_unknown",
-                                        &json!({"id": rid}).to_string(),
-                                    ),
+                                    let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                                 }
-                                let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                             }
                         } else {
                             log::error!("通知回调无法获取数据库连接");
@@ -208,16 +247,7 @@ mod inner {
         importance: Option<String>,
     ) {
         let title = format!("{} / {}", owner, repo);
-        let body = if let Some(ref imp) = importance {
-            let label = match imp.as_str() {
-                "大" => "重要度: 🔴 大",
-                "中" => "重要度: 🟡 中",
-                _ => "重要度: 🟢 小",
-            };
-            format!("{} - {}  |  {}", tag, name, label)
-        } else {
-            format!("{} - {}", tag, name)
-        };
+        let body = crate::notify::notification_body(&tag, &name, importance.as_deref());
 
         let handle = match notify_rust::Notification::new()
             .summary(&title)
@@ -394,16 +424,7 @@ mod inner {
         }
 
         let title = format!("{} / {}", owner, repo);
-        let body = if let Some(ref imp) = importance {
-            let label = match imp.as_str() {
-                "大" => "重要度: 🔴 大",
-                "中" => "重要度: 🟡 中",
-                _ => "重要度: 🟢 小",
-            };
-            format!("{} - {}  |  {}", tag, name, label)
-        } else {
-            format!("{} - {}", tag, name)
-        };
+        let body = crate::notify::notification_body(&tag, &name, importance.as_deref());
 
         let script = format!(
             r#"display notification "{}" with title "{}" subtitle "RelWatch""#,
@@ -453,3 +474,87 @@ pub use inner::send_release_notification;
 
 // ── 权限请求（跨平台空操作）─────────────────────────
 pub fn request_permission(_app: &tauri::AppHandle) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn notification_body_without_importance() {
+        assert_eq!(notification_body("v1.0.0", "Release v1", None), "v1.0.0 - Release v1");
+    }
+
+    #[test]
+    fn notification_body_importance_high() {
+        assert_eq!(
+            notification_body("v1.0.0", "Release v1", Some("大")),
+            "v1.0.0 - Release v1  |  重要度: 🔴 大"
+        );
+    }
+
+    #[test]
+    fn notification_body_importance_medium() {
+        assert_eq!(
+            notification_body("v1.0.0", "Release v1", Some("中")),
+            "v1.0.0 - Release v1  |  重要度: 🟡 中"
+        );
+    }
+
+    #[test]
+    fn notification_body_importance_low_and_unknown_fallback() {
+        assert_eq!(
+            notification_body("v1.0.0", "Release v1", Some("小")),
+            "v1.0.0 - Release v1  |  重要度: 🟢 小"
+        );
+        // 未知重要度值兜底为“小”
+        assert_eq!(
+            notification_body("v1.0.0", "Release v1", Some("未知")),
+            "v1.0.0 - Release v1  |  重要度: 🟢 小"
+        );
+    }
+
+    #[test]
+    fn notification_body_escapes_nothing_but_keeps_empty_fields() {
+        // tag/name 为空时保留占位格式（不 panic、不吞字段）
+        assert_eq!(notification_body("", "", None), " - ");
+    }
+
+    #[test]
+    fn parse_win_action_go_ignore_snooze() {
+        assert_eq!(
+            parse_win_action("go:42"),
+            Some((WinNotificationAction::Go, 42))
+        );
+        assert_eq!(
+            parse_win_action("ignore:7"),
+            Some((WinNotificationAction::Ignore, 7))
+        );
+        assert_eq!(
+            parse_win_action("snooze:99"),
+            Some((WinNotificationAction::Snooze, 99))
+        );
+    }
+
+    #[test]
+    fn parse_win_action_invalid_rid_falls_back_to_zero() {
+        // 与原 strip_prefix + unwrap_or(0) 行为一致
+        assert_eq!(
+            parse_win_action("go:abc"),
+            Some((WinNotificationAction::Go, 0))
+        );
+        assert_eq!(parse_win_action("ignore:"), Some((WinNotificationAction::Ignore, 0)));
+    }
+
+    #[test]
+    fn parse_win_action_unknown_returns_none() {
+        assert_eq!(parse_win_action("__closed"), None);
+        assert_eq!(parse_win_action(""), None);
+        assert_eq!(parse_win_action("open:1"), None);
+        assert_eq!(parse_win_action("go"), None);
+    }
+
+    #[test]
+    fn parse_win_action_negative_rid() {
+        assert_eq!(parse_win_action("go:-1"), Some((WinNotificationAction::Go, -1)));
+    }
+}

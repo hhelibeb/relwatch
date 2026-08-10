@@ -150,3 +150,27 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_require_login_window_label_accepts_own_label() {
+        assert_eq!(require_login_window_label(BILI_LOGIN_WINDOW_LABEL), Ok(()));
+    }
+
+    #[test]
+    fn test_require_login_window_label_rejects_other_labels() {
+        for label in ["main", "", "bilibili-login-2", "Bilibili-Login"] {
+            let err = require_login_window_label(label).unwrap_err();
+            assert_eq!(err, "err.bili_login_window_missing", "label={:?}", label);
+        }
+    }
+
+    #[test]
+    fn test_require_login_window_label_constant_is_stable() {
+        // capabilities/bilibili-login.json 的 windows 白名单依赖此值，改动需两处同步
+        assert_eq!(BILI_LOGIN_WINDOW_LABEL, "bilibili-login");
+    }
+}

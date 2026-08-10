@@ -54,6 +54,8 @@ specta-typescript = "=0.0.12"
 
 [dev-dependencies]
 wiremock = "0.6"
+# tauri test mock（mock_builder/noop_assets）：命令层测试用，feature 为空不影响运行时构建
+tauri = { version = "~2.11.1", features = ["test"] }
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
