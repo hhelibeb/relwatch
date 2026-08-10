@@ -3,6 +3,7 @@ pub mod crypto;
 pub mod db;
 pub mod i18n;
 mod commands;
+mod events;
 mod notify;
 mod tray;
 mod types;
@@ -19,9 +20,72 @@ mod retry;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
+use tauri_specta::{Builder, collect_commands};
 
 use types::AppState;
 use db::settings::{KEY_POLL_INTERVAL, KEY_NEXT_POLL_AT, KEY_MINIMIZE_TO_TRAY};
+
+/// tauri-specta Builder：为全部命令收集类型信息，供生成前端 TS 绑定。
+/// 单独提取为函数，便于 `cargo test` 触发导出（CI 可复现生成）；
+/// release 构建同样需要它（invoke_handler 与事件注册）。
+fn specta_builder() -> Builder<tauri::Wry> {
+    Builder::<tauri::Wry>::new()
+        // i64 id 在 JS 侧无精度风险（SQLite rowid / 秒级时间戳均 < 2^53），保持现有 number 类型
+        .dangerously_cast_bigints_to_number()
+        // Throw 模式：命令失败直接 reject，与前端 invokeI18n 的异常翻译链路兼容
+        .error_handling(tauri_specta::ErrorHandlingMode::Throw)
+        .events(tauri_specta::collect_events![
+            events::ReleaseStateChanged,
+            events::PollCompleted,
+            events::SourceAutoDisabled,
+            events::Navigate,
+        ])
+        .commands(collect_commands![
+        commands::add_source,
+        commands::remove_source,
+        commands::update_source,
+        commands::list_sources,
+        commands::get_releases,
+        commands::set_notification_state,
+        commands::delete_release,
+        commands::translate_release,
+        commands::clear_logs,
+        commands::trigger_poll,
+        commands::check_single_source,
+        commands::get_settings,
+        commands::update_settings,
+        commands::get_poll_countdown,
+        commands::set_deepseek_api_key,
+        commands::set_github_token,
+        commands::set_youtube_api_key,
+        commands::set_bilibili_cookie,
+        commands::is_official_deepseek_base_url,
+        commands::read_bilibili_login_cookie,
+        commands::close_bilibili_login_window,
+        commands::test_deepseek_connection,
+        commands::search_logs,
+        commands::export_backup,
+        commands::import_backup,
+        commands::hide_to_tray,
+        commands::fetch_url_bytes,
+        commands::set_clipboard_text,
+        commands::set_clipboard_image,
+        commands::record_usage,
+        commands::get_usage_stats,
+        commands::clear_usage_stats,
+    ])
+}
+
+/// 导出 TS 绑定到前端 src/bindings.ts（debug 构建运行时 + CI 测试两处触发）。
+#[cfg(debug_assertions)]
+pub fn export_bindings() {
+    specta_builder()
+        .export(
+            specta_typescript::Typescript::default().header("/* eslint-disable */"),
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../src/bindings.ts"),
+        )
+        .expect("Failed to export typescript bindings");
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -68,6 +132,10 @@ pub fn run() {
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
     let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(50));
+
+    // 开发/测试构建时把最新 TS 绑定写入前端（CI 亦可通过 cargo test 触发）
+    #[cfg(debug_assertions)]
+    export_bindings();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -133,6 +201,9 @@ pub fn run() {
             commands::clear_usage_stats,
         ])
         .setup(|app| {
+            // 注册事件名映射（release 构建的 emit 同样依赖），必须在 emit 之前挂载
+            specta_builder().mount_events(app);
+
             if cfg!(debug_assertions) {
                 app.handle().plugin(
                     tauri_plugin_log::Builder::default()
@@ -194,3 +265,15 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    /// 触发 TS 绑定导出：`cargo test` 即重新生成 src/bindings.ts，CI 可据此检查同步。
+    #[test]
+    #[cfg(debug_assertions)]
+    fn export_typescript_bindings() {
+        super::export_bindings();
+    }
+}
+
+

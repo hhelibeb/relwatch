@@ -38,14 +38,16 @@ where
 /// 前端 navigator.clipboard 依赖文档焦点/用户激活，在右键菜单等场景不可靠，
 /// 统一走 Rust 端写入。
 #[tauri::command]
-pub async fn set_clipboard_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
+
+#[specta::specta]pub async fn set_clipboard_text(app: tauri::AppHandle, text: String) -> Result<(), String> {
     clipboard_write(app, move |cb| cb.set_text(text.as_str())).await
 }
 
 /// 写入图片到系统剪贴板。`bytes` 为 PNG 编码字节（前端已用 canvas 统一转码），
 /// 这里解码为 RGBA 后交给 arboard（由它生成 Windows 需要的 DIBV5/PNG 格式）。
 #[tauri::command]
-pub async fn set_clipboard_image(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<(), String> {
+
+#[specta::specta]pub async fn set_clipboard_image(app: tauri::AppHandle, bytes: Vec<u8>) -> Result<(), String> {
     let img = tauri::image::Image::from_bytes(&bytes)
         .map_err(|e| format!("err.image_decode|{}", e))?;
     let width = img.width() as usize;

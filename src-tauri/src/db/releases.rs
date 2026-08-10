@@ -1,9 +1,10 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
+use specta::Type;
 
 use crate::db::settings::{get_setting_str, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE};
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct ReleaseInfo {
     pub id: i64,
     pub source_id: i64,

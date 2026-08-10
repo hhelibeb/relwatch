@@ -4,7 +4,7 @@
 #[cfg(windows)]
 mod inner {
     use tauri::AppHandle;
-    use tauri::Emitter;
+        use tauri_specta::Event;
     use tauri::Manager;
     use tauri_plugin_opener::OpenerExt;
     use tauri_winrt_notification::Toast;
@@ -103,7 +103,7 @@ mod inner {
                                         &json!({"id": rid}).to_string(),
                                     ),
                                 }
-                                let _ = app.emit("release-state-changed", rid);
+                                let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                                 drop(conn);
                                 if !go_url.is_empty() {
                                     if let Err(e) = app.opener().open_url(&go_url, None::<&str>) {
@@ -136,7 +136,7 @@ mod inner {
                                         &json!({"id": rid}).to_string(),
                                     ),
                                 }
-                                let _ = app.emit("release-state-changed", rid);
+                                let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                             } else if let Some(rest) = action.strip_prefix("snooze:") {
                                 let rid: i64 = rest.parse().unwrap_or(0);
                                 let rel =
@@ -166,7 +166,7 @@ mod inner {
                                         &json!({"id": rid}).to_string(),
                                     ),
                                 }
-                                let _ = app.emit("release-state-changed", rid);
+                                let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                             }
                         } else {
                             log::error!("通知回调无法获取数据库连接");
@@ -271,7 +271,7 @@ mod inner {
                                     &serde_json::json!({"id": rid}).to_string(),
                                 ),
                             }
-                            let _ = app.emit("release-state-changed", rid);
+                            let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                             drop(conn);
                         } else {
                             log::error!("通知回调无法获取数据库连接");
@@ -309,7 +309,7 @@ mod inner {
                                     &serde_json::json!({"id": rid}).to_string(),
                                 ),
                             }
-                            let _ = app.emit("release-state-changed", rid);
+                            let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                         } else {
                             log::error!("通知回调无法获取数据库连接");
                         }
@@ -344,7 +344,7 @@ mod inner {
                                     &serde_json::json!({"id": rid}).to_string(),
                                 ),
                             }
-                            let _ = app.emit("release-state-changed", rid);
+                            let _ = crate::events::ReleaseStateChanged(rid).emit(&app);
                         } else {
                             log::error!("通知回调无法获取数据库连接");
                         }

@@ -25,7 +25,8 @@ use crate::db::settings::{
 use serde_json::json;
 
 #[tauri::command]
-pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
+
+#[specta::specta]pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
     let proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, if proxy_url.is_empty() { "none" } else { "custom" })?;
@@ -71,7 +72,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
 }
 
 /// 仅用于 `update_settings` 接收前端参数
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateSettingsPayload {
     poll_interval_minutes: i64,
@@ -98,7 +99,8 @@ pub struct UpdateSettingsPayload {
 }
 
 #[tauri::command]
-pub async fn update_settings(
+
+#[specta::specta]pub async fn update_settings(
     app: tauri::AppHandle,
     payload: UpdateSettingsPayload,
 ) -> Result<(), String> {
@@ -197,7 +199,8 @@ pub async fn update_settings(
 }
 
 #[tauri::command]
-pub fn set_deepseek_api_key(
+
+#[specta::specta]pub fn set_deepseek_api_key(
     state: tauri::State<AppState>,
     api_key: String,
 ) -> Result<(), String> {
@@ -213,7 +216,8 @@ pub fn set_deepseek_api_key(
 }
 
 #[tauri::command]
-pub fn set_github_token(
+
+#[specta::specta]pub fn set_github_token(
     state: tauri::State<AppState>,
     token: String,
 ) -> Result<(), String> {
@@ -229,7 +233,8 @@ pub fn set_github_token(
 }
 
 #[tauri::command]
-pub fn set_youtube_api_key(
+
+#[specta::specta]pub fn set_youtube_api_key(
     state: tauri::State<AppState>,
     api_key: String,
 ) -> Result<(), String> {
@@ -245,7 +250,8 @@ pub fn set_youtube_api_key(
 }
 
 #[tauri::command]
-pub fn set_bilibili_cookie(
+
+#[specta::specta]pub fn set_bilibili_cookie(
     state: tauri::State<AppState>,
     cookie: String,
 ) -> Result<(), String> {
@@ -263,13 +269,14 @@ pub fn set_bilibili_cookie(
 /// 判断 base_url 是否为 DeepSeek 官方域名（供前端保存/测试连接前二次确认，
 /// 审计建议 #1）。返回 bool，不阻止配置。
 #[tauri::command]
-pub fn is_official_deepseek_base_url(base_url: String) -> bool {
+
+#[specta::specta]pub fn is_official_deepseek_base_url(base_url: String) -> bool {
     crate::deepseek::is_official_deepseek_base_url(&base_url)
 }
 
 /// 测试连接的可选覆盖参数：前端把表单当前值（含未保存修改）传入，
 /// 留空的项回退到已保存配置，实现"先试后存"。
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TestDeepseekPayload {
     model: Option<String>,
@@ -281,7 +288,8 @@ pub struct TestDeepseekPayload {
 }
 
 #[tauri::command]
-pub async fn test_deepseek_connection(
+
+#[specta::specta]pub async fn test_deepseek_connection(
     state: tauri::State<'_, AppState>,
     payload: Option<TestDeepseekPayload>,
 ) -> Result<String, String> {

@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
-use tauri::Emitter;
+use tauri_specta::Event;
 
 /// 连续失败超过此次数后自动禁用监控源，防止无限重试
 const MAX_CONSECUTIVE_FAILURES: i64 = 3;
@@ -390,7 +390,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         let _ = db::settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
     }
 
-    let _ = app.emit("poll-completed", ());
+    let _ = crate::events::PollCompleted.emit(&app);
 
     Ok(PollResult {
         new_releases: new_releases
@@ -576,7 +576,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     let (_, new_releases) = collect_pending_and_notify(&db_pool, emitter, &new_ids, false).await;
 
-    let _ = app.emit("poll-completed", ());
+    let _ = crate::events::PollCompleted.emit(&app);
 
     Ok(PollResult {
         new_releases: new_releases
@@ -658,12 +658,13 @@ async fn do_poll_async(app: tauri::AppHandle) {
                         source.id,
                         source.consecutive_failures
                     );
-                    let _ = app.emit("source-auto-disabled", serde_json::json!({
-                        "owner": &source.owner,
-                        "repo": &source.repo,
-                        "id": source.id,
-                        "failures": source.consecutive_failures,
-                    }));
+                    let _ = crate::events::SourceAutoDisabled {
+                        owner: source.owner.clone(),
+                        repo: source.repo.clone(),
+                        id: source.id,
+                        failures: source.consecutive_failures,
+                    }
+                    .emit(&app);
                     ids.push(source.id);
                 }
             }
@@ -692,7 +693,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         ).await;
     }
 
-    let _ = app.emit("poll-completed", ());
+    let _ = crate::events::PollCompleted.emit(&app);
 }
 
 #[allow(clippy::too_many_arguments)]

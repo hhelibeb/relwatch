@@ -1,9 +1,10 @@
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use specta::Type;
 use std::collections::HashMap;
 
 /// 单个事件的聚合统计行：total_count 为累计次数（SUM），daily 为按天趋势。
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Type)]
 pub struct UsageStatRow {
     pub key: String,
     pub total_count: i64,
@@ -12,7 +13,7 @@ pub struct UsageStatRow {
 }
 
 /// 单日计数（按本地时区 YYYY-MM-DD 分桶）。
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Type)]
 pub struct UsageDaily {
     pub day: String,
     pub count: i64,

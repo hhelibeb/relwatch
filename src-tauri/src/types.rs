@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use specta::Type;
 use std::sync::atomic::AtomicI64;
 use tokio::sync::Semaphore;
 
@@ -78,12 +79,12 @@ pub struct AppState {
     pub deepseek_semaphore: std::sync::Arc<Semaphore>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct PollResult {
     pub new_releases: Vec<ReleaseInfo>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct LogSearchResult {
     pub entries: Vec<LogEntry>,
     pub total: i64,
@@ -91,7 +92,7 @@ pub struct LogSearchResult {
     pub page_size: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Type)]
 pub struct AppSettings {
     pub poll_interval_minutes: i64,
     pub proxy_url: String,

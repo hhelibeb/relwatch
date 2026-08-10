@@ -1,11 +1,12 @@
 use crate::db;
 use crate::poll;
 use crate::types::{AppState, PollResult};
-use tauri::Emitter;
+use tauri_specta::Event;
 use serde_json::json;
 
 #[tauri::command]
-pub async fn get_releases(
+
+#[specta::specta]pub async fn get_releases(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
     // 同步 SQLite I/O 放进 spawn_blocking，避免在 Tauri 主线程冻结 UI
@@ -20,7 +21,8 @@ pub async fn get_releases(
 }
 
 #[tauri::command]
-pub fn set_notification_state(
+
+#[specta::specta]pub fn set_notification_state(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
     release_id: i64,
@@ -46,13 +48,14 @@ pub fn set_notification_state(
         None => db::logs::write_log_key(&conn, "INFO", "release.status_changed_unknown", &json!({"id": release_id, "action": &status}).to_string()),
     }
 
-    let _ = app.emit("release-state-changed", release_id);
+    let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn delete_release(
+
+#[specta::specta]pub fn delete_release(
     app: tauri::AppHandle,
     state: tauri::State<AppState>,
     release_id: i64,
@@ -77,13 +80,14 @@ pub fn delete_release(
 
     db::releases::delete_release(&conn, release_id)?;
 
-    let _ = app.emit("release-state-changed", release_id);
+    let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
 
     Ok(())
 }
 
 #[tauri::command]
-pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
+
+#[specta::specta]pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     poll::check_single_source(app, id).await
 }
 
@@ -91,7 +95,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 /// 用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 /// 仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
 #[tauri::command]
-pub async fn translate_release(
+
+#[specta::specta]pub async fn translate_release(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     release_id: i64,
@@ -126,7 +131,7 @@ pub async fn translate_release(
     crate::deepseek::generate_translations_for_new(&state.db, &state.deepseek_semaphore, &saved, true).await;
 
     // 翻译完成后通知前端刷新
-    let _ = app.emit("release-state-changed", release_id);
+    let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
     Ok(())
 }
 

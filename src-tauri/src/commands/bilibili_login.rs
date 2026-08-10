@@ -53,7 +53,8 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
 /// - `Err(err.bili_login_window_missing)`：窗口已关闭（前端停止轮询）
 /// - 其它 Err：读取/验证失败（前端提示）
 #[tauri::command]
-pub async fn read_bilibili_login_cookie(
+
+#[specta::specta]pub async fn read_bilibili_login_cookie(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     window_label: String,
@@ -138,7 +139,8 @@ pub async fn read_bilibili_login_cookie(
 
 /// 关闭登录窗口（前端在登录成功或用户放弃时调用）。
 #[tauri::command]
-pub fn close_bilibili_login_window(
+
+#[specta::specta]pub fn close_bilibili_login_window(
     app: tauri::AppHandle,
     window_label: String,
 ) -> Result<(), String> {

@@ -1,9 +1,10 @@
 use tauri::{
-    Emitter, Listener, Manager,
+    Listener, Manager,
     menu::{MenuBuilder, MenuItemBuilder},
     tray::{TrayIconBuilder, MouseButton, MouseButtonState, TrayIconEvent},
 };
 use crate::types::AppState;
+use tauri_specta::Event;
 
 pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let sources = MenuItemBuilder::with_id("tray_sources", "监控源").build(app)?;
@@ -35,21 +36,21 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
-                        let _ = app.emit("navigate", "sources");
+                        let _ = crate::events::Navigate("sources".to_string()).emit(app);
                     }
                 }
                 "tray_releases" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
-                        let _ = app.emit("navigate", "releases");
+                        let _ = crate::events::Navigate("releases".to_string()).emit(app);
                     }
                 }
                 "tray_settings" => {
                     if let Some(window) = app.get_webview_window("main") {
                         let _ = window.show();
                         let _ = window.set_focus();
-                        let _ = app.emit("navigate", "settings");
+                        let _ = crate::events::Navigate("settings".to_string()).emit(app);
                     }
                 }
                 "tray_check_now" => {

@@ -43,7 +43,8 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
 }
 
 #[tauri::command]
-pub async fn export_backup(app: tauri::AppHandle) -> Result<String, String> {
+
+#[specta::specta]pub async fn export_backup(app: tauri::AppHandle) -> Result<String, String> {
     let path = save_file_dialog(&app).await;
     let path = match path {
         Some(p) => p,
@@ -74,7 +75,8 @@ pub async fn export_backup(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 #[tauri::command]
-pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
+
+#[specta::specta]pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     let path = open_file_dialog(&app).await;
     let path = match path {
         Some(p) => p,

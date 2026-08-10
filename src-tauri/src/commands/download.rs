@@ -9,7 +9,8 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
 /// 前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 /// 返回 `Vec<u8>`，IPC 序列化为 number[]。
 #[tauri::command]
-pub async fn fetch_url_bytes(
+
+#[specta::specta]pub async fn fetch_url_bytes(
     state: tauri::State<'_, AppState>,
     url: String,
 ) -> Result<Vec<u8>, String> {

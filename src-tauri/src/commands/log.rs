@@ -2,7 +2,8 @@ use crate::db;
 use crate::types::{AppState, LogSearchResult};
 
 #[tauri::command]
-pub async fn search_logs(
+
+#[specta::specta]pub async fn search_logs(
     state: tauri::State<'_, AppState>,
     keyword: String,
     page: i64,
@@ -26,7 +27,8 @@ pub async fn search_logs(
 }
 
 #[tauri::command]
-pub async fn clear_logs(state: tauri::State<'_, AppState>) -> Result<(), String> {
+
+#[specta::specta]pub async fn clear_logs(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let pool = state.db.clone();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;

@@ -3,10 +3,11 @@ use crate::types::AppState;
 use crate::{crypto, http, source};
 use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE};
 use serde_json::json;
-use tauri::Emitter;
+use tauri_specta::Event;
 
 #[tauri::command]
-pub async fn add_source(
+
+#[specta::specta]pub async fn add_source(
     state: tauri::State<'_, AppState>,
     source_type: String,
     owner: String,
@@ -143,7 +144,8 @@ pub async fn add_source(
 }
 
 #[tauri::command]
-pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i64) -> Result<(), String> {
+
+#[specta::specta]pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i64) -> Result<(), String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     db::sources::remove_source(&conn, id)?;
@@ -155,12 +157,13 @@ pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i
         None => db::logs::write_log_key(&conn, "INFO", "source.removed_unknown", &json!({"id": id}).to_string()),
     }
     // 删除源会级联删除其 releases（未读计数变化），通知托盘刷新角标
-    let _ = app.emit("release-state-changed", id);
+    let _ = crate::events::ReleaseStateChanged(id).emit(&app);
     Ok(())
 }
 
 #[tauri::command]
-pub fn update_source(
+
+#[specta::specta]pub fn update_source(
     state: tauri::State<AppState>,
     id: i64,
     enabled: bool,
@@ -242,7 +245,8 @@ pub fn update_source(
 }
 
 #[tauri::command]
-pub fn list_sources(state: tauri::State<AppState>) -> Result<Vec<db::sources::Source>, String> {
+
+#[specta::specta]pub fn list_sources(state: tauri::State<AppState>) -> Result<Vec<db::sources::Source>, String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     db::sources::list_sources(&conn)
 }
