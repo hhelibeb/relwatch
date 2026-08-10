@@ -13,6 +13,7 @@ import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
 import { useEscapeToTray } from './composables/useEscapeToTray'
 import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
+import { applyTheme } from './composables/useTheme'
 import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
 import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'
@@ -269,17 +270,6 @@ async function loadSettings() {
     applyTheme(settings.value.theme)
   } catch (e: unknown) {
     showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
-  }
-}
-
-function applyTheme(theme: string) {
-  if (theme === 'dark') {
-    document.documentElement.dataset.theme = 'dark'
-  } else if (theme === 'light') {
-    document.documentElement.dataset.theme = 'light'
-  } else {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
   }
 }
 

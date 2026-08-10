@@ -3,13 +3,15 @@ import { ref, computed, watch, inject, nextTick, onMounted, onUnmounted } from '
 import MarkdownContent from './common/MarkdownContent.vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
-import { type ReleaseInfo, translateRelease } from '../api/releases'
+import { type ReleaseInfo } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
+import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel } from '../utils'
+import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import type { ReleaseContentMode } from './releaseTypes'
 import { getSourceTypeDef } from '../api/source-registry'
 
@@ -176,8 +178,24 @@ function resolveMode(mode: ViewMode | null | undefined): ViewMode {
 }
 
 const viewMode = ref<ViewMode>(defaultViewMode())
-const translating = ref(false)
 const bodyEl = ref<HTMLElement | null>(null)
+
+// 翻译状态机（与 ReleaseItem 卡片共用同一实现）：
+// - 开始时切到译文视图（显示「翻译中」占位）
+// - 成功后 emit update 刷新列表；失败回退全文视图
+// - body_translated 从无到有时自动切到译文视图（onTranslated）
+const { translating, handleTranslateRelease } = useReleaseTranslate({
+  release: () => props.release,
+  showToast,
+  onStart: () => { viewMode.value = 'translated' },
+  onSuccess: () => emit('update'),
+  onError: () => { viewMode.value = 'full' },
+  onTranslated: () => {
+    if (viewMode.value === 'full') {
+      viewMode.value = 'translated'
+    }
+  },
+})
 
 const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
   const modes: { mode: ViewMode; label: string }[] = []
@@ -207,16 +225,6 @@ function switchMode(mode: ViewMode) {
   track('release.detail_mode')
 }
 
-// 翻译完成后自动切换到译文视图（与 ReleaseItem 行为一致）
-watch(() => props.release.body_translated, (newVal, oldVal) => {
-  if (newVal && !oldVal) {
-    translating.value = false
-    if (viewMode.value === 'full') {
-      viewMode.value = 'translated'
-    }
-  }
-})
-
 // 切换到另一个版本时：保持当前内容模式（便于逐版本对比译文/原文），
 // 目标版本没有该内容时回退默认优先级；清除翻译中状态、内容区滚动回顶部
 watch(() => props.release.id, () => {
@@ -226,27 +234,11 @@ watch(() => props.release.id, () => {
 })
 
 // ========== 操作 ==========
+// 弹窗仅在全文视图下允许翻译（卡片无视图概念，直接用基础条件）
 const canTranslate = computed(() =>
   viewMode.value === 'full'
-  && !props.release.body_translated
-  && getSourceTypeDef(props.release.source_type)?.aiSummary !== false
-  && aiEnabled.value
+  && canTranslateRelease(props.release, aiEnabled.value)
 )
-
-async function handleTranslateRelease() {
-  const releaseId = props.release.id
-  translating.value = true
-  viewMode.value = 'translated'
-  track('release.translate')
-  try {
-    await translateRelease(releaseId)
-    emit('update')
-  } catch (e: unknown) {
-    translating.value = false
-    viewMode.value = 'full'
-    showToast?.(t('release.translate_failed') + (e instanceof Error ? e.message : String(e)))
-  }
-}
 
 async function handleCopyContent() {
   const content = currentContent.value
@@ -290,32 +282,8 @@ onUnmounted(() => {
   document.removeEventListener('click', closeBodyMenu)
 })
 
-// ========== 显示辅助（与 ReleaseItem 相同规则） ==========
-function releaseDisplayTitle(release: ReleaseInfo): string {
-  const name = release.release_name.trim()
-  return name && name !== release.tag_name ? name : ''
-}
-
 // HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）
 const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_type)?.showRepoInDetail !== false)
-
-function releaseImportanceText(release: ReleaseInfo): string {
-  switch (release.ai_importance) {
-    case '大': return t('release.importance_high')
-    case '中': return t('release.importance_medium')
-    case '小': return t('release.importance_low')
-    default: return ''
-  }
-}
-
-function releaseImportanceClass(release: ReleaseInfo): string {
-  switch (release.ai_importance) {
-    case '大': return 'release-importance-high'
-    case '中': return 'release-importance-medium'
-    case '小': return 'release-importance-low'
-    default: return ''
-  }
-}
 </script>
 
 <template>

@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, translateRelease } from '../api/releases'
+import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
+import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
+import { useLineClamp } from '../composables/useLineClamp'
+import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 
 const props = defineProps<{ release: ReleaseInfo }>()
@@ -24,7 +27,13 @@ const isUpdating = ref(false)
 // ========== 卡片内容预览：摘要 > 译文 > 原文 ==========
 // 卡片不再提供内容标签：摘要/译文/原文的切换集中在详情弹窗内进行，
 // 点击正文预览或「阅读全文」按钮一步直达弹窗阅读全文。
-const translating = ref(false)
+const { translating, handleTranslateRelease } = useReleaseTranslate({
+  release: () => props.release,
+  showToast,
+  // 翻译开始前关闭右键菜单，避免菜单残留
+  onStart: () => { summaryContextMenu.value = null },
+  onSuccess: () => emit('update'),
+})
 
 // 卡片只展示一种内容：摘要是概览的首选；无摘要时回退到译文/原文截断预览
 // （HuggingFace 源的 body 是模型 README，作为“原文”展示）
@@ -51,13 +60,6 @@ function openDetail() {
   track('release.read_full')
   emit('open-detail', props.release)
 }
-
-// 翻译完成后清除翻译中状态：无摘要时预览内容由 computed 自动从原文刷新为译文
-watch(() => props.release.body_translated, (newVal, oldVal) => {
-  if (newVal && !oldVal) {
-    translating.value = false
-  }
-})
 
 // ========== 摘要悬浮提示 ==========
 const summaryTooltip = ref<{ x: number; y: number; text: string } | null>(null)
@@ -102,149 +104,14 @@ function hideSummaryTooltip() {
 // 摘要超过两行时：前两行满行，第三行在按钮左侧精确截断（自带省略号），按钮悬浮其右侧，
 // 两者不重叠（截断仅作用于显示层，tooltip/右键菜单仍用完整摘要）；
 // 不足两行时按钮独立成行，避免悬浮遮挡正文。
-const summaryTextRef = ref<HTMLElement | null>(null)
-const summaryDisplay = ref<string | null>(null)
-const summaryHasThirdLine = ref(false)
-const EXPAND_GAP = 8
-let summaryResizeObserver: ResizeObserver | null = null
-// 上次测量时的行宽：ResizeObserver 仅在宽度变化时重测（行数/截断点只受宽度影响），
-// 避免「截断状态切换 → 容器高度变化 → 触发观察 → 再切换」的自激振荡回路
-let lastSummaryWidth = -1
-
-function rangeLineCount(node: Node, end: number): number {
-  const range = document.createRange()
-  range.setStart(node, 0)
-  range.setEnd(node, end)
-  return range.getClientRects().length
-}
-
-// 第 3 行起始字符：text[0..i] 恰好排满两行的最小 i
-function findThirdLineStart(node: Node, text: string): number {
-  let lo = 0
-  let hi = text.length
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1
-    if (rangeLineCount(node, mid) >= 3) hi = mid
-    else lo = mid + 1
-  }
-  return lo
-}
-
-function measureTextWidth(font: string, s: string): number {
-  const probe = document.createElement('span')
-  probe.style.cssText = `position:absolute;visibility:hidden;font:${font}`
-  probe.textContent = s
-  document.body.appendChild(probe)
-  const w = probe.getBoundingClientRect().width
-  document.body.removeChild(probe)
-  return w
-}
-
-function measureSummaryLayout() {
-  const el = summaryTextRef.value
-  const text = previewContent.value
-  lastSummaryWidth = el?.clientWidth ?? -1
-  if (!el || !text) {
-    summaryHasThirdLine.value = false
-    summaryDisplay.value = null
-    return
-  }
-  // 用隐藏克隆测量完整文本，不干扰显示。两个关键点：
-  // 1) 克隆后必须重写为完整文本——cloneNode 会带走当前渲染的截断文本，
-  //    后续 range.setEnd(node, text.length) 越界抛 IndexSizeError，状态被 catch 重置，
-  //    与 ResizeObserver 形成「截断 ↔ 重置」振荡（窗口缩窄时按钮闪烁、跳动、盖住文字）。
-  // 2) 克隆挂到同一父节点下，保证字体/行高等继承的排版上下文与真实元素一致。
-  const clone = el.cloneNode(true) as HTMLElement
-  clone.textContent = text
-  clone.style.cssText = `position:absolute;visibility:hidden;left:0;top:0;width:${el.clientWidth}px;pointer-events:none`
-  ;(el.parentElement ?? document.body).appendChild(clone)
-  try {
-    const node = clone.firstChild
-    if (!node) {
-      summaryHasThirdLine.value = false
-      summaryDisplay.value = null
-      return
-    }
-    const totalLines = rangeLineCount(node, text.length)
-    if (totalLines <= 2) {
-      summaryHasThirdLine.value = false
-      summaryDisplay.value = null
-      return
-    }
-    // 第三行可用宽度 = 行宽 - 按钮宽 - 间距
-    const btn = el.parentElement?.querySelector<HTMLElement>('.release-expand-btn')
-    const btnWidth = btn?.getBoundingClientRect().width ?? 0
-    const avail = el.clientWidth - btnWidth - EXPAND_GAP
-    if (avail <= 0) {
-      // 行宽连按钮都放不下：回退「按钮独立成行」，避免悬浮按钮盖住第三行文字
-      summaryHasThirdLine.value = false
-      summaryDisplay.value = null
-      return
-    }
-    summaryHasThirdLine.value = true
-    const start = findThirdLineStart(node, text)
-    // 第三行剩余文字是否超出可用区：未超出则自然结束（省略号由 line-clamp 生成），无需截断。
-    // 注意从 start-1 开始：start 是「text[0..i] 达到 3 行」的最小偏移，第三行首字符是 start-1
-    const thirdRange = document.createRange()
-    thirdRange.setStart(node, start - 1)
-    thirdRange.setEnd(node, text.length)
-    const thirdRects = thirdRange.getClientRects()
-    const thirdWidth = thirdRects.length ? thirdRects[0].width : 0
-    if (thirdWidth <= avail) {
-      summaryDisplay.value = null
-      return
-    }
-    // 二分找最大 end：slice(0, end) + '…' 的最后一行宽度 <= 可用宽
-    const ellipsis = '…'
-    const ellipsisW = measureTextWidth(getComputedStyle(el).font, ellipsis)
-    let lo = start
-    let hi = text.length
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2)
-      const r = document.createRange()
-      r.setStart(node, 0)
-      r.setEnd(node, mid)
-      const rects = r.getClientRects()
-      const lastW = rects.length ? rects[rects.length - 1].width : 0
-      if (lastW + ellipsisW <= avail) lo = mid
-      else hi = mid - 1
-    }
-    let end = lo
-    // 尽量在词边界截断（英文场景），中文不受影响
-    if (end < text.length) {
-      const ws = text.lastIndexOf(' ', end - 1)
-      if (ws > start) end = ws
-    }
-    summaryDisplay.value = text.slice(0, end) + ellipsis
-  } catch {
-    // 测量环境不支持（如测试环境无布局引擎）时回退：按钮独立成行、显示原文
-    summaryHasThirdLine.value = false
-    summaryDisplay.value = null
-  } finally {
-    clone.remove()
-  }
-}
-
-function refreshSummaryLayout() {
-  void nextTick(measureSummaryLayout)
-  // ResizeObserver 监听容器宽度变化（窗口缩放 → 行数/截断点变化）
-  summaryResizeObserver?.disconnect()
-  summaryResizeObserver = null
-  const parent = summaryTextRef.value?.parentElement
-  if (parent && typeof ResizeObserver !== 'undefined') {
-    summaryResizeObserver = new ResizeObserver(() => {
-      // 仅宽度变化才重测：截断状态切换本身会改变容器高度，不过滤会形成振荡回路
-      const w = summaryTextRef.value?.clientWidth ?? -1
-      if (w === lastSummaryWidth) return
-      measureSummaryLayout()
-    })
-    summaryResizeObserver.observe(parent)
-  }
-}
-
-watch(previewContent, refreshSummaryLayout)
-onMounted(refreshSummaryLayout)
-onUnmounted(() => summaryResizeObserver?.disconnect())
+const {
+  textRef: summaryTextRef,
+  display: summaryDisplay,
+  hasThirdLine: summaryHasThirdLine,
+} = useLineClamp({
+  text: () => previewContent.value,
+  expandBtnSelector: '.release-expand-btn',
+})
 
 // ========== 右键菜单 ==========
 const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number } | null>(null)
@@ -257,12 +124,7 @@ function closeMenus() {
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
 // 「翻译」选项仅在：有原文、无译文、非 youtube 源、AI 已启用 时出现
-const canTranslate = computed(() =>
-  !!props.release.body
-  && !props.release.body_translated
-  && getSourceTypeDef(props.release.source_type)?.aiSummary !== false
-  && aiEnabled.value
-)
+const canTranslate = computed(() => canTranslateRelease(props.release, aiEnabled.value))
 // 使用 computed 保证语言切换后右键菜单 label 实时更新
 const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = []
@@ -293,21 +155,6 @@ async function handleCopySummary() {
   track('release.copy')
   try { await navigator.clipboard.writeText(summaryContextMenu.value.text) } catch { /* ignore */ }
   summaryContextMenu.value = null
-}
-
-async function handleTranslateRelease() {
-  const releaseId = props.release.id
-  summaryContextMenu.value = null
-  track('release.translate')
-  // 立即进入翻译中状态，内容区下方显示提示行提供即时反馈
-  translating.value = true
-  try {
-    await translateRelease(releaseId)
-    emit('update')
-  } catch (e: unknown) {
-    translating.value = false
-    showToast?.(t('release.translate_failed') + (e instanceof Error ? e.message : String(e)))
-  }
 }
 
 function handleSummaryMenuAction(actionId: string) {
@@ -413,12 +260,6 @@ async function handleGoRelease(release: ReleaseInfo) {
   } finally {
     isUpdating.value = false
   }
-}
-
-// ========== 显示辅助函数 ==========
-function releaseDisplayTitle(release: ReleaseInfo): string {
-  const name = release.release_name.trim()
-  return name && name !== release.tag_name ? name : ''
 }
 
 // ========== HuggingFace 模型元数据 ==========
@@ -553,25 +394,6 @@ const youtubeViewText = computed(() => {
 const youtubeViewTitle = computed(() =>
   youtubeViewCount.value != null ? String(youtubeViewCount.value) : ''
 )
-
-// ai_importance 存的是中文枚举（大/中/小），展示时映射到 i18n 文案，兼容英文界面
-function releaseImportanceText(release: ReleaseInfo): string {
-  switch (release.ai_importance) {
-    case '大': return t('release.importance_high')
-    case '中': return t('release.importance_medium')
-    case '小': return t('release.importance_low')
-    default: return ''
-  }
-}
-
-function releaseImportanceClass(release: ReleaseInfo): string {
-  switch (release.ai_importance) {
-    case '大': return 'release-importance-high'
-    case '中': return 'release-importance-medium'
-    case '小': return 'release-importance-low'
-    default: return ''
-  }
-}
 </script>
 
 <template>

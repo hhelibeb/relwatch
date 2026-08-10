@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, inject, watch, nextTick, onUnmounted, computed } from 'vue'
+import { ref, reactive, inject, watch, computed } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { version } from '../../package.json'
@@ -10,17 +10,17 @@ import {
   setGithubToken,
   setYoutubeApiKey,
   setBilibiliCookie,
-  readBilibiliLoginCookie,
-  closeBilibiliLoginWindow,
   isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
   importBackup,
 } from '../api/settings'
-import { openReleaseUrl, InvokeI18nError } from '../api/client'
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { openReleaseUrl } from '../api/client'
 import { t, setLocale, languages } from '../i18n'
 import { track } from '../composables/useUsageTracking'
+import { applyTheme } from '../composables/useTheme'
+import { usePreviewSelect } from '../composables/usePreviewSelect'
+import { useBilibiliLogin } from '../composables/useBilibiliLogin'
 
 const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
@@ -33,160 +33,6 @@ const githubToken = ref('')
 const youtubeApiKey = ref('')
 const bilibiliCookie = ref('')
 
-// ── B 站一键登录（应用内 WebView 扫码，自动读取 SESSDATA） ────────
-const biliLoginBusy = ref(false)
-let biliLoginPollTimer: ReturnType<typeof setInterval> | null = null
-let biliLoginTimeout: ReturnType<typeof setTimeout> | null = null
-/** 单调代次令牌：每次发起登录尝试递增，回调（轮询/超时）校验令牌后才生效，
- *  避免旧流程残留的异步回调误操作新流程（F3）。 */
-let biliLoginAttempt = 0
-let biliLoginSettled = false
-const BILI_LOGIN_WINDOW_LABEL = 'bilibili-login'
-
-function stopBiliLoginPolling() {
-  if (biliLoginPollTimer) {
-    clearInterval(biliLoginPollTimer)
-    biliLoginPollTimer = null
-  }
-  if (biliLoginTimeout) {
-    clearTimeout(biliLoginTimeout)
-    biliLoginTimeout = null
-  }
-}
-
-/** 登录成功收尾：停止轮询、关窗、更新表单并提示。 */
-async function settleBiliLoginSuccess() {
-  biliLoginSettled = true
-  stopBiliLoginPolling()
-  biliLoginBusy.value = false
-  await closeBilibiliLoginWindow(BILI_LOGIN_WINDOW_LABEL)
-  form.bilibili_cookie_set = true
-  bilibiliCookie.value = ''
-  showToast(t('settings.bilibili_login_success'))
-}
-
-/** 清除已保存的 B 站 Cookie（SESSDATA）：过期后回退匿名模式的唯一入口（F2）。
- *  命令层 `set_bilibili_cookie('')` 本就支持空值清除，但此前没有任何 UI 触发点。 */
-async function handleClearBilibiliCookie() {
-  track('settings.bili_clear')
-  try {
-    await setBilibiliCookie('')
-    form.bilibili_cookie_set = false
-    bilibiliCookie.value = ''
-    showToast(t('settings.bilibili_cookie_cleared'))
-  } catch (e: unknown) {
-    showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
-  }
-}
-
-/** 等待窗口创建结果：created 到达 resolve、error 到达 reject（避免 error 先触发时 await 永久挂起）。 */
-function waitBiliWindowCreated(win: WebviewWindow): Promise<void> {
-  return new Promise((resolve, reject) => {
-    let settled = false
-    win.once('tauri://error', () => {
-      if (!settled) { settled = true; reject(new Error('bilibili login window create failed')) }
-    })
-    win.once('tauri://created', () => {
-      if (!settled) { settled = true; resolve() }
-    })
-  })
-}
-
-/** 启动登录态轮询（每 2 秒检测一次，直到登录成功或窗口关闭）。 */
-function startBiliLoginPolling() {
-  stopBiliLoginPolling()
-  biliLoginPollTimer = setInterval(async () => {
-    if (biliLoginSettled) return
-    try {
-      const ok = await readBilibiliLoginCookie(BILI_LOGIN_WINDOW_LABEL)
-      if (ok) await settleBiliLoginSuccess()
-    } catch (e: unknown) {
-      const key = e instanceof InvokeI18nError ? e.key : null
-      // 窗口已关闭 → 用户手动放弃，停止轮询（按原始错误 key 判断，不依赖翻译文案）
-      if (key === 'err.bili_login_window_missing') {
-        biliLoginSettled = true
-        stopBiliLoginPolling()
-        biliLoginBusy.value = false
-      } else if (key === 'err.bili_login_not_logged_in') {
-        // 未登录：继续轮询等待扫码完成
-      } else {
-        // 持续性错误（cookie 读取失败/网络失败等）：停止轮询并提示，
-        // 避免进入 60 秒死循环（期间按钮锁死且无法提前解除）
-        biliLoginSettled = true
-        stopBiliLoginPolling()
-        biliLoginBusy.value = false
-        showToast(t('settings.bilibili_login_failed') + (e instanceof Error ? e.message : String(e)))
-      }
-    }
-  }, 2000)
-}
-
-/** 创建（或复用已存在的）登录窗口并轮询检测登录态；成功后自动保存 SESSDATA 并关窗。 */
-async function handleBilibiliLogin() {
-  if (biliLoginBusy.value) return
-  track('settings.bili_login')
-  const attempt = ++biliLoginAttempt
-  biliLoginBusy.value = true
-  biliLoginSettled = false
-  stopBiliLoginPolling()
-  try {
-    // 先探测已有窗口（如上次轮询已因 60 秒超时停止、但窗口仍保留的场景）：
-    // 窗口存在则直接恢复轮询，避免同 label 重复创建失败导致无法重试
-    let needCreate = true
-    try {
-      await readBilibiliLoginCookie(BILI_LOGIN_WINDOW_LABEL)
-      // 窗口存在且已登录：cookie 已由命令加密入库，直接收尾
-      if (attempt !== biliLoginAttempt) return
-      await settleBiliLoginSuccess()
-      return
-    } catch (e: unknown) {
-      if (attempt !== biliLoginAttempt) return
-      const key = e instanceof InvokeI18nError ? e.key : null
-      // 窗口已不存在 → 需要创建；未登录 → 窗口存在，恢复轮询即可；
-      // 其它持续性错误（cookie 读取失败等）→ 提示并停止，不无限重试
-      if (key !== null && key !== 'err.bili_login_window_missing' && key !== 'err.bili_login_not_logged_in') {
-        biliLoginBusy.value = false
-        showToast(t('settings.bilibili_login_failed') + (e instanceof Error ? e.message : String(e)))
-        return
-      }
-      needCreate = key === 'err.bili_login_window_missing'
-    }
-    if (needCreate) {
-      const win = new WebviewWindow(BILI_LOGIN_WINDOW_LABEL, {
-        title: t('settings.bilibili_login_title'),
-        url: 'https://passport.bilibili.com/login',
-        width: 460,
-        height: 640,
-        center: true,
-        resizable: false,
-      })
-      try {
-        await waitBiliWindowCreated(win)
-      } catch {
-        if (attempt !== biliLoginAttempt) return
-        biliLoginBusy.value = false
-        showToast(t('settings.bilibili_login_window_failed'))
-        return
-      }
-    }
-    startBiliLoginPolling()
-    // 超时保护：60 秒未登录则停止轮询（窗口保留；再次点击会恢复轮询，不会重复建窗）。
-    // 句柄被保存并在收尾/卸载/超时自身处清理，避免定时器跨挂载存活、多次尝试累积（F3）。
-    biliLoginTimeout = setTimeout(() => {
-      // 单调代次令牌：仅当仍是本次尝试且未成功收尾时才停止，
-      // 旧流程残留的闭包（已发起新登录/已收尾）不再误改状态
-      if (attempt === biliLoginAttempt && !biliLoginSettled) {
-        stopBiliLoginPolling()
-        biliLoginBusy.value = false
-      }
-    }, 60000)
-  } catch (e: unknown) {
-    if (attempt !== biliLoginAttempt) return
-    stopBiliLoginPolling()
-    biliLoginBusy.value = false
-    showToast(t('settings.bilibili_login_window_failed') + (e instanceof Error ? e.message : String(e)))
-  }
-}
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
 
@@ -196,316 +42,76 @@ watch(() => props.settings, (s) => {
   Object.assign(form, s)
 }, { deep: true })
 
+// ── B 站一键登录（应用内 WebView 扫码，自动读取 SESSDATA） ────────
+const { biliLoginBusy, handleBilibiliLogin, handleClearBilibiliCookie } = useBilibiliLogin({
+  showToast,
+  onLoginSuccess: () => {
+    form.bilibili_cookie_set = true
+    bilibiliCookie.value = ''
+  },
+  onCookieCleared: () => {
+    form.bilibili_cookie_set = false
+    bilibiliCookie.value = ''
+  },
+})
+
 // ── 固定提示词后缀（不可编辑）───────────────────────
 const DEEPSEEK_PROMPT_SUFFIX = '请严格按以下 JSON 格式返回（不要包含其他内容）：\n{"summary":"简短中文摘要","importance":"大|中|小"}'
 
-const themeDropdownOpen = ref(false)
-const previewTheme = ref<string | null>(null)
 const themeOptions = [
   { value: 'system', label: 'settings.theme_system' },
   { value: 'light', label: 'settings.theme_light' },
   { value: 'dark', label: 'settings.theme_dark' },
 ]
 
-const themeSelectRef = ref<HTMLElement | null>(null)
-
-let outsideClickHandler: ((e: MouseEvent) => void) | null = null
-
-function handleOutsideClick(e: MouseEvent) {
-  if (themeSelectRef.value && !themeSelectRef.value.contains(e.target as Node)) {
-    themeDropdownOpen.value = false
-    clearThemePreview()
-  }
-}
-
-watch(themeDropdownOpen, (isOpen) => {
-  if (isOpen) {
-    nextTick(() => {
-      // 守卫：若下拉在 nextTick 执行前已被快速关闭（如同一微任务内再次 toggle），
-      // 不应再向 document 注册 outsideClick 监听器，避免监听器泄漏
-      if (!themeDropdownOpen.value) return
-      outsideClickHandler = handleOutsideClick
-      document.addEventListener('click', outsideClickHandler)
-    })
-  } else {
-    if (outsideClickHandler) {
-      document.removeEventListener('click', outsideClickHandler)
-      outsideClickHandler = null
-    }
-  }
-})
-
-onUnmounted(() => {
-  stopBiliLoginPolling()
-  if (outsideClickHandler) {
-    document.removeEventListener('click', outsideClickHandler)
-    outsideClickHandler = null
-  }
-  if (langOutsideClickHandler) {
-    document.removeEventListener('click', langOutsideClickHandler)
-    langOutsideClickHandler = null
-  }
-})
-
-function setThemePreview(val: string) {
-  previewTheme.value = val
-  if (val === 'dark') {
-    document.documentElement.dataset.theme = 'dark'
-  } else if (val === 'light') {
-    document.documentElement.dataset.theme = 'light'
-  } else {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
-  }
-}
-
-// ── 语言选择（悬停预览）─────────────────────────────
-
-const langDropdownOpen = ref(false)
-const previewLang = ref<string | null>(null)
-const langSelectRef = ref<HTMLElement | null>(null)
-
-let langOutsideClickHandler: ((e: MouseEvent) => void) | null = null
-
-function handleLangOutsideClick(e: MouseEvent) {
-  if (langSelectRef.value && !langSelectRef.value.contains(e.target as Node)) {
-    langDropdownOpen.value = false
-    clearLangPreview()
-  }
-}
-
-watch(langDropdownOpen, (isOpen) => {
-  if (isOpen) {
-    nextTick(() => {
-      // 守卫：同 themeDropdownOpen，防止 nextTick 前已关闭导致监听器泄漏
-      if (!langDropdownOpen.value) return
-      langOutsideClickHandler = handleLangOutsideClick
-      document.addEventListener('click', langOutsideClickHandler)
-    })
-  } else {
-    if (langOutsideClickHandler) {
-      document.removeEventListener('click', langOutsideClickHandler)
-      langOutsideClickHandler = null
-    }
-  }
-})
+// ── 语言/主题选择（悬停预览）─────────────────────────
+// 两份下拉共用 usePreviewSelect 状态机：仅预览/恢复/选中动作不同。
 
 function setLangPreview(val: string) {
-  previewLang.value = val
   setLocale(val)
-}
-
-function clearLangPreview() {
-  previewLang.value = null
-  setLocale(form.language)
 }
 
 function selectLang(val: string) {
   form.language = val
-  previewLang.value = null
   track('settings.lang')
   setLocale(val)
-  setTimeout(() => {
-    langDropdownOpen.value = false
-    // 下拉关闭后把焦点移回触发器，避免 v-if 移除聚焦选项后焦点回退到 body
-    nextTick(() => {
-      const langTrigger = langSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
-      langTrigger?.focus()
-    })
-  }, 0)
 }
 
-function toggleLangDropdown() {
-  langDropdownOpen.value = !langDropdownOpen.value
-  if (!langDropdownOpen.value) {
-    clearLangPreview()
-  } else {
-    // 打开时聚焦第一个选项
-    nextTick(() => {
-      const dropdown = langSelectRef.value?.querySelector('.theme-select-dropdown')
-      const firstOption = dropdown?.querySelector('.theme-select-option') as HTMLElement | null
-      firstOption?.focus()
-    })
-  }
-}
+const {
+  dropdownOpen: langDropdownOpen,
+  previewValue: previewLang,
+  selectRef: langSelectRef,
+  toggle: toggleLangDropdown,
+  handleKeydown: handleLangDropdownKeydown,
+  clearPreview: clearLangPreview,
+} = usePreviewSelect({
+  preview: setLangPreview,
+  restore: () => setLocale(form.language),
+  onSelect: selectLang,
+})
 
-function handleLangDropdownKeydown(e: KeyboardEvent) {
-  // 当下拉关闭时，只处理打开操作
-  if (!langDropdownOpen.value) {
-    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      toggleLangDropdown()
-    }
-    return
-  }
-  
-  const dropdown = langSelectRef.value?.querySelector('.theme-select-dropdown') as HTMLElement | null
-  if (!dropdown) return
-  
-  const options = Array.from(dropdown.querySelectorAll('.theme-select-option')) as HTMLElement[]
-  const currentIndex = options.findIndex(opt => opt === document.activeElement)
-  
-  switch (e.key) {
-    case 'ArrowDown': {
-      e.preventDefault()
-      const nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0
-      options[nextIndex]?.focus()
-      const nextVal = options[nextIndex]?.getAttribute('data-value')
-      if (nextVal) setLangPreview(nextVal)
-      break
-    }
-    case 'ArrowUp': {
-      e.preventDefault()
-      const prevIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1
-      options[prevIndex]?.focus()
-      const prevVal = options[prevIndex]?.getAttribute('data-value')
-      if (prevVal) setLangPreview(prevVal)
-      break
-    }
-    case 'Enter':
-    case ' ':
-      e.preventDefault()
-      if (currentIndex >= 0) {
-        const option = options[currentIndex] as HTMLElement
-        const value = option.getAttribute('data-value')
-        if (value) selectLang(value)
-      }
-      break
-    case 'Escape': {
-      e.preventDefault()
-      langDropdownOpen.value = false
-      clearLangPreview()
-      const langTrigger = langSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
-      langTrigger?.focus()
-      break
-    }
-    case 'Home': {
-      e.preventDefault()
-      options[0]?.focus()
-      const firstVal = options[0]?.getAttribute('data-value')
-      if (firstVal) setLangPreview(firstVal)
-      break
-    }
-    case 'End': {
-      e.preventDefault()
-      options[options.length - 1]?.focus()
-      const lastVal = options[options.length - 1]?.getAttribute('data-value')
-      if (lastVal) setLangPreview(lastVal)
-      break
-    }
-  }
-}
-
-// ── 主题选择（悬停预览）─────────────────────────────
-
-function clearThemePreview() {
-  previewTheme.value = null
-  const theme = form.theme
-  if (theme === 'dark') {
-    document.documentElement.dataset.theme = 'dark'
-  } else if (theme === 'light') {
-    document.documentElement.dataset.theme = 'light'
-  } else {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    document.documentElement.dataset.theme = prefersDark ? 'dark' : 'light'
-  }
+function setThemePreview(val: string) {
+  applyTheme(val)
 }
 
 function selectTheme(val: string) {
   form.theme = val
-  previewTheme.value = null
   track('settings.theme')
-  setThemePreview(val)
-  setTimeout(() => {
-    themeDropdownOpen.value = false
-    // 下拉关闭后把焦点移回触发器，避免 v-if 移除聚焦选项后焦点回退到 body
-    nextTick(() => {
-      const themeTrigger = themeSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
-      themeTrigger?.focus()
-    })
-  }, 0)
+  applyTheme(val)
 }
 
-function toggleDropdown() {
-  themeDropdownOpen.value = !themeDropdownOpen.value
-  if (!themeDropdownOpen.value) {
-    clearThemePreview()
-  } else {
-    // 打开时聚焦第一个选项
-    nextTick(() => {
-      const dropdown = themeSelectRef.value?.querySelector('.theme-select-dropdown')
-      const firstOption = dropdown?.querySelector('.theme-select-option') as HTMLElement | null
-      firstOption?.focus()
-    })
-  }
-}
-
-function handleThemeDropdownKeydown(e: KeyboardEvent) {
-  // 当下拉关闭时，只处理打开操作
-  if (!themeDropdownOpen.value) {
-    if (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault()
-      toggleDropdown()
-    }
-    return
-  }
-  
-  const dropdown = themeSelectRef.value?.querySelector('.theme-select-dropdown') as HTMLElement | null
-  if (!dropdown) return
-  
-  const options = Array.from(dropdown.querySelectorAll('.theme-select-option')) as HTMLElement[]
-  const currentIndex = options.findIndex(opt => opt === document.activeElement)
-  
-  switch (e.key) {
-    case 'ArrowDown': {
-      e.preventDefault()
-      const nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0
-      options[nextIndex]?.focus()
-      const nextVal = options[nextIndex]?.getAttribute('data-value')
-      if (nextVal) setThemePreview(nextVal)
-      break
-    }
-    case 'ArrowUp': {
-      e.preventDefault()
-      const prevIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1
-      options[prevIndex]?.focus()
-      const prevVal = options[prevIndex]?.getAttribute('data-value')
-      if (prevVal) setThemePreview(prevVal)
-      break
-    }
-    case 'Enter':
-    case ' ':
-      e.preventDefault()
-      if (currentIndex >= 0) {
-        const option = options[currentIndex] as HTMLElement
-        const value = option.getAttribute('data-value')
-        if (value) selectTheme(value)
-      }
-      break
-    case 'Escape': {
-      e.preventDefault()
-      themeDropdownOpen.value = false
-      clearThemePreview()
-      const themeTrigger = themeSelectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
-      themeTrigger?.focus()
-      break
-    }
-    case 'Home': {
-      e.preventDefault()
-      options[0]?.focus()
-      const firstVal = options[0]?.getAttribute('data-value')
-      if (firstVal) setThemePreview(firstVal)
-      break
-    }
-    case 'End': {
-      e.preventDefault()
-      options[options.length - 1]?.focus()
-      const lastVal = options[options.length - 1]?.getAttribute('data-value')
-      if (lastVal) setThemePreview(lastVal)
-      break
-    }
-  }
-}
+const {
+  dropdownOpen: themeDropdownOpen,
+  previewValue: previewTheme,
+  selectRef: themeSelectRef,
+  toggle: toggleDropdown,
+  handleKeydown: handleThemeDropdownKeydown,
+  clearPreview: clearThemePreview,
+} = usePreviewSelect({
+  preview: setThemePreview,
+  restore: () => applyTheme(form.theme),
+  onSelect: selectTheme,
+})
 
 // ── 非官方 DeepSeek API 地址二次确认（审计建议 #1）──────────
 // 官方域名 = https + deepseek.com 或其子域。非官方地址意味着 API Key 会以
