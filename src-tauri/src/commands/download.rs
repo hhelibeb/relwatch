@@ -22,7 +22,7 @@ pub async fn fetch_url_bytes(
     http::ensure_public_url(&url).await?;
     let (proxy_url, proxy_mode);
     {
-        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
             if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }

@@ -26,7 +26,7 @@ use serde_json::json;
 
 #[tauri::command]
 pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
     let proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, if proxy_url.is_empty() { "none" } else { "custom" })?;
     Ok(AppSettings {
@@ -184,16 +184,16 @@ pub async fn update_settings(
         // 开机自启动变化时，立即执行系统注册/注销（注册表写入是阻塞 I/O，已在 spawn_blocking 内）
         if old_auto_start != payload.auto_start.to_string() {
             if payload.auto_start {
-                autostart::enable().map_err(|e| format!("设置开机自启动失败: {}", e))?;
+                autostart::enable().map_err(|e| format!("err.autostart_enable_failed|{}", e))?;
             } else {
-                autostart::disable().map_err(|e| format!("取消开机自启动失败: {}", e))?;
+                autostart::disable().map_err(|e| format!("err.autostart_disable_failed|{}", e))?;
             }
         }
 
         Ok(())
     })
     .await
-    .map_err(|e| format!("update_settings 后台任务失败: {}", e))?
+    .map_err(|e| format!("err.task_failed|update_settings|{}", e))?
 }
 
 #[tauri::command]
@@ -287,7 +287,7 @@ pub async fn test_deepseek_connection(
 ) -> Result<String, String> {
     let (model, base_url, api_key, proxy_url, proxy_mode);
     {
-        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         let config = deepseek::read_config(&conn);
         let p = payload.as_ref();
         // 空白字符串视为未提供（如 API Key 输入框留空 = 沿用已保存的 key）
@@ -314,7 +314,7 @@ pub async fn test_deepseek_connection(
             };
         }
     }
-    let api_key = api_key.ok_or("请先设置 DeepSeek API Key")?;
+    let api_key = api_key.ok_or("err.deepseek_api_key_missing")?;
     let client = deepseek::build_client(&api_key, &proxy_url, &proxy_mode)?;
     let body = serde_json::json!({
         "model": model,
@@ -332,11 +332,11 @@ pub async fn test_deepseek_connection(
         .json(&body)
         .send()
         .await
-        .map_err(|e| format!("请求失败: {}", e))?;
+        .map_err(|e| format!("err.request_failed|{}", e))?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(format!("API 返回错误 {}: {}", status, text));
+        return Err(format!("err.api_error|{}|{}", status, text));
     }
     Ok("连接成功".to_string())
 }

@@ -12,7 +12,7 @@ pub async fn search_logs(
     // 同步 SQLite I/O 放进 spawn_blocking，避免在 Tauri 主线程冻结 UI
     let pool = state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
         let (entries, total) = db::logs::search_logs(&conn, &keyword, level.as_deref(), page, page_size)?;
         Ok(LogSearchResult {
             entries,
@@ -22,20 +22,20 @@ pub async fn search_logs(
         })
     })
     .await
-    .map_err(|e| format!("search_logs 后台任务失败: {}", e))?
+    .map_err(|e| format!("err.task_failed|search_logs|{}", e))?
 }
 
 #[tauri::command]
 pub async fn clear_logs(state: tauri::State<'_, AppState>) -> Result<(), String> {
     let pool = state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
         db::logs::clear_logs(&conn)?;
         db::logs::write_log_key(&conn, "INFO", "log.cleared", "{}");
         Ok::<_, String>(())
     })
     .await
-    .map_err(|e| format!("clear_logs 后台任务失败: {}", e))?
+    .map_err(|e| format!("err.task_failed|clear_logs|{}", e))?
 }
 
 #[cfg(test)]

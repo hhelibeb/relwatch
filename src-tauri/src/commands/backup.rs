@@ -6,9 +6,9 @@ use tauri_plugin_dialog::DialogExt;
 
 /// 验证指定路径的文件是有效的 SQLite 数据库（检查魔数前 16 字节）
 pub fn validate_sqlite_file(path: &str) -> Result<(), String> {
-    let header = std::fs::read(path).map_err(|e| format!("无法读取文件: {}", e))?;
+    let header = std::fs::read(path).map_err(|e| format!("err.backup_read_failed|{}", e))?;
     if header.len() < 16 || &header[..16] != b"SQLite format 3\0" {
-        return Err("所选文件不是有效的 SQLite 数据库".to_string());
+        return Err("err.backup_invalid_file".to_string());
     }
     Ok(())
 }
@@ -53,18 +53,18 @@ pub async fn export_backup(app: tauri::AppHandle) -> Result<String, String> {
     let path_str = path.as_path().unwrap().to_string_lossy().to_string();
 
     let state = app.state::<crate::types::AppState>();
-    let conn = state.db.get().map_err(|e| format!("无法获取数据库连接: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
 
     // WAL checkpoint 确保数据完整性
     conn
         .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(|e| format!("WAL checkpoint 失败: {}", e))?;
+        .map_err(|e| format!("err.backup_wal_checkpoint_failed|{}", e))?;
 
     // VACUUM INTO 创建紧凑干净的独立副本
     let escaped = path_str.replace('\'', "''").replace('\\', "\\\\");
     conn
         .execute_batch(&format!("VACUUM INTO '{}';", escaped))
-        .map_err(|e| format!("导出备份失败: {}", e))?;
+        .map_err(|e| format!("err.backup_export_failed|{}", e))?;
 
     if let Ok(conn) = state.db.get() {
         crate::db::logs::write_log_key(&conn, "INFO", "backup.exported", &json!({"path": &path_str}).to_string());
@@ -85,21 +85,21 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
 
     // 持有 poll 锁，防止导入期间轮询线程并发修改数据库
     let _poll_guard = crate::poll::acquire_lock()
-        .map_err(|_| "导入失败：后台轮询正在进行中，请稍后重试".to_string())?;
+        .map_err(|_| "err.backup_import_busy".to_string())?;
 
     // 验证文件是有效的 SQLite 数据库
     validate_sqlite_file(&path_str)?;
 
     // 打开备份文件作为源连接（source）
     let src_conn = rusqlite::Connection::open(&path_str)
-        .map_err(|e| format!("无法打开备份文件: {}", e))?;
+        .map_err(|e| format!("err.backup_open_failed|{}", e))?;
 
     // 从连接池获取目标连接（避免使用独立连接绕过连接池导致并发冲突）
     let state = app.state::<crate::types::AppState>();
     let mut dst_conn = state
         .db
         .get()
-        .map_err(|e| format!("无法获取数据库连接: {}", e))?;
+        .map_err(|e| format!("err.db_connect|{}", e))?;
 
     // 不预先 DELETE：SQLite Backup API 是页级整库覆盖拷贝，目标库的内容会被
     // 源库**完整替换**（含 schema），预先 DELETE 对结果无影响、反而会在恢复失败
@@ -109,10 +109,10 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     // 通过池连接写入，SQLite 自身的 WAL 锁机制保证并发一致性。
     {
         let backup = Backup::new(&src_conn, &mut dst_conn)
-            .map_err(|e| format!("创建备份会话失败: {}", e))?;
+            .map_err(|e| format!("err.backup_session_failed|{}", e))?;
         backup
             .run_to_completion(100, Duration::from_millis(250), None)
-            .map_err(|e| format!("恢复数据失败: {}", e))?;
+            .map_err(|e| format!("err.backup_restore_failed|{}", e))?;
     } // backup 在此处释放，dst_conn 不再被借用
     drop(dst_conn);
 
@@ -122,16 +122,16 @@ pub async fn import_backup(app: tauri::AppHandle) -> Result<(), String> {
     // 同时检查 master key 一致性： 备份里的加密设置（github_token/deepseek_api_key）
     // 用的是导出机器的 master key 加密，本机 master key 无法解密，自动清空避免静默失效。
     let cleared_keys: Vec<&'static str> = {
-        let conn = state.db.get().map_err(|e| format!("恢复后获取连接失败: {}", e))?;
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         // Backup 整库覆盖后，目标库 schema 被备份的 schema 完全替换。旧版本备份可能
         // 缺 logs 等基础表，也可能缺 ai_summary 等 ALTER 后新增的列。先 apply_schema
         // （CREATE TABLE IF NOT EXISTS 补齐缺失基础表），再 migrate（ALTER 补齐新增列），
         // 确保运行中的应用查询新列/新表不会报错。
         if let Err(e) = crate::db::init::apply_schema(&conn) {
-            return Err(format!("恢复后补齐基础表失败: {}。建议重启应用以完成迁移。", e));
+            return Err(format!("err.backup_reinit_failed|{}", e));
         }
         if let Err(e) = crate::db::init::migrate(&conn) {
-            return Err(format!("恢复后迁移数据库失败: {}。建议重启应用以完成迁移。", e));
+            return Err(format!("err.backup_migrate_failed|{}", e));
         }
         crate::crypto::verify_master_key_consistency(&conn)
     };
@@ -177,7 +177,7 @@ mod tests {
         }
         let result = validate_sqlite_file(path.to_str().unwrap());
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("不是有效的 SQLite"));
+        assert!(result.unwrap_err().contains("err.backup_invalid_file"));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -197,7 +197,7 @@ mod tests {
     fn test_validate_sqlite_file_nonexistent() {
         let result = validate_sqlite_file("/tmp/nonexistent_file_that_does_not_exist.db");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("无法读取文件"));
+        assert!(result.unwrap_err().contains("err.backup_read_failed"));
     }
 
     #[test]

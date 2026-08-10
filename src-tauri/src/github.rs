@@ -1,6 +1,5 @@
 use rusqlite::Connection;
 
-use crate::db::releases;
 use crate::db::sources::Source;
 use crate::http;
 use crate::source::SourceAdapter;
@@ -204,46 +203,41 @@ pub fn save_releases(
     .map(|v| v == "true")
     .unwrap_or(false);
 
-    // 按 published_at 降序排列，确保最新发布排在最前
-    let mut sorted: Vec<&serde_json::Value> = gh_releases.iter().collect();
-    sorted.sort_by(|a, b| {
-        let pa = a["published_at"].as_str().unwrap_or("");
-        let pb = b["published_at"].as_str().unwrap_or("");
-        pb.cmp(pa)
-    });
-
-    let mut saved = Vec::new();
-    for rel in &sorted {
-        let pre = rel["prerelease"].as_bool().unwrap_or(false);
-        if pre && !check_pre {
-            continue;
-        }
-        let tag = rel["tag_name"].as_str().unwrap_or("");
-        let name = rel["name"].as_str().unwrap_or("");
-        let html_url = rel["html_url"].as_str().unwrap_or("");
-        let published = match rel["published_at"].as_str() {
-            Some(s) if !s.is_empty() => s,
-            _ => continue,
-        };
-        let body = rel["body"].as_str();
-        if let Ok(id) =
-            releases::insert_release(conn, source_id, tag, name, html_url, published, pre, body)
-        {
-            if id > 0 {
-                saved.push((id, body.map(|s| s.to_string())));
-                if max_count > 0 && saved.len() >= max_count {
-                    return saved;
-                }
-                continue;
+    // 行为收敛到 db::save::save_entries_generic：按 published_at 降序排列，
+    // max_count=1 遇到已入库记录立即返回空；历史模式跳过已存在记录继续。
+    // prerelease 未开启时在投影阶段跳过（不参与 max_count 早退计数，与原实现一致）。
+    let entries: Vec<crate::db::save::SaveEntry> = gh_releases
+        .iter()
+        .filter_map(|rel| {
+            let pre = rel["prerelease"].as_bool().unwrap_or(false);
+            if pre && !check_pre {
+                return None;
             }
-        }
-        // 已入库且普通模式（max_count=1）时，说明不是新版，停止
-        if max_count == 1 {
-            return vec![];
-        }
-        // 历史模式：已存在的跳过，继续找更新/更旧的新版
-    }
-    saved
+            let published = match rel["published_at"].as_str() {
+                Some(s) if !s.is_empty() => s,
+                _ => return None,
+            };
+            Some(crate::db::save::SaveEntry {
+                tag: rel["tag_name"].as_str().unwrap_or("").to_string(),
+                name: rel["name"].as_str().unwrap_or("").to_string(),
+                html_url: rel["html_url"].as_str().unwrap_or("").to_string(),
+                published: published.to_string(),
+                prerelease: pre,
+                body: rel["body"].as_str().map(|s| s.to_string()),
+                metadata: None,
+            })
+        })
+        .collect();
+
+    crate::db::save::save_entries_generic(
+        conn,
+        source_id,
+        &entries,
+        max_count,
+        // GitHub 条目插入时已带 body，无需额外写入；去重命中也无需刷新元数据
+        |_, _, _| {},
+        |_, _, _| {},
+    )
 }
 
 #[cfg(test)]

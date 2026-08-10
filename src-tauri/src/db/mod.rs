@@ -4,3 +4,4 @@ pub mod settings;
 pub mod releases;
 pub mod logs;
 pub mod usage;
+pub mod save;

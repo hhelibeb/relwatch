@@ -12,11 +12,11 @@ pub async fn get_releases(
     // （池连接在轮询高峰期可能被占用， pool.get() 会等待最多 acquire_timeout）
     let pool = state.db.clone();
     tokio::task::spawn_blocking(move || {
-        let conn = pool.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
         db::releases::get_releases_with_state(&conn)
     })
     .await
-    .map_err(|e| format!("get_releases 后台任务失败: {}", e))?
+    .map_err(|e| format!("err.task_failed|get_releases|{}", e))?
 }
 
 #[tauri::command]
@@ -27,7 +27,7 @@ pub fn set_notification_state(
     status: String,
     snooze_minutes: Option<i64>,
 ) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
 
     let snooze_until = snooze_minutes.map(|minutes| {
         let until = chrono::Utc::now() + chrono::Duration::minutes(minutes);
@@ -57,7 +57,7 @@ pub fn delete_release(
     state: tauri::State<AppState>,
     release_id: i64,
 ) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
     match rel {
@@ -98,10 +98,10 @@ pub async fn translate_release(
 ) -> Result<(), String> {
     // 读取该 release 的 body，无 body 则无需翻译
     let body = {
-        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         // 已有译文则跳过
         let existing = db::releases::get_release(&conn, release_id)
-            .map_err(|e| format!("查询失败: {}", e))?;
+            .map_err(|e| format!("err.query_failed|{}", e))?;
         if let Some(ref r) = existing {
             if r.body_translated.is_some() {
                 return Ok(());

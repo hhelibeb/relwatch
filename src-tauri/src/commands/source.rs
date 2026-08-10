@@ -16,7 +16,7 @@ pub async fn add_source(
     let description: String;
     let resolved_owner: String;
     {
-        let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         let proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
         let proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
             if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
@@ -125,7 +125,7 @@ pub async fn add_source(
             }
         };
     }
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let id = db::sources::add_source_with_config(
         &conn, &source_type, &resolved_owner, &repo, &description, config.as_deref(),
     )?;
@@ -144,7 +144,7 @@ pub async fn add_source(
 
 #[tauri::command]
 pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     db::sources::remove_source(&conn, id)?;
     match source {
@@ -168,7 +168,7 @@ pub fn update_source(
     muted: Option<bool>,
     config: Option<String>,
 ) -> Result<(), String> {
-    let mut conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let source = db::sources::get_source(&conn, id)?;
     let old_enabled = source.as_ref().map(|s| s.enabled);
     let old_muted = source.as_ref().map(|s| s.muted);
@@ -243,7 +243,7 @@ pub fn update_source(
 
 #[tauri::command]
 pub fn list_sources(state: tauri::State<AppState>) -> Result<Vec<db::sources::Source>, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     db::sources::list_sources(&conn)
 }
 

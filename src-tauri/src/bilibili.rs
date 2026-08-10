@@ -662,68 +662,58 @@ fn entries_to_json(entries: Vec<BiliEntry>) -> Vec<serde_json::Value> {
 }
 
 /// 保存视频条目到 releases 表（tag_name = bvid，天然去重）。
-/// 行为与 youtube::save_entries 对齐：按 published 降序，max_count=1 遇到已入库
-/// 记录立即返回空；历史模式跳过已存在记录继续。
+///
+/// 行为收敛到 `db::save::save_entries_generic`（与 youtube 共用同一循环）：
+/// 按 published 降序，max_count=1 遇到已入库记录立即返回空；历史模式跳过已存在记录继续。
 pub fn save_entries(
     conn: &Connection,
     source_id: i64,
     items: &[serde_json::Value],
     max_count: usize,
 ) -> Vec<(i64, Option<String>)> {
-    let mut entries: Vec<BiliEntry> = items
+    let entries: Vec<crate::db::save::SaveEntry> = items
         .iter()
-        .filter_map(|v| serde_json::from_value(v.clone()).ok())
+        .filter_map(|v| serde_json::from_value::<BiliEntry>(v.clone()).ok())
+        .filter(|e| !e.bvid.is_empty() && !e.published.is_empty())
+        .map(|e| {
+            let html_url = e.html_url();
+            let metadata = e.metadata_json();
+            crate::db::save::SaveEntry {
+                tag: e.bvid,
+                name: e.title,
+                html_url,
+                published: e.published,
+                prerelease: false,
+                body: Some(e.description),
+                metadata: Some(metadata),
+            }
+        })
         .collect();
-    entries.sort_by(|a, b| b.published.cmp(&a.published));
-
-    let mut saved = Vec::new();
-    for entry in &entries {
-        if entry.bvid.is_empty() || entry.published.is_empty() {
-            continue;
-        }
-        let html_url = entry.html_url();
-        let metadata = entry.metadata_json();
-        match releases::insert_release(
-            conn,
-            source_id,
-            &entry.bvid,
-            &entry.title,
-            &html_url,
-            &entry.published,
-            false,
-            Some(&entry.description),
-        ) {
-            Ok(id) if id > 0 => {
-                let _ = releases::set_release_body_and_metadata(
-                    conn,
-                    id,
-                    Some(&entry.description),
-                    Some(&metadata),
-                );
-                saved.push((id, Some(entry.description.clone())));
-                if max_count > 0 && saved.len() >= max_count {
-                    return saved;
-                }
-                continue;
-            }
-            // 已入库（去重命中）：刷新元数据（播放量/封面/时长随轮询更新）
-            _ => {
-                let _ = releases::update_release_metadata(
-                    conn,
-                    source_id,
-                    &entry.bvid,
-                    Some(&entry.description),
-                    Some(&metadata),
-                );
-            }
-        }
-        // 已入库且普通模式（max_count=1）时，说明不是新内容，停止
-        if max_count == 1 {
-            return vec![];
-        }
-        // 历史模式：已存在的跳过，继续找更新的新内容
-    }
-    saved
+    crate::db::save::save_entries_generic(
+        conn,
+        source_id,
+        &entries,
+        max_count,
+        // 插入成功：写入正文与元数据
+        |conn, id, entry| {
+            let _ = releases::set_release_body_and_metadata(
+                conn,
+                id,
+                entry.body.as_deref(),
+                entry.metadata.as_deref(),
+            );
+        },
+        // 去重命中：刷新元数据（播放量/封面/时长随轮询更新）
+        |conn, source_id, entry| {
+            let _ = releases::update_release_metadata(
+                conn,
+                source_id,
+                &entry.tag,
+                entry.body.as_deref(),
+                entry.metadata.as_deref(),
+            );
+        },
+    )
 }
 
 // ── SourceAdapter 实现 ─────────────────────────────────

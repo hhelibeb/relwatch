@@ -9,7 +9,7 @@ pub fn record_usage(
     state: tauri::State<AppState>,
     events: Vec<(String, u32)>,
 ) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     if !db::settings::get_setting_bool(&conn, db::settings::KEY_ENABLE_USAGE_STATS, true)? {
         return Ok(());
     }
@@ -23,13 +23,13 @@ pub fn get_usage_stats(
     state: tauri::State<AppState>,
     days: Option<u32>,
 ) -> Result<Vec<UsageStatRow>, String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     db::usage::get_usage_stats(&conn, days)
 }
 
 /// 清空全部使用统计。
 #[tauri::command]
 pub fn clear_usage_stats(state: tauri::State<AppState>) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("数据库连接失败: {}", e))?;
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     db::usage::clear_usage_stats(&conn)
 }
