@@ -93,6 +93,7 @@ export default {
   'source.bulk_result': '成功: {0}，失败: {1}',
 
   'settings.general': '常规设置',
+  'settings.accounts': '账号',
   'settings.data': '数据设置',
   'settings.ai': 'AI 设置',
   'settings.language': '界面语言',

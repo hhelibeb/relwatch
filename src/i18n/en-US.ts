@@ -93,6 +93,7 @@ export default {
   'source.bulk_result': 'Succeeded: {0}, Failed: {1}',
 
   'settings.general': 'General',
+  'settings.accounts': 'Accounts',
   'settings.data': 'Data',
   'settings.ai': 'AI Settings',
   'settings.language': 'Language',

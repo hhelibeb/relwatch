@@ -145,8 +145,9 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
 
   it('填写 GitHub Token 后保存，调用 setGithubToken 并清空输入', async () => {
     const wrapper = mountSettings(createSettings({ github_token_set: false }))
+    await clickSidebar(wrapper, 'settings.accounts')
 
-    // GitHub Token 是 general tab 里的 password input
+    // GitHub Token 是 accounts tab 里的 password input
     const ghInput = wrapper.find('input[type="password"]')
     await ghInput.setValue('ghp_token-abc')
 
@@ -167,8 +168,8 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     const apiKeyInput = inputs[0]
     await apiKeyInput.setValue('sk-new-key')
 
-    // 回到 general tab 设置 GitHub token
-    await clickSidebar(wrapper, 'settings.general')
+    // 切到 accounts tab 设置 GitHub token
+    await clickSidebar(wrapper, 'settings.accounts')
     const ghInput = wrapper.find('input[type="password"]')
     await ghInput.setValue('ghp-new-token')
 
@@ -660,6 +661,17 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     expect(aiBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
   })
 
+  it('填写 GitHub Token 后，账号 tab 显示 dirty dot', async () => {
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.accounts')
+
+    const ghInput = wrapper.find('input[type="password"]')
+    await ghInput.setValue('ghp-token')
+
+    const accountsBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes('settings.accounts'))
+    expect(accountsBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
+  })
+
   it('discard 恢复 language 时调用 setLocale 恢复原语言', async () => {
     const wrapper = mountSettings(createSettings({ language: 'zh-CN' }))
     await clickSidebar(wrapper, 'settings.appearance')
@@ -705,7 +717,8 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
   it('discard 清空 API Key 和 GitHub Token 输入', async () => {
     const wrapper = mountSettings()
 
-    // 在 general tab 填写 GitHub token
+    await clickSidebar(wrapper, 'settings.accounts')
+    // 在 accounts tab 填写 GitHub token
     const ghInput = wrapper.find('input[type="password"]')
     await ghInput.setValue('ghp-something')
     expect((ghInput.element as HTMLInputElement).value).toBe('ghp-something')
@@ -807,6 +820,11 @@ describe('SettingsTab — Tab 导航与版本', () => {
     expect(wrapper.find('.settings-form').exists()).toBe(true)
     // 应能看到 poll_interval input
     expect(wrapper.find('input[type="number"]').exists()).toBe(true)
+
+    // 切换到 accounts
+    await clickSidebar(wrapper, 'settings.accounts')
+    // 应能看到 3 个凭据 password input
+    expect(wrapper.findAll('input[type="password"]').length).toBe(3)
 
     // 切换到 appearance
     await clickSidebar(wrapper, 'settings.appearance')

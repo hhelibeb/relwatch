@@ -24,7 +24,7 @@ const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
 const showToast = inject(ShowToastKey)!
 
-const settingsTab = ref<'general' | 'data' | 'appearance' | 'ai'>('general')
+const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai'>('general')
 const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
@@ -601,7 +601,8 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'github_token', 'youtube_api_key', 'bilibili_cookie', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'].filter(k => f.has(k)).length,
     ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
   }
@@ -682,6 +683,7 @@ async function handleImportBackup() {
     <div class="settings-layout">
       <aside class="settings-sidebar">
         <button :class="{ active: settingsTab === 'general' }" @click="settingsTab = 'general'">{{ t('settings.general') }}<span v-if="dirtyByTab.general" class="sidebar-dirty-dot"></span></button>
+        <button :class="{ active: settingsTab === 'accounts' }" @click="settingsTab = 'accounts'">{{ t('settings.accounts') }}<span v-if="dirtyByTab.accounts" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}<span v-if="dirtyByTab.appearance" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}<span v-if="dirtyByTab.ai" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'data' }" @click="settingsTab = 'data'">{{ t('settings.data') }}</button>
@@ -735,6 +737,37 @@ async function handleImportBackup() {
             />
           </label>
           <label class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('log_retention_days') || null">{{ t('settings.log_retention') }}</span>
+            <input
+              type="number"
+              v-model.number="form.log_retention_days"
+              min="0"
+              max="3650"
+              class="setting-input setting-input-narrow"
+            />
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.check_prereleases" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('check_prereleases') || null">{{ t('settings.check_prereleases') }}</span>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.fetch_history" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('fetch_history') || null">{{ t('settings.fetch_history') }}</span>
+          </label>
+          <label class="setting-row" v-if="form.fetch_history">
+            <span class="setting-label" :data-dirty="dirtyFields.has('fetch_history_count') || null">{{ t('settings.fetch_history_count') }}</span>
+            <input
+              type="number"
+              v-model.number="form.fetch_history_count"
+              min="0"
+              max="100"
+              class="setting-input setting-input-narrow"
+            />
+            <span class="setting-note">{{ t('settings.fetch_history_count_hint') }}</span>
+          </label>
+        </div>
+        <div v-if="settingsTab === 'accounts'" class="settings-form">
+          <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('github_token') || null">{{ t('settings.github_token') }}</span>
             <input
               type="password"
@@ -775,35 +808,6 @@ async function handleImportBackup() {
               </button>
             </div>
             <span class="setting-note">{{ t('settings.bilibili_cookie_note') }}</span>
-          </label>
-          <label class="setting-row">
-            <span class="setting-label" :data-dirty="dirtyFields.has('log_retention_days') || null">{{ t('settings.log_retention') }}</span>
-            <input
-              type="number"
-              v-model.number="form.log_retention_days"
-              min="0"
-              max="3650"
-              class="setting-input setting-input-narrow"
-            />
-          </label>
-          <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="form.check_prereleases" />
-            <span class="setting-label" :data-dirty="dirtyFields.has('check_prereleases') || null">{{ t('settings.check_prereleases') }}</span>
-          </label>
-          <label class="setting-row setting-row-checkbox">
-            <input type="checkbox" v-model="form.fetch_history" />
-            <span class="setting-label" :data-dirty="dirtyFields.has('fetch_history') || null">{{ t('settings.fetch_history') }}</span>
-          </label>
-          <label class="setting-row" v-if="form.fetch_history">
-            <span class="setting-label" :data-dirty="dirtyFields.has('fetch_history_count') || null">{{ t('settings.fetch_history_count') }}</span>
-            <input
-              type="number"
-              v-model.number="form.fetch_history_count"
-              min="0"
-              max="100"
-              class="setting-input setting-input-narrow"
-            />
-            <span class="setting-note">{{ t('settings.fetch_history_count_hint') }}</span>
           </label>
         </div>
         <div v-if="settingsTab === 'data'" class="settings-form" style="gap:13px">
