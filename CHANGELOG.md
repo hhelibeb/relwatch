@@ -7,7 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-08-10
+
+### Added
+- 版本列表支持按来源类型筛选（GitHub / Hugging Face / YouTube / B 站），视图切换折叠为下拉。
+- 监控源列表支持按来源类型排序。
+- 功能使用统计：按钮点击埋点采集、本机 SQLite 存储，设置页可开关，开发者统计面板查看。
+
 ### Changed
+- 凭据设置拆分独立账号 tab，常规页精简至行为类设置。
+- DeepSeek 支持配置非官方 API 地址，保存/测试连接前弹窗二次确认。
+- DeepSeek 模型名与 API 地址占位符国际化。
 - 版本卡片「阅读全文」按钮统一右对齐（含视频卡片无播放量时），不再因来源类型左右漂移。
 - 摘要卡片摘要显示 3 行截断（前两行满行，第三行在按钮处截断），「阅读全文」按钮悬浮嵌入第三行右侧；不足两行时按钮独立成行不遮挡正文。
 
@@ -293,7 +303,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.11.0...HEAD
+[1.11.0]: https://github.com/hhelibeb/relwatch/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/hhelibeb/relwatch/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/hhelibeb/relwatch/compare/v1.8.0...v1.9.0
 [1.8.0]: https://github.com/hhelibeb/relwatch/compare/v1.7.0...v1.8.0
