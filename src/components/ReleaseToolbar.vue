@@ -20,20 +20,20 @@ const emit = defineEmits<{
   searchEnter: []
 }>()
 
-function updateStatusFilter(value: string) {
-  emit('update:statusFilter', value as ReleaseStatusFilter)
+function updateStatusFilter(value: ReleaseStatusFilter) {
+  emit('update:statusFilter', value)
 }
 
-function updateImportanceFilter(value: string) {
-  emit('update:importanceFilter', value as ReleaseImportanceFilter)
+function updateImportanceFilter(value: ReleaseImportanceFilter) {
+  emit('update:importanceFilter', value)
 }
 
-function updateSourceFilter(value: string) {
-  emit('update:sourceFilter', value as ReleaseSourceFilter)
+function updateSourceFilter(value: ReleaseSourceFilter) {
+  emit('update:sourceFilter', value)
 }
 
-function updateViewMode(value: string) {
-  emit('update:viewMode', value as ViewMode)
+function updateViewMode(value: ViewMode) {
+  emit('update:viewMode', value)
 }
 </script>
 

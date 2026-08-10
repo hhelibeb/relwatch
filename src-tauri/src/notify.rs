@@ -191,8 +191,10 @@ mod inner {
 // ═══════════════════════════════════════════════════════════════
 #[cfg(all(unix, not(target_os = "macos")))]
 mod inner {
-    use tauri::{AppHandle, Emitter, Manager};
+    use tauri::{AppHandle, Manager};
     use tauri_plugin_opener::OpenerExt;
+    // ReleaseStateChanged(...).emit() 来自 tauri_specta::Event trait（与 Windows 分支同源）
+    use tauri_specta::Event;
 
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(

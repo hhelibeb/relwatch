@@ -9,6 +9,7 @@
  * 4. 若类型需要独立鉴权，后端 `AuthKind` 加枚举并注册 settings token
  */
 import type { Source } from './sources'
+import type { SourceType } from '../components/releaseTypes'
 
 /** 输入解析结果：type 与后端 source_type 一致。 */
 export interface ParsedSource {
@@ -107,7 +108,7 @@ function stripYtChannelPrefix(d: string): string {
  */
 export interface SourceTypeDef {
   /** 与后端 source_type 一致的标识。 */
-  type: string
+  type: SourceType
   /** 类型标题 i18n key（如 source.type_github）。 */
   titleKey: string
   /** 源徽标图标 href。 */

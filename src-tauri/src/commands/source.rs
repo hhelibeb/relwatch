@@ -1,7 +1,7 @@
 use crate::db;
 use crate::types::AppState;
-use crate::{crypto, http, source};
-use db::settings::{get_setting, KEY_GITHUB_TOKEN, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE};
+use crate::{credential, http, source};
+use db::settings::{get_setting, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE};
 use serde_json::json;
 use tauri_specta::Event;
 
@@ -22,47 +22,11 @@ use tauri_specta::Event;
         let proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
             if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
         });
-        let github_token = get_setting(&conn, KEY_GITHUB_TOKEN)
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| {
-                let (plain, new_v2) = crypto::decrypt_with_migration(&s)?;
-                if let Some(new_val) = &new_v2 {
-                    if let Err(e) = db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, new_val) {
-                        log::warn!("迁移 v1→v2 GitHub Token 回写失败: {}", e);
-                    }
-                }
-                Some(plain)
-            });
+        let github_token = credential::read_credential(&conn, KEY_GITHUB_TOKEN);
         // YouTube Data API Key（加密存储，解密后传给 youtube adapter 走 API 模式）
-        let youtube_api_key = get_setting(&conn, KEY_YOUTUBE_API_KEY)
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| {
-                let (plain, new_v2) = crypto::decrypt_with_migration(&s)?;
-                if let Some(new_val) = &new_v2 {
-                    if let Err(e) = db::settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, new_val) {
-                        log::warn!("迁移 v1→v2 YouTube API Key 回写失败: {}", e);
-                    }
-                }
-                Some(plain)
-            });
+        let youtube_api_key = credential::read_credential(&conn, KEY_YOUTUBE_API_KEY);
         // B 站登录 Cookie（SESSDATA，加密存储，可选；降低风控概率）
-        let bilibili_cookie = get_setting(&conn, KEY_BILIBILI_COOKIE)
-            .ok()
-            .flatten()
-            .filter(|s| !s.is_empty())
-            .and_then(|s| {
-                let (plain, new_v2) = crypto::decrypt_with_migration(&s)?;
-                if let Some(new_val) = &new_v2 {
-                    if let Err(e) = db::settings::set_setting(&conn, KEY_BILIBILI_COOKIE, new_val) {
-                        log::warn!("迁移 v1→v2 B 站 Cookie 回写失败: {}", e);
-                    }
-                }
-                Some(plain)
-            });
+        let bilibili_cookie = credential::read_credential(&conn, KEY_BILIBILI_COOKIE);
         // client 不携带 default Authorization——github token 由 adapter 按请求设置，
         // 避免 HF 请求泄露 GitHub Token
         let client = match http::build_http_client(http::HttpClientConfig {

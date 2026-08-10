@@ -301,9 +301,9 @@ pub struct TestDeepseekPayload {
         // 空白字符串视为未提供（如 API Key 输入框留空 = 沿用已保存的 key）
         let non_empty = |v: &Option<String>| v.clone().filter(|s| !s.trim().is_empty());
 
-        model = p.and_then(|p| non_empty(&p.model)).unwrap_or(config.1);
-        base_url = p.and_then(|p| non_empty(&p.base_url)).unwrap_or(config.2);
-        api_key = p.and_then(|p| non_empty(&p.api_key)).or(config.3);
+        model = p.and_then(|p| non_empty(&p.model)).unwrap_or(config.model);
+        base_url = p.and_then(|p| non_empty(&p.base_url)).unwrap_or(config.base_url);
+        api_key = p.and_then(|p| non_empty(&p.api_key)).or(config.api_key);
         let bypass = match p.and_then(|p| p.proxy_bypass) {
             Some(b) => b,
             None => get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false)?,

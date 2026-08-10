@@ -8,10 +8,10 @@ const MAX_CONSECUTIVE_FAILURES: i64 = 3;
 
 use crate::db;
 use crate::db::settings::{
-    KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_GITHUB_TOKEN, KEY_NEXT_POLL_AT,
-    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE,
+    KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_NEXT_POLL_AT,
+    KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
 };
-use crate::crypto;
+use crate::credential;
 use crate::http;
 use crate::deepseek;
 use crate::source;
@@ -49,50 +49,6 @@ pub(crate) fn acquire_lock() -> Result<PollGuard, String> {
         return Err("err.poll_in_progress".to_string());
     }
     Ok(PollGuard)
-}
-
-fn get_github_token(conn: &rusqlite::Connection) -> Option<String> {
-    let encrypted = db::settings::get_setting(conn, KEY_GITHUB_TOKEN).ok()??;
-    if encrypted.is_empty() {
-        return None;
-    }
-    let (plain, new_v2) = crypto::decrypt_with_migration(&encrypted)?;
-    if let Some(new_val) = new_v2 {
-        if let Err(e) = db::settings::set_setting(conn, KEY_GITHUB_TOKEN, &new_val) {
-            log::warn!("迁移 v1→v2 GitHub Token 回写失败: {}", e);
-        }
-    }
-    Some(plain)
-}
-
-/// 读取解密后的 YouTube Data API Key（含 v1→v2 加密迁移回写）。
-fn get_youtube_api_key(conn: &rusqlite::Connection) -> Option<String> {
-    let encrypted = db::settings::get_setting(conn, KEY_YOUTUBE_API_KEY).ok()??;
-    if encrypted.is_empty() {
-        return None;
-    }
-    let (plain, new_v2) = crypto::decrypt_with_migration(&encrypted)?;
-    if let Some(new_val) = new_v2 {
-        if let Err(e) = db::settings::set_setting(conn, KEY_YOUTUBE_API_KEY, &new_val) {
-            log::warn!("迁移 v1→v2 YouTube API Key 回写失败: {}", e);
-        }
-    }
-    Some(plain)
-}
-
-/// 读取解密后的 B 站登录 Cookie（SESSDATA，含 v1→v2 加密迁移回写）。
-fn get_bilibili_cookie(conn: &rusqlite::Connection) -> Option<String> {
-    let encrypted = db::settings::get_setting(conn, KEY_BILIBILI_COOKIE).ok()??;
-    if encrypted.is_empty() {
-        return None;
-    }
-    let (plain, new_v2) = crypto::decrypt_with_migration(&encrypted)?;
-    if let Some(new_val) = new_v2 {
-        if let Err(e) = db::settings::set_setting(conn, KEY_BILIBILI_COOKIE, &new_val) {
-            log::warn!("迁移 v1→v2 B 站 Cookie 回写失败: {}", e);
-        }
-    }
-    Some(plain)
 }
 
 /// 根据 fetch_history 配置计算分页参数。
@@ -158,9 +114,9 @@ fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, Strin
             "custom".to_string()
         }
     });
-    let github_token = get_github_token(conn);
-    let youtube_api_key = get_youtube_api_key(conn);
-    let bilibili_cookie = get_bilibili_cookie(conn);
+    let github_token = credential::read_credential(conn, crate::db::settings::KEY_GITHUB_TOKEN);
+    let youtube_api_key = credential::read_credential(conn, crate::db::settings::KEY_YOUTUBE_API_KEY);
+    let bilibili_cookie = credential::read_credential(conn, crate::db::settings::KEY_BILIBILI_COOKIE);
     let fetch_history =
         db::settings::get_setting_bool(conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
     let fetch_history_count =
@@ -1039,11 +995,11 @@ mod tests {
     #[test]
     fn test_read_deepseek_config_defaults() {
         let conn = init_memory_db().unwrap();
-        let (enabled, model, base_url, api_key, _prompt) = deepseek::read_config(&conn);
-        assert!(!enabled);
-        assert_eq!(model, "deepseek-v4-flash");
-        assert_eq!(base_url, "https://api.deepseek.com");
-        assert!(api_key.is_none());
+        let cfg = deepseek::read_config(&conn);
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.model, "deepseek-v4-flash");
+        assert_eq!(cfg.base_url, "https://api.deepseek.com");
+        assert!(cfg.api_key.is_none());
     }
 
     #[test]
@@ -1056,11 +1012,11 @@ mod tests {
         let encrypted = crate::crypto::encrypt("sk-test");
         db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_API_KEY, &encrypted).unwrap();
 
-        let (enabled, model, base_url, api_key, _prompt) = deepseek::read_config(&conn);
-        assert!(enabled);
-        assert_eq!(model, "deepseek-v4-pro");
-        assert_eq!(base_url, "https://custom.api");
-        assert_eq!(api_key.unwrap(), "sk-test");
+        let cfg = deepseek::read_config(&conn);
+        assert!(cfg.enabled);
+        assert_eq!(cfg.model, "deepseek-v4-pro");
+        assert_eq!(cfg.base_url, "https://custom.api");
+        assert_eq!(cfg.api_key.unwrap(), "sk-test");
     }
 
     use crate::http;
@@ -1284,20 +1240,26 @@ mod tests {
         assert!(paginate);
     }
 
-    // --- get_github_token tests ---
+    // --- credential 读取（凭据管道收敛后经 credential::read_credential）---
 
     #[test]
     fn test_get_github_token_no_key_returns_none() {
         let conn = init_memory_db().unwrap();
-        assert!(get_github_token(&conn).is_none(), "未设置 token 时应返回 None");
+        assert!(
+            crate::credential::read_credential(&conn, crate::db::settings::KEY_GITHUB_TOKEN).is_none(),
+            "未设置 token 时应返回 None"
+        );
     }
 
     #[test]
     fn test_get_github_token_empty_string_returns_none() {
         let conn = init_memory_db().unwrap();
         crate::crypto::set_test_master_key();
-        db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, "").unwrap();
-        assert!(get_github_token(&conn).is_none(), "空字符串 token 时应返回 None");
+        db::settings::set_setting(&conn, crate::db::settings::KEY_GITHUB_TOKEN, "").unwrap();
+        assert!(
+            crate::credential::read_credential(&conn, crate::db::settings::KEY_GITHUB_TOKEN).is_none(),
+            "空字符串 token 时应返回 None"
+        );
     }
 
     #[test]
@@ -1305,8 +1267,8 @@ mod tests {
         let conn = init_memory_db().unwrap();
         crate::crypto::set_test_master_key();
         let encrypted = crate::crypto::encrypt("ghp_test_token");
-        db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted).unwrap();
-        let result = get_github_token(&conn);
+        db::settings::set_setting(&conn, crate::db::settings::KEY_GITHUB_TOKEN, &encrypted).unwrap();
+        let result = crate::credential::read_credential(&conn, crate::db::settings::KEY_GITHUB_TOKEN);
         assert_eq!(result.as_deref(), Some("ghp_test_token"), "应解密返回原始 token");
     }
 
@@ -1331,7 +1293,7 @@ mod tests {
         db::settings::set_setting(&conn, KEY_PROXY_URL, "http://127.0.0.1:1080").unwrap();
         db::settings::set_setting(&conn, KEY_PROXY_MODE, "custom").unwrap();
         let encrypted = crate::crypto::encrypt("ghp_configured");
-        db::settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted).unwrap();
+        db::settings::set_setting(&conn, crate::db::settings::KEY_GITHUB_TOKEN, &encrypted).unwrap();
         db::settings::set_setting(&conn, KEY_FETCH_HISTORY, "true").unwrap();
         db::settings::set_setting(&conn, KEY_FETCH_HISTORY_COUNT, "5").unwrap();
 

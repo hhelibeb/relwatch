@@ -4,13 +4,14 @@ import { t } from '../i18n'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import { getSourceTypeDef, sourceTypeDefs } from '../api/source-registry'
+import type { ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
 
 const props = withDefaults(defineProps<{
   modelValue: string
-  statusFilter: string
-  importanceFilter: string
-  sourceFilter: string
-  viewMode: string
+  statusFilter: ReleaseStatusFilter
+  importanceFilter: ReleaseImportanceFilter
+  sourceFilter: ReleaseSourceFilter
+  viewMode: ViewMode
   showSearch?: boolean
 }>(), {
   showSearch: true,
@@ -18,10 +19,10 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   'update:modelValue': [value: string]
-  'update:statusFilter': [value: string]
-  'update:importanceFilter': [value: string]
-  'update:sourceFilter': [value: string]
-  'update:viewMode': [value: string]
+  'update:statusFilter': [value: ReleaseStatusFilter]
+  'update:importanceFilter': [value: ReleaseImportanceFilter]
+  'update:sourceFilter': [value: ReleaseSourceFilter]
+  'update:viewMode': [value: ViewMode]
   searchEnter: []
 }>()
 
@@ -82,25 +83,25 @@ function onSearchEnter() {
   emit('searchEnter')
 }
 
-function selectStatusFilter(value: string) {
+function selectStatusFilter(value: ReleaseStatusFilter) {
   emit('update:statusFilter', value)
   filterDropdown.close()
   track('release.filter_status')
 }
 
-function selectImportanceFilter(value: string) {
+function selectImportanceFilter(value: ReleaseImportanceFilter) {
   emit('update:importanceFilter', value)
   filterDropdown.close()
   track('release.filter_importance')
 }
 
-function selectSourceFilter(value: string) {
+function selectSourceFilter(value: ReleaseSourceFilter) {
   emit('update:sourceFilter', value)
   filterDropdown.close()
   track('release.filter_source')
 }
 
-function selectViewMode(value: string) {
+function selectViewMode(value: ViewMode) {
   emit('update:viewMode', value)
   filterDropdown.close()
   track('release.view_' + value)

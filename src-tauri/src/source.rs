@@ -15,6 +15,7 @@
 //!   verify + description 分支，消除第三处字符串匹配。
 
 use async_trait::async_trait;
+use std::sync::OnceLock;
 
 use crate::db::sources::Source;
 
@@ -51,17 +52,31 @@ pub fn token_for<'a>(
     }
 }
 
+type AdapterFactory = fn() -> Box<dyn SourceAdapter>;
+
+/// 全部已注册适配器的**单一来源**：source_type 字符串 → 构造器。
+///
+/// `list_adapters` / `get_adapter` 都从这份注册表取数，新增源类型只需在此
+/// 登记一行（类型字符串 + 适配器类型），两份列表不会再有漏改风险。
+static ADAPTERS: OnceLock<Vec<(&'static str, AdapterFactory)>> = OnceLock::new();
+
+fn adapters() -> &'static [(&'static str, AdapterFactory)] {
+    ADAPTERS.get_or_init(|| {
+        vec![
+            ("github", || Box::new(crate::github::GithubAdapter)),
+            ("huggingface", || Box::new(crate::huggingface::HuggingFaceAdapter)),
+            ("youtube", || Box::new(crate::youtube::YoutubeAdapter)),
+            ("bilibili", || Box::new(crate::bilibili::BilibiliAdapter)),
+        ]
+    })
+}
+
 /// 返回所有已注册的适配器。
 ///
 /// 用于按能力枚举（如 filter_ai_eligible 收集不参与 AI 摘要的源类型），
-/// 新增源类型在此登记后自动生效，无需在编排层逐个特判。
+/// 新增源类型在 `ADAPTERS` 注册表登记后自动生效，无需在编排层逐个特判。
 pub fn list_adapters() -> Vec<Box<dyn SourceAdapter>> {
-    vec![
-        Box::new(crate::github::GithubAdapter),
-        Box::new(crate::huggingface::HuggingFaceAdapter),
-        Box::new(crate::youtube::YoutubeAdapter),
-        Box::new(crate::bilibili::BilibiliAdapter),
-    ]
+    adapters().iter().map(|(_, factory)| factory()).collect()
 }
 
 /// 监控源适配器 trait：把 fetch / save / verify / description 收敛为统一接口。
@@ -156,15 +171,14 @@ pub trait SourceAdapter: Send + Sync {
 /// 根据 source_type 字符串取得对应适配器。
 ///
 /// 把原先散落在 `poll.rs`(2 处) / `commands/source.rs`(1 处) 的字符串匹配
-/// 收敛为这一处分发；新增 source 类型只需在此加一个分支并实现 `SourceAdapter`。
+/// 收敛为这一处分发；新增 source 类型只需在 `ADAPTERS` 注册表登记并实现
+/// `SourceAdapter`。
 pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, String)> {
-    match source_type {
-        "github" => Ok(Box::new(crate::github::GithubAdapter)),
-        "huggingface" => Ok(Box::new(crate::huggingface::HuggingFaceAdapter)),
-        "youtube" => Ok(Box::new(crate::youtube::YoutubeAdapter)),
-        "bilibili" => Ok(Box::new(crate::bilibili::BilibiliAdapter)),
-        other => Err((0, format!("err.unsupported_source|{}", other))),
-    }
+    adapters()
+        .iter()
+        .find(|(t, _)| *t == source_type)
+        .map(|(_, factory)| factory())
+        .ok_or_else(|| (0, format!("err.unsupported_source|{}", source_type)))
 }
 
 #[cfg(test)]

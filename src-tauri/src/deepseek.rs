@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-use crate::crypto;
+use crate::credential;
 use crate::db;
 use crate::db::settings::{
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
@@ -11,7 +11,17 @@ use crate::db::settings::{
     DEEPSEEK_PROMPT_FIXED_SUFFIX,
 };
 
-pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>, String) {
+/// DeepSeek 配置聚合（替代原 5 元组按位置取值，消除索引魔法）。
+#[derive(Debug, Clone)]
+pub struct DeepSeekConfig {
+    pub enabled: bool,
+    pub model: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub prompt: String,
+}
+
+pub fn read_config(conn: &Connection) -> DeepSeekConfig {
     let enabled = db::settings::get_setting(conn, KEY_DEEPSEEK_ENABLED)
         .ok()
         .flatten()
@@ -25,30 +35,17 @@ pub fn read_config(conn: &Connection) -> (bool, String, String, Option<String>, 
         .ok()
         .flatten()
         .unwrap_or_else(|| DEFAULT_DEEPSEEK_BASE_URL.to_string());
-    let api_key = {
-        let encrypted = db::settings::get_setting(conn, KEY_DEEPSEEK_API_KEY)
-            .ok()
-            .flatten()
-            .filter(|v| !v.is_empty());
-        match encrypted {
-            Some(enc) => {
-                if let Some((plain, new_v2)) = crypto::decrypt_with_migration(&enc) {
-                    if let Some(new_val) = &new_v2 {
-                        if let Err(e) = db::settings::set_setting(conn, KEY_DEEPSEEK_API_KEY, new_val) {
-                            log::warn!("迁移 v1→v2 DeepSeek API Key 回写失败: {}", e);
-                        }
-                    }
-                    Some(plain)
-                } else {
-                    None
-                }
-            }
-            None => None,
-        }
-    };
+    // API Key 走统一凭据管道（读取 → 解密 → v1→v2 迁移回写）
+    let api_key = credential::read_credential(conn, KEY_DEEPSEEK_API_KEY);
     let prompt = db::settings::get_setting_str(conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)
         .unwrap_or_else(|_| DEFAULT_DEEPSEEK_PROMPT_EDITABLE.to_string());
-    (enabled, model, base_url, api_key, prompt)
+    DeepSeekConfig {
+        enabled,
+        model,
+        base_url,
+        api_key,
+        prompt,
+    }
 }
 
 /// 读取翻译开关与目标语言。返回 (translate_enabled, target_lang)。
@@ -322,11 +319,11 @@ pub async fn generate_summaries_for_new(
             }
         };
         let cfg = read_config(&conn);
-        enabled = cfg.0;
-        model = cfg.1;
-        base_url = cfg.2;
-        api_key = cfg.3;
-        prompt = cfg.4;
+        enabled = cfg.enabled;
+        model = cfg.model;
+        base_url = cfg.base_url;
+        api_key = cfg.api_key;
+        prompt = cfg.prompt;
         let bypass = db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS)
             .ok()
             .flatten()
@@ -474,11 +471,11 @@ pub async fn generate_translations_for_new(
             }
         };
         let cfg = read_config(&conn);
-        enabled = cfg.0;
-        model = cfg.1;
-        base_url = cfg.2;
-        api_key = cfg.3;
-        // cfg.4 = prompt，翻译不使用用户可编辑的摘要 prompt
+        enabled = cfg.enabled;
+        model = cfg.model;
+        base_url = cfg.base_url;
+        api_key = cfg.api_key;
+        // cfg.prompt = 摘要 prompt，翻译不使用用户可编辑的摘要 prompt
         let bypass = db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS)
             .ok()
             .flatten()

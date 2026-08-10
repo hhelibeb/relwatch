@@ -39,7 +39,6 @@
     "@tauri-apps/plugin-dialog": "^2.7.1",
     "@tauri-apps/plugin-notification": "^2.3.3",
     "@tauri-apps/plugin-opener": "^2.5.4",
-    "@tauri-apps/plugin-shell": "^2.3.5",
     "dompurify": "^3.4.11",
     "marked": "^18.0.5",
     "vue": "^3.5.38"

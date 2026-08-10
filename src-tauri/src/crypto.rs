@@ -304,6 +304,12 @@ fn decrypt_inner(encoded: &str) -> Option<String> {
     decrypt_with_key(encoded, &v1_key)
 }
 
+/// 导出 v1 派生密钥（hostname 派生），供其他模块测试构造 v1 密文用。仅测试用。
+#[cfg(test)]
+pub fn test_v1_derive_key() -> [u8; 32] {
+    v1_derive_key()
+}
+
 /// 设置测试用 master key（跳过 keyring）。仅测试用。
 #[cfg(test)]
 pub fn set_test_master_key() {
