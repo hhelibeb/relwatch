@@ -29,6 +29,7 @@ function createWrapper(props: Record<string, unknown> = {}) {
       modelValue: '',
       statusFilter: 'all',
       importanceFilter: 'all',
+      sourceFilter: 'all',
       viewMode: 'simple',
       ...props,
     },
@@ -343,9 +344,10 @@ describe('ReleaseSearchBar — 组合筛选场景', () => {
     await fields[1].findAll('.filter-dropdown button')[1].trigger('click')
     expect(wrapper.emitted('update:importanceFilter')?.[0]).toEqual(['大'])
 
-    // 切换到日历视图
-    const tabs = wrapper.findAll('.view-tabs button')
-    await tabs[2].trigger('click')
+    // 切换到日历视图（视图已折叠为下拉，位于第 4 个筛选字段）
+    const viewField = wrapper.findAll('.filter-field')[3]
+    await viewField.find('.filter-trigger').trigger('click')
+    await viewField.findAll('.filter-dropdown button')[2].trigger('click')
     expect(wrapper.emitted('update:viewMode')?.[0]).toEqual(['calendar'])
   })
 })

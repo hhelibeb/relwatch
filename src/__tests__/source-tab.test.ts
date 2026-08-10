@@ -1029,7 +1029,7 @@ describe('SourceTab — 排序持久化', () => {
 
     await wrapper.get('.sort-trigger').trigger('click')
     const dropdownButtons = wrapper.findAll('.sort-dropdown button')
-    await dropdownButtons[4].trigger('click') // asc
+    await dropdownButtons[5].trigger('click') // asc（前 5 个是排序字段，后 2 个是方向）
 
     expect(window.localStorage.getItem('relwatch.source.sort.direction')).toBe('asc')
   })
@@ -1050,6 +1050,38 @@ describe('SourceTab — 排序持久化', () => {
     const { wrapper } = mountSourceTab([])
 
     expect(wrapper.get('.sort-trigger').text()).toContain('source.sort_default')
+  })
+})
+
+// ============ 按来源排序 ============
+
+describe('SourceTab — 按来源排序', () => {
+  it('选择「来源」排序后按注册表顺序排列，同类型内按名称', async () => {
+    // 显式指定升序，避免默认（desc）干扰断言
+    window.localStorage.setItem('relwatch.source.sort.direction', 'asc')
+    const sources = [
+      createSource({ id: 1, source_type: 'bilibili', owner: '12345', repo: '', description: '某UP主' }),
+      createSource({ id: 2, source_type: 'youtube', owner: 'UCzzz', repo: '', description: '某频道' }),
+      createSource({ id: 3, source_type: 'github', owner: 'vuejs', repo: 'core' }),
+      createSource({ id: 4, source_type: 'huggingface', owner: 'moonshotai', repo: '' }),
+      createSource({ id: 5, source_type: 'github', owner: 'tauri-apps', repo: 'tauri' }),
+    ]
+    const { wrapper } = mountSourceTab(sources)
+
+    await wrapper.get('.sort-trigger').trigger('click')
+    await wrapper.findAll('.sort-dropdown button')[3].trigger('click') // type
+
+    const badges = wrapper.findAll('.source-type-badge')
+    // 注册表顺序：github → huggingface → youtube → bilibili；github 内部按名称 tauri-apps → vuejs（asc）
+    expect(badges.map(b => b.classes().find(c => ['github', 'huggingface', 'youtube', 'bilibili'].includes(c)))).toEqual([
+      'github', 'github', 'huggingface', 'youtube', 'bilibili',
+    ])
+    const items = wrapper.findAll('.source-item')
+    expect(items[0].text()).toContain('tauri-apps')
+    expect(items[1].text()).toContain('vuejs')
+    expect(items[2].text()).toContain('moonshotai')
+    expect(items[3].text()).toContain('某频道')
+    expect(items[4].text()).toContain('某UP主')
   })
 })
 

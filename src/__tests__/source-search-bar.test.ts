@@ -536,6 +536,7 @@ describe('SourceTab header mode switch', () => {
       'source.sort_default',
       'source.sort_name',
       'source.sort_status',
+      'source.sort_type',
       'source.sort_created',
       'source.sort_asc',
       'source.sort_desc',
@@ -546,7 +547,7 @@ describe('SourceTab header mode switch', () => {
     const wrapper = mountSourceTab()
 
     await wrapper.get('.sort-trigger').trigger('click')
-    await wrapper.findAll('.sort-dropdown button')[3].trigger('click')
+    await wrapper.findAll('.sort-dropdown button')[4].trigger('click')
 
     expect(wrapper.get('.sort-trigger').text()).toContain('source.sort_created')
   })
@@ -555,11 +556,11 @@ describe('SourceTab header mode switch', () => {
     const wrapper = mountSourceTab()
 
     await wrapper.get('.sort-trigger').trigger('click')
-    await wrapper.findAll('.sort-dropdown button')[3].trigger('click')
+    await wrapper.findAll('.sort-dropdown button')[4].trigger('click')
     expect(window.localStorage.getItem('relwatch.source.sort.field')).toBe('created')
 
     await wrapper.get('.sort-trigger').trigger('click')
-    await wrapper.findAll('.sort-dropdown button')[4].trigger('click')
+    await wrapper.findAll('.sort-dropdown button')[5].trigger('click')
     expect(window.localStorage.getItem('relwatch.source.sort.direction')).toBe('asc')
   })
 

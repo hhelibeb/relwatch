@@ -12,8 +12,17 @@ vi.mock('../i18n', () => ({
       'release.importance_high': '高',
       'release.importance_medium': '中',
       'release.importance_low': '低',
+      'release.view_simple': '简单',
+      'release.view_aggregated': '聚合',
+      'release.view_calendar': '日历',
       'tab.status': '状态',
       'tab.importance': '重要度',
+      'tab.source': '来源',
+      'tab.view': '视图',
+      'source.type_github': 'GitHub',
+      'source.type_huggingface': 'Hugging Face',
+      'source.type_youtube': 'YouTube',
+      'source.type_bilibili': 'B站',
       'input.clear': '清除',
     }
     return map[key] ?? key
@@ -37,6 +46,7 @@ describe('ReleaseSearchBar.vue — 搜索框', () => {
         modelValue: '',
         statusFilter: 'all',
         importanceFilter: 'all',
+        sourceFilter: 'all',
         viewMode: 'simple',
         ...props,
       },
@@ -93,51 +103,79 @@ describe('ReleaseSearchBar.vue — 搜索框', () => {
   })
 })
 
-describe('ReleaseSearchBar.vue — 视图切换', () => {
+describe('ReleaseSearchBar.vue — 视图切换（折叠下拉）', () => {
   function createWrapper(props: Record<string, unknown> = {}) {
     return mount(ReleaseSearchBar, {
       props: {
         modelValue: '',
         statusFilter: 'all',
         importanceFilter: 'all',
+        sourceFilter: 'all',
         viewMode: 'simple',
         ...props,
       },
     })
   }
 
-  it('默认 simple 视图高亮', () => {
+  // 视图下拉是第 4 个筛选字段（状态/重要度/来源/视图）
+  function openViewDropdown(wrapper: ReturnType<typeof createWrapper>) {
+    return wrapper.findAll('.filter-field')[3]
+  }
+
+  it('默认 simple 视图选项选中', async () => {
     const wrapper = createWrapper()
 
-    const tabs = wrapper.findAll('.view-tabs button')
-    expect(tabs[0].classes()).toContain('active')
-    expect(tabs[1].classes()).not.toContain('active')
-    expect(tabs[2].classes()).not.toContain('active')
+    const viewField = openViewDropdown(wrapper)
+    await viewField.find('.filter-trigger').trigger('click')
+
+    const items = viewField.findAll('.filter-dropdown button')
+    expect(items[0].classes()).toContain('selected')
+    expect(items[1].classes()).not.toContain('selected')
+    expect(items[2].classes()).not.toContain('selected')
   })
 
-  it('点击聚合视图按钮 emit update:viewMode("aggregated")', async () => {
+  it('点击聚合视图选项 emit update:viewMode("aggregated")', async () => {
     const wrapper = createWrapper()
 
-    await wrapper.findAll('.view-tabs button')[1].trigger('click')
+    const viewField = openViewDropdown(wrapper)
+    await viewField.find('.filter-trigger').trigger('click')
+    await viewField.findAll('.filter-dropdown button')[1].trigger('click')
 
     expect(wrapper.emitted('update:viewMode')?.[0]).toEqual(['aggregated'])
   })
 
-  it('点击日历视图按钮 emit update:viewMode("calendar")', async () => {
+  it('点击日历视图选项 emit update:viewMode("calendar")', async () => {
     const wrapper = createWrapper()
 
-    await wrapper.findAll('.view-tabs button')[2].trigger('click')
+    const viewField = openViewDropdown(wrapper)
+    await viewField.find('.filter-trigger').trigger('click')
+    await viewField.findAll('.filter-dropdown button')[2].trigger('click')
 
     expect(wrapper.emitted('update:viewMode')?.[0]).toEqual(['calendar'])
   })
 
-  it('当前视图按钮高亮', () => {
+  it('当前视图选项高亮', async () => {
     const wrapper = createWrapper({ viewMode: 'aggregated' })
 
-    const tabs = wrapper.findAll('.view-tabs button')
-    expect(tabs[1].classes()).toContain('active')
-    expect(tabs[0].classes()).not.toContain('active')
-    expect(tabs[2].classes()).not.toContain('active')
+    const viewField = openViewDropdown(wrapper)
+    await viewField.find('.filter-trigger').trigger('click')
+
+    const items = viewField.findAll('.filter-dropdown button')
+    expect(items[1].classes()).toContain('selected')
+    expect(items[0].classes()).not.toContain('selected')
+    expect(items[2].classes()).not.toContain('selected')
+  })
+
+  it('触发按钮与下拉选项均显示视图图标', async () => {
+    const wrapper = createWrapper({ viewMode: 'calendar' })
+
+    const viewField = openViewDropdown(wrapper)
+    // 触发按钮图标：与旧按钮组同源（list/grid/calendar）
+    expect(viewField.find('.filter-trigger svg use').attributes('href')).toBe('/icons.svg#calendar-icon')
+
+    await viewField.find('.filter-trigger').trigger('click')
+    const optionIcons = viewField.findAll('.filter-dropdown button .filter-type-icon svg use').map(u => u.attributes('href'))
+    expect(optionIcons).toEqual(['/icons.svg#list-icon', '/icons.svg#grid-icon', '/icons.svg#calendar-icon'])
   })
 })
 
@@ -148,6 +186,7 @@ describe('ReleaseSearchBar.vue — 筛选下拉', () => {
         modelValue: '',
         statusFilter: 'all',
         importanceFilter: 'all',
+        sourceFilter: 'all',
         viewMode: 'simple',
         ...props,
       },
@@ -208,5 +247,54 @@ describe('ReleaseSearchBar.vue — 筛选下拉', () => {
     await wrapper.find('.filter-trigger').trigger('keydown', { key: 'Escape' })
 
     expect(wrapper.find('.filter-dropdown').exists()).toBe(false)
+  })
+})
+
+describe('ReleaseSearchBar.vue — 来源筛选', () => {
+  function createWrapper(props: Record<string, unknown> = {}) {
+    return mount(ReleaseSearchBar, {
+      props: {
+        modelValue: '',
+        statusFilter: 'all',
+        importanceFilter: 'all',
+        sourceFilter: 'all',
+        viewMode: 'simple',
+        ...props,
+      },
+    })
+  }
+
+  // 来源下拉是第 3 个筛选字段（状态/重要度/来源/视图）
+  function sourceField(wrapper: ReturnType<typeof createWrapper>) {
+    return wrapper.findAll('.filter-field')[2]
+  }
+
+  it('来源下拉选项包含全部监控类型（GitHub/HF/YouTube/B站）', async () => {
+    const wrapper = createWrapper()
+
+    const field = sourceField(wrapper)
+    await field.find('.filter-trigger').trigger('click')
+
+    const items = field.findAll('.filter-dropdown button')
+    expect(items.map(i => i.text())).toEqual(['全部', 'GitHub', 'Hugging Face', 'YouTube', 'B站'])
+  })
+
+  it('选择 YouTube 选项 emit update:sourceFilter("youtube") 并关闭', async () => {
+    const wrapper = createWrapper()
+
+    const field = sourceField(wrapper)
+    await field.find('.filter-trigger').trigger('click')
+    await field.findAll('.filter-dropdown button')[3].trigger('click')
+
+    expect(wrapper.emitted('update:sourceFilter')?.[0]).toEqual(['youtube'])
+    expect(wrapper.find('.filter-dropdown').exists()).toBe(false)
+  })
+
+  it('选中来源时触发按钮显示类型标题与图标', async () => {
+    const wrapper = createWrapper({ sourceFilter: 'bilibili' })
+
+    const trigger = sourceField(wrapper).find('.filter-trigger')
+    expect(trigger.text()).toContain('B站')
+    expect(trigger.find('svg use').attributes('href')).toBe('/icons.svg#bilibili-icon')
   })
 })

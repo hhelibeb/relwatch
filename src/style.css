@@ -549,6 +549,9 @@ html {
   background: transparent;
   color: var(--text);
   font-size: 12px;
+  /* 固定行高：避免中英文混排时行高随字体变化（中文 fallback 行高更大），
+     导致选项按钮高度不一（如「哔哩哔哩」比其他选项高） */
+  line-height: 1.4;
   cursor: pointer;
   text-align: left;
   border-radius: 4px;

@@ -8,7 +8,7 @@ import ReleaseDateDetail from './ReleaseDateDetail.vue'
 import ReleaseDetailModal from './ReleaseDetailModal.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import ReleaseToolbar from './ReleaseToolbar.vue'
-import type { ReleaseImportanceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
+import type { ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
 import { track } from '../composables/useUsageTracking'
 
 type AggregatedListInstance = InstanceType<typeof ReleaseAggregatedList> & {
@@ -29,6 +29,7 @@ const emit = defineEmits<{
 
 const viewMode = ref<ViewMode>('simple')
 const importanceFilter = ref<ReleaseImportanceFilter>('all')
+const sourceFilter = ref<ReleaseSourceFilter>('all')
 const selectedDate = ref<string | null>(null)
 const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth() + 1)
@@ -45,7 +46,7 @@ const statusFilter = computed({
 })
 
 const hasActiveFilter = computed(() => {
-  return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || importanceFilter.value !== 'all'
+  return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || importanceFilter.value !== 'all' || sourceFilter.value !== 'all'
 })
 
 const filteredReleases = computed(() => {
@@ -62,6 +63,10 @@ const filteredReleases = computed(() => {
 
   if (importanceFilter.value !== 'all') {
     list = list.filter(release => release.ai_importance === importanceFilter.value)
+  }
+
+  if (sourceFilter.value !== 'all') {
+    list = list.filter(release => release.source_type === sourceFilter.value)
   }
 
   return list
@@ -139,6 +144,7 @@ function navigateReleaseDetail(delta: number) {
       v-model="releaseSearch"
       v-model:status-filter="statusFilter"
       v-model:importance-filter="importanceFilter"
+      v-model:source-filter="sourceFilter"
       v-model:view-mode="viewMode"
       @search-enter="handleSearchEnter"
     />

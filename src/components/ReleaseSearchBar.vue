@@ -3,11 +3,13 @@ import { ref, computed } from 'vue'
 import { t } from '../i18n'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
+import { getSourceTypeDef, sourceTypeDefs } from '../api/source-registry'
 
 const props = withDefaults(defineProps<{
   modelValue: string
   statusFilter: string
   importanceFilter: string
+  sourceFilter: string
   viewMode: string
   showSearch?: boolean
 }>(), {
@@ -18,13 +20,14 @@ const emit = defineEmits<{
   'update:modelValue': [value: string]
   'update:statusFilter': [value: string]
   'update:importanceFilter': [value: string]
+  'update:sourceFilter': [value: string]
   'update:viewMode': [value: string]
   searchEnter: []
 }>()
 
 // ========== 筛选下拉状态 ==========
-// 状态/重要度共享一个 open 状态：hover 打开互斥，点击打开的不会被 hover 移出自动关闭
-const openFilter = ref<'status' | 'importance' | null>(null)
+// 状态/重要度/来源/视图共享一个 open 状态：hover 打开互斥，点击打开的不会被 hover 移出自动关闭
+const openFilter = ref<'status' | 'importance' | 'source' | 'view' | null>(null)
 const filterDropdown = useDropdown({
   openState: openFilter,
   closedKey: null,
@@ -51,6 +54,30 @@ const importanceDotClass = computed(() => {
   return ''
 })
 
+// 来源筛选显示：全部无图标，选中类型显示类型徽标图标 + i18n 标题
+const sourceDef = computed(() => {
+  if (props.sourceFilter === 'all') return null
+  return getSourceTypeDef(props.sourceFilter) ?? null
+})
+const sourceDisplayText = computed(() => {
+  const def = sourceDef.value
+  return def ? t(def.titleKey) : t('release.filter_all')
+})
+
+// 视图切换显示（折叠为下拉后沿用类型名文案）
+const viewDisplayText = computed(() => {
+  if (props.viewMode === 'aggregated') return t('release.view_aggregated')
+  if (props.viewMode === 'calendar') return t('release.view_calendar')
+  return t('release.view_simple')
+})
+
+// 视图图标：与旧按钮组同源（list/grid/calendar），触发按钮与下拉选项共用
+const viewIconHref = computed(() => {
+  if (props.viewMode === 'aggregated') return '/icons.svg#grid-icon'
+  if (props.viewMode === 'calendar') return '/icons.svg#calendar-icon'
+  return '/icons.svg#list-icon'
+})
+
 function onSearchEnter() {
   emit('searchEnter')
 }
@@ -67,8 +94,15 @@ function selectImportanceFilter(value: string) {
   track('release.filter_importance')
 }
 
+function selectSourceFilter(value: string) {
+  emit('update:sourceFilter', value)
+  filterDropdown.close()
+  track('release.filter_source')
+}
+
 function selectViewMode(value: string) {
   emit('update:viewMode', value)
+  filterDropdown.close()
   track('release.view_' + value)
 }
 </script>
@@ -112,60 +146,44 @@ function selectViewMode(value: string) {
           <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '小'" :class="{ selected: props.importanceFilter === '小' }" @click="selectImportanceFilter('小')"><span class="importance-dot importance-dot-low"></span>{{ t('release.importance_low') }}</button>
         </div>
       </div>
-    </div>
-    <div class="view-tabs">
-      <button :class="{ active: props.viewMode === 'simple' }" @click="selectViewMode('simple')">
-        <svg><use href="/icons.svg#list-icon"/></svg>
-        {{ t('release.view_simple') }}
-      </button>
-      <button :class="{ active: props.viewMode === 'aggregated' }" @click="selectViewMode('aggregated')">
-        <svg><use href="/icons.svg#grid-icon"/></svg>
-        {{ t('release.view_aggregated') }}
-      </button>
-      <button :class="{ active: props.viewMode === 'calendar' }" @click="selectViewMode('calendar')">
-        <svg><use href="/icons.svg#calendar-icon"/></svg>
-        {{ t('release.view_calendar') }}
-      </button>
+      <div class="filter-divider"></div>
+      <div class="filter-field" @mouseenter="filterDropdown.hoverEnter('source')">
+        <button type="button" class="filter-trigger" :aria-expanded="openFilter === 'source'" aria-haspopup="menu" @click="filterDropdown.toggle($event, 'source')" @keydown="filterDropdown.handleTriggerKeydown($event, 'source')">
+          <span class="filter-label">{{ t('tab.source') }}</span>
+          <span class="filter-value" :style="{ color: props.sourceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }"><span v-if="sourceDef" class="filter-type-icon"><svg><use :href="sourceDef.icon"/></svg></span>{{ sourceDisplayText }}</span>
+          <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+        </button>
+        <div v-if="openFilter === 'source'" class="filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('source')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
+          <button type="button" role="menuitem" :aria-selected="props.sourceFilter === 'all'" :class="{ selected: props.sourceFilter === 'all' }" @click="selectSourceFilter('all')">{{ t('release.filter_all') }}</button>
+          <button v-for="def in sourceTypeDefs" :key="def.type" type="button" role="menuitem" :aria-selected="props.sourceFilter === def.type" :class="{ selected: props.sourceFilter === def.type }" @click="selectSourceFilter(def.type)"><span class="filter-type-icon"><svg><use :href="def.icon"/></svg></span>{{ t(def.titleKey) }}</button>
+        </div>
+      </div>
+      <div class="filter-divider"></div>
+      <div class="filter-field" @mouseenter="filterDropdown.hoverEnter('view')">
+        <button type="button" class="filter-trigger" :aria-expanded="openFilter === 'view'" aria-haspopup="menu" @click="filterDropdown.toggle($event, 'view')" @keydown="filterDropdown.handleTriggerKeydown($event, 'view')">
+          <span class="filter-label">{{ t('tab.view') }}</span>
+          <span class="filter-value" :style="{ color: props.viewMode !== 'simple' ? 'var(--text)' : 'var(--text-muted)' }"><span class="filter-type-icon"><svg><use :href="viewIconHref"/></svg></span>{{ viewDisplayText }}</span>
+          <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+        </button>
+        <div v-if="openFilter === 'view'" class="filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('view')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
+          <button type="button" role="menuitem" :aria-selected="props.viewMode === 'simple'" :class="{ selected: props.viewMode === 'simple' }" @click="selectViewMode('simple')"><span class="filter-type-icon"><svg><use href="/icons.svg#list-icon"/></svg></span>{{ t('release.view_simple') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.viewMode === 'aggregated'" :class="{ selected: props.viewMode === 'aggregated' }" @click="selectViewMode('aggregated')"><span class="filter-type-icon"><svg><use href="/icons.svg#grid-icon"/></svg></span>{{ t('release.view_aggregated') }}</button>
+          <button type="button" role="menuitem" :aria-selected="props.viewMode === 'calendar'" :class="{ selected: props.viewMode === 'calendar' }" @click="selectViewMode('calendar')"><span class="filter-type-icon"><svg><use href="/icons.svg#calendar-icon"/></svg></span>{{ t('release.view_calendar') }}</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>
 <style scoped>
-/* 视图切换按钮组 */
-.view-tabs {
-  display: flex;
-  gap: 4px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
-  padding: 2px;
+/* 类型徽标图标（来源筛选触发按钮与下拉选项共用） */
+.filter-type-icon {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
   flex-shrink: 0;
 }
 
-.view-tabs button {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 12px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: 12px;
-  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-  white-space: nowrap;
-}
-
-.view-tabs button:hover {
-  color: var(--text);
-}
-
-.view-tabs button.active {
-  background: var(--control-active);
-  color: var(--text);
-  font-weight: 600;
-}
-
-.view-tabs button svg {
+.filter-type-icon svg {
   width: 14px;
   height: 14px;
 }

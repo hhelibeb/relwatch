@@ -4,7 +4,7 @@ import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig } from '../api/sources'
 // 源类型展示/解析统一走注册表（真实模块，避免被测试 mock 的 '../api/sources' 遮蔽）
-import { getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey } from '../api/source-registry'
+import { getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/source-registry'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
@@ -43,11 +43,11 @@ const hasActiveSourceSearch = computed(() => trimmedSourceSearch.value.length > 
 const SOURCE_SORT_FIELD_STORAGE_KEY = 'relwatch.source.sort.field'
 const SOURCE_SORT_DIRECTION_STORAGE_KEY = 'relwatch.source.sort.direction'
 
-type SourceSortField = 'default' | 'name' | 'status' | 'created'
+type SourceSortField = 'default' | 'name' | 'status' | 'type' | 'created'
 type SortDirection = 'asc' | 'desc'
 
 function isSourceSortField(value: string | null): value is SourceSortField {
-  return value === 'default' || value === 'name' || value === 'status' || value === 'created'
+  return value === 'default' || value === 'name' || value === 'status' || value === 'type' || value === 'created'
 }
 
 function isSortDirection(value: string | null): value is SortDirection {
@@ -232,6 +232,7 @@ const sortFieldOptions = computed(() => [
   { value: 'default' as const, label: t('source.sort_default') },
   { value: 'name' as const, label: t('source.sort_name') },
   { value: 'status' as const, label: t('source.sort_status') },
+  { value: 'type' as const, label: t('source.sort_type') },
   { value: 'created' as const, label: t('source.sort_created') },
 ])
 
@@ -461,6 +462,11 @@ function sourceHealthLabel(source: Source): string {
 
 const sortedSources = computed(() => {
   const direction = sourceSortDirection.value === 'asc' ? 1 : -1
+  // 类型排序基准：按注册表顺序（GitHub → HF → YouTube → B站），未知类型排最后
+  const typeIndex = (type: string) => {
+    const idx = sourceTypeDefs.findIndex(d => d.type === type)
+    return idx === -1 ? sourceTypeDefs.length : idx
+  }
   return [...filteredSources.value].sort((a, b) => {
     let result: number
     if (sourceSortField.value === 'default') {
@@ -472,6 +478,11 @@ const sortedSources = computed(() => {
     } else if (sourceSortField.value === 'status') {
       if (a.enabled !== b.enabled) result = a.enabled ? -1 : 1
       else result = b.id - a.id
+    } else if (sourceSortField.value === 'type') {
+      // 同类型内按名称排序，再按 id 兜底保证稳定
+      result = typeIndex(a.source_type) - typeIndex(b.source_type)
+        || `${a.owner}/${a.repo}`.localeCompare(`${b.owner}/${b.repo}`)
+        || a.id - b.id
     } else {
       result = a.created_at.localeCompare(b.created_at) || a.id - b.id
     }
@@ -484,6 +495,7 @@ const sortLabelText = computed(() => {
     'default': t('source.sort_default'),
     'name': t('source.sort_name'),
     'status': t('source.sort_status'),
+    'type': t('source.sort_type'),
     'created': t('source.sort_created'),
   }
   return labels[sourceSortField.value]
