@@ -6,6 +6,7 @@ import { t, tm } from '../i18n'
 import { translateError } from '../api/client'
 import { formatDate, logLevelClass } from '../utils'
 import { useDropdown } from '../composables/useDropdown'
+import { track } from '../composables/useUsageTracking'
 
 const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ update: [] }>()
@@ -95,6 +96,7 @@ function clearSearch() {
 }
 
 function setLevelFilter(level: string) {
+  track('log.filter')
   levelFilter.value = level
   levelDropdown.close()
   currentPage.value = 1
@@ -120,6 +122,7 @@ function renderMessage(entry: LogEntry): string {
 async function handleClearLogs() {
   const confirmed = await confirm(t('log.clear_confirm'), { title: t('log.clear'), kind: 'warning' })
   if (!confirmed) return
+  track('log.clear')
   try {
     await clearLogs()
     currentPage.value = 1

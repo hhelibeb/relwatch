@@ -12,6 +12,7 @@ import {
   setBilibiliCookie,
   readBilibiliLoginCookie,
   closeBilibiliLoginWindow,
+  isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
   importBackup,
@@ -19,6 +20,7 @@ import {
 import { openReleaseUrl, InvokeI18nError } from '../api/client'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { t, setLocale, languages } from '../i18n'
+import { track } from '../composables/useUsageTracking'
 
 const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
@@ -66,6 +68,7 @@ async function settleBiliLoginSuccess() {
 /** 清除已保存的 B 站 Cookie（SESSDATA）：过期后回退匿名模式的唯一入口（F2）。
  *  命令层 `set_bilibili_cookie('')` 本就支持空值清除，但此前没有任何 UI 触发点。 */
 async function handleClearBilibiliCookie() {
+  track('settings.bili_clear')
   try {
     await setBilibiliCookie('')
     form.bilibili_cookie_set = false
@@ -121,6 +124,7 @@ function startBiliLoginPolling() {
 /** 创建（或复用已存在的）登录窗口并轮询检测登录态；成功后自动保存 SESSDATA 并关窗。 */
 async function handleBilibiliLogin() {
   if (biliLoginBusy.value) return
+  track('settings.bili_login')
   const attempt = ++biliLoginAttempt
   biliLoginBusy.value = true
   biliLoginSettled = false
@@ -299,6 +303,7 @@ function clearLangPreview() {
 function selectLang(val: string) {
   form.language = val
   previewLang.value = null
+  track('settings.lang')
   setLocale(val)
   setTimeout(() => {
     langDropdownOpen.value = false
@@ -409,6 +414,7 @@ function clearThemePreview() {
 function selectTheme(val: string) {
   form.theme = val
   previewTheme.value = null
+  track('settings.theme')
   setThemePreview(val)
   setTimeout(() => {
     themeDropdownOpen.value = false
@@ -501,8 +507,22 @@ function handleThemeDropdownKeydown(e: KeyboardEvent) {
   }
 }
 
+// ── 非官方 DeepSeek API 地址二次确认（审计建议 #1）──────────
+// 官方域名 = https + deepseek.com 或其子域。非官方地址意味着 API Key 会以
+// Bearer header 发送到该域名（可能是内网或恶意地址），保存/测试前弹窗提示，
+// 但不阻止用户配置（保留自主权）。
+async function confirmDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
+  const official = await isOfficialDeepseekBaseUrl(baseUrl)
+  if (official) return true
+  return confirm(t('settings.deepseek_non_official_confirm', baseUrl), {
+    title: t('settings.deepseek_non_official_title'),
+    kind: 'warning',
+  })
+}
+
 async function handleSave() {
   savingSettings.value = true
+  track('settings.save')
   try {
     const s = form
     // 验证提示词
@@ -510,6 +530,13 @@ async function handleSave() {
       showToast(t('settings.deepseek_prompt_validate_failed'))
       savingSettings.value = false
       return
+    }
+    // 非官方 DeepSeek 地址二次确认：仅当 base_url 相对已保存值有变更时提示，
+    // 避免每次保存都打扰已确认过的用户；取消则中止保存（dirty 标记保留，可重试）
+    const baseUrl = s.deepseek_base_url.trim()
+    if (baseUrl !== props.settings.deepseek_base_url.trim()) {
+      const ok = await confirmDeepseekBaseUrl(baseUrl)
+      if (!ok) return
     }
     // 先验证提示词、持久化主设置，再写敏感凭据：保证 updateSettings 失败时凭据不会被误写入，
     // 避免“凭据已持久化但用户以为整体保存失败”的非原子状态。
@@ -535,6 +562,7 @@ async function handleSave() {
       language: s.language,
       theme: s.theme,
       showSourceTypeIcons: s.show_source_type_icons,
+      enableUsageStats: s.enable_usage_stats,
     })
     // 主设置持久化成功后再写凭据；若凭据写入失败，走外层 catch 提示 save_failed，
     // 此时主设置已存、凭据未存，用户可重试凭据。
@@ -580,6 +608,7 @@ const trackedKeys = [
   'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
   'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt',
   'deepseek_min_importance', 'deepseek_translate_release', 'language', 'theme', 'show_source_type_icons',
+  'enable_usage_stats',
 ] as const
 
 const dirtyFields = computed(() => {
@@ -601,7 +630,7 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count'].filter(k => f.has(k)).length,
+    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats'].filter(k => f.has(k)).length,
     accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'].filter(k => f.has(k)).length,
     appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'].filter(k => f.has(k)).length,
     ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
@@ -609,6 +638,7 @@ const dirtyByTab = computed(() => {
 })
 
 function discardChanges() {
+  track('settings.discard')
   const langDirty = dirtyFields.value.has('language')
   const themeDirty = dirtyFields.value.has('theme')
   Object.assign(form, props.settings)
@@ -624,7 +654,11 @@ function discardChanges() {
 
 async function handleTestDeepseek() {
   testingDeepseek.value = true
+  track('settings.test_ai')
   try {
+    // 非官方 DeepSeek 地址二次确认：测试会立即用表单地址发起请求（审计建议 #1）
+    const ok = await confirmDeepseekBaseUrl(form.deepseek_base_url.trim())
+    if (!ok) return
     // 传入表单当前值（含未保存修改）测试：API Key 留空时后端回退到已保存的 key
     const msg = await testDeepseekConnection({
       model: form.deepseek_model.trim(),
@@ -643,6 +677,7 @@ async function handleTestDeepseek() {
 }
 
 async function handleExportBackup() {
+  track('settings.export')
   try {
     const path = await exportBackup()
     showToast(t('backup.export_success') + ': ' + path)
@@ -662,6 +697,7 @@ async function handleExportBackup() {
 async function handleImportBackup() {
   const confirmed = await confirm(t('backup.import_confirm'), { title: t('backup.import_confirm_title'), kind: 'warning' })
   if (!confirmed) return
+  track('settings.import')
   try {
     await importBackup()
     showToast(t('backup.import_success'))
@@ -764,6 +800,11 @@ async function handleImportBackup() {
               class="setting-input setting-input-narrow"
             />
             <span class="setting-note">{{ t('settings.fetch_history_count_hint') }}</span>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.enable_usage_stats" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('enable_usage_stats') || null">{{ t('settings.enable_usage_stats') }}</span>
+            <span class="setting-hint">{{ t('settings.enable_usage_stats_hint') }}</span>
           </label>
         </div>
         <div v-if="settingsTab === 'accounts'" class="settings-form">
@@ -1354,27 +1395,3 @@ select.setting-input {
   font-weight: 600;
 }
 </style>
-  isOfficialDeepseekBaseUrl,
-// ── 非官方 DeepSeek API 地址二次确认（审计建议 #1）──────────
-// 官方域名 = https + deepseek.com 或其子域。非官方地址意味着 API Key 会以
-// Bearer header 发送到该域名（可能是内网或恶意地址），保存/测试前弹窗提示，
-// 但不阻止用户配置（保留自主权）。
-async function confirmDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
-  const official = await isOfficialDeepseekBaseUrl(baseUrl)
-  if (official) return true
-  return confirm(t('settings.deepseek_non_official_confirm', baseUrl), {
-    title: t('settings.deepseek_non_official_title'),
-    kind: 'warning',
-  })
-}
-
-    // 非官方 DeepSeek 地址二次确认：仅当 base_url 相对已保存值有变更时提示，
-    // 避免每次保存都打扰已确认过的用户；取消则中止保存（dirty 标记保留，可重试）
-    const baseUrl = s.deepseek_base_url.trim()
-    if (baseUrl !== props.settings.deepseek_base_url.trim()) {
-      const ok = await confirmDeepseekBaseUrl(baseUrl)
-      if (!ok) return
-    }
-    // 非官方 DeepSeek 地址二次确认：测试会立即用表单地址发起请求（审计建议 #1）
-    const ok = await confirmDeepseekBaseUrl(form.deepseek_base_url.trim())
-    if (!ok) return

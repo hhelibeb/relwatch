@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { getLocale, t } from '../i18n'
 import { parseDateKey, toDateKey } from '../utils/dateKey'
+import { track } from '../composables/useUsageTracking'
 import ReleaseItem from './ReleaseItem.vue'
 
 const props = defineProps<{
@@ -28,10 +29,14 @@ const dateDetailTitle = computed(() => {
   const locale = getLocale()
   return d.toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })
 })
+function handleBack() {
+  track('calendar.back')
+  emit('back')
+}
 </script>
 
 <template>
-  <button class="calendar-back" @click="emit('back')">
+  <button class="calendar-back" @click="handleBack">
     <svg><use href="/icons.svg#chevron-left-icon"/></svg>
     {{ t('release.back_calendar') }}
   </button>

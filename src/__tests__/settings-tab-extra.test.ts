@@ -78,6 +78,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     language: 'zh-CN',
     theme: 'light',
     show_source_type_icons: true,
+    enable_usage_stats: true,
     github_token_set: false,
     youtube_api_key_set: false,
     bilibili_cookie_set: false,

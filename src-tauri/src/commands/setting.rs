@@ -13,12 +13,12 @@ use crate::db::settings::{
     KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
-    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT,
+    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT, KEY_ENABLE_USAGE_STATS,
     DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
     DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
     DEFAULT_DEEPSEEK_TRANSLATE_RELEASE,
-    DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME, DEFAULT_SHOW_SOURCE_TYPE_ICONS,
+    DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME, DEFAULT_SHOW_SOURCE_TYPE_ICONS, DEFAULT_ENABLE_USAGE_STATS,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
     strip_prompt_suffix,
 };
@@ -54,6 +54,7 @@ pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String
         language: get_setting_str(&conn, KEY_LANGUAGE, &get_default_language())?,
         theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
         show_source_type_icons: get_setting_bool(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, true)?,
+        enable_usage_stats: get_setting_bool(&conn, KEY_ENABLE_USAGE_STATS, true)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
             .chars()
             .next()
@@ -93,6 +94,7 @@ pub struct UpdateSettingsPayload {
     language: String,
     theme: String,
     show_source_type_icons: bool,
+    enable_usage_stats: bool,
 }
 
 #[tauri::command]
@@ -135,6 +137,7 @@ pub async fn update_settings(
         let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
         let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
         let old_show_icons = get_setting_str(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, DEFAULT_SHOW_SOURCE_TYPE_ICONS)?;
+        let old_enable_usage = get_setting_str(&conn, KEY_ENABLE_USAGE_STATS, DEFAULT_ENABLE_USAGE_STATS)?;
 
         let (interval_changed, changes) = settings::apply_settings(
             &conn,
@@ -162,6 +165,7 @@ pub async fn update_settings(
                 // 参见 write_log_key 中的注释了解设计取舍。
                 (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
                 (KEY_SHOW_SOURCE_TYPE_ICONS, &old_show_icons, &payload.show_source_type_icons.to_string(), "setting.show_source_type_icons"),
+                (KEY_ENABLE_USAGE_STATS, &old_enable_usage, &payload.enable_usage_stats.to_string(), "setting.enable_usage_stats"),
             ],
         )?;
 
@@ -555,6 +559,7 @@ mod tests {
             (KEY_LANGUAGE, "zh-CN"),
             (KEY_THEME, "system"),
             (KEY_SHOW_SOURCE_TYPE_ICONS, "true"),
+            (KEY_ENABLE_USAGE_STATS, "true"),
         ];
         for &(key, val) in &old_values {
             settings::set_setting(&conn, key, val).unwrap();
@@ -581,6 +586,7 @@ mod tests {
             (KEY_LANGUAGE, "en-US"),
             (KEY_THEME, "dark"),
             (KEY_SHOW_SOURCE_TYPE_ICONS, "false"),
+            (KEY_ENABLE_USAGE_STATS, "false"),
         ];
 
         let items: Vec<(&str, &str, &str, &str)> = old_values.iter()
@@ -591,7 +597,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 19,
+        assert_eq!(items.len(), 20,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -606,7 +612,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
-        const EXPECTED_SETTING_FIELDS: usize = 19;
+        const EXPECTED_SETTING_FIELDS: usize = 20;
         let json = serde_json::json!({
             "pollIntervalMinutes": 30,
             "proxyMode": "none",
@@ -628,6 +634,7 @@ mod tests {
             "language": "zh-CN",
             "theme": "system",
             "showSourceTypeIcons": true,
+            "enableUsageStats": true,
         });
         let payload: UpdateSettingsPayload = serde_json::from_value(json)
             .expect("UpdateSettingsPayload 反序列化失败，前端字段名可能不匹配");
@@ -651,6 +658,7 @@ mod tests {
         assert_eq!(payload.language, "zh-CN");
         assert_eq!(payload.theme, "system");
         assert!(payload.show_source_type_icons);
+        assert!(payload.enable_usage_stats);
 
         // 常量标记，修改配置项时需同步改这里
         let _guard = EXPECTED_SETTING_FIELDS;

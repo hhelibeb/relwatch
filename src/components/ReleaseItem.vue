@@ -8,6 +8,7 @@ import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
+import { track } from '../composables/useUsageTracking'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 
 const props = defineProps<{ release: ReleaseInfo }>()
@@ -47,6 +48,7 @@ const canOpenDetail = computed(() => !!(props.release.body || props.release.body
 
 function openDetail() {
   if (!canOpenDetail.value) return
+  track('release.read_full')
   emit('open-detail', props.release)
 }
 
@@ -288,6 +290,7 @@ function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
 
 async function handleCopySummary() {
   if (!summaryContextMenu.value?.text) return
+  track('release.copy')
   try { await navigator.clipboard.writeText(summaryContextMenu.value.text) } catch { /* ignore */ }
   summaryContextMenu.value = null
 }
@@ -295,6 +298,7 @@ async function handleCopySummary() {
 async function handleTranslateRelease() {
   const releaseId = props.release.id
   summaryContextMenu.value = null
+  track('release.translate')
   // 立即进入翻译中状态，内容区下方显示提示行提供即时反馈
   translating.value = true
   try {
@@ -320,6 +324,7 @@ async function handleDeleteRelease() {
   const releaseId = contextMenu.value?.releaseId
   if (releaseId === undefined) return
   closeMenus()
+  track('release.delete')
   isUpdating.value = true
   try {
     await deleteRelease(releaseId)
@@ -357,6 +362,7 @@ function releaseContextMenu(e: MouseEvent, url: string) {
 }
 
 async function handleCopyLink() {
+  track('release.copy')
   try { await navigator.clipboard.writeText(contextMenu.value!.url) } catch { /* ignore */ }
   closeMenus()
 }
@@ -375,6 +381,7 @@ function statusSuccessMessage(status: NotificationStatus): string {
 
 async function updateReleaseStatus(release: ReleaseInfo, status: NotificationStatus, minutes?: number) {
   closeMenus()
+  track(status === 'snoozed' ? 'release.snooze' : 'release.ignore')
   isUpdating.value = true
   try {
     await setNotificationState(release.id, status, minutes)
@@ -389,6 +396,7 @@ async function updateReleaseStatus(release: ReleaseInfo, status: NotificationSta
 }
 
 async function handleGoRelease(release: ReleaseInfo) {
+  track('release.open')
   if (isReadStatus(release.notification_status)) {
     openReleaseUrl(release.html_url)
     return

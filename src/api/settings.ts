@@ -22,6 +22,7 @@ export interface AppSettings {
   language: string
   theme: string
   show_source_type_icons: boolean
+  enable_usage_stats: boolean
   github_token_set: boolean
   youtube_api_key_set: boolean
   bilibili_cookie_set: boolean
@@ -48,6 +49,7 @@ export interface UpdateSettingsPayload {
   language: string
   theme: string
   showSourceTypeIcons: boolean
+  enableUsageStats: boolean
 }
 
 export async function getSettings(): Promise<AppSettings> {

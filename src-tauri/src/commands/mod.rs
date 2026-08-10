@@ -8,6 +8,7 @@ pub mod poll;
 pub mod download;
 pub mod clipboard;
 pub mod bilibili_login;
+pub mod usage;
 
 pub use bilibili_login::*;
 
@@ -20,3 +21,4 @@ pub use backup::*;
 pub use window::*;
 pub use download::*;
 pub use clipboard::*;
+pub use usage::*;

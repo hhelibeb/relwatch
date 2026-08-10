@@ -65,6 +65,7 @@ describe('updateSettings', () => {
     language: 'zh-CN',
     theme: 'light',
     showSourceTypeIcons: true,
+    enableUsageStats: true,
   }
 
   it('调起 update_settings 命令并传递 payload', async () => {

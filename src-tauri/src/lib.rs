@@ -128,6 +128,9 @@ pub fn run() {
             commands::fetch_url_bytes,
             commands::set_clipboard_text,
             commands::set_clipboard_image,
+            commands::record_usage,
+            commands::get_usage_stats,
+            commands::clear_usage_stats,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

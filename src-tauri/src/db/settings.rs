@@ -21,6 +21,9 @@ pub const KEY_FETCH_HISTORY_COUNT: &str = "fetch_history_count";
 pub const KEY_LANGUAGE: &str = "language";
 pub const KEY_THEME: &str = "theme";
 pub const KEY_SHOW_SOURCE_TYPE_ICONS: &str = "show_source_type_icons";
+/// 诊断统计开关：是否记录功能按钮点击次数（默认开启）。
+/// 关闭后前端 track() 直接 no-op，后端 record_usage 也丢弃写入（双保险）。
+pub const KEY_ENABLE_USAGE_STATS: &str = "enable_usage_stats";
 pub const KEY_AUTO_START: &str = "auto_start";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
 pub const KEY_YOUTUBE_API_KEY: &str = "youtube_api_key";
@@ -93,6 +96,7 @@ pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";
 pub const DEFAULT_THEME: &str = "system";
 pub const DEFAULT_SHOW_SOURCE_TYPE_ICONS: &str = "true";
+pub const DEFAULT_ENABLE_USAGE_STATS: &str = "true";
 
 // ── 语言检测 ────────────────────────────────────────
 

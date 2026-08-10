@@ -9,6 +9,7 @@ import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
+import { track } from '../composables/useUsageTracking'
 import ContextMenu from './common/ContextMenu.vue'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
@@ -105,6 +106,29 @@ const selectionMode = ref(false)
 const selectedSourceIds = ref<Set<number>>(new Set())
 const bulkBusy = ref(false)
 
+function toggleSelectionMode() {
+  selectionMode.value = !selectionMode.value
+  if (!selectionMode.value) clearSelection()
+  track('source.select')
+}
+
+function toggleHeaderMode() {
+  headerMode.value = headerMode.value === 'add' ? 'search' : 'add'
+  track(headerMode.value === 'add' ? 'source.switch_add' : 'source.switch_search')
+}
+
+function selectSortField(field: SourceSortField) {
+  sourceSortField.value = field
+  sortDropdown.close()
+  track('source.sort')
+}
+
+function selectSortDirection(dir: SortDirection) {
+  sourceSortDirection.value = dir
+  sortDropdown.close()
+  track('source.sort')
+}
+
 function toggleSelection(sourceId: number) {
   const next = new Set(selectedSourceIds.value)
   if (next.has(sourceId)) next.delete(sourceId)
@@ -114,10 +138,12 @@ function toggleSelection(sourceId: number) {
 
 function selectAllVisible() {
   selectedSourceIds.value = new Set(sortedSources.value.map(s => s.id))
+  track('source.bulk_select_all')
 }
 
 function clearSelectedSources() {
   selectedSourceIds.value = new Set()
+  track('source.bulk_clear')
 }
 
 function clearSelection() {
@@ -130,6 +156,7 @@ const selectedCount = computed(() => selectedSourceIds.value.size)
 async function handleBulkToggle(enabled: boolean) {
   const ids = [...selectedSourceIds.value]
   if (ids.length === 0) return
+  track(enabled ? 'source.bulk_resume' : 'source.bulk_pause')
   bulkBusy.value = true
   let success = 0, failed = 0
   for (const id of ids) {
@@ -148,6 +175,7 @@ async function handleBulkToggle(enabled: boolean) {
 async function handleBulkMuteToggle(muted: boolean) {
   const ids = [...selectedSourceIds.value]
   if (ids.length === 0) return
+  track(muted ? 'source.bulk_mute' : 'source.bulk_unmute')
   bulkBusy.value = true
   let success = 0, failed = 0
   for (const id of ids) {
@@ -169,6 +197,7 @@ async function handleBulkRemove() {
   if (ids.length === 0) return
   const confirmed = await confirm(t('source.bulk_delete_confirm', String(ids.length)), { title: t('source.delete'), kind: 'warning' })
   if (!confirmed) return
+  track('source.bulk_delete')
   bulkBusy.value = true
   let success = 0, failed = 0
   for (const id of ids) {
@@ -214,6 +243,7 @@ const sortDirectionOptions = computed(() => [
 const { contextMenu, closeContextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
 
 function openSourceUrl(source: Source) {
+  track('source.open_url')
   openReleaseUrl(sourceHomeUrl(source))
 }
 
@@ -248,6 +278,7 @@ function parseYtConfig(source: Source): { videos: boolean; live: boolean; posts:
 
 /** 切换 YouTube 源的订阅内容类型（即时保存）。 */
 async function handleYtConfigToggle(source: Source, key: 'videos' | 'live', value: boolean) {
+  track('source.yt_subscribe')
   const cfg = parseYtConfig(source)
   cfg[key] = value
   const config = buildYoutubeConfig(cfg.videos, cfg.live, cfg.posts)
@@ -276,10 +307,12 @@ function unreadReleaseCount(source: Source): number {
 }
 
 function openSourceReleases(source: Source) {
+  track('source.view_releases')
   emit('openReleases', sourceSearchQuery(source))
 }
 
 function openSourceUnreadReleases(source: Source) {
+  track('source.pending')
   emit('openUnreadReleases', sourceSearchQuery(source))
 }
 
@@ -295,6 +328,7 @@ function sourceExists(parsed: { type: string; owner: string; repo: string }): bo
 async function handleAdd() {
   const raw = urlInput.value.trim()
   if (!raw) return
+  track('source.add')
   const parsed = parseSourceUrl(raw)
   if (!parsed) {
     await message(t('source.invalid_url'), { title: t('source.input_invalid'), kind: 'warning' })
@@ -339,6 +373,7 @@ async function handleAdd() {
 }
 
 async function handleRemove(id: number) {
+  track('source.remove')
   try {
     await removeSource(id)
     emit('update')
@@ -348,6 +383,7 @@ async function handleRemove(id: number) {
 }
 
 async function handleToggle(source: Source) {
+  track(source.enabled ? 'source.pause' : 'source.resume')
   try {
     await updateSource(source.id, !source.enabled, source.poll_interval_minutes)
     emit('update')
@@ -359,6 +395,7 @@ async function handleToggle(source: Source) {
 
 async function handleMuteToggle(source: Source) {
   if (!source.enabled) return
+  track(source.muted ? 'source.unmute' : 'source.mute')
   try {
     await updateSource(source.id, source.enabled, source.poll_interval_minutes, !source.muted)
     emit('update')
@@ -390,6 +427,7 @@ watch(sourceSortDirection, value => {
 
 async function handleCheckSingle(id: number) {
   if (props.polling || checkingId.value !== null) return
+  track('source.check')
   checkingId.value = id
   emit('checkBusy', true)
   try {
@@ -547,12 +585,12 @@ function hideHealthTooltip() {
             <svg class="sort-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
           <div v-if="openSort" class="sort-dropdown" role="menu" @click.stop @keydown="sortDropdown.handleDropdownKeydown">
-            <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="sourceSortField = opt.value; sortDropdown.close()">{{ opt.label }}</button>
+            <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="selectSortField(opt.value)">{{ opt.label }}</button>
             <div class="sort-dropdown-divider"></div>
-            <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="sourceSortDirection = opt.value; sortDropdown.close()">{{ opt.label }}</button>
+            <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="selectSortDirection(opt.value)">{{ opt.label }}</button>
           </div>
         </div>
-        <button class="btn-select" @click="selectionMode = !selectionMode; if (!selectionMode) clearSelection()">
+        <button class="btn-select" @click="toggleSelectionMode">
           <svg class="btn-select-icon" width="13" height="13" aria-hidden="true"><use :href="selectionMode ? '/icons.svg#checkbox-checked-icon' : '/icons.svg#checkbox-icon'"/></svg>
           {{ selectionMode ? t('source.select_cancel') : t('source.select') }}
         </button>
@@ -562,7 +600,7 @@ function hideHealthTooltip() {
           :class="{ 'has-active-search': headerMode === 'add' && hasActiveSourceSearch }"
           :title="modeToggleTitle"
           :aria-label="modeToggleTitle"
-          @click="headerMode = headerMode === 'add' ? 'search' : 'add'"
+          @click="toggleHeaderMode"
         >
           <svg v-if="headerMode === 'add'" width="16" height="16"><use href="/icons.svg#search-icon"/></svg>
           <span v-else class="mode-toggle-plus" aria-hidden="true">+</span>

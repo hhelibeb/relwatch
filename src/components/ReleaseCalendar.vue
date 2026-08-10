@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { getLocale, t } from '../i18n'
 import { toDateKey } from '../utils/dateKey'
+import { track } from '../composables/useUsageTracking'
 
 const props = defineProps<{
   releases: ReleaseInfo[]
@@ -137,17 +138,28 @@ function handleCellLeave() {
 function handleCellClick(cell: CalendarCell) {
   if (!cell.isCurrentMonth || cell.count === 0) return
   tooltip.value = null
+  track('calendar.select_date')
   emit('selectDate', cell.key)
+}
+
+function handlePrevMonth() {
+  track('calendar.prev_month')
+  emit('prevMonth')
+}
+
+function handleNextMonth() {
+  track('calendar.next_month')
+  emit('nextMonth')
 }
 </script>
 
 <template>
   <div class="calendar-nav">
-    <button @click="emit('prevMonth')">
+    <button @click="handlePrevMonth">
       <svg><use href="/icons.svg#chevron-left-icon"/></svg>
     </button>
     <span class="calendar-month-label">{{ monthLabel }}</span>
-    <button @click="emit('nextMonth')" :disabled="props.year >= new Date().getFullYear() && props.month >= new Date().getMonth() + 1">
+    <button @click="handleNextMonth" :disabled="props.year >= new Date().getFullYear() && props.month >= new Date().getMonth() + 1">
       <svg><use href="/icons.svg#chevron-right-icon"/></svg>
     </button>
   </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, provide } from 'vue'
+import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type Component, type Ref } from 'vue'
 import { ShowToastKey, AiEnabledKey } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
@@ -13,6 +13,7 @@ import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
 import { useEscapeToTray } from './composables/useEscapeToTray'
 import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
+import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
 import { isUnreadStatus } from './utils'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
@@ -51,6 +52,7 @@ const settings = ref<AppSettings>({
   language: 'zh-CN',
   theme: 'system',
   show_source_type_icons: true,
+  enable_usage_stats: true,
   github_token_set: false,
   youtube_api_key_set: false,
   bilibili_cookie_set: false,
@@ -80,6 +82,29 @@ const TOAST_SWAP_DELAY = 350
 
 const selectionMenu = ref<{ x: number; y: number } | null>(null)
 const inputContextMenu = ref<{ x: number; y: number; target: HTMLElement } | null>(null)
+
+// ── 开发者统计面板（仅开发模式）──────────────────────
+// Ctrl+Shift+U 呼出；动态 import 只在 DEV 分支执行，生产构建永不加载该模块。
+const showStatsDev = ref(false)
+const StatsDevPanelComp = shallowRef<Component | null>(null) as Ref<Component | null>
+
+async function toggleStatsDev() {
+  if (!import.meta.env.DEV) return
+  if (!StatsDevPanelComp.value) {
+    const mod = await import('./dev/StatsDevPanel.vue')
+    StatsDevPanelComp.value = mod.default as Component
+  }
+  showStatsDev.value = !showStatsDev.value
+}
+
+function onGlobalKeydown(e: KeyboardEvent) {
+  // 面板仅开发模式存在：非 DEV 直接返回，避免生产环境吞掉 Ctrl+Shift+U 却无动作
+  if (!import.meta.env.DEV) return
+  if (e.ctrlKey && e.shiftKey && (e.key === 'U' || e.key === 'u')) {
+    e.preventDefault()
+    void toggleStatsDev()
+  }
+}
 const inputMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'cut', label: t('context.cut') },
   { id: 'copy', label: t('context.copy') },
@@ -182,6 +207,8 @@ function handleToastMouseLeave() {
 
 provide(ShowToastKey, showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
+// 诊断统计开关：跟随设置项启停（关闭时 track() no-op + 丢弃未上报计数）
+watch(() => settings.value.enable_usage_stats, v => setUsageTrackingEnabled(v), { immediate: true })
 
 function repoKey(sourceType: string, owner: string, repo: string): string {
   return sourceRepoKey(sourceType, owner, repo)
@@ -296,6 +323,7 @@ function startCountdown() {
 
 async function handlePoll() {
   if (polling.value || sourceChecking.value) return
+  track('app.check_now')
   const enabled = sources.value.filter(s => s.enabled)
   if (enabled.length === 0) {
     showToast(t('app.no_sources'))
@@ -375,6 +403,12 @@ onMounted(async () => {
     document.removeEventListener('click', closeAllMenus)
   })
 
+  // 开发者统计面板快捷键仅 DEV 注册：生产包完全不包含面板逻辑入口
+  if (import.meta.env.DEV) {
+    window.addEventListener('keydown', onGlobalKeydown)
+    unlisteners.push(() => window.removeEventListener('keydown', onGlobalKeydown))
+  }
+
   const navigateUnlisten = await listen<string>('navigate', (event) => {
     if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {
       activeTab.value = event.payload as 'sources' | 'releases' | 'logs' | 'settings'
@@ -425,6 +459,8 @@ onUnmounted(() => {
   if (systemThemeMedia) {
     systemThemeMedia.onchange = null
   }
+  // 冲刷未上报的点击统计（卸载前最后一批）
+  void flushUsageTrackingNow()
 })
 </script>
 
@@ -466,6 +502,7 @@ onUnmounted(() => {
 
     <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" @close="selectionMenu = null" />
     <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" @close="inputContextMenu = null" />
+    <StatsDevPanelComp v-if="showStatsDev && StatsDevPanelComp" @close="showStatsDev = false" />
   </div>
 </template>
 

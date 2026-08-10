@@ -132,6 +132,15 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
             level TEXT NOT NULL,
             message TEXT NOT NULL,
             created_at TEXT NOT NULL
+        );
+
+        -- 诊断统计：功能按钮点击次数（按天分桶）。
+        -- 纯本地记录，不上传；随数据库备份导出/恢复；SUM(count) 即累计，GROUP BY day 看趋势。
+        CREATE TABLE IF NOT EXISTS usage_stats (
+            key TEXT NOT NULL,
+            day TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (key, day)
         );",
     )?;
     Ok(())
@@ -342,6 +351,16 @@ mod tests {
 
         // Migration 11: sources.config
         assert!(has_column(&conn, "sources", "config"));
+
+        // usage_stats 表（Migration 12：诊断统计）
+        let has_table: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_stats'")
+            .and_then(|mut s| s.exists([]))
+            .unwrap_or(false);
+        assert!(has_table, "usage_stats 表应存在");
+        assert!(has_column(&conn, "usage_stats", "key"));
+        assert!(has_column(&conn, "usage_stats", "day"));
+        assert!(has_column(&conn, "usage_stats", "count"));
     }
 
     fn has_column(conn: &Connection, table: &str, column: &str) -> bool {

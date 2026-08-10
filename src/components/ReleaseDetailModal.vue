@@ -7,6 +7,7 @@ import { type ReleaseInfo, translateRelease } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
+import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel } from '../utils'
 import type { ReleaseContentMode } from './releaseTypes'
@@ -81,6 +82,11 @@ function closeBodyMenu() {
   bodyMenu.value = null
 }
 
+function handleClose() {
+  track('release.detail_close')
+  emit('close')
+}
+
 function handleBodyContextMenu(e: MouseEvent) {
   const target = e.target as HTMLElement
   closeAllContextMenus()
@@ -116,15 +122,19 @@ async function handleBodyMenuAction(actionId: string) {
       if (m.link) openReleaseUrl(m.link)
       break
     case 'copyLink':
+      track('release.copy')
       if (m.link) await copyText(m.link)
       break
     case 'openImage':
+      track('release.open')
       if (m.imgSrc) openReleaseUrl(m.imgSrc)
       break
     case 'copyImageLink':
+      track('release.copy')
       if (m.imgSrc) await copyText(m.imgSrc)
       break
     case 'copyImage':
+      track('release.copy')
       if (m.imgSrc) {
         try {
           await copyImageToClipboard(m.imgSrc)
@@ -135,6 +145,7 @@ async function handleBodyMenuAction(actionId: string) {
       }
       break
     case 'copySelection':
+      track('release.copy')
       if (m.selection) await copyText(m.selection)
       break
     case 'copyContent':
@@ -193,6 +204,7 @@ const currentContent = computed<string | null>(() => {
 
 function switchMode(mode: ViewMode) {
   viewMode.value = mode
+  track('release.detail_mode')
 }
 
 // 翻译完成后自动切换到译文视图（与 ReleaseItem 行为一致）
@@ -225,6 +237,7 @@ async function handleTranslateRelease() {
   const releaseId = props.release.id
   translating.value = true
   viewMode.value = 'translated'
+  track('release.translate')
   try {
     await translateRelease(releaseId)
     emit('update')
@@ -238,10 +251,12 @@ async function handleTranslateRelease() {
 async function handleCopyContent() {
   const content = currentContent.value
   if (!content) return
+  track('release.copy')
   await copyText(content)
 }
 
 function handleOpenLink() {
+  track('release.open')
   openReleaseUrl(props.release.html_url)
 }
 
@@ -254,7 +269,7 @@ function handleKeydown(e: KeyboardEvent) {
       closeBodyMenu()
       return
     }
-    emit('close')
+    handleClose()
   } else if (e.key === 'ArrowLeft' && props.hasPrev) {
     if (bodyMenu.value) return
     emit('navigate', -1)
@@ -305,7 +320,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
 
 <template>
   <Teleport to="body">
-    <div class="release-detail-overlay" @click.self="emit('close')">
+    <div class="release-detail-overlay" @click.self="handleClose">
       <div ref="modalEl" class="release-detail-modal" role="dialog" aria-modal="true">
         <div class="release-detail-header" @pointerdown="startDrag">
           <div class="release-detail-heading">
@@ -315,7 +330,7 @@ function releaseImportanceClass(release: ReleaseInfo): string {
             <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
             <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
           </div>
-          <button class="release-detail-close" :title="t('release.detail_close')" @click="emit('close')">
+          <button class="release-detail-close" :title="t('release.detail_close')" @click="handleClose">
             <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
           </button>
         </div>

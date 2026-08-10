@@ -14,6 +14,7 @@ const OVERLAY_SELECTORS = [
   '.sort-dropdown',          // 监控源排序下拉
   '.dropdown-more-panel',    // 监控源更多操作面板
   '.release-detail-overlay', // 版本详情弹窗（漏掉会导致弹窗内 Esc 误触最小化到托盘）
+  '.stats-dev-overlay',      // 开发者统计面板（Ctrl+Shift+U；漏掉会导致面板内 Esc 误触最小化到托盘）
 ]
 
 function hasVisibleOverlay(): boolean {

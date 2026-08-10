@@ -9,6 +9,7 @@ import ReleaseDetailModal from './ReleaseDetailModal.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import ReleaseToolbar from './ReleaseToolbar.vue'
 import type { ReleaseImportanceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
+import { track } from '../composables/useUsageTracking'
 
 type AggregatedListInstance = InstanceType<typeof ReleaseAggregatedList> & {
   expandAll: () => void
@@ -126,6 +127,7 @@ function closeReleaseDetail() {
 }
 
 function navigateReleaseDetail(delta: number) {
+  track(delta < 0 ? 'release.detail_prev' : 'release.detail_next')
   const nextId = detailSequenceIds.value[detailIndex.value + delta]
   if (nextId !== undefined) detailReleaseId.value = nextId
 }

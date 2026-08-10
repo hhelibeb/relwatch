@@ -4,6 +4,7 @@ import ContextMenu from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
 import type { RepoGroup } from './releaseTypes'
 import { useContextMenu } from '../composables/useContextMenu'
+import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
 import { openReleaseUrl } from '../api/client'
@@ -60,6 +61,7 @@ const allExpanded = computed(() => {
 })
 
 function toggleRepo(key: string) {
+  track('aggregated.toggle_repo')
   const next = new Set(expandedRepos.value)
   if (next.has(key)) next.delete(key)
   else next.add(key)
@@ -71,6 +73,7 @@ function expandAll() {
 }
 
 function toggleAllRepos() {
+  track('aggregated.expand_all')
   if (allExpanded.value) {
     expandedRepos.value = new Set()
   } else {
@@ -89,6 +92,7 @@ const {
 } = useContextMenu()
 
 function handleOpenUrl(url: string) {
+  track('release.open')
   openReleaseUrl(url)
 }
 </script>

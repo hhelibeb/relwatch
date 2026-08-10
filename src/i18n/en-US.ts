@@ -136,6 +136,8 @@ export default {
   'settings.fetch_history': 'Fetch history on first query',
   'settings.fetch_history_count': 'History count',
   'settings.fetch_history_count_hint': 'Set to 0 to fetch all versions',
+  'settings.enable_usage_stats': 'Record feature usage stats (diagnostics)',
+  'settings.enable_usage_stats_hint': 'Records clicks of feature buttons locally for usage diagnostics. Data stays on this device, is not shown in the UI, and stops being recorded when disabled.',
   'settings.enable_ai': 'Enable AI summaries',
   'settings.api_key': 'API Key',
   'settings.api_key_set': 'Already set (leave empty to keep)',

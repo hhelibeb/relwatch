@@ -631,6 +631,8 @@ async fn do_poll_async(app: tauri::AppHandle) {
             .unwrap_or(0);
         if retention_days > 0 {
             db::logs::delete_old_logs(&conn, retention_days);
+            // 使用统计与操作日志共用同一保留天数设置，同步清理过期分桶
+            db::usage::prune_old_usage_stats(&conn, retention_days);
         }
     }
 

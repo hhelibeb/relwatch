@@ -136,6 +136,8 @@ export default {
   'settings.fetch_history': '首次查询时拉取历史版本',
   'settings.fetch_history_count': '拉取数量',
   'settings.fetch_history_count_hint': '设为 0 时拉取全部版本',
+  'settings.enable_usage_stats': '记录功能使用统计（诊断）',
+  'settings.enable_usage_stats_hint': '本地记录各功能按钮点击次数，用于功能优化诊断。数据仅存于本机、不展示在应用界面，关闭后不再记录。',
   'settings.enable_ai': '启用 AI 版本摘要',
   'settings.api_key': 'API Key',
   'settings.api_key_set': '已设置（留空不修改）',
