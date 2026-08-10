@@ -144,6 +144,8 @@ export default {
   'settings.deepseek_model_placeholder': 'deepseek-v4-flash',
   'settings.api_url': 'API 地址',
   'settings.deepseek_base_url_placeholder': 'https://api.deepseek.com',
+  'settings.deepseek_non_official_title': '确认 DeepSeek API 地址',
+  'settings.deepseek_non_official_confirm': '您填写的地址 {0} 不是 DeepSeek 官方域名（api.deepseek.com）。保存后 API Key 将发送到该地址，请确认该地址来源可信。',
   'settings.deepseek_proxy_bypass': '访问 AI API 时不使用代理',
   'settings.deepseek_prompt': '自定义提示词（可编辑）',
   'settings.deepseek_prompt_placeholder': '使用 {} 表示 Release 内容的位置，以下固定部分不可编辑，留空则使用默认提示词',

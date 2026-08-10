@@ -1354,3 +1354,27 @@ select.setting-input {
   font-weight: 600;
 }
 </style>
+  isOfficialDeepseekBaseUrl,
+// ── 非官方 DeepSeek API 地址二次确认（审计建议 #1）──────────
+// 官方域名 = https + deepseek.com 或其子域。非官方地址意味着 API Key 会以
+// Bearer header 发送到该域名（可能是内网或恶意地址），保存/测试前弹窗提示，
+// 但不阻止用户配置（保留自主权）。
+async function confirmDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
+  const official = await isOfficialDeepseekBaseUrl(baseUrl)
+  if (official) return true
+  return confirm(t('settings.deepseek_non_official_confirm', baseUrl), {
+    title: t('settings.deepseek_non_official_title'),
+    kind: 'warning',
+  })
+}
+
+    // 非官方 DeepSeek 地址二次确认：仅当 base_url 相对已保存值有变更时提示，
+    // 避免每次保存都打扰已确认过的用户；取消则中止保存（dirty 标记保留，可重试）
+    const baseUrl = s.deepseek_base_url.trim()
+    if (baseUrl !== props.settings.deepseek_base_url.trim()) {
+      const ok = await confirmDeepseekBaseUrl(baseUrl)
+      if (!ok) return
+    }
+    // 非官方 DeepSeek 地址二次确认：测试会立即用表单地址发起请求（审计建议 #1）
+    const ok = await confirmDeepseekBaseUrl(form.deepseek_base_url.trim())
+    if (!ok) return

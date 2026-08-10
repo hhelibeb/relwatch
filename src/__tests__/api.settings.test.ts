@@ -13,6 +13,7 @@ import {
   setDeepseekApiKey,
   setGithubToken,
   setYoutubeApiKey,
+  isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
   importBackup,
@@ -120,6 +121,17 @@ describe('setYoutubeApiKey', () => {
     await setYoutubeApiKey('AIzaSy_xxx')
 
     expect(invokeI18n).toHaveBeenCalledWith('set_youtube_api_key', { apiKey: 'AIzaSy_xxx' })
+  })
+})
+
+describe('isOfficialDeepseekBaseUrl', () => {
+  it('调起 is_official_deepseek_base_url 命令并透传返回值', async () => {
+    vi.mocked(invokeI18n).mockResolvedValue(false)
+
+    const result = await isOfficialDeepseekBaseUrl('https://evil.com')
+
+    expect(invokeI18n).toHaveBeenCalledWith('is_official_deepseek_base_url', { baseUrl: 'https://evil.com' })
+    expect(result).toBe(false)
   })
 })
 

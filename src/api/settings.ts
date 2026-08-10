@@ -74,6 +74,12 @@ export async function setBilibiliCookie(cookie: string): Promise<void> {
   return invokeI18n('set_bilibili_cookie', { cookie })
 }
 
+/** 判断 base_url 是否为 DeepSeek 官方域名（https + deepseek.com 或其子域）。
+ *  保存/测试连接前弹二次确认提示用（审计建议 #1）。 */
+export async function isOfficialDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
+  return invokeI18n<boolean>('is_official_deepseek_base_url', { baseUrl })
+}
+
 /** 从登录 WebView 读取 SESSDATA（成功返回 true，未登录抛 err.bili_login_not_logged_in）。 */
 export async function readBilibiliLoginCookie(windowLabel: string): Promise<boolean> {
   return invokeI18n<boolean>('read_bilibili_login_cookie', { windowLabel })

@@ -8,6 +8,7 @@ import {
   setDeepseekApiKey,
   setGithubToken,
   testDeepseekConnection,
+  isOfficialDeepseekBaseUrl,
   exportBackup,
   importBackup,
 } from '../api/settings'
@@ -25,6 +26,7 @@ vi.mock('../api/settings', () => ({
   setDeepseekApiKey: vi.fn().mockResolvedValue(undefined),
   setGithubToken: vi.fn().mockResolvedValue(undefined),
   testDeepseekConnection: vi.fn().mockResolvedValue('ok'),
+  isOfficialDeepseekBaseUrl: vi.fn().mockResolvedValue(true),
   exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
   importBackup: vi.fn().mockResolvedValue(undefined),
 }))
@@ -46,6 +48,7 @@ const updateSettingsMock = vi.mocked(updateSettings)
 const setDeepseekApiKeyMock = vi.mocked(setDeepseekApiKey)
 const setGithubTokenMock = vi.mocked(setGithubToken)
 const testDeepseekConnectionMock = vi.mocked(testDeepseekConnection)
+const isOfficialDeepseekBaseUrlMock = vi.mocked(isOfficialDeepseekBaseUrl)
 const exportBackupMock = vi.mocked(exportBackup)
 const importBackupMock = vi.mocked(importBackup)
 const messageMock = vi.mocked(message)
@@ -112,6 +115,7 @@ beforeEach(() => {
   setDeepseekApiKeyMock.mockResolvedValue(undefined)
   setGithubTokenMock.mockResolvedValue(undefined)
   testDeepseekConnectionMock.mockResolvedValue('Connection OK')
+  isOfficialDeepseekBaseUrlMock.mockResolvedValue(true)
   exportBackupMock.mockResolvedValue('/tmp/relwatch-backup.zip')
   importBackupMock.mockResolvedValue(undefined)
   messageMock.mockResolvedValue(undefined as any)
@@ -324,6 +328,104 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
       expect.any(String),
       expect.objectContaining({ title: 'settings.deepseek_test_title' }),
     )
+  })
+})
+
+describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #1）', () => {
+  it('保存非官方 base_url：确认后提交 updateSettings', async () => {
+    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
+    confirmMock.mockResolvedValue(true as any)
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    await urlInput.setValue('https://evil.com')
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      'settings.deepseek_non_official_confirm:https://evil.com',
+      expect.objectContaining({ kind: 'warning' }),
+    )
+    expect(updateSettingsMock).toHaveBeenCalledOnce()
+    expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ deepseekBaseUrl: 'https://evil.com' }))
+  })
+
+  it('保存非官方 base_url：取消确认则不提交', async () => {
+    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
+    confirmMock.mockResolvedValue(false as any)
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    await urlInput.setValue('https://evil.com')
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalledOnce()
+    expect(updateSettingsMock).not.toHaveBeenCalled()
+  })
+
+  it('保存官方 base_url：不弹确认直接提交', async () => {
+    isOfficialDeepseekBaseUrlMock.mockResolvedValue(true)
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    await urlInput.setValue('https://api.deepseek.com/v1')
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(updateSettingsMock).toHaveBeenCalledOnce()
+  })
+
+  it('保存但 base_url 未修改：不弹确认（避免打扰已确认过的用户）', async () => {
+    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
+    const wrapper = mountSettings(createSettings({ deepseek_base_url: 'https://evil.com' }))
+    await clickSidebar(wrapper, 'settings.ai')
+
+    // 只改一个无关字段，不触碰 base_url
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(updateSettingsMock).toHaveBeenCalledOnce()
+  })
+
+  it('测试连接非官方地址：确认后发起测试', async () => {
+    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
+    confirmMock.mockResolvedValue(true as any)
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    await urlInput.setValue('https://evil.com')
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    expect(testBtn).toBeTruthy()
+    await testBtn!.trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalledOnce()
+    expect(testDeepseekConnectionMock).toHaveBeenCalledOnce()
+    expect(testDeepseekConnectionMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://evil.com' }))
+  })
+
+  it('测试连接非官方地址：取消则不发起测试', async () => {
+    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
+    confirmMock.mockResolvedValue(false as any)
+    const wrapper = mountSettings()
+    await clickSidebar(wrapper, 'settings.ai')
+
+    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    await urlInput.setValue('https://evil.com')
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    expect(testBtn).toBeTruthy()
+    await testBtn!.trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalledOnce()
+    expect(testDeepseekConnectionMock).not.toHaveBeenCalled()
   })
 })
 

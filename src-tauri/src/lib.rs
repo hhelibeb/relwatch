@@ -117,6 +117,7 @@ pub fn run() {
             commands::set_github_token,
             commands::set_youtube_api_key,
             commands::set_bilibili_cookie,
+            commands::is_official_deepseek_base_url,
             commands::read_bilibili_login_cookie,
             commands::close_bilibili_login_window,
             commands::test_deepseek_connection,

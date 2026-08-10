@@ -70,6 +70,25 @@ pub fn read_translate_config(conn: &Connection) -> (bool, String) {
     (translate_enabled, target_lang)
 }
 
+/// 判断 base_url 是否为 DeepSeek 官方 API 域名。
+///
+/// 官方域名 = `https` + `deepseek.com` 或其子域（如 `api.deepseek.com`）。
+/// 供前端在保存 / 测试连接前做二次确认提示：非官方地址意味着 API Key 将
+/// 以 Bearer header 发送到该域名（含被配置成内网/恶意地址的可能）。
+/// 仅作提示用途，不阻止用户配置（保留用户自主权，审计建议 #1）。
+pub fn is_official_deepseek_base_url(base_url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if parsed.scheme() != "https" {
+        return false;
+    }
+    parsed
+        .host_str()
+        .map(|h| h == "deepseek.com" || h.ends_with(".deepseek.com"))
+        .unwrap_or(false)
+}
+
 pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<reqwest::Client, String> {
     // DeepSeek 所有请求都打同一 API 域名，token 作为 default header 安全。
     crate::http::build_http_client(crate::http::HttpClientConfig {
@@ -619,6 +638,32 @@ mod tests {
     use std::sync::Arc;
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
+
+    // ── 官方域名判定（审计建议 #1）──
+
+    #[test]
+    fn test_is_official_deepseek_base_url() {
+        // 官方：https + deepseek.com 或其子域（含带路径/带尾部斜杠）
+        assert!(is_official_deepseek_base_url("https://api.deepseek.com"));
+        assert!(is_official_deepseek_base_url("https://api.deepseek.com/v1"));
+        assert!(is_official_deepseek_base_url("https://api.deepseek.com/"));
+        assert!(is_official_deepseek_base_url("https://deepseek.com"));
+        assert!(is_official_deepseek_base_url("https://sub.deepseek.com"));
+
+        // 非官方：非 https、伪造后缀、其他域名、内网、非法输入
+        assert!(!is_official_deepseek_base_url("http://api.deepseek.com"));
+        assert!(!is_official_deepseek_base_url("https://api.deepseek.com.evil.com"));
+        assert!(!is_official_deepseek_base_url("https://deepseek.com.evil.com"));
+        assert!(!is_official_deepseek_base_url("https://evil-deepseek.com"));
+        assert!(!is_official_deepseek_base_url("https://evil.com"));
+        assert!(!is_official_deepseek_base_url("http://127.0.0.1:8080"));
+        assert!(!is_official_deepseek_base_url("http://localhost:8080"));
+        assert!(!is_official_deepseek_base_url("https://169.254.169.254/latest/meta-data"));
+        assert!(!is_official_deepseek_base_url("not-a-url"));
+        assert!(!is_official_deepseek_base_url(""));
+        // 无 host（仅 scheme）
+        assert!(!is_official_deepseek_base_url("https://"));
+    }
 
     fn sample_response() -> serde_json::Value {
         serde_json::json!({

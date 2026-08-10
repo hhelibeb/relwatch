@@ -144,6 +144,8 @@ export default {
   'settings.deepseek_model_placeholder': 'deepseek-v4-flash',
   'settings.api_url': 'API URL',
   'settings.deepseek_base_url_placeholder': 'https://api.deepseek.com',
+  'settings.deepseek_non_official_title': 'Confirm DeepSeek API URL',
+  'settings.deepseek_non_official_confirm': 'The URL {0} is not DeepSeek\'s official domain (api.deepseek.com). After saving, your API key will be sent to this address. Please make sure you trust this source.',
   'settings.deepseek_proxy_bypass': 'Bypass proxy for AI API',
   'settings.deepseek_prompt': 'Custom Prompt (editable)',
   'settings.deepseek_prompt_placeholder': 'Use {} as placeholder for release content; the fixed part below is not editable; leave empty for default prompt',
