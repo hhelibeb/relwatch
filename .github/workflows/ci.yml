@@ -18,6 +18,8 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
+      # SFC 类型检查（vue-tsc，tsc 不检查 .vue），与本地 build 前置步骤一致
+      - run: pnpm run typecheck
       # 覆盖率模式运行全部测试并执行 vitest.config.ts 中的 thresholds 门槛，低于门槛时非零退出
       - run: pnpm run coverage
 

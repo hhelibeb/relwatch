@@ -15,3 +15,19 @@ jobs:
           components: clippy
       - run: cargo clippy -- -D warnings
         working-directory: src-tauri
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # 前端 lint（eslint 覆盖 .ts/.vue）与 SFC 类型检查（vue-tsc，tsc 不检查 .vue）
+      - run: pnpm run lint
+      - run: pnpm run typecheck
