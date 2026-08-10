@@ -52,6 +52,8 @@ git log --pretty=%s -n 20 2>/dev/null || true
    5. **Rust 编译**: `cargo build`（或 `cargo check`）— 成功
    6. **Rust 测试**: `cargo test` — 全部通过
    7. **Rust Clippy**: `cargo clippy -- -D warnings` — 无 error
+   8. **bindings.ts 同步检查**: `bash scripts/check-bindings.sh` — 输出 `✓ bindings.ts 与 Rust 代码同步` 且退出码 0
+      > tauri-specta 生成物：Rust 侧命令/结构体/事件变更后必须重新生成 `src/bindings.ts` 并随提交一起带出（脚本会自动重新生成并 diff 比对；差异非空时按提示 `git add src/bindings.ts` 后重跑）
 
    > 如果某一步失败，必须先修复再提交。不得以「后续修复」为由跳过检查。
    >
