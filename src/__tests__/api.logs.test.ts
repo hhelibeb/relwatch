@@ -1,10 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}))
 vi.mock('../api/client', () => ({
-  invokeI18n: vi.fn(),
+  // 直接执行传入的绑定命令函数，使断言落在 invoke 层（命令名+参数与 Rust 端一致）
+  invokeI18nFn: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
 }))
 
-import { invokeI18n } from '../api/client'
+import { invoke } from '@tauri-apps/api/core'
 import { searchLogs, clearLogs } from '../api/logs'
 import type { LogSearchResult } from '../api/logs'
 
@@ -38,11 +42,11 @@ describe('searchLogs', () => {
       ],
       total: 1,
     })
-    vi.mocked(invokeI18n).mockResolvedValue(result)
+    vi.mocked(invoke).mockResolvedValue(result)
 
     const out = await searchLogs('boom', 2, 20, 'error')
 
-    expect(invokeI18n).toHaveBeenCalledWith('search_logs', {
+    expect(invoke).toHaveBeenCalledWith('search_logs', {
       keyword: 'boom',
       page: 2,
       pageSize: 20,
@@ -51,21 +55,21 @@ describe('searchLogs', () => {
     expect(out).toBe(result)
   })
 
-  it('不带 level 时 level 传 undefined', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(createSearchResult())
+  it('不带 level 时传 null', async () => {
+    vi.mocked(invoke).mockResolvedValue(createSearchResult())
 
     await searchLogs('', 1, 50)
 
-    expect(invokeI18n).toHaveBeenCalledWith('search_logs', {
+    expect(invoke).toHaveBeenCalledWith('search_logs', {
       keyword: '',
       page: 1,
       pageSize: 50,
-      level: undefined,
+      level: null,
     })
   })
 
   it('invokeI18n 失败时错误原样冒泡', async () => {
-    vi.mocked(invokeI18n).mockRejectedValue(new Error('Error: err.db_query_failed'))
+    vi.mocked(invoke).mockRejectedValue(new Error('Error: err.db_query_failed'))
 
     await expect(searchLogs('', 1, 50)).rejects.toThrow('err.db_query_failed')
   })
@@ -73,15 +77,15 @@ describe('searchLogs', () => {
 
 describe('clearLogs', () => {
   it('调起 clear_logs 命令', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await clearLogs()
 
-    expect(invokeI18n).toHaveBeenCalledWith('clear_logs')
+    expect(invoke).toHaveBeenCalledWith('clear_logs')
   })
 
   it('invokeI18n 失败时错误原样冒泡', async () => {
-    vi.mocked(invokeI18n).mockRejectedValue(new Error('Error: err.clear_failed'))
+    vi.mocked(invoke).mockRejectedValue(new Error('Error: err.clear_failed'))
 
     await expect(clearLogs()).rejects.toThrow('err.clear_failed')
   })

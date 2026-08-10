@@ -1,5 +1,6 @@
 import { invoke, type InvokeArgs } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { commands } from '../bindings'
 import { t } from '../i18n'
 
 export function translateError(raw: string): string {
@@ -31,21 +32,34 @@ export async function invokeI18n<T>(cmd: string, args?: InvokeArgs): Promise<T> 
   try {
     return await invoke<T>(cmd, args)
   } catch (e: unknown) {
-    const raw = e instanceof Error ? e.message : String(e)
-    const msg = translateError(raw)
-    const clean = raw.replace(/^Error:\s*/, '')
-    if (clean.startsWith('err.')) {
-      const parts = clean.split('|')
-      const err = new InvokeI18nError(parts[0], parts.slice(1), msg)
-      // 保留原始错误调用堆栈，便于定位抛出点
-      if (e instanceof Error && e.stack) err.stack = e.stack
-      throw err
-    }
-    // 非 err.* 错误：复用原始 Error 以保留调用堆栈
-    const err = e instanceof Error ? e : new Error(raw)
-    err.message = msg
+    return throwTranslated(e)
+  }
+}
+
+/** 包装 tauri-specta 生成的类型安全命令（Throw 模式），复用统一错误翻译链路。 */
+export async function invokeI18nFn<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn()
+  } catch (e: unknown) {
+    return throwTranslated(e)
+  }
+}
+
+function throwTranslated(e: unknown): never {
+  const raw = e instanceof Error ? e.message : String(e)
+  const msg = translateError(raw)
+  const clean = raw.replace(/^Error:\s*/, '')
+  if (clean.startsWith('err.')) {
+    const parts = clean.split('|')
+    const err = new InvokeI18nError(parts[0], parts.slice(1), msg)
+    // 保留原始错误调用堆栈，便于定位抛出点
+    if (e instanceof Error && e.stack) err.stack = e.stack
     throw err
   }
+  // 非 err.* 错误：复用原始 Error 以保留调用堆栈
+  const err = e instanceof Error ? e : new Error(raw)
+  err.message = msg
+  throw err
 }
 
 export async function openReleaseUrl(url: string): Promise<void> {
@@ -55,7 +69,7 @@ export async function openReleaseUrl(url: string): Promise<void> {
 // 复制文本到剪贴板：统一走 Rust 端写入（navigator.clipboard 依赖文档焦点/用户激活，
 // 右键菜单等场景下不可靠；Rust 端已处理 Windows 的线程约束）
 export async function copyTextToClipboard(text: string): Promise<void> {
-  await invokeI18n('set_clipboard_text', { text })
+  await invokeI18nFn(() => commands.setClipboardText(text))
 }
 
 // 复制图片到剪贴板：
@@ -63,9 +77,9 @@ export async function copyTextToClipboard(text: string): Promise<void> {
 // 2) 用 canvas 统一转码为 PNG（gif/jpg/webp/svg 等格式归一化；blob: URL 同源，canvas 不会被污染）
 // 3) PNG 字节交回 Rust 端解码为 RGBA 并写入系统剪贴板
 export async function copyImageToClipboard(url: string): Promise<void> {
-  const bytes = await invokeI18n<number[]>('fetch_url_bytes', { url })
+  const bytes = await invokeI18nFn(() => commands.fetchUrlBytes(url))
   const png = await normalizeToPng(new Uint8Array(bytes))
-  await invokeI18n('set_clipboard_image', { bytes: png })
+  await invokeI18nFn(() => commands.setClipboardImage([...png]))
 }
 
 async function normalizeToPng(bytes: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {

@@ -1,99 +1,53 @@
-import { invokeI18n } from './client'
+import { invokeI18nFn } from './client'
+import { commands } from '../bindings'
+import type { AppSettings, UpdateSettingsPayload } from '../bindings'
 
-export interface AppSettings {
-  poll_interval_minutes: number
-  proxy_mode: string
-  proxy_url: string
-  auto_start: boolean
-  minimize_to_tray: boolean
-  log_retention_days: number
-  deepseek_enabled: boolean
-  deepseek_model: string
-  deepseek_base_url: string
-  deepseek_api_key_set: boolean
-  deepseek_proxy_bypass: boolean
-  deepseek_prompt: string
-  deepseek_min_importance: string
-  deepseek_translate_release: boolean
-
-  check_prereleases: boolean
-  fetch_history: boolean
-  fetch_history_count: number
-  language: string
-  theme: string
-  show_source_type_icons: boolean
-  enable_usage_stats: boolean
-  github_token_set: boolean
-  youtube_api_key_set: boolean
-  bilibili_cookie_set: boolean
-}
-
-export interface UpdateSettingsPayload {
-  pollIntervalMinutes: number
-  proxyMode: string
-  proxyUrl: string
-  autoStart: boolean
-  minimizeToTray: boolean
-  logRetentionDays: number
-  deepseekEnabled: boolean
-  deepseekModel: string
-  deepseekBaseUrl: string
-  deepseekProxyBypass: boolean
-  deepseekPrompt: string
-  deepseekMinImportance: string
-  deepseekTranslateRelease: boolean
-
-  checkPrereleases: boolean
-  fetchHistory: boolean
-  fetchHistoryCount: number
-  language: string
-  theme: string
-  showSourceTypeIcons: boolean
-  enableUsageStats: boolean
-}
+// 类型由 tauri-specta 从 Rust 生成（src/bindings.ts），此处 re-export 保持调用方路径不变
+export type { AppSettings, UpdateSettingsPayload } from '../bindings'
 
 export async function getSettings(): Promise<AppSettings> {
-  return invokeI18n<AppSettings>('get_settings')
+  return invokeI18nFn(commands.getSettings)
 }
 
 export async function updateSettings(payload: UpdateSettingsPayload): Promise<void> {
-  return invokeI18n('update_settings', { payload })
+  await invokeI18nFn(() => commands.updateSettings(payload))
 }
 
 export async function setDeepseekApiKey(apiKey: string): Promise<void> {
-  return invokeI18n('set_deepseek_api_key', { apiKey })
+  await invokeI18nFn(() => commands.setDeepseekApiKey(apiKey))
 }
 
 export async function setGithubToken(token: string): Promise<void> {
-  return invokeI18n('set_github_token', { token })
+  await invokeI18nFn(() => commands.setGithubToken(token))
 }
 
 export async function setYoutubeApiKey(apiKey: string): Promise<void> {
-  return invokeI18n('set_youtube_api_key', { apiKey })
+  await invokeI18nFn(() => commands.setYoutubeApiKey(apiKey))
 }
 
 export async function setBilibiliCookie(cookie: string): Promise<void> {
-  return invokeI18n('set_bilibili_cookie', { cookie })
+  await invokeI18nFn(() => commands.setBilibiliCookie(cookie))
 }
 
 /** 判断 base_url 是否为 DeepSeek 官方域名（https + deepseek.com 或其子域）。
  *  保存/测试连接前弹二次确认提示用（审计建议 #1）。 */
 export async function isOfficialDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
-  return invokeI18n<boolean>('is_official_deepseek_base_url', { baseUrl })
+  return invokeI18nFn(() => commands.isOfficialDeepseekBaseUrl(baseUrl))
 }
 
 /** 从登录 WebView 读取 SESSDATA（成功返回 true，未登录抛 err.bili_login_not_logged_in）。 */
 export async function readBilibiliLoginCookie(windowLabel: string): Promise<boolean> {
-  return invokeI18n<boolean>('read_bilibili_login_cookie', { windowLabel })
+  return invokeI18nFn(() => commands.readBilibiliLoginCookie(windowLabel))
 }
 
 export async function closeBilibiliLoginWindow(windowLabel: string): Promise<void> {
-  return invokeI18n('close_bilibili_login_window', { windowLabel })
+  await invokeI18nFn(() => commands.closeBilibiliLoginWindow(windowLabel))
 }
 
 /**
  * 测试连接的可选覆盖参数：传表单当前值（含未保存修改），
  * 留空的字段由后端回退到已保存配置，实现"先试后存"。
+ * （bindings 侧为全必填可空类型，包装时转换 undefined → null）
  */
 export interface TestDeepseekPayload {
   model?: string
@@ -105,13 +59,22 @@ export interface TestDeepseekPayload {
 }
 
 export async function testDeepseekConnection(payload?: TestDeepseekPayload): Promise<string> {
-  return invokeI18n<string>('test_deepseek_connection', payload ? { payload } : undefined)
+  return invokeI18nFn(() => commands.testDeepseekConnection(payload
+    ? {
+        model: payload.model ?? null,
+        baseUrl: payload.baseUrl ?? null,
+        apiKey: payload.apiKey ?? null,
+        proxyBypass: payload.proxyBypass ?? null,
+        proxyUrl: payload.proxyUrl ?? null,
+        proxyMode: payload.proxyMode ?? null,
+      }
+    : null))
 }
 
 export async function exportBackup(): Promise<string> {
-  return invokeI18n<string>('export_backup')
+  return invokeI18nFn(commands.exportBackup)
 }
 
 export async function importBackup(): Promise<void> {
-  return invokeI18n('import_backup')
+  await invokeI18nFn(commands.importBackup)
 }

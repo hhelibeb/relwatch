@@ -295,7 +295,7 @@ describe('invokeI18n 错误处理', () => {
     const { listSources } = await import('../api/sources')
     const result = await listSources()
     expect(result).toEqual([{ id: 1, owner: 'test', repo: 'repo' }])
-    expect(invoke).toHaveBeenCalledWith('list_sources', undefined)
+    expect(invoke).toHaveBeenCalledWith('list_sources')
   })
 
   it('invoke 抛出 Tauri 错误时通过 translateError 转换', async () => {

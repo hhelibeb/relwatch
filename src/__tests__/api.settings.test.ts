@@ -1,12 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: vi.fn(),
+}))
 vi.mock('../api/client', () => ({
-  invokeI18n: vi.fn(),
+  // 直接执行传入的绑定命令函数，使断言落在 invoke 层（命令名+参数与 Rust 端一致）
+  invokeI18nFn: vi.fn(async <T>(fn: () => Promise<T>) => fn()),
   openReleaseUrl: vi.fn(),
   translateError: vi.fn((raw: string) => raw),
 }))
 
-import { invokeI18n } from '../api/client'
+import { invoke } from '@tauri-apps/api/core'
 import {
   getSettings,
   updateSettings,
@@ -33,12 +37,12 @@ describe('getSettings', () => {
       language: 'zh-CN',
       theme: 'system',
     }
-    vi.mocked(invokeI18n).mockResolvedValue(mockSettings)
+    vi.mocked(invoke).mockResolvedValue(mockSettings)
 
     const result = await getSettings()
 
     // 无参数命令：只传 command name
-    expect(invokeI18n).toHaveBeenCalledWith('get_settings')
+    expect(invoke).toHaveBeenCalledWith('get_settings')
     expect(result.poll_interval_minutes).toBe(30)
     expect(result.language).toBe('zh-CN')
   })
@@ -69,19 +73,19 @@ describe('updateSettings', () => {
   }
 
   it('调起 update_settings 命令并传递 payload', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await updateSettings(payload)
 
-    expect(invokeI18n).toHaveBeenCalledWith('update_settings', { payload })
+    expect(invoke).toHaveBeenCalledWith('update_settings', { payload })
   })
 
   it('自定义 payload 正确传递', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await updateSettings({ ...payload, language: 'en-US', theme: 'dark' })
 
-    const callArgs = vi.mocked(invokeI18n).mock.calls[0][1] as { payload: UpdateSettingsPayload }
+    const callArgs = vi.mocked(invoke).mock.calls[0][1] as { payload: UpdateSettingsPayload }
     expect(callArgs.payload.language).toBe('en-US')
     expect(callArgs.payload.theme).toBe('dark')
   })
@@ -89,72 +93,71 @@ describe('updateSettings', () => {
 
 describe('setDeepseekApiKey', () => {
   it('调起 set_deepseek_api_key 命令', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await setDeepseekApiKey('sk-xxxx')
 
-    expect(invokeI18n).toHaveBeenCalledWith('set_deepseek_api_key', { apiKey: 'sk-xxxx' })
+    expect(invoke).toHaveBeenCalledWith('set_deepseek_api_key', { apiKey: 'sk-xxxx' })
   })
 
   it('空字符串也传递', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await setDeepseekApiKey('')
 
-    expect(invokeI18n).toHaveBeenCalledWith('set_deepseek_api_key', { apiKey: '' })
+    expect(invoke).toHaveBeenCalledWith('set_deepseek_api_key', { apiKey: '' })
   })
 })
 
 describe('setGithubToken', () => {
   it('调起 set_github_token 命令', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await setGithubToken('ghp_xxxx')
 
-    expect(invokeI18n).toHaveBeenCalledWith('set_github_token', { token: 'ghp_xxxx' })
+    expect(invoke).toHaveBeenCalledWith('set_github_token', { token: 'ghp_xxxx' })
   })
 })
 
 describe('setYoutubeApiKey', () => {
   it('调起 set_youtube_api_key 命令', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await setYoutubeApiKey('AIzaSy_xxx')
 
-    expect(invokeI18n).toHaveBeenCalledWith('set_youtube_api_key', { apiKey: 'AIzaSy_xxx' })
+    expect(invoke).toHaveBeenCalledWith('set_youtube_api_key', { apiKey: 'AIzaSy_xxx' })
   })
 })
 
 describe('isOfficialDeepseekBaseUrl', () => {
   it('调起 is_official_deepseek_base_url 命令并透传返回值', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(false)
+    vi.mocked(invoke).mockResolvedValue(false)
 
     const result = await isOfficialDeepseekBaseUrl('https://evil.com')
 
-    expect(invokeI18n).toHaveBeenCalledWith('is_official_deepseek_base_url', { baseUrl: 'https://evil.com' })
+    expect(invoke).toHaveBeenCalledWith('is_official_deepseek_base_url', { baseUrl: 'https://evil.com' })
     expect(result).toBe(false)
   })
 })
 
 describe('testDeepseekConnection', () => {
-  it('调起 test_deepseek_connection 命令', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue('ok')
+  it('无 payload 时传 null', async () => {
+    vi.mocked(invoke).mockResolvedValue('ok')
 
     const result = await testDeepseekConnection()
 
-    // 无 payload 时第二参显式传 undefined（与 invokeI18n 的可选 args 形参一致）
-    expect(invokeI18n).toHaveBeenCalledWith('test_deepseek_connection', undefined)
+    expect(invoke).toHaveBeenCalledWith('test_deepseek_connection', { payload: null })
     expect(result).toBe('ok')
   })
 
   it('连接失败时抛出错误', async () => {
-    vi.mocked(invokeI18n).mockRejectedValue(new Error('err.deepseek.connection'))
+    vi.mocked(invoke).mockRejectedValue(new Error('err.deepseek.connection'))
 
     await expect(testDeepseekConnection()).rejects.toThrow('err.deepseek.connection')
   })
 
-  it('携带表单覆盖参数时透传 payload', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue('ok')
+  it('携带表单覆盖参数时透传 payload（未填字段转 null）', async () => {
+    vi.mocked(invoke).mockResolvedValue('ok')
 
     await testDeepseekConnection({
       model: 'deepseek-v4',
@@ -165,7 +168,7 @@ describe('testDeepseekConnection', () => {
       proxyMode: 'custom',
     })
 
-    expect(invokeI18n).toHaveBeenCalledWith('test_deepseek_connection', {
+    expect(invoke).toHaveBeenCalledWith('test_deepseek_connection', {
       payload: {
         model: 'deepseek-v4',
         baseUrl: 'https://api.example.com',
@@ -176,25 +179,42 @@ describe('testDeepseekConnection', () => {
       },
     })
   })
+
+  it('部分字段缺省时转换为 null', async () => {
+    vi.mocked(invoke).mockResolvedValue('ok')
+
+    await testDeepseekConnection({ model: 'deepseek-v4' })
+
+    expect(invoke).toHaveBeenCalledWith('test_deepseek_connection', {
+      payload: {
+        model: 'deepseek-v4',
+        baseUrl: null,
+        apiKey: null,
+        proxyBypass: null,
+        proxyUrl: null,
+        proxyMode: null,
+      },
+    })
+  })
 })
 
 describe('exportBackup', () => {
   it('调起 export_backup 命令，返回文件路径', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue('/tmp/relwatch-backup.zip')
+    vi.mocked(invoke).mockResolvedValue('/tmp/relwatch-backup.zip')
 
     const result = await exportBackup()
 
-    expect(invokeI18n).toHaveBeenCalledWith('export_backup')
+    expect(invoke).toHaveBeenCalledWith('export_backup')
     expect(result).toBe('/tmp/relwatch-backup.zip')
   })
 })
 
 describe('importBackup', () => {
   it('调起 import_backup 命令', async () => {
-    vi.mocked(invokeI18n).mockResolvedValue(undefined)
+    vi.mocked(invoke).mockResolvedValue(undefined)
 
     await importBackup()
 
-    expect(invokeI18n).toHaveBeenCalledWith('import_backup')
+    expect(invoke).toHaveBeenCalledWith('import_backup')
   })
 })

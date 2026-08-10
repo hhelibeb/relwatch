@@ -1,36 +1,14 @@
-import { invokeI18n } from './client'
+import { invokeI18nFn } from './client'
+import { commands } from '../bindings'
+import type { PollResult, ReleaseInfo } from '../bindings'
+
+// 类型与命令签名由 tauri-specta 从 Rust 生成（src/bindings.ts），此处 re-export 保持调用方路径不变
+export type { PollResult, ReleaseInfo } from '../bindings'
 
 export type NotificationStatus = 'pending' | 'snoozed' | 'clicked' | 'ignored'
 
-export interface ReleaseInfo {
-  id: number
-  source_id: number
-  source_type: string
-  owner: string
-  repo: string
-  tag_name: string
-  release_name: string
-  html_url: string
-  published_at: string
-  prerelease: boolean
-  body: string | null
-  detected_at: string
-  notification_status: NotificationStatus
-  snooze_until: string | null
-  ai_summary: string | null
-  ai_importance: string | null
-  body_translated: string | null
-  extra_metadata: string | null
-  /** 所属源的描述（YouTube 源存频道名）。 */
-  source_description: string | null
-}
-
-export interface PollResult {
-  new_releases: ReleaseInfo[]
-}
-
 export async function getReleases(): Promise<ReleaseInfo[]> {
-  return invokeI18n<ReleaseInfo[]>('get_releases')
+  return invokeI18nFn(commands.getReleases)
 }
 
 export async function setNotificationState(
@@ -38,27 +16,25 @@ export async function setNotificationState(
   status: NotificationStatus,
   snoozeMinutes?: number
 ): Promise<void> {
-  const args: Record<string, unknown> = { releaseId, status }
-  if (snoozeMinutes !== undefined) args.snoozeMinutes = snoozeMinutes
-  return invokeI18n('set_notification_state', args)
+  await invokeI18nFn(() => commands.setNotificationState(releaseId, status, snoozeMinutes ?? null))
 }
 
 export async function deleteRelease(releaseId: number): Promise<void> {
-  return invokeI18n('delete_release', { releaseId })
+  await invokeI18nFn(() => commands.deleteRelease(releaseId))
 }
 
 export async function translateRelease(releaseId: number): Promise<void> {
-  return invokeI18n('translate_release', { releaseId })
+  await invokeI18nFn(() => commands.translateRelease(releaseId))
 }
 
 export async function triggerPoll(): Promise<PollResult> {
-  return invokeI18n<PollResult>('trigger_poll')
+  return invokeI18nFn(commands.triggerPoll)
 }
 
 export async function checkSingleSource(id: number): Promise<PollResult> {
-  return invokeI18n<PollResult>('check_single_source', { id })
+  return invokeI18nFn(() => commands.checkSingleSource(id))
 }
 
 export async function getPollCountdown(): Promise<number> {
-  return invokeI18n<number>('get_poll_countdown')
+  return invokeI18nFn(commands.getPollCountdown)
 }

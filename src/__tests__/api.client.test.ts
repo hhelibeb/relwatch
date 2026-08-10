@@ -154,7 +154,7 @@ describe('copyImageToClipboard', () => {
     await copyImageToClipboard('https://example.com/a.png')
 
     expect(invoke).toHaveBeenNthCalledWith(1, 'fetch_url_bytes', { url: 'https://example.com/a.png' })
-    expect(invoke).toHaveBeenNthCalledWith(2, 'set_clipboard_image', expect.objectContaining({ bytes: expect.any(Uint8Array) }))
+    expect(invoke).toHaveBeenNthCalledWith(2, 'set_clipboard_image', expect.objectContaining({ bytes: expect.any(Array) }))
     expect(createSpy).toHaveBeenCalled()
     expect(revokeSpy).toHaveBeenCalled()
   })

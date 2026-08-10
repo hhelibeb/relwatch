@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type
 import { ShowToastKey, AiEnabledKey } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
-import { listen } from '@tauri-apps/api/event'
+import { events } from './bindings'
 import { type Source, listSources } from './api/sources'
 // 计数键含 source_type，避免不同类型同 owner/repo 串源（走注册表真实模块）
 import { sourceRepoKey } from './api/source-registry'
@@ -399,14 +399,14 @@ onMounted(async () => {
     unlisteners.push(() => window.removeEventListener('keydown', onGlobalKeydown))
   }
 
-  const navigateUnlisten = await listen<string>('navigate', (event) => {
+  const navigateUnlisten = await events.navigate.listen((event) => {
     if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {
       activeTab.value = event.payload as 'sources' | 'releases' | 'logs' | 'settings'
     }
   })
   unlisteners.push(navigateUnlisten)
 
-  const pollUnlisten = await listen('poll-completed', () => {
+  const pollUnlisten = await events.pollCompleted.listen(() => {
     loadSources()
     loadReleases()
     refreshLogs()
@@ -414,13 +414,13 @@ onMounted(async () => {
   })
   unlisteners.push(pollUnlisten)
 
-  const stateUnlisten = await listen('release-state-changed', () => {
+  const stateUnlisten = await events.releaseStateChanged.listen(() => {
     loadReleases()
     refreshLogs()
   })
   unlisteners.push(stateUnlisten)
 
-  const autoDisabledUnlisten = await listen<{ owner: string; repo: string; failures: number }>('source-auto-disabled', (event) => {
+  const autoDisabledUnlisten = await events.sourceAutoDisabled.listen((event) => {
     showToast(t('app.source_auto_disabled', event.payload.owner, event.payload.repo, String(event.payload.failures)))
     loadSources()
     refreshLogs()

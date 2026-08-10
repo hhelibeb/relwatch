@@ -1,5 +1,5 @@
 import { onMounted, onUnmounted, type Ref } from 'vue'
-import { invoke } from '@tauri-apps/api/core'
+import { commands } from '../bindings'
 
 /**
  * 覆盖层 CSS 选择器列表——任意一个在 DOM 中出现，Escape 就不应冒泡到 app 级。
@@ -45,7 +45,7 @@ export function useEscapeToTray(minimizeToTray: Ref<boolean>) {
     if (!minimizeToTray.value) return
 
     e.preventDefault()
-    invoke('hide_to_tray')
+    commands.hideToTray()
   }
 
   onMounted(() => document.addEventListener('keydown', handleKeydown, true))

@@ -84,7 +84,7 @@ describe('StatsDevPanel', () => {
     await flushPromises()
 
     expect(confirm).toHaveBeenCalled()
-    expect(invoke).toHaveBeenCalledWith('clear_usage_stats', undefined)
+    expect(invoke).toHaveBeenCalledWith('clear_usage_stats')
     expect(wrapper.text()).toContain('暂无统计数据')
   })
 
