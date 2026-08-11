@@ -930,6 +930,28 @@ async fn api_get_videos_details(
     Ok(map)
 }
 
+/// 把 videos.list 详情应用到条目（时长/播放量/精确类型标注）。
+/// need_classify（单类型）与双类型分支共用，消除逐字复制的"应用循环"，
+/// 避免日后合并改动只改到一处导致两分支行为漂移。
+fn apply_video_details(
+    entries: &mut [FeedEntry],
+    details: &std::collections::HashMap<String, VideoDetail>,
+) {
+    for e in entries.iter_mut() {
+        if let Some(d) = details.get(&e.video_id) {
+            if let Some(dur) = &d.duration {
+                e.duration = Some(dur.clone());
+            }
+            if let Some(vc) = d.view_count {
+                e.view_count = Some(vc);
+            }
+            if d.live.as_deref().map(|s| s != "none").unwrap_or(false) {
+                e.kind = FeedKind::Live;
+            }
+        }
+    }
+}
+
 /// Data API 模式拉取频道最新内容。
 ///
 /// 流程：channels.list（uploads 播放列表）→ playlistItems.list（翻页，最多 50/页）
@@ -978,9 +1000,12 @@ async fn fetch_via_api(
         }
     }
 
+    // 无论单/双类型都拉 videos.list 补全详情（时长/播放量/精确类型标注），
+    // 每 50 个视频额外 1 unit 配额；仅单类型订阅（need_classify）时
+    // 额外用 liveBroadcastContent 过滤视频/直播。
+    let ids: Vec<String> = entries.iter().map(|e| e.video_id.clone()).collect();
+    let details = api_get_videos_details(client, &ids, api_key, api_base).await?;
     if need_classify {
-        let ids: Vec<String> = entries.iter().map(|e| e.video_id.clone()).collect();
-        let details = api_get_videos_details(client, &ids, api_key, api_base).await?;
         let want_videos = config.videos;
         entries.retain(|e| {
             let live = details
@@ -994,38 +1019,8 @@ async fn fetch_via_api(
                 live
             }
         });
-        for e in entries.iter_mut() {
-            if let Some(d) = details.get(&e.video_id) {
-                if let Some(dur) = &d.duration {
-                    e.duration = Some(dur.clone());
-                }
-                if let Some(vc) = d.view_count {
-                    e.view_count = Some(vc);
-                }
-                if d.live.as_deref().map(|s| s != "none").unwrap_or(false) {
-                    e.kind = FeedKind::Live;
-                }
-            }
-        }
-    } else {
-        // 两种类型都勾选（默认）：仍拉 videos.list 补全时长（+ 精确标注类型 + 播放量），
-        // 每 50 个视频额外 1 unit 配额。
-        let ids: Vec<String> = entries.iter().map(|e| e.video_id.clone()).collect();
-        let details = api_get_videos_details(client, &ids, api_key, api_base).await?;
-        for e in entries.iter_mut() {
-            if let Some(d) = details.get(&e.video_id) {
-                if let Some(dur) = &d.duration {
-                    e.duration = Some(dur.clone());
-                }
-                if let Some(vc) = d.view_count {
-                    e.view_count = Some(vc);
-                }
-                if d.live.as_deref().map(|s| s != "none").unwrap_or(false) {
-                    e.kind = FeedKind::Live;
-                }
-            }
-        }
     }
+    apply_video_details(&mut entries, &details);
 
     if let Some(limit) = max_count {
         entries.truncate(limit);

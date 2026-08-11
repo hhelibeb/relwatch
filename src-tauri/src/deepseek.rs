@@ -155,29 +155,24 @@ pub(crate) async fn chat_completion(
     Err((status, text))
 }
 
-async fn call_summary_inner(
-    client: &reqwest::Client,
-    _model: &str,
-    base_url: &str,
-    body_json: &serde_json::Value,
-) -> Result<(String, String), (u16, String)> {
-    let content = chat_completion(client, base_url, body_json)
-        .await
-        .map_err(|(status, msg)| {
-            if status > 0 {
-                (status, format!("DeepSeek API 返回错误 {}: {}", status, msg))
-            } else {
-                (0, msg)
-            }
-        })?;
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content)))?;
-    let summary = parsed["summary"].as_str().unwrap_or("").to_string();
-    let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
-    if summary.is_empty() {
-        return Err((0, "摘要为空".to_string()));
+/// 把 chat/completions 调用链的 `(status, msg)` 错误映射为展示串。
+/// 三个 call_*（摘要/语言检测/翻译）共用，此前各有实现、格式曾漂移
+/// （detect/translate 曾以重复 status 参数拼出与 summary 相同的输出）。
+fn format_chat_error(status: u16, msg: &str) -> String {
+    if status > 0 {
+        format!("[{}] DeepSeek API 返回错误 {}: {}", status, status, msg)
+    } else {
+        msg.to_string()
     }
-    Ok((summary, importance))
+}
+
+/// 429 限流重试判定（三个 call_* 共用）。
+fn is_rate_limited(e: &(u16, String)) -> bool {
+    if e.0 == 429 {
+        log::warn!("DeepSeek 限流(429), 将重试");
+        return true;
+    }
+    false
 }
 
 async fn call_summary(
@@ -205,24 +200,23 @@ async fn call_summary(
         "response_format": {"type": "json_object"}
     });
 
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 429 {
-            log::warn!("DeepSeek 限流(429), 将重试");
-            return true;
-        }
-        false
-    }, || async {
-        call_summary_inner(client, model, base_url, &body_json).await
-    })
+    crate::retry::retry_with_backoff(
+        &crate::retry::RetryConfig::default(),
+        is_rate_limited,
+        || async {
+            let content = chat_completion(client, base_url, &body_json).await?;
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content)))?;
+            let summary = parsed["summary"].as_str().unwrap_or("").to_string();
+            let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
+            if summary.is_empty() {
+                return Err((0, "摘要为空".to_string()));
+            }
+            Ok((summary, importance))
+        },
+    )
     .await
-    .map_err(|(status, msg)| {
-        if status > 0 {
-            format!("[{}] {}", status, msg)
-        } else {
-            msg
-        }
-    })
+    .map_err(|(status, msg)| format_chat_error(status, &msg))
 }
 
 /// 调用 AI 检测文本主体语言。仅取 body 前 500 字符以节省 token。
@@ -246,28 +240,19 @@ async fn call_detect_language(
         "temperature": 0.0,
         "max_tokens": 20
     });
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 429 {
-            log::warn!("DeepSeek 语言检测限流(429), 将重试");
-            return true;
-        }
-        false
-    }, || async {
-        let content = chat_completion(client, base_url, &body_json).await?;
-        if content.is_empty() {
-            return Err((0, "语言检测结果为空".to_string()));
-        }
-        Ok(content)
-    })
+    crate::retry::retry_with_backoff(
+        &crate::retry::RetryConfig::default(),
+        is_rate_limited,
+        || async {
+            let content = chat_completion(client, base_url, &body_json).await?;
+            if content.is_empty() {
+                return Err((0, "语言检测结果为空".to_string()));
+            }
+            Ok(content)
+        },
+    )
     .await
-    .map_err(|(status, msg)| {
-        if status > 0 {
-            format!("[{}] DeepSeek API 返回错误 {}: {}", status, status, msg)
-        } else {
-            msg
-        }
-    })
+    .map_err(|(status, msg)| format_chat_error(status, &msg))
 }
 
 /// 调用 AI 翻译 release note 全文。纯文本输出（非 JSON），
@@ -291,38 +276,88 @@ async fn call_translate(
         "max_tokens": 8000
     });
 
-    let config = crate::retry::RetryConfig::default();
-    crate::retry::retry_with_backoff(&config, |e: &(u16, String)| {
-        if e.0 == 429 {
-            log::warn!("DeepSeek 翻译限流(429), 将重试");
-            return true;
-        }
-        false
-    }, || async {
-        let content = chat_completion(client, base_url, &body_json).await?;
-        if content.is_empty() {
-            return Err((0, "翻译结果为空".to_string()));
-        }
-        Ok(content)
-    })
+    crate::retry::retry_with_backoff(
+        &crate::retry::RetryConfig::default(),
+        is_rate_limited,
+        || async {
+            let content = chat_completion(client, base_url, &body_json).await?;
+            if content.is_empty() {
+                return Err((0, "翻译结果为空".to_string()));
+            }
+            Ok(content)
+        },
+    )
     .await
-    .map_err(|(status, msg)| {
-        if status > 0 {
-            format!("[{}] DeepSeek API 返回错误 {}: {}", status, status, msg)
-        } else {
-            msg
-        }
-    })
+    .map_err(|(status, msg)| format_chat_error(status, &msg))
 }
 
-pub async fn generate_summaries_for_new(
+/// 写 AI 任务结果日志：统一"成功/失败 × 有/无 release 行"四种组合。
+/// 摘要与翻译共用，收敛了原 4 份逐字复制的日志块。
+/// - `ok=true`：`{action}已生成: {owner}/{repo} {tag}[ {detail}]`
+/// - `ok=false`：`{action}生成失败: {owner}/{repo} {tag}: {detail}`
+///
+/// 有 release 行时用 owner/repo/tag 定位，否则退化为 `id={release_id}`。
+fn log_ai_job_result(
+    conn: &Connection,
+    level: &str,
+    action: &str,
+    release_id: i64,
+    detail: &str,
+    ok: bool,
+) {
+    let rel = db::releases::get_release(conn, release_id).ok().flatten();
+    let who = match rel {
+        Some(r) => format!("{}/{} {}", r.owner, r.repo, r.tag_name),
+        None => format!("id={}", release_id),
+    };
+    let msg = if ok {
+        if detail.is_empty() {
+            format!("{}已生成: {}", action, who)
+        } else {
+            format!("{}已生成: {} {}", action, who, detail)
+        }
+    } else {
+        format!("{}生成失败: {}: {}", action, who, detail)
+    };
+    db::logs::write_log(conn, level, &msg);
+}
+
+/// 翻译任务的结果：语言检测一致时短路（返回原文）或正常译文。
+/// 短路与正常译文在 on_ok 中区分处理（短路写原文 + log::info，译文写译文 + DB 日志）。
+enum TranslateOutcome {
+    Skipped(String),
+    Translated(String),
+}
+
+/// AI 任务公共流水线：读配置 → 建 client → 并发调度 → 结果/失败分别落库。
+///
+/// 摘要与翻译两条流水线共用此骨架，收敛了原先整段平行的
+/// for/spawn/信号量/spawn_blocking 结构（此前并发/日志语义的修改需同步改
+/// 2 处，事实上"语言检测短路"就曾只存在于翻译一侧）。差异点以参数注入：
+/// - `job`：控制台日志文案（"摘要"/"译文"）
+/// - `truncate_chars`：正文截断上限（摘要 4000 / 翻译 12000）
+/// - `extra_ready`：额外前置开关（翻译的 translate_enabled/force；摘要恒 true）
+/// - `call`：AI 调用（翻译侧在闭包内做语言检测短路）
+/// - `on_ok` / `on_err`：成功/失败各自的落库与日志动作（在 spawn_blocking 内执行）
+///
+/// 参数较多：均为两条流水线的真实差异点，刻意集中注入而非隐式复制。
+#[allow(clippy::too_many_arguments)]
+async fn run_ai_job<T, F, Fut>(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
-) {
-    let (enabled, model, base_url, api_key, prompt, proxy_url, proxy_mode);
-
-    {
+    job: &'static str,
+    truncate_chars: usize,
+    extra_ready: impl Fn(&Connection) -> bool,
+    call: F,
+    on_ok: impl Fn(&Connection, i64, T) + Send + Sync + 'static,
+    on_err: impl Fn(&Connection, i64, &str) + Send + Sync + 'static,
+) where
+    F: Fn(reqwest::Client, String, String, String, String) -> Fut + Send + Sync + 'static,
+    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    T: Send + 'static,
+{
+    let (cfg, proxy_url, proxy_mode) = {
         let conn = match db_pool.get() {
             Ok(c) => c,
             Err(e) => {
@@ -330,21 +365,17 @@ pub async fn generate_summaries_for_new(
                 return;
             }
         };
+        if !extra_ready(&conn) {
+            return;
+        }
         let cfg = read_config(&conn);
-        enabled = cfg.enabled;
-        model = cfg.model;
-        base_url = cfg.base_url;
-        api_key = cfg.api_key;
-        prompt = cfg.prompt;
-        let (p_url, p_mode) = load_ai_network_config(&conn);
-        proxy_url = p_url;
-        proxy_mode = p_mode;
-    }
-
-    if !enabled {
+        let (proxy_url, proxy_mode) = load_ai_network_config(&conn);
+        (cfg, proxy_url, proxy_mode)
+    };
+    if !cfg.enabled {
         return;
     }
-    let api_key = match api_key {
+    let api_key = match cfg.api_key {
         Some(k) => k,
         None => return,
     };
@@ -356,22 +387,30 @@ pub async fn generate_summaries_for_new(
         }
     };
 
+    let call = std::sync::Arc::new(call);
+    let on_ok = std::sync::Arc::new(on_ok);
+    let on_err = std::sync::Arc::new(on_err);
     let semaphore = deepseek_semaphore.clone();
+    let model = cfg.model;
+    let base_url = cfg.base_url;
+    let prompt = cfg.prompt;
     let mut handles = Vec::new();
     for (release_id, body) in saved {
         let body_text = match body {
             Some(b) if !b.is_empty() => b,
             _ => continue,
         };
-        let truncated: String = body_text.chars().take(4000).collect();
+        let truncated: String = body_text.chars().take(truncate_chars).collect();
         let client = client.clone();
         let model = model.clone();
         let base_url = base_url.clone();
         let prompt = prompt.clone();
         let db = db_pool.clone();
-        let db2 = db_pool.clone();
         let release_id = *release_id;
         let sem_clone = semaphore.clone();
+        let call = call.clone();
+        let on_ok = on_ok.clone();
+        let on_err = on_err.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = match sem_clone.acquire_owned().await {
@@ -381,8 +420,8 @@ pub async fn generate_summaries_for_new(
                     return;
                 }
             };
-            match call_summary(&client, &model, &base_url, &prompt, &truncated).await {
-                Ok((summary, importance)) => {
+            match call(client, model, base_url, prompt, truncated).await {
+                Ok(result) => {
                     // 同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
                     let _ = tokio::task::spawn_blocking(move || {
                         let conn = match db.get() {
@@ -392,46 +431,15 @@ pub async fn generate_summaries_for_new(
                                 return;
                             }
                         };
-                        if let Err(e) = db::releases::set_ai_summary(
-                            &conn, release_id, &summary, &importance,
-                        ) {
-                            log::error!("保存摘要失败 id={}: {}", release_id, e);
-                        } else {
-                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                            match rel {
-                                Some(r) => db::logs::write_log(
-                                    &conn,
-                                    "INFO",
-                                    &format!("AI 摘要已生成: {}/{} {} 重要度={}", r.owner, r.repo, r.tag_name, importance),
-                                ),
-                                None => db::logs::write_log(
-                                    &conn,
-                                    "INFO",
-                                    &format!("AI 摘要已生成: id={} 重要度={}", release_id, importance),
-                                ),
-                            }
-                        }
+                        on_ok(&conn, release_id, result);
                     })
                     .await;
                 }
                 Err(e) => {
-                    log::error!("生成摘要失败 id={}: {}", release_id, e);
+                    log::error!("生成{}失败 id={}: {}", job, release_id, e);
                     let _ = tokio::task::spawn_blocking(move || {
-                        if let Ok(conn) = db2.get() {
-                            let _ = db::releases::increment_retry_count(&conn, release_id);
-                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                            match rel {
-                                Some(r) => db::logs::write_log(
-                                    &conn,
-                                    "ERROR",
-                                    &format!("AI 摘要生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
-                                ),
-                                None => db::logs::write_log(
-                                    &conn,
-                                    "ERROR",
-                                    &format!("AI 摘要生成失败: id={}: {}", release_id, e),
-                                ),
-                            }
+                        if let Ok(conn) = db.get() {
+                            on_err(&conn, release_id, &e);
                         }
                     })
                     .await;
@@ -443,6 +451,43 @@ pub async fn generate_summaries_for_new(
     for handle in handles {
         let _ = handle.await;
     }
+}
+
+pub async fn generate_summaries_for_new(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    saved: &[(i64, Option<String>)],
+) {
+    run_ai_job(
+        db_pool,
+        deepseek_semaphore,
+        saved,
+        "摘要",
+        4000,
+        |_| true,
+        |client, model, base_url, prompt, text| async move {
+            call_summary(&client, &model, &base_url, &prompt, &text).await
+        },
+        |conn, release_id, (summary, importance)| {
+            if let Err(e) = db::releases::set_ai_summary(conn, release_id, &summary, &importance) {
+                log::error!("保存摘要失败 id={}: {}", release_id, e);
+            } else {
+                log_ai_job_result(
+                    conn,
+                    "INFO",
+                    "AI 摘要",
+                    release_id,
+                    &format!("重要度={}", importance),
+                    true,
+                );
+            }
+        },
+        |conn, release_id, e| {
+            let _ = db::releases::increment_retry_count(conn, release_id);
+            log_ai_job_result(conn, "ERROR", "AI 摘要", release_id, e, false);
+        },
+    )
+    .await;
 }
 
 /// 为新增的 releases 生成全文翻译。与摘要任务共用 `deepseek_semaphore`，
@@ -455,9 +500,8 @@ pub async fn generate_translations_for_new(
     saved: &[(i64, Option<String>)],
     force: bool,
 ) {
-    let (enabled, model, base_url, api_key, proxy_url, proxy_mode, translate_enabled, target_lang);
-
-    {
+    // 目标语言供 call 闭包（语言检测短路）与 on_ok（短路日志）使用，提前读取。
+    let target_lang = {
         let conn = match db_pool.get() {
             Ok(c) => c,
             Err(e) => {
@@ -465,146 +509,63 @@ pub async fn generate_translations_for_new(
                 return;
             }
         };
-        let cfg = read_config(&conn);
-        enabled = cfg.enabled;
-        model = cfg.model;
-        base_url = cfg.base_url;
-        api_key = cfg.api_key;
-        // cfg.prompt = 摘要 prompt，翻译不使用用户可编辑的摘要 prompt
-        let (p_url, p_mode) = load_ai_network_config(&conn);
-        proxy_url = p_url;
-        proxy_mode = p_mode;
-        let (t_enabled, t_lang) = read_translate_config(&conn);
-        translate_enabled = t_enabled;
-        target_lang = t_lang;
-    }
-
-    if !enabled || (!translate_enabled && !force) {
-        return;
-    }
-    let api_key = match api_key {
-        Some(k) => k,
-        None => return,
+        read_translate_config(&conn).1
     };
-    let client = match build_client(&api_key, &proxy_url, &proxy_mode) {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("创建 DeepSeek 客户端失败: {}", e);
-            return;
-        }
-    };
-
-    let semaphore = deepseek_semaphore.clone();
-    let mut handles = Vec::new();
-    for (release_id, body) in saved {
-        let body_text = match body {
-            Some(b) if !b.is_empty() => b,
-            _ => continue,
-        };
+    let target_lang_log = target_lang.clone();
+    run_ai_job(
+        db_pool,
+        deepseek_semaphore,
+        saved,
+        "译文",
         // 翻译全文比摘要耗 token 多，放宽截断上限到 12000 字符
-        let truncated: String = body_text.chars().take(12000).collect();
-        let client = client.clone();
-        let model = model.clone();
-        let base_url = base_url.clone();
-        let target_lang = target_lang.clone();
-        let db = db_pool.clone();
-        let db2 = db_pool.clone();
-        let release_id = *release_id;
-        let sem_clone = semaphore.clone();
-
-        handles.push(tokio::spawn(async move {
-            let _permit = match sem_clone.acquire_owned().await {
-                Ok(p) => p,
-                Err(e) => {
-                    log::error!("信号量获取失败: {}", e);
-                    return;
+        12000,
+        // 翻译开关：force 绕过 translate_enabled（手动单条场景）
+        move |conn| read_translate_config(conn).0 || force,
+        move |client, model, base_url, _prompt, text| {
+            let target_lang = target_lang.clone();
+            async move {
+                // 语言检测短路：取 body 前 500 字符让 AI 判断主体语言，
+                // 若与目标语言一致则直接把原文返回（由 on_ok 写入 body_translated），
+                // 跳过翻译调用。检测失败时不阻塞翻译（视为语言不一致，照常翻译）。
+                let sample: String = text.chars().take(500).collect();
+                if let Ok(detected) =
+                    call_detect_language(&client, &model, &base_url, &sample).await
+                {
+                    if detected.trim() == target_lang {
+                        return Ok(TranslateOutcome::Skipped(text));
+                    }
                 }
-            };
-            // 语言检测短路：取 body 前 500 字符让 AI 判断主体语言，
-            // 若与目标语言一致则直接把原文写入 body_translated，跳过翻译调用。
-            // 检测失败时不阻塞翻译（视为语言不一致，照常翻译）。
-            let sample: String = truncated.chars().take(500).collect();
-            if let Ok(detected) = call_detect_language(&client, &model, &base_url, &sample).await {
-                if detected.trim() == target_lang {
-                    // 同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
-                    let target_lang_log = target_lang.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let conn = match db.get() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                log::error!("数据库连接失败: {}", e);
-                                return;
-                            }
-                        };
-                        if let Err(e) = db::releases::set_body_translated(&conn, release_id, &truncated) {
-                            log::error!("保存译文失败 id={}: {}", release_id, e);
-                        } else {
-                            log::info!("跳过翻译(语言一致): id={} lang={}", release_id, target_lang_log);
-                        }
-                    })
-                    .await;
-                    return;
+                call_translate(&client, &model, &base_url, &target_lang, &text)
+                    .await
+                    .map(TranslateOutcome::Translated)
+            }
+        },
+        move |conn, release_id, outcome| match outcome {
+            TranslateOutcome::Skipped(original) => {
+                if let Err(e) = db::releases::set_body_translated(conn, release_id, &original) {
+                    log::error!("保存译文失败 id={}: {}", release_id, e);
+                } else {
+                    log::info!(
+                        "跳过翻译(语言一致): id={} lang={}",
+                        release_id,
+                        target_lang_log
+                    );
                 }
             }
-            match call_translate(&client, &model, &base_url, &target_lang, &truncated).await {
-                Ok(translated) => {
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let conn = match db.get() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                log::error!("数据库连接失败: {}", e);
-                                return;
-                            }
-                        };
-                        if let Err(e) = db::releases::set_body_translated(&conn, release_id, &translated) {
-                            log::error!("保存译文失败 id={}: {}", release_id, e);
-                        } else {
-                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                            match rel {
-                                Some(r) => db::logs::write_log(
-                                    &conn,
-                                    "INFO",
-                                    &format!("AI 译文已生成: {}/{} {}", r.owner, r.repo, r.tag_name),
-                                ),
-                                None => db::logs::write_log(
-                                    &conn,
-                                    "INFO",
-                                    &format!("AI 译文已生成: id={}", release_id),
-                                ),
-                            }
-                        }
-                    })
-                    .await;
-                }
-                Err(e) => {
-                    log::error!("生成译文失败 id={}: {}", release_id, e);
-                    let _ = tokio::task::spawn_blocking(move || {
-                        if let Ok(conn) = db2.get() {
-                            let _ = db::releases::increment_translate_retry_count(&conn, release_id);
-                            let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-                            match rel {
-                                Some(r) => db::logs::write_log(
-                                    &conn,
-                                    "ERROR",
-                                    &format!("AI 译文生成失败: {}/{} {}: {}", r.owner, r.repo, r.tag_name, e),
-                                ),
-                                None => db::logs::write_log(
-                                    &conn,
-                                    "ERROR",
-                                    &format!("AI 译文生成失败: id={}: {}", release_id, e),
-                                ),
-                            }
-                        }
-                    })
-                    .await;
+            TranslateOutcome::Translated(translated) => {
+                if let Err(e) = db::releases::set_body_translated(conn, release_id, &translated) {
+                    log::error!("保存译文失败 id={}: {}", release_id, e);
+                } else {
+                    log_ai_job_result(conn, "INFO", "AI 译文", release_id, "", true);
                 }
             }
-        }));
-    }
-
-    for handle in handles {
-        let _ = handle.await;
-    }
+        },
+        |conn, release_id, e| {
+            let _ = db::releases::increment_translate_retry_count(conn, release_id);
+            log_ai_job_result(conn, "ERROR", "AI 译文", release_id, e, false);
+        },
+    )
+    .await;
 }
 
 #[cfg(test)]
