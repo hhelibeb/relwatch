@@ -1100,6 +1100,32 @@ impl SourceAdapter for YoutubeAdapter {
         false
     }
 
+    /// 通知标题用真实频道名（channel_id 无阅读意义），兼容旧版 "YouTube channel: " 前缀。
+    fn notification_source_name(
+        &self,
+        owner: &str,
+        _repo: &str,
+        description: Option<&str>,
+    ) -> String {
+        let d = description.unwrap_or("").trim();
+        let d = d.strip_prefix("YouTube channel: ").unwrap_or(d);
+        if d.is_empty() {
+            owner.to_string()
+        } else {
+            d.to_string()
+        }
+    }
+
+    /// 通知标题来源标签（与前端 i18n source.type_youtube 文案一致）。
+    fn notification_source_label(&self) -> Option<&'static str> {
+        Some("YouTube")
+    }
+
+    /// 视频标题在通知正文的 name 位，tag（videoId）无意义，不显示。
+    fn notification_show_tag(&self) -> bool {
+        false
+    }
+
     /// 手动检查后刷新真实频道名（RSS 标题是播放列表名，频道页 og:title 才是真名）。
     fn refresh_description_after_check(&self) -> bool {
         true
@@ -1423,6 +1449,43 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.0, 404);
         assert!(err.1.contains("err.youtube_channel_not_found"));
+    }
+
+    #[test]
+    fn test_notification_source_name_uses_channel_name() {
+        let adapter = YoutubeAdapter;
+        // 有 description：通知标题用频道名而非 channel_id
+        assert_eq!(
+            adapter.notification_source_name("UCabc123", "", Some("Freesia")),
+            "Freesia"
+        );
+        // 旧版数据带 "YouTube channel: " 前缀：兼容剥离
+        assert_eq!(
+            adapter.notification_source_name("UCabc123", "", Some("YouTube channel: Freesia")),
+            "Freesia"
+        );
+        // 无 description：回退 channel_id
+        assert_eq!(
+            adapter.notification_source_name("UCabc123", "", None),
+            "UCabc123"
+        );
+        // description 为空白：同样回退
+        assert_eq!(
+            adapter.notification_source_name("UCabc123", "", Some("   ")),
+            "UCabc123"
+        );
+    }
+
+    #[test]
+    fn test_notification_show_tag_false_for_video() {
+        // videoId 对用户无意义，通知正文不显示 tag，只留视频标题
+        assert!(!YoutubeAdapter.notification_show_tag());
+    }
+
+    #[test]
+    fn test_notification_source_label() {
+        // 标题带来源标签：`YouTube / 频道名`
+        assert_eq!(YoutubeAdapter.notification_source_label(), Some("YouTube"));
     }
 
     #[tokio::test]

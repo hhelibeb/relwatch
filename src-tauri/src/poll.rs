@@ -850,12 +850,35 @@ async fn collect_pending_and_notify(
         if muted_source_ids.contains(&release.source_id) {
             continue;
         }
+        // 视频源（YouTube/B 站）：标题用频道名/UP 主名（description，channel_id/UID 无阅读
+        // 意义）并加来源标签（`哔哩哔哩 / UP主名`），正文隐藏 videoId/bvid 只留视频标题。
+        // 能力声明在 SourceAdapter，避免特判。
+        let adapter = crate::source::get_adapter(&release.source_type).ok();
+        let display_name = adapter
+            .as_ref()
+            .map(|a| {
+                a.notification_source_name(
+                    &release.owner,
+                    &release.repo,
+                    release.source_description.as_deref(),
+                )
+            })
+            .unwrap_or_else(|| release.owner.clone());
+        let notify_owner = match adapter.as_ref().and_then(|a| a.notification_source_label()) {
+            Some(label) => format!("{} / {}", label, display_name),
+            None => display_name,
+        };
+        let notify_tag = if adapter.map_or(true, |a| a.notification_show_tag()) {
+            release.tag_name.clone()
+        } else {
+            String::new()
+        };
         emitter.notify_release(ReleaseNotifyParams {
             release_id: release.id,
             html_url: release.html_url.clone(),
-            owner: release.owner.clone(),
+            owner: notify_owner,
             repo: release.repo.clone(),
-            tag: release.tag_name.clone(),
+            tag: notify_tag,
             name: release.release_name.clone(),
             importance: release.ai_importance.clone(),
         });
@@ -1588,6 +1611,81 @@ mod tests {
 
         assert_eq!(emitter.call_count(), 1, "静音源不派发通知，仅 source_b 通知");
         assert_eq!(new_releases.len(), 2, "muted 不剔除 new_releases（仅跳过通知）");
+    }
+
+    /// 视频源（YouTube/B 站）通知参数：标题用频道名/UP 主名（description），
+    /// tag（videoId/bvid）置空只留视频标题——与列表页可读性修复保持一致。
+    #[tokio::test]
+    async fn test_collect_pending_video_sources_readable_notification() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let (yt_id, bili_id) = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+            let yt = db::sources::add_source(&conn, "youtube", "UCabc123", "", "某频道名").unwrap();
+            let bili = db::sources::add_source(&conn, "bilibili", "123456", "", "某UP主").unwrap();
+            let yt_id = db::releases::insert_release(
+                &conn, yt, "videoId123", "某视频标题",
+                "https://youtube.com/watch?v=videoId123", "2024-01-01T00:00:00Z", false, None,
+            ).unwrap();
+            let bili_id = db::releases::insert_release(
+                &conn, bili, "BV1xx411c7mD", "B站视频标题",
+                "https://www.bilibili.com/video/BV1xx411c7mD", "2024-01-02T00:00:00Z", false, None,
+            ).unwrap();
+            (yt_id, bili_id)
+        };
+        let new_ids = vec![yt_id, bili_id];
+
+        let emitter = crate::types::NoopEmitter::new();
+        let (_all_pending, new_releases) =
+            collect_pending_and_notify(&pool, &emitter, &new_ids, false).await;
+        assert_eq!(new_releases.len(), 2);
+
+        let params = emitter.params();
+        assert_eq!(params.len(), 2);
+        // YouTube：标题为「来源标签 / 频道名」（非 channel_id），正文仅视频标题（无 videoId）
+        let yt = params
+            .iter()
+            .find(|p| p.owner == "YouTube / 某频道名")
+            .expect("YT 通知应带来源标签与频道名");
+        assert_eq!(yt.tag, "");
+        assert_eq!(yt.name, "某视频标题");
+        assert_eq!(crate::notify::notification_title(&yt.owner, &yt.repo), "YouTube / 某频道名");
+        assert_eq!(crate::notify::notification_body(&yt.tag, &yt.name, None), "某视频标题");
+        // B 站：标题为「哔哩哔哩 / UP主名」（非 UID），正文仅视频标题（无 bvid）
+        let bili = params
+            .iter()
+            .find(|p| p.owner == "哔哩哔哩 / 某UP主")
+            .expect("B 站通知应带来源标签与 UP 主名");
+        assert_eq!(bili.tag, "");
+        assert_eq!(bili.name, "B站视频标题");
+        assert_eq!(
+            crate::notify::notification_title(&bili.owner, &bili.repo),
+            "哔哩哔哩 / 某UP主"
+        );
+        assert_eq!(crate::notify::notification_body(&bili.tag, &bili.name, None), "B站视频标题");
+    }
+
+    /// GitHub（默认能力）：通知标题仍为 owner / repo，正文保留 tag - name。
+    #[tokio::test]
+    async fn test_collect_pending_github_notification_keeps_tag() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
+            let source = make_source(&conn, "o", "r");
+            github::save_releases(&conn, source.id, &[gh_release("v1", "2024-01-01T00:00:00Z", Some("b"))], 1)[0].0
+        };
+
+        let emitter = crate::types::NoopEmitter::new();
+        let _ = collect_pending_and_notify(&pool, &emitter, &[id], false).await;
+
+        let params = emitter.params();
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].owner, "o");
+        assert_eq!(params[0].repo, "r");
+        assert_eq!(params[0].tag, "v1");
+        assert_eq!(crate::notify::notification_title(&params[0].owner, &params[0].repo), "o / r");
+        assert_eq!(crate::notify::notification_body(&params[0].tag, &params[0].name, None), "v1 - v1");
     }
 
     /// 通知派发阶段对全部 pending 都触发；new_releases 仅按 new_ids 子集过滤。

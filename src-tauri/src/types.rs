@@ -50,26 +50,35 @@ impl Emitter for tauri::AppHandle {
     }
 }
 
-/// 测试用 Noop Emitter：不发送任何通知，仅记录调用次数（可扩展）。
+/// 测试用 Noop Emitter：不发送任何通知，记录调用参数（供断言通知内容可读性）。
 #[cfg(test)]
-pub struct NoopEmitter(pub std::sync::atomic::AtomicUsize);
+pub struct NoopEmitter {
+    calls: std::sync::Mutex<Vec<ReleaseNotifyParams>>,
+}
 
 #[cfg(test)]
 impl NoopEmitter {
     pub const fn new() -> Self {
-        NoopEmitter(std::sync::atomic::AtomicUsize::new(0))
+        NoopEmitter {
+            calls: std::sync::Mutex::new(Vec::new()),
+        }
     }
 
     /// 已记录的通知调用次数。
     pub fn call_count(&self) -> usize {
-        self.0.load(std::sync::atomic::Ordering::Relaxed)
+        self.calls.lock().unwrap().len()
+    }
+
+    /// 全部通知参数（按调用顺序），供断言标题/正文可读性。
+    pub fn params(&self) -> Vec<ReleaseNotifyParams> {
+        self.calls.lock().unwrap().clone()
     }
 }
 
 #[cfg(test)]
 impl Emitter for NoopEmitter {
-    fn notify_release(&self, _params: ReleaseNotifyParams) {
-        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    fn notify_release(&self, params: ReleaseNotifyParams) {
+        self.calls.lock().unwrap().push(params);
     }
 }
 

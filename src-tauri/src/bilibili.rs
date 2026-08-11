@@ -736,6 +736,31 @@ impl SourceAdapter for BilibiliAdapter {
         false
     }
 
+    /// 通知标题用 UP 主名（UID 无阅读意义）。
+    fn notification_source_name(
+        &self,
+        owner: &str,
+        _repo: &str,
+        description: Option<&str>,
+    ) -> String {
+        let d = description.unwrap_or("").trim();
+        if d.is_empty() {
+            owner.to_string()
+        } else {
+            d.to_string()
+        }
+    }
+
+    /// 通知标题来源标签（与前端 i18n source.type_bilibili 中文文案一致）。
+    fn notification_source_label(&self) -> Option<&'static str> {
+        Some("哔哩哔哩")
+    }
+
+    /// 视频标题在通知正文的 name 位，tag（bvid）无意义，不显示。
+    fn notification_show_tag(&self) -> bool {
+        false
+    }
+
     /// 检查成功后刷新 UP 主昵称（动态接口 module_author.name 才是真名）。
     fn refresh_description_after_check(&self) -> bool {
         true
@@ -1141,6 +1166,32 @@ mod tests {
         // 历史模式（max_count 大）跳过已存在，仍返回空
         let saved3 = save_entries(&conn, source_id, &items, 100);
         assert!(saved3.is_empty());
+    }
+
+    #[test]
+    fn test_notification_source_name_uses_up_name() {
+        let adapter = BilibiliAdapter;
+        // 有 description：通知标题用 UP 主名而非 UID
+        assert_eq!(
+            adapter.notification_source_name("123456", "", Some("某UP主")),
+            "某UP主"
+        );
+        // 无 description：回退 UID
+        assert_eq!(adapter.notification_source_name("123456", "", None), "123456");
+        // description 为空白：同样回退
+        assert_eq!(adapter.notification_source_name("123456", "", Some(" ")), "123456");
+    }
+
+    #[test]
+    fn test_notification_show_tag_false_for_video() {
+        // bvid 对用户无意义，通知正文不显示 tag，只留视频标题
+        assert!(!BilibiliAdapter.notification_show_tag());
+    }
+
+    #[test]
+    fn test_notification_source_label() {
+        // 标题带来源标签：`哔哩哔哩 / UP主名`（与前端 i18n 中文文案一致）
+        assert_eq!(BilibiliAdapter.notification_source_label(), Some("哔哩哔哩"));
     }
 
     #[test]

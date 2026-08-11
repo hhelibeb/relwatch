@@ -2,9 +2,24 @@
 // 跨平台纯函数（三平台实现共用，独立于桌面通知 API，可直接单测）
 // ═══════════════════════════════════════════════════════════════
 
-/// 通知正文：`tag - name`；带重要度时追加中文 label（后端 ai_importance 存中文枚举）。
+/// 通知标题：`owner / repo`；repo 为空时仅显示 owner（视频源无仓库概念）。
+pub(crate) fn notification_title(owner: &str, repo: &str) -> String {
+    if repo.is_empty() {
+        owner.to_string()
+    } else {
+        format!("{} / {}", owner, repo)
+    }
+}
+
+/// 通知正文：`tag - name`；tag 为空（视频源 videoId/bvid 对用户无意义，标题即正文）时
+/// 仅显示 name。带重要度时追加中文 label（后端 ai_importance 存中文枚举）。
 /// 此前 Windows/Linux/macOS 三份实现各复制一份，语义漂移风险高（见阶段 2-2）。
 pub(crate) fn notification_body(tag: &str, name: &str, importance: Option<&str>) -> String {
+    let base = if tag.is_empty() {
+        name.to_string()
+    } else {
+        format!("{} - {}", tag, name)
+    };
     match importance {
         Some(imp) => {
             let label = match imp {
@@ -12,9 +27,9 @@ pub(crate) fn notification_body(tag: &str, name: &str, importance: Option<&str>)
                 "中" => "重要度: 🟡 中",
                 _ => "重要度: 🟢 小",
             };
-            format!("{} - {}  |  {}", tag, name, label)
+            format!("{}  |  {}", base, label)
         }
-        None => format!("{} - {}", tag, name),
+        None => base,
     }
 }
 
@@ -99,7 +114,7 @@ mod inner {
         let rid = release_id;
 
         let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            let title = format!("{} / {}", owner, repo);
+            let title = crate::notify::notification_title(&owner, &repo);
             let body = crate::notify::notification_body(&tag, &name, importance.as_deref());
             let toast = Toast::new(Toast::POWERSHELL_APP_ID)
                 .title(&title)
@@ -246,7 +261,7 @@ mod inner {
         name: String,
         importance: Option<String>,
     ) {
-        let title = format!("{} / {}", owner, repo);
+        let title = crate::notify::notification_title(&owner, &repo);
         let body = crate::notify::notification_body(&tag, &name, importance.as_deref());
 
         let handle = match notify_rust::Notification::new()
@@ -423,7 +438,7 @@ mod inner {
                 .replace('\r', " ")
         }
 
-        let title = format!("{} / {}", owner, repo);
+        let title = crate::notify::notification_title(&owner, &repo);
         let body = crate::notify::notification_body(&tag, &name, importance.as_deref());
 
         let script = format!(
@@ -480,8 +495,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn notification_title_owner_repo() {
+        assert_eq!(notification_title("torvalds", "linux"), "torvalds / linux");
+    }
+
+    #[test]
+    fn notification_title_empty_repo_owner_only() {
+        // 视频源（YouTube/B 站）无仓库概念，repo 为空 → 仅显示可读源名
+        assert_eq!(notification_title("某频道", ""), "某频道");
+        assert_eq!(notification_title("频道名", ""), "频道名");
+    }
+
+    #[test]
     fn notification_body_without_importance() {
         assert_eq!(notification_body("v1.0.0", "Release v1", None), "v1.0.0 - Release v1");
+    }
+
+    #[test]
+    fn notification_body_empty_tag_name_only() {
+        // 视频源 tag（videoId/bvid）无意义 → 正文仅显示视频标题
+        assert_eq!(notification_body("", "视频标题", None), "视频标题");
+    }
+
+    #[test]
+    fn notification_body_empty_tag_with_importance() {
+        assert_eq!(
+            notification_body("", "视频标题", Some("大")),
+            "视频标题  |  重要度: 🔴 大"
+        );
     }
 
     #[test]
@@ -515,8 +556,10 @@ mod tests {
 
     #[test]
     fn notification_body_escapes_nothing_but_keeps_empty_fields() {
-        // tag/name 为空时保留占位格式（不 panic、不吞字段）
-        assert_eq!(notification_body("", "", None), " - ");
+        // tag/name 为空时保留占位格式（不 panic、不吞字段）；tag 空则仅显示 name
+        assert_eq!(notification_body("", "", None), "");
+        assert_eq!(notification_body("", "Release v1", None), "Release v1");
+        assert_eq!(notification_body("v1.0.0", "", None), "v1.0.0 - ");
     }
 
     #[test]

@@ -114,6 +114,30 @@ pub trait SourceAdapter: Send + Sync {
         false
     }
 
+    /// 通知标题中的源显示名（owner 的可读替代）。默认原样返回 owner
+    /// （GitHub/HF 通知标题拼 `owner / repo` 即可）；YouTube/B 站覆写为
+    /// description（频道名/UP 主名，channel_id/UID 无阅读意义）。
+    fn notification_source_name(
+        &self,
+        owner: &str,
+        _repo: &str,
+        _description: Option<&str>,
+    ) -> String {
+        owner.to_string()
+    }
+
+    /// 通知标题的来源标签（拼在可读源名前，如 `哔哩哔哩 / UP主名`）。
+    /// 默认 None：GitHub/HF 标题本身是 `owner / repo`，无需标签。
+    fn notification_source_label(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// 通知正文是否显示 tag（版本标识）。YouTube videoId / B 站 bvid 对用户无意义，
+    /// 覆写为 false 后正文只显示视频标题。默认 true。
+    fn notification_show_tag(&self) -> bool {
+        true
+    }
+
     /// 单页拉取（非翻页模式）。`token` 为该 source 对应的鉴权 token（可忽略）。
     async fn fetch(
         &self,
@@ -260,5 +284,35 @@ mod tests {
             .map(|a| a.source_type())
             .collect();
         assert_eq!(refresh, vec!["github", "youtube", "bilibili"]);
+
+        // 通知正文不显示 tag 的：youtube + bilibili（videoId/bvid 无阅读意义）
+        let hide_tag: Vec<&str> = adapters
+            .iter()
+            .filter(|a| !a.notification_show_tag())
+            .map(|a| a.source_type())
+            .collect();
+        assert_eq!(hide_tag, vec!["youtube", "bilibili"]);
+
+        // 通知标题默认能力：非视频源返回 owner 原样（标题由 notify 拼 owner / repo）
+        let github_adapter = adapters.iter().find(|a| a.source_type() == "github").unwrap();
+        assert_eq!(
+            github_adapter.notification_source_name("o", "r", Some("任意描述")),
+            "o"
+        );
+        // 非视频源无来源标签（GitHub 标题本身是 owner / repo）
+        assert_eq!(github_adapter.notification_source_label(), None);
+        // 视频源用 description 作可读源名（youtube 兼容旧版前缀）并带来源标签
+        let yt_adapter = adapters.iter().find(|a| a.source_type() == "youtube").unwrap();
+        assert_eq!(
+            yt_adapter.notification_source_name("UCabc", "", Some("YouTube channel: Freesia")),
+            "Freesia"
+        );
+        assert_eq!(yt_adapter.notification_source_label(), Some("YouTube"));
+        let bili_adapter = adapters.iter().find(|a| a.source_type() == "bilibili").unwrap();
+        assert_eq!(
+            bili_adapter.notification_source_name("123456", "", Some("某UP主")),
+            "某UP主"
+        );
+        assert_eq!(bili_adapter.notification_source_label(), Some("哔哩哔哩"));
     }
 }
