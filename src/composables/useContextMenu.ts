@@ -30,6 +30,12 @@ export function useContextMenu() {
     closeContextMenu()
   }
 
+  /** 右键菜单 action 分发：'open' → 打开链接，'copy' → 复制链接 */
+  function handleMenuAction(id: string) {
+    if (id === 'open') handleOpenLink()
+    else if (id === 'copy') handleCopyLink()
+  }
+
   onMounted(() => {
     registerCloser(closeContextMenu)
     document.addEventListener('click', closeContextMenu)
@@ -45,5 +51,6 @@ export function useContextMenu() {
     handleContextMenu,
     handleCopyLink,
     handleOpenLink,
+    handleMenuAction,
   }
 }

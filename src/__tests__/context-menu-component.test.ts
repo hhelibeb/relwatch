@@ -22,28 +22,18 @@ beforeEach(() => {
  * ContextMenu.vue 真实运行场景测试
  *
  * 固定定位右键菜单，支持：
- * - 无 items prop → 默认渲染 "打开" 和 "复制链接"
- * - 有 items prop → 按 items 渲染按钮
+ * - 按 items 渲染按钮（items 为必填 prop）
  * - 挂载后自动聚焦第一个按钮
  * - 键盘导航：ArrowDown/ArrowUp（循环）、Escape → close
  */
 describe('ContextMenu.vue — 渲染', () => {
   function mountMenu(props: Record<string, unknown> = {}) {
     return mount(ContextMenu, {
-      props: { x: 100, y: 200, ...props },
+      props: { x: 100, y: 200, items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], ...props },
     })
   }
 
-  it('无 items prop 时默认渲染两个按钮', () => {
-    const wrapper = mountMenu()
-
-    const buttons = wrapper.findAll('button')
-    expect(buttons).toHaveLength(2)
-    expect(buttons[0].text()).toBe('打开')
-    expect(buttons[1].text()).toBe('复制链接')
-  })
-
-  it('有 items prop 时按 items 渲染按钮', () => {
+  it('按 items 渲染按钮', () => {
     const wrapper = mountMenu({
       items: [
         { id: 'openLink', label: '在浏览器中打开' },
@@ -82,20 +72,12 @@ describe('ContextMenu.vue — 渲染', () => {
       expect(btn.attributes('role')).toBe('menuitem')
     })
   })
-
-  it('无 items 时按钮也有 menuitem role', () => {
-    const wrapper = mountMenu()
-
-    wrapper.findAll('button').forEach(btn => {
-      expect(btn.attributes('role')).toBe('menuitem')
-    })
-  })
 })
 
 describe('ContextMenu.vue — 交互', () => {
   function mountMenu(props: Record<string, unknown> = {}) {
     return mount(ContextMenu, {
-      props: { x: 100, y: 200, ...props },
+      props: { x: 100, y: 200, items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], ...props },
     })
   }
 
@@ -111,28 +93,12 @@ describe('ContextMenu.vue — 交互', () => {
 
     expect(wrapper.emitted('action')?.[0]).toEqual(['copyLink'])
   })
-
-  it('无 items 时点击第一个按钮 emit open', () => {
-    const wrapper = mountMenu()
-
-    wrapper.findAll('button')[0].trigger('click')
-
-    expect(wrapper.emitted('open')).toBeTruthy()
-  })
-
-  it('无 items 时点击第二个按钮 emit copy', () => {
-    const wrapper = mountMenu()
-
-    wrapper.findAll('button')[1].trigger('click')
-
-    expect(wrapper.emitted('copy')).toBeTruthy()
-  })
 })
 
 describe('ContextMenu.vue — 键盘导航', () => {
   function mountMenu(props: Record<string, unknown> = {}) {
     return mount(ContextMenu, {
-      props: { x: 0, y: 0, ...props },
+      props: { x: 0, y: 0, items: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], ...props },
       attachTo: document.body,
     })
   }

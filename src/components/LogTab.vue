@@ -27,11 +27,6 @@ const levelDropdown = useDropdown({
   openState: openFilter,
   closedKey: false,
   hoverOpen: true,
-  // 打开时聚焦第一个选项；从触发元素就近定位
-  onOpen: (_key, el) => {
-    const dropdown = el.parentElement?.querySelector('.filter-dropdown') as HTMLElement | null
-    dropdown?.querySelector('button')?.focus()
-  },
 })
 
 // 自增标记：用于丢弃并发场景下陈旧响应，避免旧请求结果覆盖新数据

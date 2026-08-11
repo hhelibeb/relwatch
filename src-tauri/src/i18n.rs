@@ -45,21 +45,31 @@ fn resolve_action(text: &str, action_val: &str, dict: &HashMap<&'static str, &'s
     text.replace("{action}", &translated_action)
 }
 
-/// 将字符串中的 setting.\w+ 引用替换为字典中对应的翻译文本
+/// 将字符串中的 setting.\w+ 引用替换为字典中对应的翻译文本。
+///
+/// 协议：token = `setting.` + 字母数字/下划线（单段键，不含点）。
+/// 与前端 `resolveSettingKeys`（src/i18n/index.ts）的 `setting\.\w+` 规则必须保持一致，
+/// 两端同步修改，防止渲染结果漂移；未命中的键原样保留。
 fn resolve_setting_keys(text: &str, dict: &HashMap<&'static str, &'static str>) -> String {
+    const PREFIX: &str = "setting.";
     let mut result = String::new();
     let mut remaining = text;
-    while let Some(pos) = remaining.find("setting.") {
+    while let Some(pos) = remaining.find(PREFIX) {
         result.push_str(&remaining[..pos]);
         let rest = &remaining[pos..];
-        let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')
+        // token = "setting." + 字母数字/下划线：前缀中的点是 token 的一部分，
+        // 与前端 `setting\.\w+` 一致（\w 不含点，故键为单段）。
+        let tail_start = PREFIX.len();
+        let tail_end = rest[tail_start..]
+            .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .map(|i| tail_start + i)
             .unwrap_or(rest.len());
-        let token = &rest[..end];
+        let token = &rest[..tail_end];
         match dict.get(token) {
             Some(translated) => result.push_str(translated),
             None => result.push_str(token),
         }
-        remaining = &rest[end..];
+        remaining = &rest[tail_end..];
     }
     result.push_str(remaining);
     result

@@ -1,4 +1,5 @@
 import { watch, onUnmounted, type Ref } from 'vue'
+import { registerOverlayActive } from './contextMenuBus'
 
 export interface UseDropdownOptions<T> {
   /** 下拉组共享的打开状态：如 ref<'status'|'importance'|null>、ref<boolean> 或 ref<number|null> */
@@ -9,8 +10,6 @@ export interface UseDropdownOptions<T> {
   hoverOpen?: boolean
   /** 移出触发区后延迟关闭的毫秒数 */
   closeDelay?: number
-  /** 打开时的副作用（用于聚焦第一个选项），key 为打开目标，el 为触发元素 */
-  onOpen?: (key: T, el: HTMLElement) => void
 }
 
 /**
@@ -19,13 +18,18 @@ export interface UseDropdownOptions<T> {
  * - 可选 hover 展开 + 移出延迟关闭（timer 在进入任一下拉区时清除）
  * - 触发按钮键盘：Enter/Space/ArrowDown 打开，Escape 关闭
  * - 下拉面板键盘：ArrowUp/Down 循环移动焦点，Escape 关闭
+ * - 打开时自动聚焦面板内第一个可用选项（面板需带 role="menu" 或位于触发元素父级下）
+ * - 打开期间向全局覆盖层总线注册活跃状态（供 useEscapeToTray 判定 Esc 拦截）
  * 共享 openState 即天然互斥：同组多个下拉（如状态/重要度）只有一个能打开。
  */
 export function useDropdown<T>(options: UseDropdownOptions<T>) {
-  const { openState, closedKey, hoverOpen = true, closeDelay = 120, onOpen } = options
+  const { openState, closedKey, hoverOpen = true, closeDelay = 120 } = options
 
   let hoverTimer: ReturnType<typeof setTimeout> | null = null
   let openedByClick = false
+
+  // 打开期间向覆盖层总线注册：下拉打开时 Esc 应优先关闭下拉而非最小化到托盘
+  const unregisterOverlay = registerOverlayActive(() => openState.value !== closedKey)
 
   watch(openState, () => {
     if (openState.value === closedKey) openedByClick = false
@@ -38,11 +42,20 @@ export function useDropdown<T>(options: UseDropdownOptions<T>) {
     }
   }
 
+  /** 打开时聚焦面板内第一个可用选项；从触发元素就近定位，避免全局选择器误中其他实例 */
+  function focusFirstItem(el: HTMLElement) {
+    const panel = el.parentElement?.querySelector('[role="menu"]') as HTMLElement | null
+    if (!panel) return
+    const enabled = panel.querySelector('button:not(:disabled)') as HTMLButtonElement | null
+    const any = panel.querySelector('button') as HTMLButtonElement | null
+    ;(enabled ?? any)?.focus()
+  }
+
   // openState 同步更新后，v-if 包裹的面板要到下一帧才渲染。
-  // onOpen（聚焦首个选项等副作用）必须等 DOM 更新后再执行；el 提前捕获，
+  // 聚焦必须等 DOM 更新后再执行；el 提前捕获，
   // 因为事件回调结束后 currentTarget 会变为 null。
-  function deferOnOpen(key: T, el: HTMLElement) {
-    const run = () => onOpen?.(key, el)
+  function deferFocus(el: HTMLElement) {
+    const run = () => focusFirstItem(el)
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run)
     else setTimeout(run, 0)
   }
@@ -69,7 +82,7 @@ export function useDropdown<T>(options: UseDropdownOptions<T>) {
     } else {
       openState.value = key
       openedByClick = true
-      deferOnOpen(key, el)
+      deferFocus(el)
     }
   }
 
@@ -83,7 +96,7 @@ export function useDropdown<T>(options: UseDropdownOptions<T>) {
       e.preventDefault()
       if (openState.value !== key) {
         openState.value = key
-        deferOnOpen(key, el)
+        deferFocus(el)
       }
     }
   }
@@ -112,7 +125,10 @@ export function useDropdown<T>(options: UseDropdownOptions<T>) {
     openState.value = closedKey
   }
 
-  onUnmounted(clearHoverTimer)
+  onUnmounted(() => {
+    clearHoverTimer()
+    unregisterOverlay()
+  })
 
   return { toggle, close, hoverEnter, hoverLeave, handleTriggerKeydown, handleDropdownKeydown }
 }

@@ -6,7 +6,7 @@ import { ShowToastKey, AiEnabledKey } from '../injection-keys'
 import { type ReleaseInfo } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
-import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
+import { registerCloser, unregisterCloser, closeAllContextMenus, registerOverlayActive } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { t } from '../i18n'
@@ -83,6 +83,8 @@ const bodyMenuItems = computed<ContextMenuItem[]>(() => {
 function closeBodyMenu() {
   bodyMenu.value = null
 }
+
+let unregisterOverlay: (() => void) | null = null
 
 function handleClose() {
   track('release.detail_close')
@@ -275,11 +277,14 @@ onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   registerCloser(closeBodyMenu)
   document.addEventListener('click', closeBodyMenu)
+  // 弹窗挂载即视为覆盖层打开：弹窗内 Esc 不应最小化到托盘（供 useEscapeToTray 判定）
+  unregisterOverlay = registerOverlayActive(() => true)
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
   unregisterCloser(closeBodyMenu)
   document.removeEventListener('click', closeBodyMenu)
+  unregisterOverlay?.()
 })
 
 // HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）

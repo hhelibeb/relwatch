@@ -33,11 +33,6 @@ const filterDropdown = useDropdown({
   openState: openFilter,
   closedKey: null,
   hoverOpen: true,
-  // 打开时聚焦下拉第一个选项；从触发元素就近定位，避免全局选择器误中其他实例
-  onOpen: (_key, el) => {
-    const dropdown = el.parentElement?.querySelector('.filter-dropdown') as HTMLElement | null
-    dropdown?.querySelector('button')?.focus()
-  },
 })
 
 const importanceDisplayText = computed(() => {

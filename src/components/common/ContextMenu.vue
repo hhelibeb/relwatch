@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, nextTick } from 'vue'
-import { t } from '../../i18n'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { registerOverlayActive } from '../../composables/contextMenuBus'
 
 export interface ContextMenuItem {
   id: string
@@ -10,11 +10,9 @@ export interface ContextMenuItem {
 const props = defineProps<{
   x: number
   y: number
-  items?: ContextMenuItem[]
+  items: ContextMenuItem[]
 }>()
 const emit = defineEmits<{
-  open: []
-  copy: []
   action: [id: string]
   close: []
 }>()
@@ -24,8 +22,12 @@ const menuRef = ref<HTMLElement | null>(null)
 const adjustedX = ref(props.x)
 const adjustedY = ref(props.y)
 
-// 打开后钳位到视口内并自动聚焦第一个菜单项
+let unregisterOverlay: (() => void) | null = null
+
+// 打开后钳位到视口内并自动聚焦第一个菜单项；
+// 同时向全局覆盖层总线注册（组件挂载即视为覆盖层打开，供 useEscapeToTray 判定 Esc 拦截）
 onMounted(async () => {
+  unregisterOverlay = registerOverlayActive(() => true)
   await nextTick()
   const el = menuRef.value
   if (el) {
@@ -43,6 +45,11 @@ onMounted(async () => {
   }
   const firstButton = menuRef.value?.querySelector('button') as HTMLButtonElement | null
   firstButton?.focus()
+})
+
+onUnmounted(() => {
+  unregisterOverlay?.()
+  unregisterOverlay = null
 })
 
 // 键盘导航
@@ -81,10 +88,6 @@ function handleKeydown(e: KeyboardEvent) {
       <button v-for="item in items" :key="item.id" role="menuitem" tabindex="0" @click="$emit('action', item.id)">
         {{ item.label }}
       </button>
-    </template>
-    <template v-else>
-      <button role="menuitem" tabindex="0" @click="$emit('open')">{{ t('context.open') }}</button>
-      <button role="menuitem" tabindex="0" @click="$emit('copy')">{{ t('context.copy_link') }}</button>
     </template>
   </div>
 </template>

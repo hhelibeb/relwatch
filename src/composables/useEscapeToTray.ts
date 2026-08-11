@@ -1,25 +1,6 @@
 import { onMounted, onUnmounted, type Ref } from 'vue'
 import { commands } from '../bindings'
-
-/**
- * 覆盖层 CSS 选择器列表——任意一个在 DOM 中出现，Escape 就不应冒泡到 app 级。
- *
- * 这些元素用 `v-if` 控制显隐，打开时存在于 DOM、关闭时被移除，
- * 所以 `document.querySelector` 可以准确反映当前是否有覆盖层打开。
- */
-const OVERLAY_SELECTORS = [
-  '.context-menu',           // 右键菜单
-  '.filter-dropdown',        // 日志/发布过滤下拉
-  '.theme-select-dropdown',  // 设置页语言/主题选择器
-  '.sort-dropdown',          // 监控源排序下拉
-  '.dropdown-more-panel',    // 监控源更多操作面板
-  '.release-detail-overlay', // 版本详情弹窗（漏掉会导致弹窗内 Esc 误触最小化到托盘）
-  '.stats-dev-overlay',      // 开发者统计面板（Ctrl+Shift+U；漏掉会导致面板内 Esc 误触最小化到托盘）
-]
-
-function hasVisibleOverlay(): boolean {
-  return document.querySelector(OVERLAY_SELECTORS.join(',')) !== null
-}
+import { hasActiveOverlay } from './contextMenuBus'
 
 /**
  * Escape 逐层退出——最外层最小化到托盘
@@ -28,6 +9,10 @@ function hasVisibleOverlay(): boolean {
  * - 右键菜单 Escape → @close 关闭菜单
  * - 各下拉面板 Escape → 各自的 handle*Keydown 关闭面板
  * - 无覆盖层 + 已开启最小化到托盘 → 隐藏窗口到系统托盘
+ *
+ * 覆盖层判定走 contextMenuBus 的注册表（registerOverlayActive）：
+ * 所有覆盖层（右键菜单/下拉/弹窗/面板）打开期间自行注册活跃回调，
+ * 新增覆盖层时无需再改本文件——漏注册才会导致 Esc 误触最小化到托盘。
  */
 export function useEscapeToTray(minimizeToTray: Ref<boolean>) {
   function handleKeydown(e: KeyboardEvent) {
@@ -39,7 +24,7 @@ export function useEscapeToTray(minimizeToTray: Ref<boolean>) {
     if ((document.activeElement as HTMLElement | null)?.isContentEditable) return
 
     // 有覆盖层打开 → 让子组件的 Escape 处理器优先处理
-    if (hasVisibleOverlay()) return
+    if (hasActiveOverlay()) return
 
     // 用户未开启最小化到托盘
     if (!minimizeToTray.value) return

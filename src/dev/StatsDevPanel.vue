@@ -6,12 +6,15 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { getUsageStats, clearUsageStats, type UsageStatRow } from '../api/usage'
 import { flushUsageTrackingNow } from '../composables/useUsageTracking'
+import { registerOverlayActive } from '../composables/contextMenuBus'
 
 const emit = defineEmits<{ close: [] }>()
 
 const rows = ref<UsageStatRow[]>([])
 const loading = ref(false)
 const error = ref('')
+
+let unregisterOverlay: (() => void) | null = null
 const TREND_DAYS = 7
 
 const totalClicks = computed(() => rows.value.reduce((sum, r) => sum + r.total_count, 0))
@@ -131,11 +134,15 @@ async function handleClear() {
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
   void load()
+  // 面板挂载即视为覆盖层打开：面板内 Esc 不应最小化到托盘（供 useEscapeToTray 判定）
+  unregisterOverlay = registerOverlayActive(() => true)
 })
-onUnmounted(() => window.removeEventListener('keydown', handleKeydown))
+onUnmounted(() => {
+  window.removeEventListener('keydown', handleKeydown)
+  unregisterOverlay?.()
+})
 
-// Esc 关闭面板；配合 App 级 useEscapeToTray 的覆盖层判定（.stats-dev-overlay 已在
-// OVERLAY_SELECTORS 中），面板打开时 Esc 不会冒泡成最小化到托盘。
+// Esc 关闭面板；覆盖层活跃状态由 contextMenuBus 注册表维护，面板打开时 Esc 不会冒泡成最小化到托盘。
 function handleKeydown(e: KeyboardEvent) {
   if (e.defaultPrevented) return
   if (e.key === 'Escape') emit('close')

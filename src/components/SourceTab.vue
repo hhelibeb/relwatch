@@ -10,7 +10,7 @@ import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
-import ContextMenu from './common/ContextMenu.vue'
+import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 
@@ -80,12 +80,6 @@ const sortDropdown = useDropdown({
   openState: openSort,
   closedKey: false,
   hoverOpen: false,
-  // 打开时聚焦排序下拉第一个选项；从触发元素就近定位
-  onOpen: (_key, el) => {
-    const dropdown = el.parentElement?.querySelector('.sort-dropdown') as HTMLElement | null
-    const btn = dropdown?.querySelector('button') as HTMLButtonElement | null
-    btn?.focus()
-  },
 })
 
 // 每行"更多"面板：共享 openMoreId，同一时刻只有一个面板打开
@@ -93,12 +87,6 @@ const moreDropdown = useDropdown({
   openState: openMoreId,
   closedKey: null,
   hoverOpen: false,
-  // 打开时聚焦面板第一个可用选项；从触发元素就近定位
-  onOpen: (_key, el) => {
-    const panel = el.parentElement?.querySelector('.dropdown-more-panel') as HTMLElement | null
-    const btn = panel?.querySelector('button:not(:disabled)') as HTMLButtonElement | null
-    btn?.focus()
-  },
 })
 const headerMode = ref<HeaderMode>('add')
 
@@ -241,7 +229,13 @@ const sortDirectionOptions = computed(() => [
   { value: 'desc' as const, label: t('source.sort_desc') },
 ])
 
-const { contextMenu, closeContextMenu, handleContextMenu, handleCopyLink, handleOpenLink } = useContextMenu()
+const { contextMenu, closeContextMenu, handleContextMenu, handleMenuAction } = useContextMenu()
+
+// 右键菜单项：与 useContextMenu 的 action 分发（'open'/'copy'）对应
+const contextMenuItems = computed<ContextMenuItem[]>(() => [
+  { id: 'open', label: t('context.open') },
+  { id: 'copy', label: t('context.copy_link') },
+])
 
 function openSourceUrl(source: Source) {
   track('source.open_url')
@@ -749,7 +743,7 @@ function hideHealthTooltip() {
       </div>
       <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="empty source-search-status">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
     </div>
-    <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" @open="handleOpenLink" @copy="handleCopyLink" @close="closeContextMenu" />
+    <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="contextMenuItems" @action="handleMenuAction" @close="closeContextMenu" />
     <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
       <div v-for="(line, i) in tooltip.lines" :key="i" class="tooltip-line" :class="{ 'tooltip-line-wrap': line.wrap }">{{ line.text }}</div>
     </div>

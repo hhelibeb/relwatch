@@ -94,3 +94,42 @@ describe('迭代安全', () => {
     expect(b).toHaveBeenCalledTimes(2)
   })
 })
+
+// ── registerOverlayActive + hasActiveOverlay ─────────────────────
+
+describe('registerOverlayActive + hasActiveOverlay', () => {
+  it('无注册时 hasActiveOverlay 返回 false', () => {
+    expect(bus.hasActiveOverlay()).toBe(false)
+  })
+
+  it('注册活跃回调后返回 true，注销后返回 false', () => {
+    const unregister = bus.registerOverlayActive(() => true)
+    expect(bus.hasActiveOverlay()).toBe(true)
+    unregister()
+    expect(bus.hasActiveOverlay()).toBe(false)
+  })
+
+  it('任一回调返回 true 即为有覆盖层', () => {
+    const a = bus.registerOverlayActive(() => false)
+    const b = bus.registerOverlayActive(() => true)
+    expect(bus.hasActiveOverlay()).toBe(true)
+    a()
+    b()
+    expect(bus.hasActiveOverlay()).toBe(false)
+  })
+
+  it('回调在判定过程中注销自身不会导致崩溃或跳项', () => {
+    const unregister = bus.registerOverlayActive(() => {
+      unregister()
+      return true
+    })
+    expect(() => bus.hasActiveOverlay()).not.toThrow()
+    expect(bus.hasActiveOverlay()).toBe(false)
+  })
+
+  it('重复注销同一个回调是安全的', () => {
+    const unregister = bus.registerOverlayActive(() => true)
+    unregister()
+    expect(() => unregister()).not.toThrow()
+  })
+})

@@ -6,8 +6,8 @@ import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
 import ReleaseCalendar from './ReleaseCalendar.vue'
 import ReleaseDateDetail from './ReleaseDateDetail.vue'
 import ReleaseDetailModal from './ReleaseDetailModal.vue'
+import ReleaseSearchBar from './ReleaseSearchBar.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
-import ReleaseToolbar from './ReleaseToolbar.vue'
 import type { ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
 import { track } from '../composables/useUsageTracking'
 
@@ -140,7 +140,7 @@ function navigateReleaseDetail(delta: number) {
 
 <template>
   <section class="tab-content">
-    <ReleaseToolbar
+    <ReleaseSearchBar
       v-model="releaseSearch"
       v-model:status-filter="statusFilter"
       v-model:importance-filter="importanceFilter"

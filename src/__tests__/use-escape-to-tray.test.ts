@@ -3,6 +3,7 @@ import { defineComponent, ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import { invoke } from '@tauri-apps/api/core'
 import { useEscapeToTray } from '../composables/useEscapeToTray'
+import { registerOverlayActive } from '../composables/contextMenuBus'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 
@@ -41,49 +42,46 @@ describe('useEscapeToTray', () => {
     wrapper.unmount()
   })
 
-  it('存在右键菜单时，Escape 不隐藏到托盘', () => {
+  it('存在注册的活跃覆盖层时，Escape 不隐藏到托盘', () => {
     const wrapper = mount(Harness)
-    document.body.innerHTML = '<div class="context-menu"><button>copy</button></div>'
+    const unregister = registerOverlayActive(() => true)
 
     pressEscape()
 
     expect(invokeMock).not.toHaveBeenCalled()
+    unregister()
     wrapper.unmount()
   })
 
-  it('版本详情弹窗打开时，Escape 不隐藏到托盘', () => {
+  it('覆盖层注销（关闭）后，Escape 恢复隐藏到托盘', () => {
     const wrapper = mount(Harness)
-    document.body.innerHTML = '<div class="release-detail-overlay"><div class="release-detail-modal"></div></div>'
+    const unregister = registerOverlayActive(() => true)
+    pressEscape()
+    expect(invokeMock).not.toHaveBeenCalled()
 
+    unregister()
     pressEscape()
 
-    expect(invokeMock).not.toHaveBeenCalled()
+    expect(invokeMock).toHaveBeenCalledWith('hide_to_tray')
     wrapper.unmount()
   })
 
-  it('开发者统计面板打开时，Escape 不隐藏到托盘', () => {
+  it('覆盖层判定在捕获阶段先于菜单关闭执行，避免菜单关闭后同一次 Escape 触发隐藏', () => {
     const wrapper = mount(Harness)
-    document.body.innerHTML = '<div class="stats-dev-overlay"><div class="stats-dev-panel"></div></div>'
-
-    pressEscape()
-
-    expect(invokeMock).not.toHaveBeenCalled()
-    wrapper.unmount()
-  })
-
-  it('全局监听在捕获阶段先于菜单关闭执行，避免菜单关闭后同一次 Escape 触发隐藏', () => {
-    const wrapper = mount(Harness)
+    let active = true
+    registerOverlayActive(() => active)
     const menu = document.createElement('div')
     menu.className = 'context-menu'
     menu.tabIndex = -1
     menu.addEventListener('keydown', () => {
-      menu.remove()
+      // 模拟菜单自身的 Escape 处理器：关闭菜单 → 活跃状态置 false
+      active = false
     })
     document.body.appendChild(menu)
 
     pressEscape(menu)
 
-    expect(document.querySelector('.context-menu')).toBeNull()
+    expect(active).toBe(false)
     expect(invokeMock).not.toHaveBeenCalled()
     wrapper.unmount()
   })

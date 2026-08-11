@@ -8,8 +8,8 @@ import type { ReleaseInfo } from '../api/releases'
 
 const expandAll = vi.fn()
 
-const ToolbarStub = defineComponent({
-  name: 'ReleaseToolbarStub',
+const SearchBarStub = defineComponent({
+  name: 'ReleaseSearchBarStub',
   emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'searchEnter'],
   template: '<div class="toolbar-stub" />',
 })
@@ -51,7 +51,7 @@ const DetailModalStub = defineComponent({
 })
 
 const stubs = {
-  ReleaseToolbar: ToolbarStub,
+  ReleaseSearchBar: SearchBarStub,
   ReleaseSimpleList: SimpleListStub,
   ReleaseAggregatedList: AggregatedListStub,
   ReleaseCalendar: CalendarStub,
@@ -156,7 +156,7 @@ describe('ReleaseTab 渲染与过滤', () => {
 
   it('切换 aggregated 视图渲染聚合列表', async () => {
     const wrapper = mountTab()
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'aggregated')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'aggregated')
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'ReleaseAggregatedListStub' }).exists()).toBe(true)
@@ -167,7 +167,7 @@ describe('ReleaseTab 渲染与过滤', () => {
 
 describe('ReleaseTab 月份导航', () => {
   function switchToCalendar(wrapper: VueWrapper) {
-    return wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'calendar')
+    return wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'calendar')
   }
 
   it('prevMonth 普通递减', async () => {
@@ -252,7 +252,7 @@ describe('ReleaseTab 视图切换', () => {
   it('日历选中日期后切换视图会重置 selectedDate', async () => {
     setSystemTime('2025-06-15T00:00:00Z')
     const wrapper = mountTab()
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'calendar')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'calendar')
     await nextTick()
 
     // 选中日期 → 显示日期详情
@@ -261,8 +261,8 @@ describe('ReleaseTab 视图切换', () => {
     expect(wrapper.findComponent({ name: 'ReleaseDateDetailStub' }).exists()).toBe(true)
 
     // 切走再切回 → 重置回日历
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'simple')
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'calendar')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'simple')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'calendar')
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseCalendarStub' }).exists()).toBe(true)
     expect(wrapper.findComponent({ name: 'ReleaseDateDetailStub' }).exists()).toBe(false)
@@ -271,7 +271,7 @@ describe('ReleaseTab 视图切换', () => {
   it('日期详情返回按钮回到日历', async () => {
     setSystemTime('2025-06-15T00:00:00Z')
     const wrapper = mountTab()
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'calendar')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'calendar')
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseCalendarStub' }).vm.$emit('selectDate', '2025-06-10')
     await nextTick()
@@ -364,17 +364,17 @@ describe('ReleaseTab 详情弹窗', () => {
 
   it('聚合视图 search-enter 触发 expandAll', async () => {
     const wrapper = mountTab()
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('update:viewMode', 'aggregated')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:viewMode', 'aggregated')
     await nextTick()
 
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('searchEnter')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('searchEnter')
     await nextTick()
     expect(expandAll).toHaveBeenCalled()
   })
 
   it('simple 视图 search-enter 不触发 expandAll', async () => {
     const wrapper = mountTab()
-    await wrapper.findComponent({ name: 'ReleaseToolbarStub' }).vm.$emit('searchEnter')
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('searchEnter')
     await nextTick()
     expect(expandAll).not.toHaveBeenCalled()
   })

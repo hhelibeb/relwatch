@@ -1,4 +1,5 @@
 import { ref, watch, nextTick, onUnmounted } from 'vue'
+import { registerOverlayActive } from './contextMenuBus'
 
 /**
  * 悬停预览下拉（语言/主题等小型选择器）的完整交互状态机：
@@ -20,6 +21,9 @@ export function usePreviewSelect(opts: {
   const previewValue = ref<string | null>(null)
   const selectRef = ref<HTMLElement | null>(null)
   let outsideClickHandler: ((e: MouseEvent) => void) | null = null
+
+  // 下拉打开期间向覆盖层总线注册活跃状态（供 useEscapeToTray 判定 Esc 拦截）
+  const unregisterOverlay = registerOverlayActive(() => dropdownOpen.value)
 
   function clearPreview() {
     previewValue.value = null
@@ -60,6 +64,7 @@ export function usePreviewSelect(opts: {
       document.removeEventListener('click', outsideClickHandler)
       outsideClickHandler = null
     }
+    unregisterOverlay()
   })
 
   /** 确认选中：落地 onSelect 后关闭下拉，焦点移回触发器。 */

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import ContextMenu from './common/ContextMenu.vue'
+import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
 import type { RepoGroup } from './releaseTypes'
 import { useContextMenu } from '../composables/useContextMenu'
@@ -87,9 +87,14 @@ const {
   contextMenu: repoContextMenu,
   closeContextMenu: closeRepoContextMenu,
   handleContextMenu: handleRepoContextMenu,
-  handleCopyLink: handleRepoCopyLink,
-  handleOpenLink: handleRepoOpenLink,
+  handleMenuAction: handleRepoMenuAction,
 } = useContextMenu()
+
+// 右键菜单项：与 useContextMenu 的 action 分发（'open'/'copy'）对应
+const repoContextMenuItems = computed<ContextMenuItem[]>(() => [
+  { id: 'open', label: t('context.open') },
+  { id: 'copy', label: t('context.copy_link') },
+])
 
 function handleOpenUrl(url: string) {
   track('release.open')
@@ -131,7 +136,7 @@ function handleOpenUrl(url: string) {
     </div>
   </div>
 
-  <ContextMenu v-if="repoContextMenu" :x="repoContextMenu.x" :y="repoContextMenu.y" @open="handleRepoOpenLink" @copy="handleRepoCopyLink" @close="closeRepoContextMenu" />
+  <ContextMenu v-if="repoContextMenu" :x="repoContextMenu.x" :y="repoContextMenu.y" :items="repoContextMenuItems" @action="handleRepoMenuAction" @close="closeRepoContextMenu" />
 </template>
 
 <style scoped>

@@ -42,7 +42,13 @@ const actionKeys: Record<string, string> = {
   clicked: 'status.viewed',
 }
 
-/** 将字符串中的 setting.\w+ 引用替换为对应的翻译文本 */
+/**
+ * 将字符串中的 setting.\w+ 引用替换为对应的翻译文本。
+ *
+ * 协议：token = `setting.` + 字母数字/下划线（单段键，不含点）。
+ * 与后端 `resolve_setting_keys`（src-tauri/src/i18n.rs）规则必须保持一致，
+ * 两端同步修改，防止渲染结果漂移；未命中的键原样保留。
+ */
 function resolveSettingKeys(text: string): string {
   return text.replace(/setting\.\w+/g, (match) => t(match))
 }

@@ -32,6 +32,7 @@ vi.mock('../composables/useContextMenu', () => ({
     handleContextMenu: vi.fn(),
     handleCopyLink: vi.fn(),
     handleOpenLink: vi.fn(),
+    handleMenuAction: vi.fn(),
   })),
 }))
 

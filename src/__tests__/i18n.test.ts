@@ -154,6 +154,21 @@ describe('i18n 核心函数', () => {
         }),
       ).toBe('user/myapp v1.0 未读(id=123)')
     })
+
+    it('changes 参数中内嵌的 setting.xxx 键名按当前语言二次翻译（与后端 resolve_setting_keys 同协议）', () => {
+      i18n.setLocale('zh-CN')
+      expect(i18n.tm('setting.updated', { changes: 'setting.poll_interval→60, setting.language→en-US' }))
+        .toBe('更新设置: 轮询间隔→60, 界面语言→en-US')
+
+      i18n.setLocale('en-US')
+      expect(i18n.tm('setting.updated', { changes: 'setting.poll_interval→60' }))
+        .toBe('Setting updated: Poll Interval→60')
+
+      // 未命中的键原样保留
+      i18n.setLocale('zh-CN')
+      expect(i18n.tm('setting.updated', { changes: 'setting.unknown_key→x' }))
+        .toBe('更新设置: setting.unknown_key→x')
+    })
   })
 
   // ── translateError（与 Rust translate_error_str 保持一致）─────
