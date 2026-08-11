@@ -58,8 +58,8 @@ export interface TestDeepseekPayload {
   proxyMode?: string
 }
 
-export async function testDeepseekConnection(payload?: TestDeepseekPayload): Promise<string> {
-  return invokeI18nFn(() => commands.testDeepseekConnection(payload
+export async function testDeepseekConnection(payload?: TestDeepseekPayload): Promise<void> {
+  await invokeI18nFn(() => commands.testDeepseekConnection(payload
     ? {
         model: payload.model ?? null,
         baseUrl: payload.baseUrl ?? null,

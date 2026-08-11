@@ -25,7 +25,7 @@ vi.mock('../api/settings', () => ({
   updateSettings: vi.fn().mockResolvedValue(undefined),
   setDeepseekApiKey: vi.fn().mockResolvedValue(undefined),
   setGithubToken: vi.fn().mockResolvedValue(undefined),
-  testDeepseekConnection: vi.fn().mockResolvedValue('ok'),
+  testDeepseekConnection: vi.fn().mockResolvedValue(undefined),
   isOfficialDeepseekBaseUrl: vi.fn().mockResolvedValue(true),
   exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
   importBackup: vi.fn().mockResolvedValue(undefined),
@@ -115,7 +115,7 @@ beforeEach(() => {
   updateSettingsMock.mockResolvedValue(undefined)
   setDeepseekApiKeyMock.mockResolvedValue(undefined)
   setGithubTokenMock.mockResolvedValue(undefined)
-  testDeepseekConnectionMock.mockResolvedValue('Connection OK')
+  testDeepseekConnectionMock.mockResolvedValue(undefined)
   isOfficialDeepseekBaseUrlMock.mockResolvedValue(true)
   exportBackupMock.mockResolvedValue('/tmp/relwatch-backup.zip')
   importBackupMock.mockResolvedValue(undefined)
@@ -282,7 +282,8 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
     await flushPromises()
 
     expect(testDeepseekConnectionMock).toHaveBeenCalledOnce()
-    expect(messageMock).toHaveBeenCalledWith('Connection OK', expect.objectContaining({ kind: 'info' }))
+    // 命令成功后文案由前端按 i18n key 渲染（测试中 t 被 mock 为返回 key 本身）
+    expect(messageMock).toHaveBeenCalledWith('settings.connection_success', expect.objectContaining({ kind: 'info' }))
   })
 
   it('测试失败，显示错误对话框', async () => {
@@ -311,7 +312,7 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
-      'Connection OK',
+      'settings.connection_success',
       expect.objectContaining({ title: 'settings.deepseek_test_title' }),
     )
   })

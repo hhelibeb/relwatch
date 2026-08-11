@@ -3,186 +3,21 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 // ── 日志相关的 i18n key 翻译表 ──────────────────────
+// 字典由 build.rs 从 src/i18n/zh-CN.ts / en-US.ts 生成（单一来源）。
+// 修改文案请编辑 TS 文件；此处禁止手写字典，防止两侧漂移。
+
+include!(concat!(env!("OUT_DIR"), "/i18n_generated.rs"));
 
 fn zh_cn() -> &'static HashMap<&'static str, &'static str> {
     static ZH_CN: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    ZH_CN.get_or_init(|| {
-        let mut m = HashMap::new();
-    // source
-    m.insert("source.added",               "添加监控源: {source_type} {owner}/{repo}");
-    m.insert("source.add_failed",          "添加监控源失败: {source_type} {owner}/{repo}, {error}");
-    m.insert("source.removed",             "移除监控源 {owner}/{repo} id={id}");
-    m.insert("source.removed_unknown",     "移除监控源 id={id}");
-    m.insert("source.log_paused",          "暂停监控源 {owner}/{repo} id={id}");
-    m.insert("source.log_auto_disabled",   "自动禁用监控源 {owner}/{repo} id={id}（连续失败）");
-    m.insert("source.log_resumed",         "恢复监控源 {owner}/{repo} id={id}");
-    m.insert("source.log_muted",           "静默监控源 {owner}/{repo} id={id}");
-    m.insert("source.log_unmuted",         "取消静默监控源 {owner}/{repo} id={id}");
-    m.insert("source.updated",             "更新监控源 {owner}/{repo} id={id}");
-    m.insert("source.updated_unknown",     "更新监控源 id={id}");
-    // check
-    m.insert("check.manual",              "[手动] 检查 {owner}/{repo}: {count} 个新版本");
-    m.insert("check.auto",                "检查 {owner}/{repo}: {count} 个新版本");
-    m.insert("check.skipped",             "[自动] 无启用监控源，跳过检查");
-    m.insert("check.http_client_error",   "创建 HTTP 客户端失败: {error}");
-    m.insert("check.failed",              "检查 {owner}/{repo} 失败: {error}");
-    m.insert("check.manual_all_done",     "[手动] 全局检查完成, {count} 个新版本");
-    // release
-    m.insert("release.go",                "前往版本 {owner}/{repo} {tag} id={id}");
-    m.insert("release.go_unknown",        "前往版本 id={id}");
-    m.insert("release.ignored",           "忽略版本 {owner}/{repo} {tag} id={id}");
-    m.insert("release.ignored_unknown",   "忽略版本 id={id}");
-    m.insert("release.snoozed",           "推迟版本 {owner}/{repo} {tag} id={id}");
-    m.insert("release.snoozed_unknown",   "推迟版本 id={id}");
-    m.insert("release.status_changed",    "{owner}/{repo} {tag} {action}(id={id})");
-    m.insert("release.status_changed_unknown", "版本 id={id} 状态: {action}");
-    // setting
-    m.insert("setting.updated",           "更新设置: {changes}");
-    m.insert("setting.deepseek_key_updated", "已更新 DeepSeek API Key");
-    m.insert("setting.github_token_updated", "已更新 GitHub Token");
-    m.insert("setting.youtube_key_updated", "已更新 YouTube API Key");
-    // backup
-    m.insert("backup.exported",           "导出备份到 {path}");
-    m.insert("backup.imported",           "从 {path} 恢复备份");
-    // log
-    m.insert("log.cleared",               "已清空所有操作日志");
-    // setting labels (用于 setting.updated 中的 setting.\w+ 替换)
-    m.insert("setting.poll_interval",      "轮询间隔");
-    m.insert("setting.proxy_url",          "代理地址");
-    m.insert("setting.proxy_mode",         "代理模式");
-    m.insert("setting.minimize_to_tray",   "最小化到托盘");
-    m.insert("setting.log_retention_days", "日志保留天数");
-    m.insert("setting.deepseek_enabled",   "AI 摘要");
-    m.insert("setting.deepseek_model",     "AI 模型");
-    m.insert("setting.deepseek_base_url",  "AI 地址");
-    m.insert("setting.deepseek_proxy_bypass", "AI 代理绕过");
-    m.insert("setting.deepseek_prompt",    "自定义提示词");
-    m.insert("setting.deepseek_min_importance", "按重要度通知");
-    m.insert("setting.deepseek_proxy",     "AI 代理");
-    m.insert("setting.check_prereleases",  "检查预发布版本");
-    m.insert("setting.fetch_history",      "拉取历史版本");
-    m.insert("setting.fetch_history_count","历史版本数量");
-    m.insert("setting.language",           "界面语言");
-    m.insert("setting.theme",              "主题");
-    // action key 映射 (用于 release.status_changed)
-    m.insert("status.pending",  "未读");
-    m.insert("status.ignored",  "已忽略");
-    m.insert("status.snoozed",  "稍后提醒");
-    m.insert("status.viewed",   "已读");
-    // err.* 错误码翻译 (用于 rendered_message)
-    m.insert("err.repo_not_found",     "不存在该仓库");
-    m.insert("err.repo_verify_failed", "验证仓库失败: {0}");
-    m.insert("err.repo_api_error",     "GitHub API 返回 {0}");
-    m.insert("err.request_failed",     "网络请求失败: {0}");
-    m.insert("err.api_error",          "API 请求失败: HTTP {0} {1}");
-    m.insert("err.parse_failed",       "解析响应失败: {0}");
-    m.insert("err.poll_in_progress",   "轮询正在进行中，请稍后再试");
-    m.insert("err.source_timeout",     "源拉取超时（{0} 秒），已跳过本轮，下轮自动重试");
-    m.insert("err.unsupported_source", "不支持的监控源类型: {0}");
-    m.insert("err.source_no_ai", "该源类型不生成 AI 摘要/翻译: {0}");
-    m.insert("err.youtube_api_key_invalid", "YouTube API Key 无效或未授权该请求: {0}");
-    m.insert("err.youtube_api_quota", "YouTube API 配额已用尽: {0}");
-    m.insert("err.bili_risk", "B 站风控校验失败，请求被拦截。可稍后重试，或在设置中配置 B 站 Cookie（SESSDATA）降低风控概率");
-    m.insert("err.bili_rate_limit", "B 站请求过于频繁，请稍后再试");
-    m.insert("err.bili_up_not_found", "B 站用户不存在或空间不可访问: {0}");
-    m.insert("err.bili_invalid_uid", "无效的 B 站 UID（请输入数字 UID 或 space.bilibili.com 链接）: {0}");
-    m.insert("err.bili_invalid_params", "B 站接口参数错误: {0}");
-    m.insert("err.bili_api_error", "B 站接口错误: code={0} {1}");
-    m.insert("err.bili_wbi_keys", "获取 B 站签名密钥失败: {0}");
-    m.insert("err.source_not_found",   "监控源不存在");
-        m
-    })
+    ZH_CN.get_or_init(|| ZH_CN_ENTRIES.iter().copied().collect())
 }
 
 fn en_us() -> &'static HashMap<&'static str, &'static str> {
     static EN_US: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    EN_US.get_or_init(|| {
-        let mut m = HashMap::new();
-    // source
-    m.insert("source.added",               "Source added: {source_type} {owner}/{repo}");
-    m.insert("source.add_failed",          "Failed to add source: {source_type} {owner}/{repo}, {error}");
-    m.insert("source.removed",             "Source removed: {owner}/{repo} id={id}");
-    m.insert("source.removed_unknown",     "Source removed: id={id}");
-    m.insert("source.log_paused",          "Source paused: {owner}/{repo} id={id}");
-    m.insert("source.log_auto_disabled",   "Source auto-disabled: {owner}/{repo} id={id} (consecutive failures)");
-    m.insert("source.log_resumed",         "Source resumed: {owner}/{repo} id={id}");
-    m.insert("source.log_muted",           "Source muted: {owner}/{repo} id={id}");
-    m.insert("source.log_unmuted",         "Source unmuted: {owner}/{repo} id={id}");
-    m.insert("source.updated",             "Source updated: {owner}/{repo} id={id}");
-    m.insert("source.updated_unknown",     "Source updated: id={id}");
-    // check
-    m.insert("check.manual",              "[Manual] Check {owner}/{repo}: {count} new release(s)");
-    m.insert("check.auto",                "Check {owner}/{repo}: {count} new release(s)");
-    m.insert("check.skipped",             "[Auto] No enabled sources, skipping check");
-    m.insert("check.http_client_error",   "Failed to create HTTP client: {error}");
-    m.insert("check.failed",              "Check {owner}/{repo} failed: {error}");
-    m.insert("check.manual_all_done",     "[Manual] Global check done, {count} new release(s)");
-    // release
-    m.insert("release.go",                "Go to release {owner}/{repo} {tag} id={id}");
-    m.insert("release.go_unknown",        "Go to release id={id}");
-    m.insert("release.ignored",           "Ignore release {owner}/{repo} {tag} id={id}");
-    m.insert("release.ignored_unknown",   "Ignore release id={id}");
-    m.insert("release.snoozed",           "Snooze release {owner}/{repo} {tag} id={id}");
-    m.insert("release.snoozed_unknown",   "Snooze release id={id}");
-    m.insert("release.status_changed",    "{owner}/{repo} {tag} - {action} (id={id})");
-    m.insert("release.status_changed_unknown", "Release id={id} status: {action}");
-    // setting
-    m.insert("setting.updated",           "Setting updated: {changes}");
-    m.insert("setting.deepseek_key_updated", "DeepSeek API Key updated");
-    m.insert("setting.github_token_updated", "GitHub Token updated");
-    m.insert("setting.youtube_key_updated", "YouTube API Key updated");
-    // backup
-    m.insert("backup.exported",           "Exported backup to {path}");
-    m.insert("backup.imported",           "Restored backup from {path}");
-    // log
-    m.insert("log.cleared",               "All operation logs cleared");
-    // setting labels
-    m.insert("setting.poll_interval",      "Poll Interval");
-    m.insert("setting.proxy_url",          "Proxy URL");
-    m.insert("setting.proxy_mode",         "Proxy Mode");
-    m.insert("setting.minimize_to_tray",   "Minimize to Tray");
-    m.insert("setting.log_retention_days", "Log Retention Days");
-    m.insert("setting.deepseek_enabled",   "AI Summary");
-    m.insert("setting.deepseek_model",     "AI Model");
-    m.insert("setting.deepseek_base_url",  "AI API URL");
-    m.insert("setting.deepseek_proxy_bypass", "AI Proxy Bypass");
-    m.insert("setting.deepseek_prompt",    "Custom Prompt");
-    m.insert("setting.deepseek_min_importance", "Notify by Importance");
-    m.insert("setting.deepseek_proxy",     "AI Proxy");
-    m.insert("setting.check_prereleases",  "Check Pre-releases");
-    m.insert("setting.fetch_history",      "Fetch History");
-    m.insert("setting.fetch_history_count","History Version Count");
-    m.insert("setting.language",           "Language");
-    m.insert("setting.theme",              "Theme");
-    // action key 映射
-    m.insert("status.pending",  "Unread");
-    m.insert("status.ignored",  "Ignored");
-    m.insert("status.snoozed",  "Reminder");
-    m.insert("status.viewed",   "Read");
-    // err.* 错误码翻译 (用于 rendered_message)
-    m.insert("err.repo_not_found",     "Repository not found");
-    m.insert("err.repo_verify_failed", "Failed to verify repo: {0}");
-    m.insert("err.repo_api_error",     "GitHub API returned {0}");
-    m.insert("err.request_failed",     "Request failed: {0}");
-    m.insert("err.api_error",          "API request failed: HTTP {0} {1}");
-    m.insert("err.parse_failed",       "Failed to parse response: {0}");
-    m.insert("err.poll_in_progress",   "Poll in progress, please try again later");
-    m.insert("err.source_timeout",     "Source fetch timed out after {0}s, skipped this round (will retry)");
-    m.insert("err.unsupported_source", "Unsupported source type: {0}");
-    m.insert("err.source_no_ai", "This source type is excluded from AI summary/translation: {0}");
-    m.insert("err.bili_risk", "Bilibili risk control blocked the request. Retry later, or configure Bilibili Cookie (SESSDATA) in settings to reduce risk");
-    m.insert("err.bili_rate_limit", "Bilibili rate limited, retry later");
-    m.insert("err.bili_up_not_found", "Bilibili user not found or space unavailable: {0}");
-    m.insert("err.bili_invalid_uid", "Invalid Bilibili UID (enter numeric UID or space.bilibili.com link): {0}");
-    m.insert("err.bili_invalid_params", "Bilibili API invalid params: {0}");
-    m.insert("err.bili_api_error", "Bilibili API error: code={0} {1}");
-    m.insert("err.bili_wbi_keys", "Failed to get Bilibili WBI keys: {0}");
-    m.insert("err.youtube_api_key_invalid", "YouTube API Key invalid or not authorized for this request: {0}");
-    m.insert("err.youtube_api_quota", "YouTube API quota exceeded: {0}");
-    m.insert("err.source_not_found",   "Source not found");
-        m
-    })
+    EN_US.get_or_init(|| EN_US_ENTRIES.iter().copied().collect())
 }
+
 
 /// action 状态值 → i18n key 的映射
 fn action_to_key(action: &str) -> &'static str {
@@ -659,7 +494,7 @@ mod tests {
     fn test_translate_error_str_unknown_key() {
         let dict = zh_cn();
         // 不存在的 err.* 键应返回原始字符串
-        assert_eq!(translate_error_str("err.unknown_error", dict), "err.unknown_error");
+        assert_eq!(translate_error_str("err.definitely_missing_key", dict), "err.definitely_missing_key");
     }
 
     #[test]

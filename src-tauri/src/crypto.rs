@@ -272,12 +272,11 @@ pub fn initialize_master_key() -> Result<(), String> {
 /// 此时会自动清空对应的设置项，避免程序无法启动。
 /// 返回被清空的 key 名称列表（如 `deepseek_api_key`、`github_token`）。
 pub fn verify_master_key_consistency(conn: &rusqlite::Connection) -> Vec<&'static str> {
-    let keys_to_check = [
-        crate::db::settings::KEY_DEEPSEEK_API_KEY,
-        crate::db::settings::KEY_GITHUB_TOKEN,
-    ];
+    // 遍历「声明为加密存储」的单一注册表，而非手工数组：
+    // 新增加密键时只需在 db::settings::ENCRYPTED_SETTING_KEYS 登记，此处自动覆盖。
+    let keys_to_check = crate::db::settings::ENCRYPTED_SETTING_KEYS;
     let mut cleared = Vec::new();
-    for &key_name in &keys_to_check {
+    for &key_name in keys_to_check {
         if let Ok(Some(val)) = crate::db::settings::get_setting(conn, key_name) {
             if val.starts_with(V2_PREFIX) && decrypt_inner(&val).is_none() {
                 // 无法解密，清空该设置项

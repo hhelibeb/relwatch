@@ -31,6 +31,19 @@ pub const KEY_YOUTUBE_API_KEY: &str = "youtube_api_key";
 pub const KEY_BILIBILI_COOKIE: &str = "bilibili_cookie";
 pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 
+/// 声明为加密存储的设置键（master key 加密）。
+/// 所有经 `crypto::encrypt` 存储的设置必须登记于此：
+/// - `crypto::verify_master_key_consistency` 依赖它做启动时一致性检查，
+///   master key 失配（如 Windows keyring 凭据丢失）时自动清空对应项，避免死数据。
+///
+/// 新增加密键时务必同步登记，否则失配时不会被自动清空、将永久解密失败。
+pub const ENCRYPTED_SETTING_KEYS: &[&str] = &[
+    KEY_DEEPSEEK_API_KEY,
+    KEY_GITHUB_TOKEN,
+    KEY_YOUTUBE_API_KEY,
+    KEY_BILIBILI_COOKIE,
+];
+
 // ── 默认值常量 ──────────────────────────────────────
 pub const DEFAULT_POLL_INTERVAL: &str = "30";
 pub const DEFAULT_PROXY_URL: &str = "";

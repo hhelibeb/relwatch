@@ -165,6 +165,7 @@ export default {
   'settings.test_connection_hint': 'Tests with the current form values, including unsaved changes',
   'settings.testing': 'Testing...',
   'settings.deepseek_test_title': 'DeepSeek Connection Test',
+  'settings.connection_success': 'Connection successful',
   'settings.save': 'Save Settings',
   'settings.saving': 'Saving...',
   'settings.saved': 'Settings saved',
@@ -289,6 +290,7 @@ export default {
   'source.log_unmuted': 'Source unmuted: {owner}/{repo} id={id}',
   'source.updated': 'Source updated: {owner}/{repo} id={id}',
   'source.updated_unknown': 'Source updated: id={id}',
+  'source.log_config_updated': 'Source config updated: {owner}/{repo} id={id}',
 
   'check.manual': '[Manual] Check {owner}/{repo}: {count} new release(s)',
   'check.auto': 'Check {owner}/{repo}: {count} new release(s)',
@@ -333,6 +335,8 @@ export default {
   'setting.fetch_history_count': 'History Version Count',
   'setting.language': 'Language',
   'setting.theme': 'Theme',
+  'setting.show_source_type_icons': 'Show Source Type Icons',
+  'setting.enable_usage_stats': 'Usage Stats',
 
   'log.cleared': 'All operation logs cleared',
 

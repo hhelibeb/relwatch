@@ -292,7 +292,7 @@ pub struct TestDeepseekPayload {
 #[specta::specta]pub async fn test_deepseek_connection(
     state: tauri::State<'_, AppState>,
     payload: Option<TestDeepseekPayload>,
-) -> Result<String, String> {
+) -> Result<(), String> {
     let (model, base_url, api_key, proxy_url, proxy_mode);
     {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
@@ -346,7 +346,9 @@ pub struct TestDeepseekPayload {
         let text = resp.text().await.unwrap_or_default();
         return Err(format!("err.api_error|{}|{}", status, text));
     }
-    Ok("连接成功".to_string())
+    // 成功不返回任何文案：命令只承诺“测试通过”，提示语由前端按 i18n key 渲染
+    // （settings.connection_success），避免后端硬编码语言与调用方无法预判返回语义。
+    Ok(())
 }
 
 #[cfg(test)]

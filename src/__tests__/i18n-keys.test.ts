@@ -16,7 +16,7 @@ function extractKeys(file: string): string[] {
   return [...src.matchAll(/^\s*'([^']+)':/gm)].map((m) => m[1])
 }
 
-/** 递归收集 src-tauri/src 下所有 .rs 文件中出现的 `"err.xxx` 引用 */
+/** 递归收集 src-tauri/src 下生产代码中出现的 `"err.xxx` 引用（跳过测试块） */
 function rustErrKeys(): string[] {
   const root = path.resolve(process.cwd(), 'src-tauri/src')
   const keys = new Set<string>()
@@ -26,7 +26,60 @@ function rustErrKeys(): string[] {
       if (entry.isDirectory()) walk(full)
       else if (entry.name.endsWith('.rs')) {
         const src = fs.readFileSync(full, 'utf-8')
-        for (const m of src.matchAll(/"err\.[a-z_0-9.]+/g)) keys.add(m[0].slice(1))
+        const prod = stripTestBlocks(src)
+        for (const m of prod.matchAll(/"err\.[a-z_0-9.]+/g)) keys.add(m[0].slice(1))
+      }
+    }
+  }
+  walk(root)
+  return [...keys].sort()
+}
+
+/**
+ * 剥离 #[cfg(test)] / mod tests 块（花括号配对），只保留生产代码。
+ * 测试代码中的 write_log_key 使用测试键（如 test.message），不应参与存在性校验。
+ */
+function stripTestBlocks(src: string): string {
+  const re = /^\s*(?:#\[cfg\(test\)\]|mod tests\s*\{)/gm
+  let result = ''
+  let last = 0
+  let m: RegExpExecArray | null
+  while ((m = re.exec(src))) {
+    result += src.slice(last, m.index)
+    const open = src.indexOf('{', m.index)
+    if (open === -1) break
+    let depth = 0
+    let i = open
+    for (; i < src.length; i++) {
+      const c = src[i]
+      if (c === '{') depth++
+      else if (c === '}') {
+        depth--
+        if (depth === 0) break
+      }
+    }
+    last = i + 1
+    re.lastIndex = last
+  }
+  result += src.slice(last)
+  return result
+}
+
+/** 递归收集 src-tauri/src 下生产代码中 write_log_key 调用使用的日志 key（跳过测试块） */
+function rustLogKeys(): string[] {
+  const root = path.resolve(process.cwd(), 'src-tauri/src')
+  const keys = new Set<string>()
+  const walk = (dir: string): void => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name)
+      if (entry.isDirectory()) walk(full)
+      else if (entry.name.endsWith('.rs')) {
+        const src = fs.readFileSync(full, 'utf-8')
+        const prod = stripTestBlocks(src)
+        // write_log_key(conn, level, "key", args) —— 支持跨行调用；
+        // 第一参数限定为标识符（&conn / conn / &tx），避免误匹配函数定义本身
+        const re = /write_log_key\s*\(\s*&?\w+\s*,\s*"(?:INFO|WARN|ERROR|DEBUG)"\s*,\s*"([^"]+)"/g
+        for (const m of prod.matchAll(re)) keys.add(m[1])
       }
     }
   }
@@ -51,5 +104,14 @@ describe('i18n 键一致性', () => {
     const missingEn = rustErrKeys().filter((k) => !enSet.has(k))
     expect(missingZh, `zh-CN 缺失翻译: ${missingZh.join(', ')}`).toEqual([])
     expect(missingEn, `en-US 缺失翻译: ${missingEn.join(', ')}`).toEqual([])
+  })
+
+  it('Rust 侧所有 write_log_key 调用键在 zh-CN 与 en-US 中都有翻译', () => {
+    const zhSet = new Set(zhKeys)
+    const enSet = new Set(enKeys)
+    const missingZh = rustLogKeys().filter((k) => !zhSet.has(k))
+    const missingEn = rustLogKeys().filter((k) => !enSet.has(k))
+    expect(missingZh, `zh-CN 缺失日志键: ${missingZh.join(', ')}`).toEqual([])
+    expect(missingEn, `en-US 缺失日志键: ${missingEn.join(', ')}`).toEqual([])
   })
 })

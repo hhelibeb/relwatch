@@ -165,6 +165,7 @@ export default {
   'settings.test_connection_hint': '使用当前编辑中的配置测试（含未保存修改）',
   'settings.testing': '测试中...',
   'settings.deepseek_test_title': 'DeepSeek 连接测试',
+  'settings.connection_success': '连接成功',
   'settings.save': '保存设置',
   'settings.saving': '保存中...',
   'settings.saved': '设置已保存',
@@ -289,6 +290,7 @@ export default {
   'source.log_unmuted': '取消静默监控源 {owner}/{repo} id={id}',
   'source.updated': '更新监控源 {owner}/{repo} id={id}',
   'source.updated_unknown': '更新监控源 id={id}',
+  'source.log_config_updated': '更新监控源配置 {owner}/{repo} id={id}',
 
   'check.manual': '[手动] 检查 {owner}/{repo}: {count} 个新版本',
   'check.auto': '检查 {owner}/{repo}: {count} 个新版本',
@@ -333,6 +335,8 @@ export default {
   'setting.fetch_history_count': '历史版本数量',
   'setting.language': '界面语言',
   'setting.theme': '主题',
+  'setting.show_source_type_icons': '显示源类型图标',
+  'setting.enable_usage_stats': '记录使用统计',
 
   'log.cleared': '已清空所有操作日志',
 

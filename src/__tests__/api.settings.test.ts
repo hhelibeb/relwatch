@@ -142,12 +142,12 @@ describe('isOfficialDeepseekBaseUrl', () => {
 
 describe('testDeepseekConnection', () => {
   it('无 payload 时传 null', async () => {
-    vi.mocked(invoke).mockResolvedValue('ok')
+    vi.mocked(invoke).mockResolvedValue(null)
 
     const result = await testDeepseekConnection()
 
     expect(invoke).toHaveBeenCalledWith('test_deepseek_connection', { payload: null })
-    expect(result).toBe('ok')
+    expect(result).toBeUndefined()
   })
 
   it('连接失败时抛出错误', async () => {
@@ -157,7 +157,7 @@ describe('testDeepseekConnection', () => {
   })
 
   it('携带表单覆盖参数时透传 payload（未填字段转 null）', async () => {
-    vi.mocked(invoke).mockResolvedValue('ok')
+    vi.mocked(invoke).mockResolvedValue(null)
 
     await testDeepseekConnection({
       model: 'deepseek-v4',
@@ -181,7 +181,7 @@ describe('testDeepseekConnection', () => {
   })
 
   it('部分字段缺省时转换为 null', async () => {
-    vi.mocked(invoke).mockResolvedValue('ok')
+    vi.mocked(invoke).mockResolvedValue(null)
 
     await testDeepseekConnection({ model: 'deepseek-v4' })
 

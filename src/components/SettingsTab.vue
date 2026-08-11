@@ -266,7 +266,7 @@ async function handleTestDeepseek() {
     const ok = await confirmDeepseekBaseUrl(form.deepseek_base_url.trim())
     if (!ok) return
     // 传入表单当前值（含未保存修改）测试：API Key 留空时后端回退到已保存的 key
-    const msg = await testDeepseekConnection({
+    await testDeepseekConnection({
       model: form.deepseek_model.trim(),
       baseUrl: form.deepseek_base_url.trim(),
       apiKey: deepseekApiKey.value,
@@ -274,7 +274,8 @@ async function handleTestDeepseek() {
       proxyUrl: form.proxy_url.trim(),
       proxyMode: form.proxy_mode,
     })
-    await message(msg, { title: t('settings.deepseek_test_title'), kind: 'info' })
+    // 命令成功只返回空值，提示语由前端按 i18n key 渲染，避免后端硬编码语言
+    await message(t('settings.connection_success'), { title: t('settings.deepseek_test_title'), kind: 'info' })
   } catch (e: unknown) {
     await message(t('settings.connect_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.deepseek_test_title'), kind: 'error' })
   } finally {

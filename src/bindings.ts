@@ -52,7 +52,7 @@ export const commands = {
 	proxyBypass: boolean | null,
 	proxyUrl: string | null,
 	proxyMode: string | null,
-} | null) => __TAURI_INVOKE<string>("test_deepseek_connection", { payload }),
+} | null) => __TAURI_INVOKE<null>("test_deepseek_connection", { payload }),
 	searchLogs: (keyword: string, page: number, pageSize: number, level: string | null) => __TAURI_INVOKE<LogSearchResult>("search_logs", { keyword, page, pageSize, level }),
 	exportBackup: () => __TAURI_INVOKE<string>("export_backup"),
 	importBackup: () => __TAURI_INVOKE<null>("import_backup"),
