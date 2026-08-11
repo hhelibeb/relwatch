@@ -160,6 +160,80 @@ fn default_should_retry(e: &(u16, String)) -> bool {
     true
 }
 
+/// 默认非 2xx 错误映射：`err.api_error|status|reason`。
+/// `body` 仅在自定义映射（如解析 API 错误 JSON）时使用，默认映射忽略。
+pub fn default_api_error(status: u16, _body: &str) -> (u16, String) {
+    let reason = reqwest::StatusCode::from_u16(status)
+        .map(|s| s.canonical_reason().unwrap_or("").to_string())
+        .unwrap_or_default();
+    (status, format!("err.api_error|{}|{}", status, reason))
+}
+
+/// GET 并取文本（无重试）：统一「send → 状态映射 → text」原语（M3）。
+/// 供 XML / HTML / JSON 各路径复用，避免 youtube/bilibili 各自重写
+/// 「send → is_success → err.api_error」块；`build_req` 注入自定义 header
+/// （Cookie/UA/Referer 等），`map_err` 做 source 特定错误映射（如 B 站 412、
+/// YouTube key/配额）。非 2xx 时先取 body 再映射，供需要解析错误体的映射器。
+pub async fn get_text<B, M>(
+    client: &reqwest::Client,
+    url: &str,
+    build_req: B,
+    map_err: M,
+) -> Result<String, (u16, String)>
+where
+    B: Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    M: Fn(u16, &str) -> (u16, String),
+{
+    let resp = build_req(client.get(url))
+        .send()
+        .await
+        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+    if !status.is_success() {
+        return Err(map_err(status.as_u16(), &text));
+    }
+    Ok(text)
+}
+
+/// 带重试的 `get_text`：XML/HTML/JSON 路径统一复用重试骨架与错误格式化（M3）。
+pub async fn get_text_with_retry<B, M, R>(
+    client: &reqwest::Client,
+    url: &str,
+    build_req: B,
+    should_retry: R,
+    map_err: M,
+) -> Result<String, (u16, String)>
+where
+    B: Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    M: Fn(u16, &str) -> (u16, String),
+    R: Fn(&(u16, String)) -> bool,
+{
+    with_retry(should_retry, || async {
+        get_text(client, url, &build_req, &map_err).await
+    })
+    .await
+}
+
+/// 便捷版 `get_text`：默认请求（无额外 header）、默认错误映射。
+pub async fn fetch_text(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<String, (u16, String)> {
+    get_text(client, url, |r| r, default_api_error).await
+}
+
+/// 便捷版 `get_text_with_retry`：默认 header、默认重试规则（403 不重试）、默认错误映射。
+pub async fn fetch_text_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<String, (u16, String)> {
+    get_text_with_retry(client, url, |r| r, default_should_retry, default_api_error).await
+}
+
 /// 单页拉取 + 默认重试。返回 (items, 下一页 URL)。
 /// `token` 为 `Some` 时仅对本次请求 URL 设置 Authorization（见 `fetch_page`）。
 pub async fn fetch_page_with_retry(

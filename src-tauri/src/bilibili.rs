@@ -167,14 +167,28 @@ fn sign_wbi_query(params: &HashMap<String, String>, mixin_key: &str, wts: i64) -
 /// 风控相关错误（412/403/429/400）不重试，其余（网络抖动、5xx）重试。
 /// `referer`：B 站校验 Referer 来源，动态接口应传具体用户空间页（`space.bilibili.com/{mid}`），
 /// 其它接口传 `https://www.bilibili.com/`（实测缺头/通用 Referer 易触发风控）。
+/// 复用 `http::get_text_with_retry` 统一封装（M3）：仅 header 注入、412 映射与
+/// 重试规则为 B 站变体，「send → 状态映射 → text」与重试骨架不再各自重写。
 async fn bili_get(
     client: &reqwest::Client,
     url: &str,
     cookie: Option<&str>,
     referer: &str,
 ) -> Result<String, (u16, String)> {
-    crate::retry::retry_with_backoff(
-        &Default::default(),
+    crate::http::get_text_with_retry(
+        client,
+        url,
+        |req| {
+            let req = req
+                .header("User-Agent", BILI_UA)
+                .header("Referer", referer)
+                .header("Accept", BILI_ACCEPT)
+                .header("Accept-Language", BILI_ACCEPT_LANG);
+            match cookie {
+                Some(c) => req.header("Cookie", c),
+                None => req,
+            }
+        },
         |e: &(u16, String)| {
             // 风控/限流/参数错误不重试，其余（网络抖动、5xx）重试
             if matches!(e.0, 412 | 429 | 400 | 403) {
@@ -183,34 +197,13 @@ async fn bili_get(
             log::warn!("B 站请求失败(状态={}), 将重试: {}", e.0, e.1);
             true
         },
-        || async {
-            let mut req = client
-                .get(url)
-                .header("User-Agent", BILI_UA)
-                .header("Referer", referer)
-                .header("Accept", BILI_ACCEPT)
-                .header("Accept-Language", BILI_ACCEPT_LANG);
-            if let Some(c) = cookie {
-                req = req.header("Cookie", c);
+        |status, _body| {
+            // 412 是 B 站 WAF 直接拦截（IP/指纹级风控）
+            if status == 412 {
+                (412, "err.bili_risk|HTTP 412".to_string())
+            } else {
+                crate::http::default_api_error(status, _body)
             }
-            let resp = req
-                .send()
-                .await
-                .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-            let status = resp.status().as_u16();
-            if !resp.status().is_success() {
-                let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-                // 412 是 B 站 WAF 直接拦截（IP/指纹级风控）
-                let msg = if status == 412 {
-                    "err.bili_risk|HTTP 412".to_string()
-                } else {
-                    format!("err.api_error|{}|{}", status, reason)
-                };
-                return Err((status, msg));
-            }
-            resp.text()
-                .await
-                .map_err(|e| (0, format!("err.parse_failed|{}", e)))
         },
     )
     .await

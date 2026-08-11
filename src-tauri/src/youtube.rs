@@ -473,74 +473,21 @@ fn extract_og_title(html: &str) -> Option<String> {
 }
 
 /// 拉取 URL 原始文本（带重试，仅限 HTML 页面等文本内容）。
+/// 复用 `http::fetch_text_with_retry` 统一封装（M3）。
 async fn fetch_text_with_retry(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<String, (u16, String)> {
-    crate::retry::retry_with_backoff(
-        &Default::default(),
-        |e: &(u16, String)| {
-            if e.0 == 403 {
-                return false;
-            }
-            log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
-            true
-        },
-        || async {
-            let resp = client
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-            let status = resp.status().as_u16();
-            if !resp.status().is_success() {
-                let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-                return Err((status, format!("err.api_error|{}|{}", status, reason)));
-            }
-            resp.text()
-                .await
-                .map_err(|e| (0, format!("err.parse_failed|{}", e)))
-        },
-    )
-    .await
+    crate::http::fetch_text_with_retry(client, url).await
 }
 
-/// 拉取单个 feed 的原始 XML（带重试）。
-async fn fetch_feed_raw(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<String, (u16, String)> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-    let status = resp.status().as_u16();
-    if !resp.status().is_success() {
-        let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("err.api_error|{}|{}", status, reason)));
-    }
-    resp.text()
-        .await
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))
-}
-
+/// 拉取单个 feed 的原始 XML（带重试，供测试直接调用）。
+/// 复用 `http::fetch_text_with_retry`（M3）。
 async fn fetch_feed_with_retry(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<String, (u16, String)> {
-    crate::retry::retry_with_backoff(
-        &Default::default(),
-        |e: &(u16, String)| {
-            if e.0 == 403 {
-                return false;
-            }
-            log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
-            true
-        },
-        || fetch_feed_raw(client, url),
-    )
-    .await
+    crate::http::fetch_text_with_retry(client, url).await
 }
 
 /// 拉取单个 feed 并解析条目（不含 per_page 截断）。
@@ -593,28 +540,6 @@ where
 
 // ── Data API v3 模式（配置 youtube_api_key 后启用）──────────────────
 
-/// 请求 YouTube Data API 并解析 JSON。
-/// 非 2xx 时把 `{"error":{...}}` 映射为 i18n 错误（区分 key 无效 / 配额用尽）。
-async fn api_get_json(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<serde_json::Value, (u16, String)> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-    let status = resp.status().as_u16();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
-    if !(200..300).contains(&status) {
-        return Err(map_api_error(status, &text));
-    }
-    serde_json::from_str(&text).map_err(|e| (0, format!("err.parse_failed|{}", e)))
-}
-
 /// 把 Data API 错误响应映射为 i18n 错误串。
 /// - `keyInvalid` / `referrerNotAllowed` / `ipRefererBlocked` → key 配置问题
 /// - `quotaExceeded` / `dailyLimitExceeded` → 配额用尽
@@ -649,12 +574,16 @@ fn map_api_error(status: u16, body: &str) -> (u16, String) {
 }
 
 /// 带重试的 API GET。key/配额类错误（401/403/400）不重试，其余可重试。
+/// 复用 `http::get_text_with_retry` 统一重试骨架（M3），仅重试规则与错误
+/// 映射为 YouTube API 变体。
 async fn api_get_json_with_retry(
     client: &reqwest::Client,
     url: &str,
 ) -> Result<serde_json::Value, (u16, String)> {
-    crate::retry::retry_with_backoff(
-        &Default::default(),
+    let text = crate::http::get_text_with_retry(
+        client,
+        url,
+        |r| r,
         |e: &(u16, String)| {
             if matches!(e.0, 400 | 401 | 403) {
                 return false;
@@ -662,9 +591,10 @@ async fn api_get_json_with_retry(
             log::warn!("YouTube API 请求失败(状态={}), 将重试: {}", e.0, e.1);
             true
         },
-        || api_get_json(client, url),
+        map_api_error,
     )
-    .await
+    .await?;
+    serde_json::from_str(&text).map_err(|e| (0, format!("err.parse_failed|{}", e)))
 }
 
 /// 从用户输入提取 @handle（供 Data API `forHandle` 参数使用）。
@@ -1052,20 +982,7 @@ pub async fn resolve_channel_id(
     }
     // 其余形式：请求频道页提取 channelId（channel_page_url 已做 youtube.com host 白名单）
     let page_url = channel_page_url(input)?;
-    let resp = client
-        .get(&page_url)
-        .send()
-        .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
-    let status = resp.status().as_u16();
-    if !resp.status().is_success() {
-        let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("err.api_error|{}|{}", status, reason)));
-    }
-    let html = resp
-        .text()
-        .await
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+    let html = crate::http::fetch_text(client, &page_url).await?;
     extract_channel_id_from_html(&html)
         .ok_or((404, format!("err.youtube_channel_not_found|{}", input)))
 }
@@ -2039,7 +1956,7 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let xml = fetch_feed_raw(&client, &format!("{}/feeds/videos.xml?playlist_id=UULFabcdefghijklmnopqrst", mock.uri()))
+        let xml = fetch_feed_with_retry(&client, &format!("{}/feeds/videos.xml?playlist_id=UULFabcdefghijklmnopqrst", mock.uri()))
             .await
             .unwrap();
         let parsed = parse_feed(&xml, FeedKind::Video).unwrap();
