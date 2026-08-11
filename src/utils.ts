@@ -16,6 +16,13 @@ export function formatDate(dateStr: string): string {
   return d.toLocaleString(getLocale())
 }
 
+export function formatCountdown(secs: number): string {
+  if (secs <= 0) return t('app.check_soon')
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return t('app.min_sec', String(m), String(s))
+}
+
 export function releaseMatchesSearch(release: SearchableRelease, query: string): boolean {
   const q = query.trim().toLowerCase()
   if (!q) return true

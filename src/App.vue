@@ -13,7 +13,7 @@ import { useEscapeToTray } from './composables/useEscapeToTray'
 import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
 import { applyTheme } from './composables/useTheme'
 import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
-import { isUnreadStatus } from './utils'
+import { isUnreadStatus, formatCountdown } from './utils'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
 import LogTab from './components/LogTab.vue'
@@ -235,13 +235,6 @@ const totalReleaseCounts = computed<Record<string, number>>(() => {
   }
   return counts
 })
-
-function formatCountdown(secs: number) {
-  if (secs <= 0) return t('app.check_soon')
-  const m = Math.floor(secs / 60)
-  const s = secs % 60
-  return t('app.min_sec', String(m), String(s))
-}
 
 async function loadAll() {
   await Promise.allSettled([loadSources(), loadReleases(), loadSettings()])
