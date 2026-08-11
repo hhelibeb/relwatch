@@ -588,7 +588,7 @@ function hideHealthTooltip() {
             <span>{{ sortLabelText }}</span>
             <svg class="sort-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
-          <div v-if="openSort" class="sort-dropdown" role="menu" @click.stop @keydown="sortDropdown.handleDropdownKeydown">
+          <div v-if="openSort" class="dropdown-panel sort-dropdown" role="menu" @click.stop @keydown="sortDropdown.handleDropdownKeydown">
             <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="selectSortField(opt.value)">{{ opt.label }}</button>
             <div class="sort-dropdown-divider"></div>
             <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="selectSortDirection(opt.value)">{{ opt.label }}</button>
@@ -674,9 +674,9 @@ function hideHealthTooltip() {
             <button class="btn-icon-link" @click="openSourceReleases(source)" :title="t('source.view_releases')">
               <svg><use href="/icons.svg#search-icon"/></svg>
             </button>
-            <span v-if="source.enabled && source.muted" class="badge badge-muted">{{ t('source.muted') }}</span>
-            <span v-else-if="source.enabled" class="badge badge-on">{{ t('source.enabled') }}</span>
-            <span v-else class="badge badge-off">{{ t('source.paused') }}</span>
+            <span v-if="source.enabled && source.muted" class="source-status">{{ t('source.muted') }}</span>
+            <span v-else-if="source.enabled" class="source-status source-status-on">{{ t('source.enabled') }}</span>
+            <span v-else class="source-status source-status-off">{{ t('source.paused') }}</span>
           </div>
           <div class="source-health">
             <span class="health-dot" :class="sourceHealthClass(source)" :aria-label="sourceHealthAriaLabel(source)" @mouseenter="showHealthTooltip($event, source)" @mouseleave="hideHealthTooltip"></span>
@@ -713,7 +713,7 @@ function hideHealthTooltip() {
             <button type="button" class="btn-icon-action btn-more" :aria-expanded="openMoreId === source.id" aria-haspopup="menu" @click.stop="moreDropdown.toggle($event, source.id)" @keydown="moreDropdown.handleTriggerKeydown($event, source.id)" :title="t('source.more')">
               <svg><use href="/icons.svg#more-icon"/></svg>
             </button>
-            <div v-if="openMoreId === source.id" class="dropdown-more-panel" role="menu" @click.stop @keydown="moreDropdown.handleDropdownKeydown">
+            <div v-if="openMoreId === source.id" class="dropdown-panel dropdown-more-panel" role="menu" @click.stop @keydown="moreDropdown.handleDropdownKeydown">
               <template v-if="getSourceTypeDef(source.source_type)?.hasConfigInput">
                 <div class="dropdown-section-label">{{ t('source.subscribe_title') }}</div>
                 <label class="yt-menu-option">
@@ -1074,7 +1074,7 @@ function hideHealthTooltip() {
   color: var(--danger);
 }
 
-.badge {
+.source-status {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -1084,7 +1084,7 @@ function hideHealthTooltip() {
   color: var(--text-muted);
 }
 
-.badge::before {
+.source-status::before {
   content: '';
   width: 6px;
   height: 6px;
@@ -1093,11 +1093,11 @@ function hideHealthTooltip() {
   flex-shrink: 0;
 }
 
-.badge-on::before {
+.source-status-on::before {
   background: var(--success);
 }
 
-.badge-off::before {
+.source-status-off::before {
   background: var(--warning);
 }
 
@@ -1115,18 +1115,14 @@ function hideHealthTooltip() {
   display: inline-flex;
 }
 
-/* 侧边弹出面板 */
+/* 侧边弹出面板：radius/shadow 覆盖公共基类（菜单视觉更重） */
 .dropdown-more-panel {
-  position: absolute;
   top: 100%;
   right: 0;
   margin-top: 4px;
   min-width: 140px;
-  background: var(--surface);
-  border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
-  z-index: 100;
   overflow: hidden;
 }
 
@@ -1268,15 +1264,9 @@ function hideHealthTooltip() {
 }
 
 .sort-dropdown {
-  position: absolute;
   top: calc(100% + 4px);
   right: 0;
-  z-index: 100;
   min-width: 140px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-md);
   padding: 4px;
 }
 

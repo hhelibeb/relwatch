@@ -352,7 +352,7 @@ describe('SourceTab — 静默/取消静默', () => {
     const source = createSource({ id: 7, enabled: true, muted: true })
     const { wrapper } = mountSourceTab([source])
 
-    expect(wrapper.find('.badge-muted').exists()).toBe(true)
+    expect(wrapper.find('.source-status').exists()).toBe(true)
 
     const moreButton = wrapper.get('.btn-more')
     await moreButton.trigger('click')
@@ -888,24 +888,24 @@ describe('SourceTab — Badge 显示', () => {
     const source = createSource({ enabled: true, muted: false })
     const { wrapper } = mountSourceTab([source])
 
-    expect(wrapper.find('.badge-on').exists()).toBe(true)
-    expect(wrapper.find('.badge-on').text()).toContain(t('source.enabled'))
+    expect(wrapper.find('.source-status-on').exists()).toBe(true)
+    expect(wrapper.find('.source-status-on').text()).toContain(t('source.enabled'))
   })
 
   it('disabled source 显示「暂停」badge', () => {
     const source = createSource({ enabled: false })
     const { wrapper } = mountSourceTab([source])
 
-    expect(wrapper.find('.badge-off').exists()).toBe(true)
-    expect(wrapper.find('.badge-off').text()).toContain(t('source.paused'))
+    expect(wrapper.find('.source-status-off').exists()).toBe(true)
+    expect(wrapper.find('.source-status-off').text()).toContain(t('source.paused'))
   })
 
   it('muted source 显示「静默」badge', () => {
     const source = createSource({ enabled: true, muted: true })
     const { wrapper } = mountSourceTab([source])
 
-    expect(wrapper.find('.badge-muted').exists()).toBe(true)
-    expect(wrapper.find('.badge-muted').text()).toContain(t('source.muted'))
+    expect(wrapper.find('.source-status').exists()).toBe(true)
+    expect(wrapper.find('.source-status').text()).toContain(t('source.muted'))
   })
 })
 

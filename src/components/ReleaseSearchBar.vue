@@ -122,7 +122,7 @@ function selectViewMode(value: ViewMode) {
           <span class="filter-value" :style="{ color: props.statusFilter === 'unread' ? 'var(--primary)' : props.statusFilter === 'read' ? 'var(--success)' : 'var(--text-muted)' }">{{ props.statusFilter === 'all' ? t('release.filter_all') : (props.statusFilter === 'unread' ? t('release.filter_unread') : t('release.filter_read')) }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
-        <div v-if="openFilter === 'status'" class="filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('status')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
+        <div v-if="openFilter === 'status'" class="dropdown-panel filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('status')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
           <button type="button" role="menuitem" :aria-selected="props.statusFilter === 'all'" :class="{ selected: props.statusFilter === 'all' }" @click="selectStatusFilter('all')">{{ t('release.filter_all') }}</button>
           <button type="button" role="menuitem" :aria-selected="props.statusFilter === 'unread'" :class="{ selected: props.statusFilter === 'unread' }" @click="selectStatusFilter('unread')">{{ t('release.filter_unread') }}</button>
           <button type="button" role="menuitem" :aria-selected="props.statusFilter === 'read'" :class="{ selected: props.statusFilter === 'read' }" @click="selectStatusFilter('read')">{{ t('release.filter_read') }}</button>
@@ -135,7 +135,7 @@ function selectViewMode(value: ViewMode) {
           <span class="filter-value" :style="{ color: props.importanceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }"><span v-if="importanceDotClass" class="importance-dot" :class="importanceDotClass"></span>{{ importanceDisplayText }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
-        <div v-if="openFilter === 'importance'" class="filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('importance')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
+        <div v-if="openFilter === 'importance'" class="dropdown-panel filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('importance')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
           <button type="button" role="menuitem" :aria-selected="props.importanceFilter === 'all'" :class="{ selected: props.importanceFilter === 'all' }" @click="selectImportanceFilter('all')">{{ t('release.filter_all') }}</button>
           <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '大'" :class="{ selected: props.importanceFilter === '大' }" @click="selectImportanceFilter('大')"><span class="importance-dot importance-dot-high"></span>{{ t('release.importance_high') }}</button>
           <button type="button" role="menuitem" :aria-selected="props.importanceFilter === '中'" :class="{ selected: props.importanceFilter === '中' }" @click="selectImportanceFilter('中')"><span class="importance-dot importance-dot-medium"></span>{{ t('release.importance_medium') }}</button>
@@ -149,7 +149,7 @@ function selectViewMode(value: ViewMode) {
           <span class="filter-value" :style="{ color: props.sourceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }"><span v-if="sourceDef" class="filter-type-icon"><svg><use :href="sourceDef.icon"/></svg></span>{{ sourceDisplayText }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
-        <div v-if="openFilter === 'source'" class="filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('source')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
+        <div v-if="openFilter === 'source'" class="dropdown-panel filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('source')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
           <button type="button" role="menuitem" :aria-selected="props.sourceFilter === 'all'" :class="{ selected: props.sourceFilter === 'all' }" @click="selectSourceFilter('all')">{{ t('release.filter_all') }}</button>
           <button v-for="def in sourceTypeDefs" :key="def.type" type="button" role="menuitem" :aria-selected="props.sourceFilter === def.type" :class="{ selected: props.sourceFilter === def.type }" @click="selectSourceFilter(def.type)"><span class="filter-type-icon"><svg><use :href="def.icon"/></svg></span>{{ t(def.titleKey) }}</button>
         </div>
@@ -161,7 +161,7 @@ function selectViewMode(value: ViewMode) {
           <span class="filter-value" :style="{ color: props.viewMode !== 'simple' ? 'var(--text)' : 'var(--text-muted)' }"><span class="filter-type-icon"><svg><use :href="viewIconHref"/></svg></span>{{ viewDisplayText }}</span>
           <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
         </button>
-        <div v-if="openFilter === 'view'" class="filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('view')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
+        <div v-if="openFilter === 'view'" class="dropdown-panel filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('view')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
           <button type="button" role="menuitem" :aria-selected="props.viewMode === 'simple'" :class="{ selected: props.viewMode === 'simple' }" @click="selectViewMode('simple')"><span class="filter-type-icon"><svg><use href="/icons.svg#list-icon"/></svg></span>{{ t('release.view_simple') }}</button>
           <button type="button" role="menuitem" :aria-selected="props.viewMode === 'aggregated'" :class="{ selected: props.viewMode === 'aggregated' }" @click="selectViewMode('aggregated')"><span class="filter-type-icon"><svg><use href="/icons.svg#grid-icon"/></svg></span>{{ t('release.view_aggregated') }}</button>
           <button type="button" role="menuitem" :aria-selected="props.viewMode === 'calendar'" :class="{ selected: props.viewMode === 'calendar' }" @click="selectViewMode('calendar')"><span class="filter-type-icon"><svg><use href="/icons.svg#calendar-icon"/></svg></span>{{ t('release.view_calendar') }}</button>

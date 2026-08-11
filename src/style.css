@@ -525,17 +525,23 @@ html {
   flex-shrink: 0;
 }
 
-.filter-dropdown {
+/* 下拉面板公共基类：surface 背景 + 边框 + 圆角 + 阴影 + 层级。
+   filter/sort/more/theme 各下拉共用，仅保留定位与尺寸差异；
+   需更重视觉（如 radius / shadow-lg）时在组件内覆盖。 */
+.dropdown-panel {
   position: absolute;
-  top: calc(100% + 4px);
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 100;
-  min-width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-md);
+  z-index: 100;
+}
+
+.filter-dropdown {
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 100%;
   padding: 4px;
   white-space: nowrap;
 }
@@ -597,4 +603,77 @@ html {
 /* 滚动后 sticky 元素贴顶 */
 .app-main.is-scrolled .log-search-row {
   top: calc(-1 * var(--app-padding-y, 16px));
+}
+
+/* ── 发布徽标 / 状态灯（ReleaseItem 与 ReleaseDetailModal 共用） ──
+   原为两份 scoped 逐字副本（scoped 不共享，曾靠注释互相提醒同步），
+   收敛至此避免改一处漏一处。 */
+.pre-release-badge {
+  display: inline-block;
+  padding: 0 5px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+.release-importance-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.release-importance-chip.release-importance-high {
+  background: var(--danger-soft-bg);
+  color: var(--danger-soft-text);
+}
+
+.release-importance-chip.release-importance-medium {
+  background: var(--warning-soft-bg);
+  color: var(--warning-soft-text);
+}
+
+.release-importance-chip.release-importance-low {
+  background: var(--success-soft-bg);
+  color: var(--success-soft-text);
+}
+
+.status-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.status-inline::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.status-unread,
+.status-pending {
+  color: var(--primary);
+}
+
+.status-unread::before,
+.status-pending::before {
+  background: var(--primary);
+}
+
+.status-snoozed::before {
+  background: var(--warning);
 }

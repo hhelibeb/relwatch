@@ -164,7 +164,7 @@ onUnmounted(() => {
             <span class="filter-value" :style="{ color: levelFilter === 'all' ? 'var(--text-muted)' : levelFilter === 'ERROR' ? 'var(--danger)' : levelFilter === 'WARN' ? 'var(--warning)' : 'var(--text-muted)' }">{{ levelFilter === 'all' ? t('log.filter_all') : levelFilter }}</span>
             <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
           </button>
-          <div v-if="openFilter" class="filter-dropdown" role="menu" @mouseenter="levelDropdown.hoverEnter(true)" @mouseleave="levelDropdown.hoverLeave()" @keydown="levelDropdown.handleDropdownKeydown">
+          <div v-if="openFilter" class="dropdown-panel filter-dropdown" role="menu" @mouseenter="levelDropdown.hoverEnter(true)" @mouseleave="levelDropdown.hoverLeave()" @keydown="levelDropdown.handleDropdownKeydown">
             <button type="button" role="menuitem" :aria-selected="levelFilter === 'all'" :class="{ selected: levelFilter === 'all' }" @click="setLevelFilter('all')">{{ t('log.filter_all') }}</button>
             <button type="button" role="menuitem" :aria-selected="levelFilter === 'INFO'" :class="{ selected: levelFilter === 'INFO' }" @click="setLevelFilter('INFO')" style="color:var(--text-muted)">INFO</button>
             <button type="button" role="menuitem" :aria-selected="levelFilter === 'WARN'" :class="{ selected: levelFilter === 'WARN' }" @click="setLevelFilter('WARN')" style="color:var(--warning)">WARN</button>

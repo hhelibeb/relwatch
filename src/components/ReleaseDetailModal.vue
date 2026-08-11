@@ -300,7 +300,7 @@ const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_typ
             <span v-if="showReleaseRepo" class="release-detail-repo">{{ release.owner }}/{{ release.repo }}</span>
             <span class="release-detail-tag">{{ release.tag_name }}</span>
             <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-            <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+            <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
             <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
           </div>
           <button class="release-detail-close" :title="t('release.detail_close')" @click="handleClose">
@@ -618,77 +618,6 @@ const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_typ
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-/* 以下与 ReleaseItem 同款徽标/状态样式（scoped 不共享，保持视觉一致） */
-.release-importance-chip {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 0 6px;
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
-.release-importance-chip.release-importance-high {
-  background: var(--danger-soft-bg);
-  color: var(--danger-soft-text);
-}
-
-.release-importance-chip.release-importance-medium {
-  background: var(--warning-soft-bg);
-  color: var(--warning-soft-text);
-}
-
-.release-importance-chip.release-importance-low {
-  background: var(--success-soft-bg);
-  color: var(--success-soft-text);
-}
-
-.badge {
-  display: inline-block;
-  padding: 0 5px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--text-muted);
-}
-
-.status-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.status-inline::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--text-faint);
-  flex-shrink: 0;
-}
-
-.status-unread,
-.status-pending {
-  color: var(--primary);
-}
-
-.status-unread::before,
-.status-pending::before {
-  background: var(--primary);
-}
-
-.status-snoozed::before {
-  background: var(--warning);
 }
 
 .release-view-tabs {

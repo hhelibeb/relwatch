@@ -406,7 +406,7 @@ const youtubeViewTitle = computed(() =>
         <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
         <!-- 版本固有属性（重要性/预发布）贴版本号；状态（圆点+文字）放在分隔符后自成一体，避免圆点被误读为重要性指示 -->
         <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-        <span v-if="release.prerelease" class="badge badge-pre">{{ t('release.prerelease') }}</span>
+        <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
         <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
       </div>
       <div class="release-header-right">
@@ -734,17 +734,6 @@ const youtubeViewTitle = computed(() =>
 }
 
 
-.badge {
-  display: inline-block;
-  padding: 0 5px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--text-muted);
-}
-
 .release-tag-hf {
   cursor: help;
   text-decoration: underline dotted var(--primary-soft-border);
@@ -822,33 +811,6 @@ const youtubeViewTitle = computed(() =>
   border-radius: var(--radius-sm);
 }
 
-/* 重要性软色徽章：位于 header 行，三个内容视图常驻可见；规格与 badge-pre 一致 */
-.release-importance-chip {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 0 6px;
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 16px;
-}
-
-.release-importance-chip.release-importance-high {
-  background: var(--danger-soft-bg);
-  color: var(--danger-soft-text);
-}
-
-.release-importance-chip.release-importance-medium {
-  background: var(--warning-soft-bg);
-  color: var(--warning-soft-text);
-}
-
-.release-importance-chip.release-importance-low {
-  background: var(--success-soft-bg);
-  color: var(--success-soft-text);
-}
-
 .release-summary-text {
   min-width: 0;
   width: 100%;
@@ -880,42 +842,9 @@ const youtubeViewTitle = computed(() =>
   pointer-events: none;
 }
 
-.status-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  font-size: 12px;
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.status-inline::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--text-faint);
-  flex-shrink: 0;
-}
-
 .release-status-meta {
   font-size: 12px;
   color: var(--text-muted);
-}
-
-.status-unread,
-.status-pending {
-  color: var(--primary);
-}
-
-.status-unread::before,
-.status-pending::before {
-  background: var(--primary);
-}
-
-.status-snoozed::before {
-  background: var(--warning);
 }
 
 .release-link-action {
