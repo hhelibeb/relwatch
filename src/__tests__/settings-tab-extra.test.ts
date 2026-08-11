@@ -5,8 +5,7 @@ import { ShowToastKey } from '../injection-keys'
 import type { AppSettings } from '../api/settings'
 import {
   updateSettings,
-  setDeepseekApiKey,
-  setGithubToken,
+  setCredential,
   testDeepseekConnection,
   isOfficialDeepseekBaseUrl,
   exportBackup,
@@ -23,8 +22,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 
 vi.mock('../api/settings', () => ({
   updateSettings: vi.fn().mockResolvedValue(undefined),
-  setDeepseekApiKey: vi.fn().mockResolvedValue(undefined),
-  setGithubToken: vi.fn().mockResolvedValue(undefined),
+  setCredential: vi.fn().mockResolvedValue(undefined),
   testDeepseekConnection: vi.fn().mockResolvedValue(undefined),
   isOfficialDeepseekBaseUrl: vi.fn().mockResolvedValue(true),
   exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
@@ -36,8 +34,7 @@ vi.mock('../api/client', () => ({
 }))
 
 const updateSettingsMock = vi.mocked(updateSettings)
-const setDeepseekApiKeyMock = vi.mocked(setDeepseekApiKey)
-const setGithubTokenMock = vi.mocked(setGithubToken)
+const setCredentialMock = vi.mocked(setCredential)
 const testDeepseekConnectionMock = vi.mocked(testDeepseekConnection)
 const isOfficialDeepseekBaseUrlMock = vi.mocked(isOfficialDeepseekBaseUrl)
 const exportBackupMock = vi.mocked(exportBackup)
@@ -103,8 +100,7 @@ beforeEach(() => {
     value: vi.fn().mockReturnValue({ matches: false }),
   })
   updateSettingsMock.mockResolvedValue(undefined)
-  setDeepseekApiKeyMock.mockResolvedValue(undefined)
-  setGithubTokenMock.mockResolvedValue(undefined)
+  setCredentialMock.mockResolvedValue(undefined)
   testDeepseekConnectionMock.mockResolvedValue(undefined)
   isOfficialDeepseekBaseUrlMock.mockResolvedValue(true)
   exportBackupMock.mockResolvedValue('/tmp/relwatch-backup.zip')
@@ -120,7 +116,7 @@ afterEach(() => {
 })
 
 describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
-  it('填写 DeepSeek API Key 后保存，调用 setDeepseekApiKey 并清空输入', async () => {
+  it('填写 DeepSeek API Key 后保存，调用 setCredential 并清空输入', async () => {
     const wrapper = mountSettings(createSettings({ deepseek_api_key_set: false }))
     await clickSidebar(wrapper, 'settings.ai')
 
@@ -133,12 +129,12 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     await flushPromises()
     await vi.runAllTimersAsync()
 
-    expect(setDeepseekApiKeyMock).toHaveBeenCalledWith('sk-test-key-123')
+    expect(setCredentialMock).toHaveBeenCalledWith('deepseek_api_key', 'sk-test-key-123')
     // 保存成功后 input 应被清空
     expect((apiInput.element as HTMLInputElement).value).toBe('')
   })
 
-  it('填写 GitHub Token 后保存，调用 setGithubToken 并清空输入', async () => {
+  it('填写 GitHub Token 后保存，调用 setCredential 并清空输入', async () => {
     const wrapper = mountSettings(createSettings({ github_token_set: false }))
     await clickSidebar(wrapper, 'settings.accounts')
 
@@ -150,7 +146,7 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     await flushPromises()
     await vi.runAllTimersAsync()
 
-    expect(setGithubTokenMock).toHaveBeenCalledWith('ghp_token-abc')
+    expect(setCredentialMock).toHaveBeenCalledWith('github_token', 'ghp_token-abc')
     expect((ghInput.element as HTMLInputElement).value).toBe('')
   })
 
@@ -174,8 +170,8 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     await vi.runAllTimersAsync()
 
     // 两个凭据都应被设置
-    expect(setDeepseekApiKeyMock).toHaveBeenCalledWith('sk-new-key')
-    expect(setGithubTokenMock).toHaveBeenCalledWith('ghp-new-token')
+    expect(setCredentialMock).toHaveBeenCalledWith('deepseek_api_key', 'sk-new-key')
+    expect(setCredentialMock).toHaveBeenCalledWith('github_token', 'ghp-new-token')
     expect(updateSettingsMock).toHaveBeenCalledOnce()
   })
 

@@ -30,10 +30,11 @@ export const commands = {
 	 */
 	updateSettings: (payload: AppSettings) => __TAURI_INVOKE<null>("update_settings", { payload }),
 	getPollCountdown: () => __TAURI_INVOKE<number>("get_poll_countdown"),
-	setDeepseekApiKey: (apiKey: string) => __TAURI_INVOKE<null>("set_deepseek_api_key", { apiKey }),
-	setGithubToken: (token: string) => __TAURI_INVOKE<null>("set_github_token", { token }),
-	setYoutubeApiKey: (apiKey: string) => __TAURI_INVOKE<null>("set_youtube_api_key", { apiKey }),
-	setBilibiliCookie: (cookie: string) => __TAURI_INVOKE<null>("set_bilibili_cookie", { cookie }),
+	/**
+	 *  设置/更新单个加密凭据：空值清除，非空值加密存储。
+	 *  `kind` 必须命中 `CREDENTIAL_KINDS` 注册表，未知 kind 返回错误（不静默）。
+	 */
+	setCredential: (kind: string, value: string) => __TAURI_INVOKE<null>("set_credential", { kind, value }),
 	/**
 	 *  判断 base_url 是否为 DeepSeek 官方域名（供前端保存/测试连接前二次确认，
 	 *  审计建议 #1）。返回 bool，不阻止配置。

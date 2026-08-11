@@ -6,10 +6,7 @@ import { version } from '../../package.json'
 import {
   type AppSettings,
   updateSettings,
-  setDeepseekApiKey,
-  setGithubToken,
-  setYoutubeApiKey,
-  setBilibiliCookie,
+  setCredential,
   isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
@@ -178,23 +175,24 @@ async function handleSave() {
     })
     // 主设置持久化成功后再写凭据；若凭据写入失败，走外层 catch 提示 save_failed，
     // 此时主设置已存、凭据未存，用户可重试凭据。
+    // 四个 set_* 命令已合并为 setCredential(kind, value)（M2）。
     if (deepseekApiKey.value) {
-      await setDeepseekApiKey(deepseekApiKey.value)
+      await setCredential('deepseek_api_key', deepseekApiKey.value)
       deepseekApiKey.value = ''
       form.deepseek_api_key_set = true
     }
     if (githubToken.value) {
-      await setGithubToken(githubToken.value)
+      await setCredential('github_token', githubToken.value)
       githubToken.value = ''
       form.github_token_set = true
     }
     if (youtubeApiKey.value) {
-      await setYoutubeApiKey(youtubeApiKey.value)
+      await setCredential('youtube_api_key', youtubeApiKey.value)
       youtubeApiKey.value = ''
       form.youtube_api_key_set = true
     }
     if (bilibiliCookie.value) {
-      await setBilibiliCookie(bilibiliCookie.value)
+      await setCredential('bilibili_cookie', bilibiliCookie.value)
       bilibiliCookie.value = ''
       form.bilibili_cookie_set = true
     }
@@ -213,22 +211,23 @@ async function handleSave() {
 }
 
 // ── 脏标记 ────────────────────────────────────────────
-
-const trackedKeys = [
-  'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'auto_start', 'minimize_to_tray',
-  'log_retention_days', 'check_prereleases', 'fetch_history',
-  'fetch_history_count', 'deepseek_enabled', 'deepseek_model',
-  'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt',
-  'deepseek_min_importance', 'deepseek_translate_release', 'language', 'theme', 'show_source_type_icons',
-  'enable_usage_stats',
-] as const
+// 通用比对：遍历 form 全部键（即 AppSettings 全部字段），不再手工维护
+// trackedKeys 清单——新增设置项自动纳入脏检查（M2）。
+// tab → 设置字段清单（dirty 徽标按 tab 聚合；accounts 为凭据输入键）：
+// 新增设置项若属已有 tab，需在此登记；属新 tab 时新增一行。
+const TAB_SETTING_KEYS: Record<'general' | 'accounts' | 'appearance' | 'ai', readonly string[]> = {
+  general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats'],
+  accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'],
+  appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'],
+  ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'],
+}
 
 const dirtyFields = computed(() => {
   const dirty = new Set<string>()
-  for (const key of trackedKeys) {
-    if ((form as unknown as Record<string, unknown>)[key] !== (props.settings as unknown as Record<string, unknown>)[key]) {
-      dirty.add(key)
-    }
+  const f = form as unknown as Record<string, unknown>
+  const base = props.settings as unknown as Record<string, unknown>
+  for (const key of Object.keys(f)) {
+    if (f[key] !== base[key]) dirty.add(key)
   }
   if (deepseekApiKey.value) dirty.add('deepseek_api_key')
   if (githubToken.value) dirty.add('github_token')
@@ -242,10 +241,10 @@ const dirtyCount = computed(() => dirtyFields.value.size)
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
   return {
-    general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats'].filter(k => f.has(k)).length,
-    accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'].filter(k => f.has(k)).length,
-    appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'].filter(k => f.has(k)).length,
-    ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'].filter(k => f.has(k)).length,
+    general: TAB_SETTING_KEYS.general.filter(k => f.has(k)).length,
+    accounts: TAB_SETTING_KEYS.accounts.filter(k => f.has(k)).length,
+    appearance: TAB_SETTING_KEYS.appearance.filter(k => f.has(k)).length,
+    ai: TAB_SETTING_KEYS.ai.filter(k => f.has(k)).length,
   }
 })
 

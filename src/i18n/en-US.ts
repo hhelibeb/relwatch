@@ -369,6 +369,8 @@ export default {
   'err.db_connect': 'Database connection failed: {0}',
   'err.query_failed': 'Query failed: {0}',
   'err.task_failed': 'Background task {0} failed: {1}',
+  'err.settings_serialize': 'Failed to serialize settings: {0}',
+  'err.unknown_credential_kind': 'Unknown credential kind: {0}',
   'err.autostart_enable_failed': 'Failed to enable auto-start: {0}',
   'err.autostart_disable_failed': 'Failed to disable auto-start: {0}',
   'err.deepseek_api_key_missing': 'Please set a DeepSeek API Key first',

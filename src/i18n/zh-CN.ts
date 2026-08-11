@@ -369,6 +369,8 @@ export default {
   'err.db_connect': '数据库连接失败: {0}',
   'err.query_failed': '查询失败: {0}',
   'err.task_failed': '后台任务 {0} 失败: {1}',
+  'err.settings_serialize': '设置序列化失败: {0}',
+  'err.unknown_credential_kind': '未知的凭据类型: {0}',
   'err.autostart_enable_failed': '设置开机自启动失败: {0}',
   'err.autostart_disable_failed': '取消开机自启动失败: {0}',
   'err.deepseek_api_key_missing': '请先设置 DeepSeek API Key',

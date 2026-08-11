@@ -14,9 +14,7 @@ import { invoke } from '@tauri-apps/api/core'
 import {
   getSettings,
   updateSettings,
-  setDeepseekApiKey,
-  setGithubToken,
-  setYoutubeApiKey,
+  setCredential,
   isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
@@ -95,41 +93,37 @@ describe('updateSettings', () => {
   })
 })
 
-describe('setDeepseekApiKey', () => {
-  it('调起 set_deepseek_api_key 命令', async () => {
+describe('setCredential', () => {
+  it('deepseek_api_key 调起 set_credential 命令并传递 kind/value', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    await setDeepseekApiKey('sk-xxxx')
+    await setCredential('deepseek_api_key', 'sk-xxxx')
 
-    expect(invoke).toHaveBeenCalledWith('set_deepseek_api_key', { apiKey: 'sk-xxxx' })
+    expect(invoke).toHaveBeenCalledWith('set_credential', { kind: 'deepseek_api_key', value: 'sk-xxxx' })
   })
 
-  it('空字符串也传递', async () => {
+  it('github_token 调起 set_credential 命令', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    await setDeepseekApiKey('')
+    await setCredential('github_token', 'ghp_xxxx')
 
-    expect(invoke).toHaveBeenCalledWith('set_deepseek_api_key', { apiKey: '' })
+    expect(invoke).toHaveBeenCalledWith('set_credential', { kind: 'github_token', value: 'ghp_xxxx' })
   })
-})
 
-describe('setGithubToken', () => {
-  it('调起 set_github_token 命令', async () => {
+  it('youtube_api_key 调起 set_credential 命令', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    await setGithubToken('ghp_xxxx')
+    await setCredential('youtube_api_key', 'AIzaSy_xxx')
 
-    expect(invoke).toHaveBeenCalledWith('set_github_token', { token: 'ghp_xxxx' })
+    expect(invoke).toHaveBeenCalledWith('set_credential', { kind: 'youtube_api_key', value: 'AIzaSy_xxx' })
   })
-})
 
-describe('setYoutubeApiKey', () => {
-  it('调起 set_youtube_api_key 命令', async () => {
+  it('bilibili_cookie 空值清除也传递', async () => {
     vi.mocked(invoke).mockResolvedValue(undefined)
 
-    await setYoutubeApiKey('AIzaSy_xxx')
+    await setCredential('bilibili_cookie', '')
 
-    expect(invoke).toHaveBeenCalledWith('set_youtube_api_key', { apiKey: 'AIzaSy_xxx' })
+    expect(invoke).toHaveBeenCalledWith('set_credential', { kind: 'bilibili_cookie', value: '' })
   })
 })
 

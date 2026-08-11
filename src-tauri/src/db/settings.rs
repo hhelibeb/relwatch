@@ -161,6 +161,45 @@ pub fn get_setting_i64(conn: &Connection, key: &str, default: i64) -> Result<i64
         .unwrap_or(default))
 }
 
+// ── 可更新设置项注册表 ─────────────────────────────
+
+/// 单个设置项元数据：DB key、默认值、变更日志 label。
+pub struct SettingSpec {
+    pub key: &'static str,
+    pub default: &'static str,
+    pub label: &'static str,
+}
+
+/// 可更新设置项注册表：(key, 默认值, 日志 label)。
+/// `update_settings` 按此注册表驱动「读旧值 → 比较 → 写入」，不再手写
+/// 逐个 old 变量与元组表；新增可更新设置项只需：AppSettings 加字段 +
+/// 此处加一行（key/default/label 集中一处，无需再同步 KEY/DEFAULT 常量
+/// 之外的第三份清单）。
+///
+/// 注意：注册表不覆盖 `*_set` 派生只读字段（凭据是否已设置，不入库）。
+pub const SETTING_SPECS: &[SettingSpec] = &[
+    SettingSpec { key: KEY_POLL_INTERVAL, default: DEFAULT_POLL_INTERVAL, label: "setting.poll_interval" },
+    SettingSpec { key: KEY_PROXY_MODE, default: "none", label: "setting.proxy_mode" },
+    SettingSpec { key: KEY_PROXY_URL, default: DEFAULT_PROXY_URL, label: "setting.proxy_url" },
+    SettingSpec { key: KEY_AUTO_START, default: DEFAULT_AUTO_START, label: "setting.auto_start" },
+    SettingSpec { key: KEY_MINIMIZE_TO_TRAY, default: DEFAULT_MINIMIZE_TO_TRAY, label: "setting.minimize_to_tray" },
+    SettingSpec { key: KEY_LOG_RETENTION, default: DEFAULT_LOG_RETENTION, label: "setting.log_retention_days" },
+    SettingSpec { key: KEY_DEEPSEEK_ENABLED, default: DEFAULT_DEEPSEEK_ENABLED, label: "setting.deepseek_enabled" },
+    SettingSpec { key: KEY_DEEPSEEK_MODEL, default: DEFAULT_DEEPSEEK_MODEL, label: "setting.deepseek_model" },
+    SettingSpec { key: KEY_DEEPSEEK_BASE_URL, default: DEFAULT_DEEPSEEK_BASE_URL, label: "setting.deepseek_base_url" },
+    SettingSpec { key: KEY_DEEPSEEK_PROXY_BYPASS, default: DEFAULT_DEEPSEEK_PROXY_BYPASS, label: "setting.deepseek_proxy_bypass" },
+    SettingSpec { key: KEY_DEEPSEEK_PROMPT, default: DEFAULT_DEEPSEEK_PROMPT_EDITABLE, label: "setting.deepseek_prompt" },
+    SettingSpec { key: KEY_DEEPSEEK_MIN_IMPORTANCE, default: DEFAULT_DEEPSEEK_MIN_IMPORTANCE, label: "setting.deepseek_min_importance" },
+    SettingSpec { key: KEY_DEEPSEEK_TRANSLATE_RELEASE, default: DEFAULT_DEEPSEEK_TRANSLATE_RELEASE, label: "setting.deepseek_translate_release" },
+    SettingSpec { key: KEY_CHECK_PRERELEASES, default: DEFAULT_CHECK_PRERELEASES, label: "setting.check_prereleases" },
+    SettingSpec { key: KEY_FETCH_HISTORY, default: "false", label: "setting.fetch_history" },
+    SettingSpec { key: KEY_FETCH_HISTORY_COUNT, default: DEFAULT_FETCH_HISTORY_COUNT, label: "setting.fetch_history_count" },
+    SettingSpec { key: KEY_LANGUAGE, default: "", label: "setting.language" },
+    SettingSpec { key: KEY_THEME, default: DEFAULT_THEME, label: "setting.theme" },
+    SettingSpec { key: KEY_SHOW_SOURCE_TYPE_ICONS, default: DEFAULT_SHOW_SOURCE_TYPE_ICONS, label: "setting.show_source_type_icons" },
+    SettingSpec { key: KEY_ENABLE_USAGE_STATS, default: DEFAULT_ENABLE_USAGE_STATS, label: "setting.enable_usage_stats" },
+];
+
 // ── 批量应用（仅写入变化的项）───────────────────────
 
 /// 每项为 (key, old_str, new_str, label)。

@@ -5,8 +5,7 @@ import { ShowToastKey } from '../injection-keys'
 import type { AppSettings } from '../api/settings'
 import {
   updateSettings,
-  setDeepseekApiKey,
-  setGithubToken,
+  setCredential,
   importBackup,
 } from '../api/settings'
 import { confirm } from '@tauri-apps/plugin-dialog'
@@ -19,8 +18,7 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
 
 vi.mock('../api/settings', () => ({
   updateSettings: vi.fn().mockResolvedValue(undefined),
-  setDeepseekApiKey: vi.fn().mockResolvedValue(undefined),
-  setGithubToken: vi.fn().mockResolvedValue(undefined),
+  setCredential: vi.fn().mockResolvedValue(undefined),
   testDeepseekConnection: vi.fn().mockResolvedValue('ok'),
   isOfficialDeepseekBaseUrl: vi.fn().mockResolvedValue(true),
   exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
@@ -33,8 +31,7 @@ vi.mock('../api/client', () => ({
 
 // i18n 为纯内存模块：不 mock，直接用真实字典
 const updateSettingsMock = vi.mocked(updateSettings)
-const setDeepseekApiKeyMock = vi.mocked(setDeepseekApiKey)
-const setGithubTokenMock = vi.mocked(setGithubToken)
+const setCredentialMock = vi.mocked(setCredential)
 const importBackupMock = vi.mocked(importBackup)
 const confirmMock = vi.mocked(confirm)
 
@@ -93,8 +90,7 @@ beforeEach(() => {
     value: vi.fn().mockReturnValue({ matches: false }),
   })
   updateSettingsMock.mockResolvedValue(undefined)
-  setDeepseekApiKeyMock.mockResolvedValue(undefined)
-  setGithubTokenMock.mockResolvedValue(undefined)
+  setCredentialMock.mockResolvedValue(undefined)
   importBackupMock.mockResolvedValue(undefined)
   confirmMock.mockResolvedValue(true)
 })
@@ -188,8 +184,7 @@ describe('SettingsTab — 表单保护性行为', () => {
     await flushPromises()
 
     expect(updateSettingsMock).toHaveBeenCalledOnce()
-    expect(setDeepseekApiKeyMock).not.toHaveBeenCalled()
-    expect(setGithubTokenMock).not.toHaveBeenCalled()
+    expect(setCredentialMock).not.toHaveBeenCalled()
   })
 
   it('导入备份成功后 emit forceReload', async () => {
@@ -221,8 +216,7 @@ describe('SettingsTab — 保存原子性（P0 #2）', () => {
 
     expect(updateSettingsMock).toHaveBeenCalledOnce()
     // 凭据在 updateSettings 之后才写入；updateSettings 失败 → 凭据不应被调用
-    expect(setDeepseekApiKeyMock).not.toHaveBeenCalled()
-    expect(setGithubTokenMock).not.toHaveBeenCalled()
+    expect(setCredentialMock).not.toHaveBeenCalled()
     // 输入未清空、标记未被误置为 true（避免“凭据已存但 UI 以为未存”的反向不一致）
     expect((apiKeyInput.element as HTMLInputElement).value).toBe('sk-new-key')
     // placeholder 仍为「未设置」提示（真实 i18n 文案）
@@ -238,10 +232,10 @@ describe('SettingsTab — 保存原子性（P0 #2）', () => {
     await flushPromises()
 
     expect(updateSettingsMock).toHaveBeenCalledOnce()
-    expect(setDeepseekApiKeyMock).toHaveBeenCalledWith('sk-new-key')
-    // 严格校验调用顺序：updateSettings 必须早于 setDeepseekApiKey
+    expect(setCredentialMock).toHaveBeenCalledWith('deepseek_api_key', 'sk-new-key')
+    // 严格校验调用顺序：updateSettings 必须早于 setCredential
     const settingsOrder = vi.mocked(updateSettings).mock.invocationCallOrder[0]
-    const credOrder = vi.mocked(setDeepseekApiKey).mock.invocationCallOrder[0]
+    const credOrder = vi.mocked(setCredential).mock.invocationCallOrder[0]
     expect(settingsOrder).toBeLessThan(credOrder)
   })
 })

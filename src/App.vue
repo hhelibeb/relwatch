@@ -6,7 +6,7 @@ import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events } from './bindings'
 import { type Source, listSources, sourceRepoKey } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
-import { type AppSettings, getSettings } from './api/settings'
+import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
 import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
 import { useEscapeToTray } from './composables/useEscapeToTray'
@@ -30,32 +30,7 @@ function onMainScroll(e: Event) {
 const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
 const logRefreshKey = ref(0)
-const settings = ref<AppSettings>({
-  auto_start: false,
-  poll_interval_minutes: 30,
-  proxy_mode: 'none',
-  proxy_url: '',
-  minimize_to_tray: true,
-  log_retention_days: 0,
-  deepseek_enabled: false,
-  deepseek_model: 'deepseek-v4-flash',
-  deepseek_base_url: 'https://api.deepseek.com',
-  deepseek_api_key_set: false,
-  deepseek_proxy_bypass: false,
-  deepseek_prompt: '',
-  deepseek_min_importance: '小',
-  deepseek_translate_release: false,
-  check_prereleases: false,
-  fetch_history: false,
-  fetch_history_count: 1,
-  language: 'zh-CN',
-  theme: 'system',
-  show_source_type_icons: true,
-  enable_usage_stats: true,
-  github_token_set: false,
-  youtube_api_key_set: false,
-  bilibili_cookie_set: false,
-})
+const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
 
 const countdown = ref('')
 const releaseSearch = ref('')

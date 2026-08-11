@@ -3,7 +3,7 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   readBilibiliLoginCookie,
   closeBilibiliLoginWindow,
-  setBilibiliCookie,
+  setCredential,
 } from '../api/settings'
 import { InvokeI18nError } from '../api/client'
 import { t } from '../i18n'
@@ -56,11 +56,11 @@ export function useBilibiliLogin(opts: {
   }
 
   /** 清除已保存的 B 站 Cookie（SESSDATA）：过期后回退匿名模式的唯一入口（F2）。
-   *  命令层 `set_bilibili_cookie('')` 本就支持空值清除，但此前没有任何 UI 触发点。 */
+   *  命令层 `set_credential('bilibili_cookie', '')` 本就支持空值清除，但此前没有任何 UI 触发点。 */
   async function handleClearBilibiliCookie() {
     track('settings.bili_clear')
     try {
-      await setBilibiliCookie('')
+      await setCredential('bilibili_cookie', '')
       onCookieCleared()
       showToast(t('settings.bilibili_cookie_cleared'))
     } catch (e: unknown) {

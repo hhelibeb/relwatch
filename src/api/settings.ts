@@ -5,6 +5,9 @@ import type { AppSettings } from '../bindings'
 // 类型由 tauri-specta 从 Rust 生成（src/bindings.ts），此处 re-export 保持调用方路径不变
 export type { AppSettings } from '../bindings'
 
+/** 凭据 kind：与后端 `CREDENTIAL_KINDS` 注册表一一对应（M2）。 */
+export type CredentialKind = 'deepseek_api_key' | 'github_token' | 'youtube_api_key' | 'bilibili_cookie'
+
 export async function getSettings(): Promise<AppSettings> {
   return invokeI18nFn(commands.getSettings)
 }
@@ -13,20 +16,39 @@ export async function updateSettings(payload: AppSettings): Promise<void> {
   await invokeI18nFn(() => commands.updateSettings(payload))
 }
 
-export async function setDeepseekApiKey(apiKey: string): Promise<void> {
-  await invokeI18nFn(() => commands.setDeepseekApiKey(apiKey))
+/** 设置/更新单个加密凭据：空值清除，非空值加密存储（后端 set_credential，M2）。 */
+export async function setCredential(kind: CredentialKind, value: string): Promise<void> {
+  await invokeI18nFn(() => commands.setCredential(kind, value))
 }
 
-export async function setGithubToken(token: string): Promise<void> {
-  await invokeI18nFn(() => commands.setGithubToken(token))
-}
-
-export async function setYoutubeApiKey(apiKey: string): Promise<void> {
-  await invokeI18nFn(() => commands.setYoutubeApiKey(apiKey))
-}
-
-export async function setBilibiliCookie(cookie: string): Promise<void> {
-  await invokeI18nFn(() => commands.setBilibiliCookie(cookie))
+/** 首屏加载完成前的类型占位默认值（与后端 get_settings 默认语义一致）。
+ *  真实值由 `getSettings()` 首屏整体覆盖；新增设置项时 TS 类型强制此处补齐，
+ *  无需手工维护第二份默认值清单。 */
+export const DEFAULT_SETTINGS: AppSettings = {
+  auto_start: false,
+  poll_interval_minutes: 30,
+  proxy_mode: 'none',
+  proxy_url: '',
+  minimize_to_tray: true,
+  log_retention_days: 0,
+  deepseek_enabled: false,
+  deepseek_model: 'deepseek-v4-flash',
+  deepseek_base_url: 'https://api.deepseek.com',
+  deepseek_api_key_set: false,
+  deepseek_proxy_bypass: false,
+  deepseek_prompt: '',
+  deepseek_min_importance: '小',
+  deepseek_translate_release: false,
+  check_prereleases: false,
+  fetch_history: false,
+  fetch_history_count: 1,
+  language: 'zh-CN',
+  theme: 'system',
+  show_source_type_icons: true,
+  enable_usage_stats: true,
+  github_token_set: false,
+  youtube_api_key_set: false,
+  bilibili_cookie_set: false,
 }
 
 /** 判断 base_url 是否为 DeepSeek 官方域名（https + deepseek.com 或其子域）。

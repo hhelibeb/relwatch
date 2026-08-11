@@ -14,11 +14,11 @@ use crate::db::settings::{
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT, KEY_ENABLE_USAGE_STATS,
-    DEFAULT_POLL_INTERVAL, DEFAULT_PROXY_URL, DEFAULT_AUTO_START, DEFAULT_MINIMIZE_TO_TRAY, DEFAULT_LOG_RETENTION,
-    DEFAULT_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROXY_BYPASS,
+    DEFAULT_PROXY_URL,
+    DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
-    DEFAULT_DEEPSEEK_TRANSLATE_RELEASE,
-    DEFAULT_CHECK_PRERELEASES, DEFAULT_FETCH_HISTORY_COUNT, DEFAULT_THEME, DEFAULT_SHOW_SOURCE_TYPE_ICONS, DEFAULT_ENABLE_USAGE_STATS,
+    DEFAULT_THEME,
+    SETTING_SPECS,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
     strip_prompt_suffix,
 };
@@ -79,12 +79,17 @@ use serde_json::json;
     app: tauri::AppHandle,
     payload: AppSettings,
 ) -> Result<(), String> {
-    let poll_interval_minutes = payload.poll_interval_minutes.clamp(5, 1440);
-    let log_retention_days = payload.log_retention_days.clamp(0, 3650);
-    let fetch_history_count = payload.fetch_history_count.max(0);
+    // 边界 clamp（保持原有行为）与 prompt 后缀剥离在写入前统一处理
+    let payload = AppSettings {
+        poll_interval_minutes: payload.poll_interval_minutes.clamp(5, 1440),
+        log_retention_days: payload.log_retention_days.clamp(0, 3650),
+        fetch_history_count: payload.fetch_history_count.max(0),
+        deepseek_prompt: strip_prompt_suffix(&payload.deepseek_prompt),
+        ..payload
+    };
 
     // 拿到 pool 与 next_poll_at 的克隆，避免跨 await 持有 tauri::State 借用。
-    // 同步 SQLite I/O（读旧值 + 写 19 项 + 写日志）与系统注册表写入（自启动）
+    // 同步 SQLite I/O（读旧值 + 写设置项 + 写日志）与系统注册表写入（自启动）
     // 一并放进 spawn_blocking，避免在 Tauri 主线程冻结 UI（轮询高峰期 pool.get
     // 可能等待，且 autostart 注册表写入是阻塞 I/O）。
     let state = app.state::<AppState>();
@@ -94,57 +99,44 @@ use serde_json::json;
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let conn = pool.get().map_err(|e| e.to_string())?;
 
-        let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)?;
-        let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none")?;
-        let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
-        let old_auto_start = get_setting_str(&conn, KEY_AUTO_START, DEFAULT_AUTO_START)?;
-        let old_minimize = get_setting_str(&conn, KEY_MINIMIZE_TO_TRAY, DEFAULT_MINIMIZE_TO_TRAY)?;
-        let old_retention = get_setting_str(&conn, KEY_LOG_RETENTION, DEFAULT_LOG_RETENTION)?;
-        let old_deepseek = get_setting_str(&conn, KEY_DEEPSEEK_ENABLED, DEFAULT_DEEPSEEK_ENABLED)?;
-        let old_model = get_setting_str(&conn, KEY_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_MODEL)?;
-        let old_base_url = get_setting_str(&conn, KEY_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)?;
-        let old_deepseek_proxy_bypass = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS)?;
-        let old_deepseek_prompt = get_setting_str(&conn, KEY_DEEPSEEK_PROMPT, DEFAULT_DEEPSEEK_PROMPT_EDITABLE)?;
-        let old_deepseek_min_importance = get_setting_str(&conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)?;
+        // 注册表驱动（M2）：payload 序列化为 (字段名 → JSON 值) 映射，字段名与
+        // DB key 同名（snake_case）；按 SETTING_SPECS 统一「读旧值 → 比较 → 写入」，
+        // 不再手写 20 个 old 变量与 20 行元组表。新增设置项只需改 AppSettings +
+        // SETTING_SPECS 一处，此处代码无需变动。
+        let payload_map = serde_json::to_value(&payload)
+            .map_err(|e| format!("err.settings_serialize|{}", e))?
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "err.settings_serialize|not-an-object".to_string())?;
+        let json_to_str = json_setting_value;
+        let new_values: Vec<String> = SETTING_SPECS
+            .iter()
+            .map(|s| {
+                payload_map
+                    .get(s.key)
+                    .map(&json_to_str)
+                    .unwrap_or_else(|| s.default.to_string())
+            })
+            .collect();
+        let old_values: Vec<String> = SETTING_SPECS
+            .iter()
+            .map(|s| get_setting_str(&conn, s.key, s.default))
+            .collect::<Result<_, _>>()?;
+        let items: Vec<(&str, &str, &str, &str)> = SETTING_SPECS
+            .iter()
+            .zip(old_values.iter())
+            .zip(new_values.iter())
+            .map(|((s, old), new)| (s.key, old.as_str(), new.as_str(), s.label))
+            .collect();
+        // 开机自启动变化判断（写入后需触发系统注册表注册/注销）
+        let auto_start_idx = SETTING_SPECS
+            .iter()
+            .position(|s| s.key == KEY_AUTO_START)
+            .expect("KEY_AUTO_START 必须在 SETTING_SPECS 中");
+        let auto_start_changed =
+            old_values[auto_start_idx] != new_values[auto_start_idx];
 
-        let old_deepseek_translate = get_setting_str(&conn, KEY_DEEPSEEK_TRANSLATE_RELEASE, DEFAULT_DEEPSEEK_TRANSLATE_RELEASE)?;
-        let old_check_pre = get_setting_str(&conn, KEY_CHECK_PRERELEASES, DEFAULT_CHECK_PRERELEASES)?;
-        let old_fetch_history = get_setting_str(&conn, KEY_FETCH_HISTORY, "false")?;
-        let old_fetch_history_count = get_setting_str(&conn, KEY_FETCH_HISTORY_COUNT, DEFAULT_FETCH_HISTORY_COUNT)?;
-        let old_language = get_setting_str(&conn, KEY_LANGUAGE, "")?;
-        let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?;
-        let old_show_icons = get_setting_str(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, DEFAULT_SHOW_SOURCE_TYPE_ICONS)?;
-        let old_enable_usage = get_setting_str(&conn, KEY_ENABLE_USAGE_STATS, DEFAULT_ENABLE_USAGE_STATS)?;
-
-        let (interval_changed, changes) = settings::apply_settings(
-            &conn,
-            &[
-                (KEY_POLL_INTERVAL, &old_interval, &poll_interval_minutes.to_string(), "setting.poll_interval"),
-                (KEY_PROXY_MODE, &old_proxy_mode, &payload.proxy_mode, "setting.proxy_mode"),
-                (KEY_PROXY_URL, &old_proxy, &payload.proxy_url, "setting.proxy_url"),
-                (KEY_AUTO_START, &old_auto_start, &payload.auto_start.to_string(), "setting.auto_start"),
-                (KEY_MINIMIZE_TO_TRAY, &old_minimize, &payload.minimize_to_tray.to_string(), "setting.minimize_to_tray"),
-                (KEY_LOG_RETENTION, &old_retention, &log_retention_days.to_string(), "setting.log_retention_days"),
-                (KEY_DEEPSEEK_ENABLED, &old_deepseek, &payload.deepseek_enabled.to_string(), "setting.deepseek_enabled"),
-                (KEY_DEEPSEEK_MODEL, &old_model, &payload.deepseek_model, "setting.deepseek_model"),
-                (KEY_DEEPSEEK_BASE_URL, &old_base_url, &payload.deepseek_base_url, "setting.deepseek_base_url"),
-                (KEY_DEEPSEEK_PROXY_BYPASS, &old_deepseek_proxy_bypass, &payload.deepseek_proxy_bypass.to_string(), "setting.deepseek_proxy_bypass"),
-                (KEY_DEEPSEEK_PROMPT, &old_deepseek_prompt, &strip_prompt_suffix(&payload.deepseek_prompt), "setting.deepseek_prompt"),
-                (KEY_DEEPSEEK_MIN_IMPORTANCE, &old_deepseek_min_importance, &payload.deepseek_min_importance, "setting.deepseek_min_importance"),
-                (KEY_DEEPSEEK_TRANSLATE_RELEASE, &old_deepseek_translate, &payload.deepseek_translate_release.to_string(), "setting.deepseek_translate_release"),
-
-                (KEY_CHECK_PRERELEASES, &old_check_pre, &payload.check_prereleases.to_string(), "setting.check_prereleases"),
-                (KEY_FETCH_HISTORY, &old_fetch_history, &payload.fetch_history.to_string(), "setting.fetch_history"),
-                (KEY_FETCH_HISTORY_COUNT, &old_fetch_history_count, &fetch_history_count.to_string(), "setting.fetch_history_count"),
-                (KEY_LANGUAGE, &old_language, &payload.language, "setting.language"),
-                // 不在此处触发 rendered_message 回填：这是有意为之的 locale-frozen 设计。
-                // 切换语言后日志搜索仅对新写入的行生效，旧行以原 locale 的 rendered_message 存在。
-                // 参见 write_log_key 中的注释了解设计取舍。
-                (KEY_THEME, &old_theme, &payload.theme, "setting.theme"),
-                (KEY_SHOW_SOURCE_TYPE_ICONS, &old_show_icons, &payload.show_source_type_icons.to_string(), "setting.show_source_type_icons"),
-                (KEY_ENABLE_USAGE_STATS, &old_enable_usage, &payload.enable_usage_stats.to_string(), "setting.enable_usage_stats"),
-            ],
-        )?;
+        let (interval_changed, changes) = settings::apply_settings(&conn, &items)?;
 
         if changes.is_empty() {
             return Ok(());
@@ -153,7 +145,7 @@ use serde_json::json;
         db::logs::write_log_key(&conn, "INFO", "setting.updated", &json!({"changes": changes.join(", ")}).to_string());
 
         if interval_changed {
-            let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
+            let next = chrono::Utc::now().timestamp() + payload.poll_interval_minutes * 60;
             next_poll_at.store(next, Ordering::Relaxed);
             let _ = settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
             // 唤醒轮询线程重算下次执行时间，新间隔立即生效（不再等逐秒轮询）
@@ -161,7 +153,7 @@ use serde_json::json;
         }
 
         // 开机自启动变化时，立即执行系统注册/注销（注册表写入是阻塞 I/O，已在 spawn_blocking 内）
-        if old_auto_start != payload.auto_start.to_string() {
+        if auto_start_changed {
             if payload.auto_start {
                 autostart::enable().map_err(|e| format!("err.autostart_enable_failed|{}", e))?;
             } else {
@@ -175,72 +167,61 @@ use serde_json::json;
     .map_err(|e| format!("err.task_failed|update_settings|{}", e))?
 }
 
-#[tauri::command]
+/// 凭据 kind → (DB key, 日志 label) 注册表。
+/// 四个 `set_deepseek_api_key` / `set_github_token` / `set_youtube_api_key` /
+/// `set_bilibili_cookie` 命令除 key 名外逐字相同（M2），合并为单个
+/// `set_credential(kind, value)`：新增凭据只需在此登记一行。
+const CREDENTIAL_KINDS: &[(&str, &str, &str)] = &[
+    ("deepseek_api_key", KEY_DEEPSEEK_API_KEY, "setting.deepseek_key_updated"),
+    ("github_token", KEY_GITHUB_TOKEN, "setting.github_token_updated"),
+    ("youtube_api_key", KEY_YOUTUBE_API_KEY, "setting.youtube_key_updated"),
+    ("bilibili_cookie", KEY_BILIBILI_COOKIE, "setting.bilibili_cookie_updated"),
+];
 
-#[specta::specta]pub fn set_deepseek_api_key(
-    state: tauri::State<AppState>,
-    api_key: String,
-) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| e.to_string())?;
-    if api_key.is_empty() {
-        settings::set_setting(&conn, KEY_DEEPSEEK_API_KEY, "")?;
-    } else {
-        let encrypted = crypto::encrypt(&api_key);
-        settings::set_setting(&conn, KEY_DEEPSEEK_API_KEY, &encrypted)?;
+/// 把 payload JSON 值序列化为 DB 存储字符串：bool → "true"/"false"、
+/// 数字 → 十进制、字符串 → 原样（M2 注册表驱动的序列化规则）。
+fn json_setting_value(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        _ => String::new(),
     }
-    db::logs::write_log_key(&conn, "INFO", "setting.deepseek_key_updated", &json!({}).to_string());
+}
+
+/// 凭据写入核心逻辑（与 tauri::State 解耦，便于测试）：
+/// 未知 kind 报错（不静默）；空值清除；非空加密存储 + 写变更日志。
+fn set_credential_impl(
+    conn: &rusqlite::Connection,
+    kind: &str,
+    value: &str,
+) -> Result<(), String> {
+    let (key, label) = CREDENTIAL_KINDS
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, key, label)| (*key, *label))
+        .ok_or_else(|| format!("err.unknown_credential_kind|{}", kind))?;
+    if value.is_empty() {
+        settings::set_setting(conn, key, "")?;
+    } else {
+        let encrypted = crypto::encrypt(value);
+        settings::set_setting(conn, key, &encrypted)?;
+    }
+    db::logs::write_log_key(conn, "INFO", label, &json!({}).to_string());
     Ok(())
 }
 
+/// 设置/更新单个加密凭据：空值清除，非空值加密存储。
+/// `kind` 必须命中 `CREDENTIAL_KINDS` 注册表，未知 kind 返回错误（不静默）。
 #[tauri::command]
 
-#[specta::specta]pub fn set_github_token(
+#[specta::specta]pub fn set_credential(
     state: tauri::State<AppState>,
-    token: String,
+    kind: String,
+    value: String,
 ) -> Result<(), String> {
     let conn = state.db.get().map_err(|e| e.to_string())?;
-    if token.is_empty() {
-        settings::set_setting(&conn, KEY_GITHUB_TOKEN, "")?;
-    } else {
-        let encrypted = crypto::encrypt(&token);
-        settings::set_setting(&conn, KEY_GITHUB_TOKEN, &encrypted)?;
-    }
-    db::logs::write_log_key(&conn, "INFO", "setting.github_token_updated", &json!({}).to_string());
-    Ok(())
-}
-
-#[tauri::command]
-
-#[specta::specta]pub fn set_youtube_api_key(
-    state: tauri::State<AppState>,
-    api_key: String,
-) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| e.to_string())?;
-    if api_key.is_empty() {
-        settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, "")?;
-    } else {
-        let encrypted = crypto::encrypt(&api_key);
-        settings::set_setting(&conn, KEY_YOUTUBE_API_KEY, &encrypted)?;
-    }
-    db::logs::write_log_key(&conn, "INFO", "setting.youtube_key_updated", &json!({}).to_string());
-    Ok(())
-}
-
-#[tauri::command]
-
-#[specta::specta]pub fn set_bilibili_cookie(
-    state: tauri::State<AppState>,
-    cookie: String,
-) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| e.to_string())?;
-    if cookie.is_empty() {
-        settings::set_setting(&conn, KEY_BILIBILI_COOKIE, "")?;
-    } else {
-        let encrypted = crypto::encrypt(&cookie);
-        settings::set_setting(&conn, KEY_BILIBILI_COOKIE, &encrypted)?;
-    }
-    db::logs::write_log_key(&conn, "INFO", "setting.bilibili_cookie_updated", &json!({}).to_string());
-    Ok(())
+    set_credential_impl(&conn, &kind, &value)
 }
 
 /// 判断 base_url 是否为 DeepSeek 官方域名（供前端保存/测试连接前二次确认，
@@ -328,6 +309,9 @@ pub struct TestDeepseekPayload {
 mod tests {
     use super::*;
     use crate::db;
+    use crate::db::settings::{
+        DEFAULT_AUTO_START, DEFAULT_DEEPSEEK_PROXY_BYPASS, DEFAULT_FETCH_HISTORY_COUNT,
+    };
     use std::sync::Arc;
 
     fn test_state() -> AppState {
@@ -684,5 +668,94 @@ mod tests {
         ).unwrap();
         assert_eq!(changes.len(), 1);
         assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, true).unwrap());
+    }
+
+    /// M2 防线：SETTING_SPECS 注册表与 AppSettings 字段一一对应，
+    /// 新增设置项漏改任一侧都会在此失败。
+    #[test]
+    fn test_setting_specs_cover_all_app_settings_fields() {
+        let json = serde_json::json!({
+            "poll_interval_minutes": 30,
+            "proxy_mode": "none",
+            "proxy_url": "",
+            "auto_start": false,
+            "minimize_to_tray": true,
+            "log_retention_days": 0,
+            "deepseek_enabled": false,
+            "deepseek_model": "m",
+            "deepseek_base_url": "u",
+            "deepseek_api_key_set": false,
+            "deepseek_proxy_bypass": false,
+            "deepseek_prompt": "",
+            "deepseek_min_importance": "小",
+            "deepseek_translate_release": false,
+
+            "check_prereleases": false,
+            "fetch_history": true,
+            "fetch_history_count": 3,
+            "language": "zh-CN",
+            "theme": "system",
+            "show_source_type_icons": true,
+            "enable_usage_stats": true,
+            "github_token_set": false,
+            "youtube_api_key_set": false,
+            "bilibili_cookie_set": false,
+        });
+        let payload: AppSettings = serde_json::from_value(json).unwrap();
+        let map = serde_json::to_value(&payload).unwrap();
+        let obj = map.as_object().unwrap();
+
+        // 每个注册表 key 都必须能在 AppSettings 中找到（序列化后字段名 = DB key）
+        for spec in SETTING_SPECS {
+            assert!(
+                obj.contains_key(spec.key),
+                "SETTING_SPECS 中的 key '{}' 在 AppSettings 中不存在（字段名需与 DB key 一致）",
+                spec.key
+            );
+        }
+        // 数量守卫：注册表必须覆盖全部可更新项（当前 20 项）
+        assert_eq!(
+            SETTING_SPECS.len(),
+            20,
+            "可更新设置项数量变化！新增/删除配置项时需同步 AppSettings 与 SETTING_SPECS。"
+        );
+    }
+
+    /// M2 防线：payload JSON 值 → DB 字符串的序列化规则。
+    #[test]
+    fn test_json_setting_value_serialization() {
+        assert_eq!(json_setting_value(&serde_json::json!(true)), "true");
+        assert_eq!(json_setting_value(&serde_json::json!(false)), "false");
+        assert_eq!(json_setting_value(&serde_json::json!(30)), "30");
+        assert_eq!(json_setting_value(&serde_json::json!(0)), "0");
+        assert_eq!(json_setting_value(&serde_json::json!("zh-CN")), "zh-CN");
+        assert_eq!(json_setting_value(&serde_json::json!("")), "");
+        // 非常规类型（null/数组）不产生写入值
+        assert_eq!(json_setting_value(&serde_json::json!(null)), "");
+        assert_eq!(json_setting_value(&serde_json::json!([1])), "");
+    }
+
+    /// M2：set_credential 未知 kind 拒绝，空值清除，非空加密存储。
+    #[test]
+    fn test_set_credential_encrypts_and_clears() {
+        crate::crypto::set_test_master_key();
+        let state = test_state();
+        {
+            let conn = state.db.get().unwrap();
+            // 未知 kind：报错且不写库
+            let err = set_credential_impl(&conn, "evil_kind", "x").unwrap_err();
+            assert!(err.starts_with("err.unknown_credential_kind|evil_kind"));
+            assert!(settings::get_setting(&conn, KEY_GITHUB_TOKEN).unwrap().is_none());
+        }
+        {
+            let conn = state.db.get().unwrap();
+            // 非空值：加密存储（不是明文）
+            set_credential_impl(&conn, "github_token", "ghp_secret").unwrap();
+            let stored = settings::get_setting(&conn, KEY_GITHUB_TOKEN).unwrap().unwrap();
+            assert!(!stored.contains("ghp_secret"), "凭据应以密文存储，实际: {}", stored);
+            // 空值：清除
+            set_credential_impl(&conn, "github_token", "").unwrap();
+            assert_eq!(settings::get_setting(&conn, KEY_GITHUB_TOKEN).unwrap().unwrap(), "");
+        }
     }
 }
