@@ -22,6 +22,8 @@ export default defineConfig({
         'src/main.ts',
         'src/style.css',
         'src/components/releaseTypes.ts',
+        // Tauri Specta 生成文件：不可控且不反映手写代码质量，不计入覆盖率门槛
+        'src/bindings.ts',
       ],
       // 覆盖率回退防线：低于门槛时 vitest 以非零退出，CI 同步执行 pnpm run coverage
       thresholds: {
