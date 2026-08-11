@@ -2,9 +2,7 @@
 import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig } from '../api/sources'
-// 源类型展示/解析统一走注册表（真实模块，避免被测试 mock 的 '../api/sources' 遮蔽）
-import { getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/source-registry'
+import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig, getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'

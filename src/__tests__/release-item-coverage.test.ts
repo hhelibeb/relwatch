@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
+import { t } from '../i18n'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import { ShowToastKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
@@ -12,11 +13,6 @@ vi.mock('../api/releases', () => ({
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
-}))
-
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string) => key),
-  getLocale: vi.fn(() => 'zh-CN'),
 }))
 
 // 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
@@ -158,7 +154,7 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
     await ctxMenu.vm.$emit('action', 'deleteRelease')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(toast).toHaveBeenCalledWith(expect.stringContaining('release.delete_failed'))
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.delete_failed')))
     expect(toast).toHaveBeenCalledWith(expect.stringContaining('permission denied'))
   })
 
@@ -310,11 +306,11 @@ describe('ReleaseItem.vue — 状态操作成功消息', () => {
       global: { provide: { [ShowToastKey as symbol]: toast } },
     })
 
-    const snoozeBtn = wrapper.findAll('button').find(b => b.text().includes('release.snooze'))
+    const snoozeBtn = wrapper.findAll('button').find(b => b.text().includes(t('release.snooze')))
     await snoozeBtn!.trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(toast).toHaveBeenCalledWith('release.snooze_scheduled')
+    expect(toast).toHaveBeenCalledWith(t('release.snooze_scheduled'))
   })
 
   it('点击 Ignore 成功后显示"notification_cancelled" Toast', async () => {
@@ -329,7 +325,7 @@ describe('ReleaseItem.vue — 状态操作成功消息', () => {
     await wrapper.find('.btn-danger-soft').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(toast).toHaveBeenCalledWith('release.notification_cancelled')
+    expect(toast).toHaveBeenCalledWith(t('release.notification_cancelled'))
   })
 })
 
@@ -354,7 +350,7 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(true)
     // 组件将中文枚举映射为 i18n key（mock 的 t 原样返回 key）
-    expect(wrapper.find('.release-importance-chip').text()).toBe('release.importance_high')
+    expect(wrapper.find('.release-importance-chip').text()).toBe(t('release.importance_high'))
   })
 
   it('无 ai_importance 时不显示重要性标签', () => {
@@ -394,7 +390,7 @@ describe('ReleaseItem.vue — 操作按钮状态', () => {
       snooze_until: '2020-01-01T00:00:00Z',
     }))
 
-    expect(wrapper.text()).toContain('release.ignore')
+    expect(wrapper.text()).toContain(t('release.ignore'))
   })
 
   it('snoozed 状态且 snooze_until 未到期时仍显示 Ignore 按钮（闭环不中断）', () => {
@@ -404,7 +400,7 @@ describe('ReleaseItem.vue — 操作按钮状态', () => {
       snooze_until: '2099-01-01T00:00:00Z',
     }))
 
-    expect(wrapper.text()).toContain('release.ignore')
+    expect(wrapper.text()).toContain(t('release.ignore'))
   })
 })
 

@@ -18,12 +18,10 @@ vi.mock('@tauri-apps/api/window', () => ({
 vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }))
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string) => key),
-}))
 
 import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl, parseYoutubeUrl, parseBilibiliUrl, buildYoutubeConfig } from '../api/sources'
 import { translateError } from '../api/client'
+import { t } from '../i18n'
 
 describe('parseGitHubUrl', () => {
   it('parses standard GitHub URL', () => {
@@ -250,17 +248,13 @@ describe('translateError', () => {
     expect(translateError('Error: err.source.not_found')).toBe('err.source.not_found')
   })
 
-  it('不以 "err." 开头时返回去除 Error: 前缀后的消息，不调用 t()', async () => {
-    const { t } = await import('../i18n')
+  it('不以 "err." 开头时返回去除 Error: 前缀后的消息', () => {
     // translateError 移除 Error: 前缀后，非 err. 前缀返回 msg
     expect(translateError('Error: something went wrong')).toBe('something went wrong')
-    expect(t).not.toHaveBeenCalled()
   })
 
-  it('无 "Error: " 前缀的字符串直接返回', async () => {
-    const { t } = await import('../i18n')
+  it('无 "Error: " 前缀的字符串直接返回', () => {
     expect(translateError('normal message')).toBe('normal message')
-    expect(t).not.toHaveBeenCalled()
   })
 
   it('仅 "Error: " 前缀无内容返回空字符串', () => {
@@ -268,16 +262,16 @@ describe('translateError', () => {
     expect(translateError('Error: ')).toBe('')
   })
 
-  it('带 pipe 分隔的参数传递给 t()', async () => {
-    const { t } = await import('../i18n')
-    translateError('Error: err.add_failed|microsoft/vscode')
-    expect(t).toHaveBeenCalledWith('err.add_failed', 'microsoft/vscode')
+  it('带 pipe 分隔的参数：translateError 输出与真实 t 拆分参数渲染一致', () => {
+    // err.repo_verify_failed 在真实字典中：验证仓库失败: {0}
+    expect(translateError('Error: err.repo_verify_failed|microsoft/vscode'))
+      .toBe(t('err.repo_verify_failed', 'microsoft/vscode'))
   })
 
-  it('带多个 pipe 分隔的参数', async () => {
-    const { t } = await import('../i18n')
-    translateError('Error: err.format|{0}|{1}|{2}')
-    expect(t).toHaveBeenCalledWith('err.format', '{0}', '{1}', '{2}')
+  it('带多个 pipe 分隔的参数', () => {
+    // 未知 key 原样返回，但 pipe 拆分路径已走通（输出与直接调用 t 一致）
+    expect(translateError('Error: err.format|{0}|{1}|{2}'))
+      .toBe(t('err.format', '{0}', '{1}', '{2}'))
   })
 })
 
@@ -321,7 +315,6 @@ describe('invokeI18n 错误处理', () => {
 
     const { listSources } = await import('../api/sources')
     await expect(listSources()).rejects.toThrow('network timeout')
-    expect(t).not.toHaveBeenCalled()
   })
 
   it('invoke 带参数调用', async () => {

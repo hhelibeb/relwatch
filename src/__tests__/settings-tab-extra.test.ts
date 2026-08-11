@@ -14,7 +14,7 @@ import {
 } from '../api/settings'
 import { openReleaseUrl } from '../api/client'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { setLocale } from '../i18n'
+import { setLocale, getLocale, t } from '../i18n'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -35,15 +35,6 @@ vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
 }))
 
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string, ...args: string[]) => args.length ? `${key}:${args.join(',')}` : key),
-  setLocale: vi.fn(),
-  languages: [
-    { value: 'zh-CN', label: '中文' },
-    { value: 'en-US', label: 'English' },
-  ],
-}))
-
 const updateSettingsMock = vi.mocked(updateSettings)
 const setDeepseekApiKeyMock = vi.mocked(setDeepseekApiKey)
 const setGithubTokenMock = vi.mocked(setGithubToken)
@@ -53,7 +44,6 @@ const exportBackupMock = vi.mocked(exportBackup)
 const importBackupMock = vi.mocked(importBackup)
 const messageMock = vi.mocked(message)
 const confirmMock = vi.mocked(confirm)
-const setLocaleMock = vi.mocked(setLocale)
 const openReleaseUrlMock = vi.mocked(openReleaseUrl)
 
 function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
@@ -99,7 +89,7 @@ function mountSettings(settings: AppSettings = createSettings()) {
 
 async function clickSidebar(wrapper: ReturnType<typeof mountSettings>, text: string) {
   const buttons = wrapper.findAll('.settings-sidebar button')
-  const btn = buttons.find(b => b.text().includes(text))
+  const btn = buttons.find(b => b.text().includes(t(text)))
   expect(btn).toBeTruthy()
   await btn!.trigger('click')
 }
@@ -121,10 +111,10 @@ beforeEach(() => {
   importBackupMock.mockResolvedValue(undefined)
   messageMock.mockResolvedValue(undefined as any)
   confirmMock.mockResolvedValue(true as any)
-  setLocaleMock.mockClear()
 })
 
 afterEach(() => {
+  setLocale('zh-CN')
   vi.useRealTimers()
   document.documentElement.dataset.theme = ''
 })
@@ -207,7 +197,7 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     // 不应调用 updateSettings
     expect(updateSettingsMock).not.toHaveBeenCalled()
     // 应提示校验失败
-    expect(showToast).toHaveBeenCalledWith('settings.deepseek_prompt_validate_failed')
+    expect(showToast).toHaveBeenCalledWith(t('settings.deepseek_prompt_validate_failed'))
   })
 
   it('保存失败时显示错误信息（含 Error message）', async () => {
@@ -276,14 +266,14 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
     expect(testBtn).toBeTruthy()
     await testBtn!.trigger('click')
     await flushPromises()
 
     expect(testDeepseekConnectionMock).toHaveBeenCalledOnce()
     // 命令成功后文案由前端按 i18n key 渲染（测试中 t 被 mock 为返回 key 本身）
-    expect(messageMock).toHaveBeenCalledWith('settings.connection_success', expect.objectContaining({ kind: 'info' }))
+    expect(messageMock).toHaveBeenCalledWith(t('settings.connection_success'), expect.objectContaining({ kind: 'info' }))
   })
 
   it('测试失败，显示错误对话框', async () => {
@@ -291,7 +281,7 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
     await testBtn!.trigger('click')
     await flushPromises()
 
@@ -307,13 +297,13 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
     await testBtn!.trigger('click')
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
-      'settings.connection_success',
-      expect.objectContaining({ title: 'settings.deepseek_test_title' }),
+      t('settings.connection_success'),
+      expect.objectContaining({ title: t('settings.deepseek_test_title') }),
     )
   })
 
@@ -322,13 +312,13 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
     await testBtn!.trigger('click')
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ title: 'settings.deepseek_test_title' }),
+      expect.objectContaining({ title: t('settings.deepseek_test_title') }),
     )
   })
 })
@@ -340,13 +330,13 @@ describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
     await urlInput.setValue('https://evil.com')
     await wrapper.get('.setting-actions .btn-primary').trigger('click')
     await flushPromises()
 
     expect(confirmMock).toHaveBeenCalledWith(
-      'settings.deepseek_non_official_confirm:https://evil.com',
+      t('settings.deepseek_non_official_confirm', 'https://evil.com'),
       expect.objectContaining({ kind: 'warning' }),
     )
     expect(updateSettingsMock).toHaveBeenCalledOnce()
@@ -359,7 +349,7 @@ describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
     await urlInput.setValue('https://evil.com')
     await wrapper.get('.setting-actions .btn-primary').trigger('click')
     await flushPromises()
@@ -373,7 +363,7 @@ describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
     await urlInput.setValue('https://api.deepseek.com/v1')
     await wrapper.get('.setting-actions .btn-primary').trigger('click')
     await flushPromises()
@@ -401,9 +391,9 @@ describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
     await urlInput.setValue('https://evil.com')
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
     expect(testBtn).toBeTruthy()
     await testBtn!.trigger('click')
     await flushPromises()
@@ -419,9 +409,9 @@ describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
-    const urlInput = wrapper.find('input[placeholder="settings.deepseek_base_url_placeholder"]')
+    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
     await urlInput.setValue('https://evil.com')
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))
+    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
     expect(testBtn).toBeTruthy()
     await testBtn!.trigger('click')
     await flushPromises()
@@ -449,8 +439,8 @@ describe('SettingsTab — 备份导出', () => {
   })
 
   it('导出取消（后端返回 err.backup_cancelled_export），显示取消 toast', async () => {
-    // 新 contract：后端用稳定 err key 表示用户取消；invokeI18n 在测试转换器下返回 key 本身。
-    exportBackupMock.mockRejectedValueOnce(new Error('err.backup_cancelled_export'))
+    // 新 contract：后端用稳定 err key 表示用户取消；mock 模拟 invokeI18nFn 翻译后的消息
+    exportBackupMock.mockRejectedValueOnce(new Error(t('err.backup_cancelled_export')))
     const showToast = vi.fn()
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
@@ -461,7 +451,7 @@ describe('SettingsTab — 备份导出', () => {
     await wrapper.findAll('.backup-actions button')[0].trigger('click')
     await flushPromises()
 
-    expect(showToast).toHaveBeenCalledWith('backup.export_cancelled')
+    expect(showToast).toHaveBeenCalledWith(t('backup.export_cancelled'))
   })
 
   it('导出失败（非取消错误），显示失败 toast', async () => {
@@ -498,8 +488,8 @@ describe('SettingsTab — 备份导入', () => {
   })
 
   it('导入取消（后端返回 err.backup_cancelled_import），显示取消 toast', async () => {
-    // 新 contract：后端用稳定 err key 表示用户取消；invokeI18n 在测试转换器下返回 key 本身。
-    importBackupMock.mockRejectedValueOnce(new Error('err.backup_cancelled_import'))
+    // 新 contract：后端用稳定 err key 表示用户取消；mock 模拟 invokeI18nFn 翻译后的消息
+    importBackupMock.mockRejectedValueOnce(new Error(t('err.backup_cancelled_import')))
     const showToast = vi.fn()
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
@@ -510,7 +500,7 @@ describe('SettingsTab — 备份导入', () => {
     await wrapper.findAll('.backup-actions button')[1].trigger('click')
     await flushPromises()
 
-    expect(showToast).toHaveBeenCalledWith('backup.import_cancelled')
+    expect(showToast).toHaveBeenCalledWith(t('backup.import_cancelled'))
   })
 
   it('导入失败（非取消错误），显示失败 toast', async () => {
@@ -642,7 +632,7 @@ describe('SettingsTab — 语言下拉选择', () => {
     await enOpt!.trigger('click')
     await vi.runAllTimersAsync()
 
-    expect(setLocaleMock).toHaveBeenCalledWith('en-US')
+    expect(getLocale()).toBe('en-US')
   })
 
   it('语言下拉键盘导航：Enter 选中当前聚焦项', async () => {
@@ -678,13 +668,13 @@ describe('SettingsTab — 语言下拉选择', () => {
     const options = langSelect.findAll('.theme-select-option')
     const enOpt = options.find(o => o.attributes('data-value') === 'en-US')
     await enOpt!.trigger('mouseenter')
-    expect(setLocaleMock).toHaveBeenLastCalledWith('en-US')
+    expect(getLocale()).toBe('en-US')
 
     // Escape 关闭并恢复
     await trigger.trigger('keydown', { key: 'Escape' })
     await vi.runAllTimersAsync()
 
-    expect(setLocaleMock).toHaveBeenLastCalledWith('zh-CN')
+    expect(getLocale()).toBe('zh-CN')
   })
 
   it('语言下拉外部点击关闭并恢复语言', async () => {
@@ -699,13 +689,13 @@ describe('SettingsTab — 语言下拉选择', () => {
     const options = langSelect.findAll('.theme-select-option')
     const enOpt = options.find(o => o.attributes('data-value') === 'en-US')
     await enOpt!.trigger('mouseenter')
-    expect(setLocaleMock).toHaveBeenLastCalledWith('en-US')
+    expect(getLocale()).toBe('en-US')
 
     // 外部点击
     document.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await vi.runAllTimersAsync()
 
-    expect(setLocaleMock).toHaveBeenLastCalledWith('zh-CN')
+    expect(getLocale()).toBe('zh-CN')
   })
 })
 
@@ -724,7 +714,7 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     // banner 仍然可见
     expect(wrapper.find('.settings-banner').exists()).toBe(true)
     // 应显示多个未保存变更
-    expect(wrapper.find('.settings-banner').text()).toContain('settings.unsaved_banner')
+    expect(wrapper.find('.settings-banner').text()).toContain(t('settings.unsaved_banner', '2'))
   })
 
   it('dirtyByTab 在不同 tab 显示 dirty dot', async () => {
@@ -735,7 +725,7 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
 
     // 切换到 appearance 检查 general tab 有 dirty dot
     const sidebarButtons = wrapper.findAll('.settings-sidebar button')
-    const generalBtn = sidebarButtons.find(b => b.text().includes('settings.general'))
+    const generalBtn = sidebarButtons.find(b => b.text().includes(t('settings.general')))
     expect(generalBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
 
     // 修改 appearance tab 的字段
@@ -749,7 +739,7 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     await vi.runAllTimersAsync()
 
     // appearance 也应该有 dirty dot
-    const appearanceBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes('settings.appearance'))
+    const appearanceBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes(t('settings.appearance')))
     expect(appearanceBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
   })
 
@@ -761,7 +751,7 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     const apiKeyInput = inputs[0]
     await apiKeyInput.setValue('sk-test')
 
-    const aiBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes('settings.ai'))
+    const aiBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes(t('settings.ai')))
     expect(aiBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
   })
 
@@ -772,7 +762,7 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     const ghInput = wrapper.find('input[type="password"]')
     await ghInput.setValue('ghp-token')
 
-    const accountsBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes('settings.accounts'))
+    const accountsBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes(t('settings.accounts')))
     expect(accountsBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
   })
 
@@ -789,12 +779,12 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     await enOpt!.trigger('click')
     await vi.runAllTimersAsync()
 
-    expect(setLocaleMock).toHaveBeenCalledWith('en-US')
+    expect(getLocale()).toBe('en-US')
 
     // discard
     await wrapper.get('.settings-banner .btn-secondary').trigger('click')
 
-    expect(setLocaleMock).toHaveBeenCalledWith('zh-CN')
+    expect(getLocale()).toBe('zh-CN')
   })
 
   it('discard 恢复 theme 时设置正确的 data-theme', async () => {
@@ -839,7 +829,7 @@ describe('SettingsTab — 条件渲染', () => {
     const wrapper = mountSettings(createSettings({ proxy_mode: 'custom', proxy_url: 'socks5://127.0.0.1:7890' }))
 
     const proxyInput = wrapper.findAll('input[type="text"]').find(i =>
-      (i.element as HTMLInputElement).placeholder?.includes('settings.proxy_placeholder') ||
+      (i.element as HTMLInputElement).placeholder?.includes(t('settings.proxy_placeholder')) ||
       (i.element as HTMLInputElement).value?.includes('socks5'),
     )
     expect(proxyInput).toBeTruthy()
@@ -851,7 +841,7 @@ describe('SettingsTab — 条件渲染', () => {
     // 初始无 proxy URL 输入
     const textInputs = wrapper.findAll('input[type="text"]')
     const proxyInputBefore = textInputs.find(i =>
-      (i.element as HTMLInputElement).placeholder === 'settings.proxy_placeholder',
+      (i.element as HTMLInputElement).placeholder === t('settings.proxy_placeholder'),
     )
     expect(proxyInputBefore).toBeFalsy()
 
@@ -862,7 +852,7 @@ describe('SettingsTab — 条件渲染', () => {
 
     const textInputsAfter = wrapper.findAll('input[type="text"]')
     const proxyInputAfter = textInputsAfter.find(i =>
-      (i.element as HTMLInputElement).placeholder === 'settings.proxy_placeholder',
+      (i.element as HTMLInputElement).placeholder === t('settings.proxy_placeholder'),
     )
     expect(proxyInputAfter).toBeTruthy()
   })
@@ -882,7 +872,7 @@ describe('SettingsTab — 条件渲染', () => {
     // 不应有 password input（API key）
     expect(wrapper.find('input[type="password"]').exists()).toBe(false)
     // 不应有 test connection 按钮
-    expect(wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))).toBeFalsy()
+    expect(wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))).toBeFalsy()
   })
 
   it('AI tab 中 deepseek_enabled=true 时显示 AI 配置项', async () => {
@@ -892,7 +882,7 @@ describe('SettingsTab — 条件渲染', () => {
     // 应有 password input（API key）
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
     // 应有 test connection 按钮
-    expect(wrapper.findAll('button').find(b => b.text().includes('settings.test_connection'))).toBeTruthy()
+    expect(wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))).toBeTruthy()
   })
 
   it('切换 deepseek_enabled 开/关，子字段显隐切换', async () => {
@@ -956,7 +946,7 @@ describe('SettingsTab — Tab 导航与版本', () => {
     const wrapper = mountSettings(createSettings({ github_token_set: true }))
     await clickSidebar(wrapper, 'settings.data')
 
-    expect(wrapper.find('.setting-section-desc').text()).toContain('backup.token_note')
+    expect(wrapper.find('.setting-section-desc').text()).toContain(t('backup.token_note'))
   })
 })
 

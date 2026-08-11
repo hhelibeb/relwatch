@@ -2,18 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
 import ContextMenu from '../components/common/ContextMenu.vue'
 
-// 注意：ContextMenu.vue 中的 import 是 '../../i18n'
-// vi.mock 路径基于测试文件位置解析：从 src/__tests__/ 出发
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string) => {
-    const map: Record<string, string> = {
-      'context.open': '打开',
-      'context.copy_link': '复制链接',
-    }
-    return map[key] ?? key
-  }),
-}))
-
 beforeEach(() => {
   vi.clearAllMocks()
 })

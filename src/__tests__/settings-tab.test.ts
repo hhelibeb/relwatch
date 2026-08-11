@@ -10,7 +10,7 @@ import {
   importBackup,
 } from '../api/settings'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { setLocale } from '../i18n'
+import { setLocale, getLocale, t } from '../i18n'
 
 vi.mock('@tauri-apps/plugin-dialog', () => ({
   message: vi.fn(),
@@ -31,21 +31,12 @@ vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
 }))
 
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string, ...args: string[]) => args.length ? `${key}:${args.join(',')}` : key),
-  setLocale: vi.fn(),
-  languages: [
-    { value: 'zh-CN', label: '中文' },
-    { value: 'en-US', label: 'English' },
-  ],
-}))
-
+// i18n 为纯内存模块：不 mock，直接用真实字典
 const updateSettingsMock = vi.mocked(updateSettings)
 const setDeepseekApiKeyMock = vi.mocked(setDeepseekApiKey)
 const setGithubTokenMock = vi.mocked(setGithubToken)
 const importBackupMock = vi.mocked(importBackup)
 const confirmMock = vi.mocked(confirm)
-const setLocaleMock = vi.mocked(setLocale)
 
 function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
   return {
@@ -89,7 +80,7 @@ function mountSettings(settings: AppSettings = createSettings()) {
 }
 
 async function clickSidebar(wrapper: ReturnType<typeof mountSettings>, key: string) {
-  const button = wrapper.findAll('.settings-sidebar button').find(btn => btn.text().includes(key))
+  const button = wrapper.findAll('.settings-sidebar button').find(btn => btn.text().includes(t(key)))
   expect(button, `sidebar button ${key} should exist`).toBeTruthy()
   await button!.trigger('click')
 }
@@ -110,6 +101,7 @@ beforeEach(() => {
 
 afterEach(() => {
   document.documentElement.dataset.theme = ''
+  setLocale('zh-CN')
 })
 
 describe('SettingsTab — 表单保护性行为', () => {
@@ -120,7 +112,7 @@ describe('SettingsTab — 表单保护性行为', () => {
     await wrapper.get('input[type="number"]').setValue(30)
 
     expect(wrapper.find('.settings-banner').exists()).toBe(true)
-    expect(wrapper.find('.settings-banner').text()).toContain('settings.unsaved_banner')
+    expect(wrapper.find('.settings-banner').text()).toContain(t('settings.unsaved_banner', '1'))
   })
 
   it('discard 后恢复 props 值并隐藏未保存 banner', async () => {
@@ -166,10 +158,11 @@ describe('SettingsTab — 表单保护性行为', () => {
     expect(englishOption).toBeTruthy()
 
     await englishOption!.trigger('mouseenter')
-    expect(setLocaleMock).toHaveBeenLastCalledWith('en-US')
+    // 真实 i18n：语言预览立即生效
+    expect(getLocale()).toBe('en-US')
 
     await languageSelect.trigger('mouseleave')
-    expect(setLocaleMock).toHaveBeenLastCalledWith('zh-CN')
+    expect(getLocale()).toBe('zh-CN')
   })
 
   it('主题预览后离开恢复为当前表单主题', async () => {
@@ -178,7 +171,7 @@ describe('SettingsTab — 表单保护性行为', () => {
 
     const themeSelect = wrapper.findAll('.theme-select')[1]
     await themeSelect.get('.theme-select-trigger').trigger('click')
-    const darkOption = themeSelect.findAll('.theme-select-option').find(option => option.text() === 'settings.theme_dark')
+    const darkOption = themeSelect.findAll('.theme-select-option').find(option => option.text() === t('settings.theme_dark'))
     expect(darkOption).toBeTruthy()
 
     await darkOption!.trigger('mouseenter')
@@ -232,7 +225,8 @@ describe('SettingsTab — 保存原子性（P0 #2）', () => {
     expect(setGithubTokenMock).not.toHaveBeenCalled()
     // 输入未清空、标记未被误置为 true（避免“凭据已存但 UI 以为未存”的反向不一致）
     expect((apiKeyInput.element as HTMLInputElement).value).toBe('sk-new-key')
-    expect((wrapper.vm as any).form.deepseek_api_key_set).toBe(false)
+    // placeholder 仍为「未设置」提示（真实 i18n 文案）
+    expect((apiKeyInput.element as HTMLInputElement).placeholder).toBe(t('settings.api_key_input'))
   })
 
   it('updateSettings 成功后才写入凭据（调用顺序：先主设置后凭据）', async () => {

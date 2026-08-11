@@ -2,9 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SourceTab from '../components/SourceTab.vue'
 import { ShowToastKey } from '../injection-keys'
-import { parseSourceUrl, addSource, removeSource, updateSource } from '../api/sources'
-import { checkSingleSource } from '../api/releases'
-import { openReleaseUrl } from '../api/client'
+import { t } from '../i18n'
+import { createSource, type TestSource } from './helpers'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
@@ -12,30 +11,24 @@ vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ message: vi.fn(), confirm: vi.fn() }))
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ readText: vi.fn() }))
 
-vi.mock('../api/sources', () => ({
-  parseSourceUrl: vi.fn(),
-  addSource: vi.fn(),
-  removeSource: vi.fn(),
-  updateSource: vi.fn(),
-  buildYoutubeConfig: vi.fn((videos: boolean, live: boolean, posts = false) => JSON.stringify({ videos, live, posts })),
-}))
+// API 层：仅替换发起 IPC 的函数；parseSourceUrl / buildYoutubeConfig / 源类型注册表走真实实现
+vi.mock('../api/sources', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/sources')>()
+  return { ...actual, addSource: vi.fn(), removeSource: vi.fn(), updateSource: vi.fn() }
+})
+vi.mock('../api/releases', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/releases')>()
+  return { ...actual, checkSingleSource: vi.fn() }
+})
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return { ...actual, openReleaseUrl: vi.fn() }
+})
 
-vi.mock('../api/releases', () => ({
-  checkSingleSource: vi.fn(),
-}))
+import { addSource, removeSource, updateSource } from '../api/sources'
+import { checkSingleSource } from '../api/releases'
+import { openReleaseUrl } from '../api/client'
 
-vi.mock('../api/client', () => ({
-  openReleaseUrl: vi.fn(),
-  translateError: vi.fn((msg: string) => msg),
-}))
-
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string, ...args: string[]) => args.length ? `${key}:${args.join(',')}` : key),
-  tm: vi.fn((key: string, _args: Record<string, string>) => key),
-  getLocale: vi.fn(() => 'en'),
-}))
-
-const parseSourceUrlMock = vi.mocked(parseSourceUrl)
 const addSourceMock = vi.mocked(addSource)
 const removeSourceMock = vi.mocked(removeSource)
 const updateSourceMock = vi.mocked(updateSource)
@@ -43,47 +36,6 @@ const checkSingleSourceMock = vi.mocked(checkSingleSource)
 const openReleaseUrlMock = vi.mocked(openReleaseUrl)
 const messageMock = vi.mocked(message)
 const confirmMock = vi.mocked(confirm)
-
-interface TestSource {
-  id: number
-  source_type: string
-  owner: string
-  repo: string
-  poll_interval_minutes: number
-  enabled: boolean
-  muted: boolean
-  last_checked_at: string | null
-  last_check_status: string
-  last_check_message: string | null
-  consecutive_failures: number
-  last_new_count: number
-  description: string | null
-  created_at: string
-  updated_at: string
-  config: string | null
-}
-
-function createSource(overrides: Partial<TestSource> = {}): TestSource {
-  return {
-    id: 1,
-    source_type: 'github',
-    owner: 'vuejs',
-    repo: 'core',
-    poll_interval_minutes: 60,
-    enabled: true,
-    muted: false,
-    last_checked_at: '2025-06-01T00:00:00Z',
-    last_check_status: 'ok',
-    last_check_message: null,
-    consecutive_failures: 0,
-    last_new_count: 0,
-    description: null,
-    created_at: '2025-06-01T00:00:00Z',
-    updated_at: '2025-06-01T00:00:00Z',
-    config: null,
-    ...overrides,
-  }
-}
 
 function mountSourceTab(
   sources: TestSource[] = [createSource()],
@@ -108,16 +60,18 @@ function mountSourceTab(
   return { wrapper, showToast }
 }
 
+// 添加模式输入框（真实 placeholder 文案）
+function addInput(wrapper: ReturnType<typeof mountSourceTab>['wrapper']) {
+  return wrapper.get(`input[placeholder="${t('source.placeholder')}"]`)
+}
+// 搜索模式输入框
+function searchInput(wrapper: ReturnType<typeof mountSourceTab>['wrapper']) {
+  return wrapper.get(`input[placeholder="${t('source.search')}"]`)
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   window.localStorage.clear()
-  parseSourceUrlMock.mockImplementation((raw: string) => {
-    const match = raw.match(/github\.com\/([^/]+)\/([^/?#]+)/)
-    if (match) return { type: 'github', owner: match[1], repo: match[2] }
-    const shortMatch = raw.match(/^([a-zA-Z0-9][a-zA-Z0-9_.-]*)\/([a-zA-Z0-9_.-]+)$/)
-    if (shortMatch) return { type: 'github', owner: shortMatch[1], repo: shortMatch[2] }
-    return null
-  })
   addSourceMock.mockResolvedValue(1)
   removeSourceMock.mockResolvedValue(undefined)
   updateSourceMock.mockResolvedValue(undefined)
@@ -136,22 +90,20 @@ afterEach(() => {
 describe('SourceTab — 添加 Source', () => {
   it('输入有效 URL 并点击添加按钮，调用 addSource 并清空输入框', async () => {
     const { wrapper } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('https://github.com/vuejs/core')
     await addButton.trigger('click')
     await flushPromises()
 
-    expect(parseSourceUrlMock).toHaveBeenCalledWith('https://github.com/vuejs/core')
     expect(addSourceMock).toHaveBeenCalledWith('github', 'vuejs', 'core', undefined)
     expect((input.element as HTMLInputElement).value).toBe('')
   })
 
   it('输入 YouTube 频道时显示订阅内容复选框行，添加时携带 config', async () => {
     const { wrapper } = mountSourceTab([])
-    parseSourceUrlMock.mockReturnValue({ type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '' })
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')
@@ -180,8 +132,7 @@ describe('SourceTab — 添加 Source', () => {
 
   it('YouTube 源视频直播均未勾选时阻止添加并提示', async () => {
     const { wrapper } = mountSourceTab([])
-    parseSourceUrlMock.mockReturnValue({ type: 'youtube', owner: '@handle', repo: '' })
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('@handle')
@@ -194,27 +145,26 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(addSourceMock).not.toHaveBeenCalled()
-    expect(messageMock).toHaveBeenCalledWith('source.require_subscribe', expect.any(Object))
+    expect(messageMock).toHaveBeenCalledWith(t('source.require_subscribe'), expect.any(Object))
   })
 
   it('输入无效 URL 时，显示错误对话框而不调用 addSource', async () => {
     const { wrapper } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
-    await input.setValue('not-a-valid-url')
+    await input.setValue('https://example.com/foo')
     await addButton.trigger('click')
     await flushPromises()
 
-    expect(parseSourceUrlMock).toHaveBeenCalled()
     expect(addSourceMock).not.toHaveBeenCalled()
-    expect(messageMock).toHaveBeenCalledWith('source.invalid_url', expect.any(Object))
+    expect(messageMock).toHaveBeenCalledWith(t('source.invalid_url'), expect.any(Object))
   })
 
   it('输入已存在的 source 时，显示 toast 提示', async () => {
     const existingSource = createSource({ owner: 'vuejs', repo: 'core' })
     const { wrapper, showToast } = mountSourceTab([existingSource])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('https://github.com/vuejs/core')
@@ -222,13 +172,13 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(addSourceMock).not.toHaveBeenCalled()
-    expect(showToast).toHaveBeenCalledWith('source.exists')
+    expect(showToast).toHaveBeenCalledWith(t('source.exists'))
   })
 
   it('addSource 返回 0 表示已存在，显示 toast', async () => {
     addSourceMock.mockResolvedValue(0)
     const { wrapper, showToast } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('https://github.com/vuejs/core')
@@ -236,13 +186,13 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(addSourceMock).toHaveBeenCalled()
-    expect(showToast).toHaveBeenCalledWith('source.exists')
+    expect(showToast).toHaveBeenCalledWith(t('source.exists'))
   })
 
-  it('addSource 抛出错误时，显示错误对话框', async () => {
+  it('addSource 抛出错误时，显示错误对话框（含错误详情）', async () => {
     addSourceMock.mockRejectedValue(new Error('Network error'))
     const { wrapper } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('https://github.com/vuejs/core')
@@ -250,7 +200,7 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('source.add_failed'),
+      expect.stringContaining('Network error'),
       expect.any(Object)
     )
   })
@@ -258,7 +208,7 @@ describe('SourceTab — 添加 Source', () => {
   it('添加成功后，emit update', async () => {
     addSourceMock.mockResolvedValue(99)
     const { wrapper } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
     await input.setValue('https://github.com/vuejs/core')
@@ -274,7 +224,7 @@ describe('SourceTab — 添加 Source', () => {
 
     expect(addButton.attributes('disabled')).toBeDefined()
 
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
     await input.setValue('https://github.com/vuejs/core')
 
     expect(addButton.attributes('disabled')).toBeUndefined()
@@ -282,7 +232,7 @@ describe('SourceTab — 添加 Source', () => {
 
   it('Enter 键触发添加', async () => {
     const { wrapper } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
 
     await input.setValue('https://github.com/vuejs/core')
     await input.trigger('keyup.enter')
@@ -293,7 +243,7 @@ describe('SourceTab — 添加 Source', () => {
 
   it('清空按钮清空输入框', async () => {
     const { wrapper } = mountSourceTab([])
-    const input = wrapper.get('input[placeholder="source.placeholder"]')
+    const input = addInput(wrapper)
 
     await input.setValue('some text')
     await wrapper.get('.input-clear-btn').trigger('click')
@@ -333,7 +283,7 @@ describe('SourceTab — 删除单个 Source', () => {
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('source.delete_failed'),
+      expect.stringContaining('Delete failed'),
       expect.any(Object)
     )
   })
@@ -375,7 +325,7 @@ describe('SourceTab — 启用/禁用 Source', () => {
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('source.operation_failed'),
+      expect.stringContaining('Update failed'),
       expect.any(Object)
     )
   })
@@ -492,7 +442,7 @@ describe('SourceTab — 检查单个 Source 更新', () => {
     await flushPromises()
 
     expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('source.check_failed'),
+      expect.stringContaining('Check failed'),
       expect.any(Object)
     )
   })
@@ -565,7 +515,7 @@ describe('SourceTab — 打开 Source 链接和发布页', () => {
     })
 
     const pendingLink = wrapper.get('.source-pending-link')
-    expect(pendingLink.text()).toContain('source.pending_updates')
+    expect(pendingLink.text()).toContain(t('source.pending_updates', '3'))
     await pendingLink.trigger('click')
 
     expect(wrapper.emitted('openUnreadReleases')?.[0]).toEqual(['vuejs/core'])
@@ -587,7 +537,6 @@ describe('SourceTab — 健康状态显示', () => {
     const { wrapper } = mountSourceTab([source])
 
     expect(wrapper.find('.health-ok').exists()).toBe(true)
-    // ok 状态且无未读时，只显示 last checked 时间
     expect(wrapper.find('.source-health-meta').exists()).toBe(true)
     expect(wrapper.find('.source-error').exists()).toBe(false)
   })
@@ -603,7 +552,7 @@ describe('SourceTab — 健康状态显示', () => {
 
     expect(wrapper.find('.health-error').exists()).toBe(true)
     expect(wrapper.find('.source-error').exists()).toBe(true)
-    expect(wrapper.find('.source-health-label').text()).toContain('source.health_error')
+    expect(wrapper.find('.source-health-label').text()).toContain(t('source.health_error'))
   })
 
   it('disabled 状态显示暂停图标', () => {
@@ -611,7 +560,7 @@ describe('SourceTab — 健康状态显示', () => {
     const { wrapper } = mountSourceTab([source])
 
     expect(wrapper.find('.health-paused').exists()).toBe(true)
-    expect(wrapper.find('.source-health-label').text()).toContain('source.health_paused')
+    expect(wrapper.find('.source-health-label').text()).toContain(t('source.health_paused'))
   })
 
   it('last_check_status 为空时显示未知状态', () => {
@@ -619,7 +568,7 @@ describe('SourceTab — 健康状态显示', () => {
     const { wrapper } = mountSourceTab([source])
 
     expect(wrapper.find('.health-unknown').exists()).toBe(true)
-    expect(wrapper.find('.source-health-label').text()).toContain('source.health_unknown')
+    expect(wrapper.find('.source-health-label').text()).toContain(t('source.health_unknown'))
   })
 
   it('显示最后检查时间文本', () => {
@@ -630,12 +579,12 @@ describe('SourceTab — 健康状态显示', () => {
     expect(metaElements.length).toBeGreaterThan(0)
   })
 
-  it('从未检查时显示 "从未检查" 文本', () => {
+  it('从未检查时显示「从未检查」文本', () => {
     const source = createSource({ last_checked_at: null })
     const { wrapper } = mountSourceTab([source])
 
     const metaElements = wrapper.findAll('.source-health-meta')
-    const lastCheckedText = metaElements.find(el => el.text().includes('source.never_checked'))
+    const lastCheckedText = metaElements.find(el => el.text().includes(t('source.never_checked')))
     expect(lastCheckedText).toBeTruthy()
   })
 
@@ -648,11 +597,11 @@ describe('SourceTab — 健康状态显示', () => {
     const { wrapper } = mountSourceTab([source])
 
     const metaElements = wrapper.findAll('.source-health-meta')
-    const failureCount = metaElements.find(el => el.text().includes('source.failure_count'))
+    const failureCount = metaElements.find(el => el.text().includes(t('source.failure_count', '5')))
     expect(failureCount).toBeTruthy()
   })
 
-  it('error source 显示 last_check_message 经过 translateError', () => {
+  it('error source 显示 last_check_message 经过 translateError（真实实现）', () => {
     const source = createSource({
       enabled: true,
       last_check_status: 'error',
@@ -675,9 +624,9 @@ describe('SourceTab — 搜索过滤', () => {
     const { wrapper } = mountSourceTab(sources)
 
     await wrapper.get('.btn-mode-toggle').trigger('click')
-    const searchInput = wrapper.get('input[placeholder="source.search"]')
+    const input = searchInput(wrapper)
 
-    await searchInput.setValue('vue')
+    await input.setValue('vue')
     await flushPromises()
 
     const sourceItems = wrapper.findAll('.source-item')
@@ -692,13 +641,13 @@ describe('SourceTab — 搜索过滤', () => {
     const { wrapper } = mountSourceTab(sources)
 
     await wrapper.get('.btn-mode-toggle').trigger('click')
-    const searchInput = wrapper.get('input[placeholder="source.search"]')
+    const input = searchInput(wrapper)
 
-    await searchInput.setValue('nonexistent')
+    await input.setValue('nonexistent')
     await flushPromises()
 
     expect(wrapper.find('.source-search-status').exists()).toBe(true)
-    expect(wrapper.find('.source-search-status').text()).toContain('source.search_empty')
+    expect(wrapper.find('.source-search-status').text()).toContain(t('source.search_empty'))
   })
 
   it('搜索有结果时，显示结果数量', async () => {
@@ -709,12 +658,12 @@ describe('SourceTab — 搜索过滤', () => {
     const { wrapper } = mountSourceTab(sources)
 
     await wrapper.get('.btn-mode-toggle').trigger('click')
-    const searchInput = wrapper.get('input[placeholder="source.search"]')
+    const input = searchInput(wrapper)
 
-    await searchInput.setValue('vue')
+    await input.setValue('vue')
     await flushPromises()
 
-    expect(wrapper.find('.source-search-status').text()).toContain('source.search_result_count')
+    expect(wrapper.find('.source-search-status').text()).toContain(t('source.search_result_count', '2'))
   })
 
   it('清空搜索框后，恢复显示所有 source', async () => {
@@ -725,9 +674,9 @@ describe('SourceTab — 搜索过滤', () => {
     const { wrapper } = mountSourceTab(sources)
 
     await wrapper.get('.btn-mode-toggle').trigger('click')
-    const searchInput = wrapper.get('input[placeholder="source.search"]')
+    const input = searchInput(wrapper)
 
-    await searchInput.setValue('vue')
+    await input.setValue('vue')
     await flushPromises()
     expect(wrapper.findAll('.source-item')).toHaveLength(1)
 
@@ -744,8 +693,8 @@ describe('SourceTab — 搜索过滤', () => {
     const { wrapper } = mountSourceTab(sources)
 
     await wrapper.get('.btn-mode-toggle').trigger('click')
-    const searchInput = wrapper.get('input[placeholder="source.search"]')
-    await searchInput.setValue('vue')
+    const input = searchInput(wrapper)
+    await input.setValue('vue')
     await flushPromises()
 
     await wrapper.get('.btn-mode-toggle').trigger('click')
@@ -877,9 +826,9 @@ describe('SourceTab — Tooltip', () => {
 
     expect(wrapper.find('.source-health-tooltip').exists()).toBe(true)
     const tooltip = wrapper.get('.source-health-tooltip')
-    expect(tooltip.text()).toContain('source.tooltip_status')
-    expect(tooltip.text()).toContain('source.tooltip_history')
-    expect(tooltip.text()).toContain('source.tooltip_about')
+    expect(tooltip.text()).toContain(t('source.tooltip_status'))
+    expect(tooltip.text()).toContain(t('source.tooltip_history'))
+    expect(tooltip.text()).toContain(t('source.tooltip_about'))
   })
 
   it('鼠标离开健康图标时隐藏 tooltip', async () => {
@@ -903,7 +852,7 @@ describe('SourceTab — Tooltip', () => {
     await flushPromises()
 
     const tooltip = wrapper.get('.source-health-tooltip')
-    expect(tooltip.text()).toContain('source.health_paused')
+    expect(tooltip.text()).toContain(t('source.health_paused'))
   })
 
   it('无 totalReleaseCounts 时 tooltip 不显示历史版本信息', async () => {
@@ -917,7 +866,7 @@ describe('SourceTab — Tooltip', () => {
     await flushPromises()
 
     const tooltip = wrapper.get('.source-health-tooltip')
-    expect(tooltip.text()).not.toContain('source.tooltip_history')
+    expect(tooltip.text()).not.toContain(t('source.tooltip_history'))
   })
 })
 
@@ -928,39 +877,39 @@ describe('SourceTab — 空状态', () => {
     const { wrapper } = mountSourceTab([])
 
     expect(wrapper.find('.empty').exists()).toBe(true)
-    expect(wrapper.find('.empty').text()).toContain('source.empty')
+    expect(wrapper.find('.empty').text()).toContain(t('source.empty'))
   })
 })
 
 // ============ Badge 显示 ============
 
 describe('SourceTab — Badge 显示', () => {
-  it('enabled source 显示 "启用" badge', () => {
+  it('enabled source 显示「启用」badge', () => {
     const source = createSource({ enabled: true, muted: false })
     const { wrapper } = mountSourceTab([source])
 
     expect(wrapper.find('.badge-on').exists()).toBe(true)
-    expect(wrapper.find('.badge-on').text()).toContain('source.enabled')
+    expect(wrapper.find('.badge-on').text()).toContain(t('source.enabled'))
   })
 
-  it('disabled source 显示 "暂停" badge', () => {
+  it('disabled source 显示「暂停」badge', () => {
     const source = createSource({ enabled: false })
     const { wrapper } = mountSourceTab([source])
 
     expect(wrapper.find('.badge-off').exists()).toBe(true)
-    expect(wrapper.find('.badge-off').text()).toContain('source.paused')
+    expect(wrapper.find('.badge-off').text()).toContain(t('source.paused'))
   })
 
-  it('muted source 显示 "静默" badge', () => {
+  it('muted source 显示「静默」badge', () => {
     const source = createSource({ enabled: true, muted: true })
     const { wrapper } = mountSourceTab([source])
 
     expect(wrapper.find('.badge-muted').exists()).toBe(true)
-    expect(wrapper.find('.badge-muted').text()).toContain('source.muted')
+    expect(wrapper.find('.badge-muted').text()).toContain(t('source.muted'))
   })
 })
 
-// ============ 选择模式下的批量操作（通过真实组件） ============
+// ============ 选择模式下的批量操作 ============
 
 describe('SourceTab — 选择模式批量操作（组件级）', () => {
   it('进入选择模式后显示批量操作栏', async () => {
@@ -993,21 +942,61 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     await checkboxes[0].setValue(true)
     await checkboxes[1].setValue(true)
 
-    await wrapper.get('.btn-sm:nth-child(4)').trigger('click') // 批量暂停
+    const pauseBtn = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_pause'))!
+    await pauseBtn.trigger('click')
     await flushPromises()
 
     expect(updateSourceMock).toHaveBeenCalledTimes(2)
     expect(wrapper.emitted('update')).toBeTruthy()
   })
 
-  it('批量删除无选中时不触发操作', async () => {
+  it('批量静默/取消静默选中 source（按钮入口）', async () => {
+    const sources = [createSource({ id: 1 }), createSource({ id: 2, owner: 'other', repo: 'repo' })]
+    const { wrapper } = mountSourceTab(sources)
+
+    await wrapper.get('.btn-select').trigger('click')
+    const checkboxes = wrapper.findAll('.source-checkbox input[type="checkbox"]')
+    await checkboxes[0].setValue(true)
+    await checkboxes[1].setValue(true)
+
+    const muteBtn = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_mute'))!
+    await muteBtn.trigger('click')
+    await flushPromises()
+    expect(updateSourceMock).toHaveBeenCalledWith(1, true, 60, true)
+    expect(updateSourceMock).toHaveBeenCalledWith(2, true, 60, true)
+
+    const unmuteBtn = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_unmute'))!
+    await unmuteBtn.trigger('click')
+    await flushPromises()
+    expect(updateSourceMock).toHaveBeenCalledWith(1, true, 60, false)
+    expect(updateSourceMock).toHaveBeenCalledWith(2, true, 60, false)
+  })
+
+  it('批量操作无选中时不触发（按钮禁用）', async () => {
     const sources = [createSource({ id: 1 })]
     const { wrapper } = mountSourceTab(sources)
 
     await wrapper.get('.btn-select').trigger('click')
-    // 不选中任何项
-    const deleteButton = wrapper.findAll('.btn-sm').find(btn => btn.text().includes('source.bulk_delete'))
-    expect(deleteButton?.attributes('disabled')).toBeDefined()
+
+    const deleteButton = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_delete'))!
+    expect(deleteButton.attributes('disabled')).toBeDefined()
+  })
+
+  it('批量删除经确认后调用 removeSource', async () => {
+    const sources = [createSource({ id: 1 }), createSource({ id: 2, owner: 'other', repo: 'repo' })]
+    const { wrapper } = mountSourceTab(sources)
+
+    await wrapper.get('.btn-select').trigger('click')
+    const checkboxes = wrapper.findAll('.source-checkbox input[type="checkbox"]')
+    await checkboxes[0].setValue(true)
+    await checkboxes[1].setValue(true)
+
+    const deleteButton = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_delete'))!
+    await deleteButton.trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalled()
+    expect(removeSourceMock).toHaveBeenCalledTimes(2)
   })
 })
 
@@ -1040,7 +1029,7 @@ describe('SourceTab — 排序持久化', () => {
 
     const { wrapper } = mountSourceTab([])
 
-    expect(wrapper.get('.sort-trigger').text()).toContain('source.sort_status')
+    expect(wrapper.get('.sort-trigger').text()).toContain(t('source.sort_status'))
     expect(wrapper.get('.sort-direction-icon').text()).toBe('↑')
   })
 
@@ -1049,7 +1038,7 @@ describe('SourceTab — 排序持久化', () => {
 
     const { wrapper } = mountSourceTab([])
 
-    expect(wrapper.get('.sort-trigger').text()).toContain('source.sort_default')
+    expect(wrapper.get('.sort-trigger').text()).toContain(t('source.sort_default'))
   })
 })
 

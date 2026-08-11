@@ -6,11 +6,9 @@ vi.mock('@tauri-apps/api/core', () => ({
 vi.mock('@tauri-apps/plugin-opener', () => ({
   openUrl: vi.fn(),
 }))
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string, ...args: string[]) => (args.length ? `${key}|${args.join('|')}` : key)),
-}))
 
 import { invoke } from '@tauri-apps/api/core'
+import { t } from '../i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   invokeI18n,
@@ -91,25 +89,24 @@ describe('invokeI18n', () => {
   })
 
   it('Error 且带 err. 前缀时抛 InvokeI18nError（携带原始 key/args，翻译消息并保留堆栈）', async () => {
-    const original = new Error('Error: err.add_failed|microsoft/vscode')
+    const original = new Error('Error: err.repo_verify_failed|microsoft/vscode')
     vi.mocked(invoke).mockRejectedValue(original)
 
-    await expect(invokeI18n('some_command')).rejects.toThrow('err.add_failed|microsoft/vscode')
+    // 真实 i18n 字典：err.repo_verify_failed 渲染为「验证仓库失败: {0}」
+    await expect(invokeI18n('some_command')).rejects.toThrow(t('err.repo_verify_failed', 'microsoft/vscode'))
     // 抛 InvokeI18nError：message 已翻译，且携带原始错误 key 与参数供调用方分支判断
     const err = (await invokeI18n('some_command').catch(e => e)) as InvokeI18nError
     expect(err).toBeInstanceOf(InvokeI18nError)
-    expect(err.key).toBe('err.add_failed')
+    expect(err.key).toBe('err.repo_verify_failed')
     expect(err.args).toEqual(['microsoft/vscode'])
     // 保留原始错误调用堆栈
     expect(err.stack).toBe(original.stack)
   })
 
-  it('Error 无 err. 前缀时不调用 t()，仅去前缀', async () => {
-    const { t } = await import('../i18n')
+  it('Error 无 err. 前缀时仅去前缀，不翻译', async () => {
     vi.mocked(invoke).mockRejectedValue(new Error('Error: network timeout'))
 
     await expect(invokeI18n('some_command')).rejects.toThrow('network timeout')
-    expect(t).not.toHaveBeenCalled()
   })
 
   it('非 Error 抛出值转换为 Error', async () => {

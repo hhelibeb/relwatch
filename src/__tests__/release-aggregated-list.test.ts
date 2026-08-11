@@ -1,97 +1,72 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { shallowMount } from '@vue/test-utils'
+import { mount } from '@vue/test-utils'
+import { defineComponent } from 'vue'
 import ReleaseAggregatedList from '../components/ReleaseAggregatedList.vue'
+import { t } from '../i18n'
+import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
-import type { RepoGroup } from '../components/releaseTypes'
 
-// 阶段 2-1：聚合列表（ReleaseAggregatedList.vue）repoGroups 分组逻辑专项测试。
-// 覆盖：空/单/多 repo 聚合、组内按发布时间降序、组间按最新版本降序、
-// 分组键含 source_type（不同源类型同 owner/repo 不串源）、
-// 展开/折叠/全展开、open-detail 携带组内序列、分组显示名（注册表 displayName）。
+// API 边界：仅替换 openReleaseUrl；注册表 / formatDate / i18n 走真实实现
+vi.mock('../api/client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/client')>()
+  return { ...actual, openReleaseUrl: vi.fn() }
+})
+// 统计上报：内存聚合 + 5s 定时刷库，仅置空 track 避免定时器
+vi.mock('../composables/useUsageTracking', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../composables/useUsageTracking')>()
+  return { ...actual, track: vi.fn() }
+})
 
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string) => key),
-}))
-
-vi.mock('../composables/useUsageTracking', () => ({
-  track: vi.fn(),
-}))
-
-vi.mock('../utils', () => ({
-  formatDate: vi.fn(() => '2025-06-01'),
-}))
-
-vi.mock('../api/client', () => ({
-  openReleaseUrl: vi.fn(),
-}))
-
-vi.mock('../composables/useContextMenu', () => ({
-  useContextMenu: vi.fn(() => ({
-    contextMenu: null,
-    closeContextMenu: vi.fn(),
-    handleContextMenu: vi.fn(),
-    handleCopyLink: vi.fn(),
-    handleOpenLink: vi.fn(),
-    handleMenuAction: vi.fn(),
-  })),
-}))
-
-function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
-  return {
-    id: 1,
-    source_id: 1,
-    source_type: 'github',
-    owner: 'tauri-apps',
-    repo: 'tauri',
-    tag_name: 'v2.0.0',
-    release_name: 'Tauri 2.0 Stable',
-    html_url: 'https://github.com/tauri-apps/tauri/releases/tag/v2.0.0',
-    published_at: '2025-06-01T00:00:00Z',
-    prerelease: false,
-    body: null,
-    detected_at: '2025-06-01T00:00:00Z',
-    notification_status: 'pending',
-    snooze_until: null,
-    ai_summary: null,
-    ai_importance: null,
-    body_translated: null,
-    extra_metadata: null,
-    source_description: null,
-    ...overrides,
-  }
-}
+// ReleaseItem 自定义 stub：通过点击事件入口驱动 open-detail（真实绑定链路）
+const ReleaseItemStub = defineComponent({
+  name: 'ReleaseItem',
+  props: ['release'],
+  emits: ['update', 'open-detail'],
+  template: '<div class="stub-release-item" @click="$emit(\'open-detail\', release)">{{ release.tag_name }}</div>',
+})
 
 function mountList(releases: ReleaseInfo[], isFiltering = false) {
-  return shallowMount(ReleaseAggregatedList, { props: { releases, isFiltering } })
+  return mount(ReleaseAggregatedList, {
+    props: { releases, isFiltering },
+    global: { stubs: { ReleaseItem: ReleaseItemStub, ContextMenu: true } },
+  })
 }
 
-function groups(wrapper: ReturnType<typeof mountList>): RepoGroup[] {
-  return (wrapper.vm as unknown as { repoGroups: RepoGroup[] }).repoGroups
-}
+beforeEach(() => {
+  vi.clearAllMocks()
+})
 
+/**
+ * ReleaseAggregatedList.vue 行为测试（真实分组逻辑 + 注册表显示名）
+ * 覆盖：空/单/多 repo 聚合、组内按发布时间降序、组间按最新版本降序、
+ * 分组键含 source_type、展开/折叠/全展开、open-detail 携带组内序列。
+ */
 describe('ReleaseAggregatedList.vue — 分组聚合', () => {
   it('空数据：无分组，显示 empty 文案（过滤时 no_match）', () => {
     const wrapper = mountList([])
-    expect(groups(wrapper)).toEqual([])
-    expect(wrapper.text()).toContain('release.empty')
+    expect(wrapper.find('.empty').text()).toContain(t('release.empty'))
+    expect(wrapper.findAll('.repo-group')).toHaveLength(0)
 
     const filtered = mountList([], true)
-    expect(filtered.text()).toContain('release.no_match')
+    expect(filtered.find('.empty').text()).toContain(t('release.no_match'))
   })
 
-  it('单 repo 多版本 → 一组，组内按发布时间降序', () => {
+  it('单 repo 多版本 → 一组，组内按发布时间降序', async () => {
     const releases = [
       createRelease({ id: 1, tag_name: 'v1.0.0', published_at: '2025-06-01T00:00:00Z' }),
       createRelease({ id: 2, tag_name: 'v1.1.0', published_at: '2025-06-10T00:00:00Z' }),
       createRelease({ id: 3, tag_name: 'v0.9.0', published_at: '2025-05-01T00:00:00Z' }),
     ]
     const wrapper = mountList(releases)
-    const g = groups(wrapper)
 
-    expect(g).toHaveLength(1)
-    expect(g[0].releases.map(r => r.tag_name)).toEqual(['v1.1.0', 'v1.0.0', 'v0.9.0'])
+    expect(wrapper.findAll('.repo-group')).toHaveLength(1)
     // 组头显示最新 tag
-    expect(wrapper.text()).toContain('v1.1.0')
+    expect(wrapper.find('.repo-latest-tag').text()).toBe('v1.1.0')
+
+    // 展开后组内条目按发布时间降序
+    await wrapper.find('.repo-group-toggle').trigger('click')
+    const itemTags = wrapper.findAll('.stub-release-item').map(i => i.text())
+    expect(itemTags).toEqual(['v1.1.0', 'v1.0.0', 'v0.9.0'])
   })
 
   it('多 repo → 组按最新版本时间降序', () => {
@@ -100,10 +75,10 @@ describe('ReleaseAggregatedList.vue — 分组聚合', () => {
       createRelease({ id: 2, owner: 'b', repo: 'new', published_at: '2025-06-20T00:00:00Z' }),
       createRelease({ id: 3, owner: 'c', repo: 'mid', published_at: '2025-06-01T00:00:00Z' }),
     ]
-    const g = groups(mountList(releases))
+    const wrapper = mountList(releases)
 
-    // 分组键带 source_type 前缀（sourceRepoKey：type|owner|repo 小写）
-    expect(g.map(x => x.key)).toEqual(['github|b|new', 'github|c|mid', 'github|a|old'])
+    // 组按最新版本降序：new → mid → old
+    expect(wrapper.findAll('.repo-name').map(n => n.text())).toEqual(['b/new', 'c/mid', 'a/old'])
   })
 
   it('分组键含 source_type：不同源类型同 owner/repo 不串源', () => {
@@ -111,10 +86,10 @@ describe('ReleaseAggregatedList.vue — 分组聚合', () => {
       createRelease({ id: 1, source_type: 'github', owner: 'same', repo: 'x', tag_name: 'v1', published_at: '2025-06-01T00:00:00Z' }),
       createRelease({ id: 2, source_type: 'youtube', owner: 'same', repo: 'x', tag_name: 'vid1', published_at: '2025-06-02T00:00:00Z' }),
     ]
-    const g = groups(mountList(releases))
+    const wrapper = mountList(releases)
 
-    expect(g).toHaveLength(2)
-    expect(g.map(x => x.key)).toEqual(['youtube|same|x', 'github|same|x'])
+    // 两个独立分组（github|same|x 与 youtube|same|x）
+    expect(wrapper.findAll('.repo-group')).toHaveLength(2)
   })
 
   it('分组键大小写不敏感（owner/repo 统一小写）', () => {
@@ -122,10 +97,10 @@ describe('ReleaseAggregatedList.vue — 分组聚合', () => {
       createRelease({ id: 1, owner: 'Owner', repo: 'Repo', published_at: '2025-06-01T00:00:00Z' }),
       createRelease({ id: 2, owner: 'owner', repo: 'repo', published_at: '2025-06-02T00:00:00Z' }),
     ]
-    const g = groups(mountList(releases))
+    const wrapper = mountList(releases)
 
-    expect(g).toHaveLength(1)
-    expect(g[0].key).toBe('github|owner|repo')
+    expect(wrapper.findAll('.repo-group')).toHaveLength(1)
+    expect(wrapper.find('.repo-latest-tag').text()).toBe('v2.0.0')
   })
 })
 
@@ -134,27 +109,25 @@ describe('ReleaseAggregatedList.vue — 展开/折叠', () => {
     const releases = [createRelease({ id: 1, published_at: '2025-06-01T00:00:00Z' })]
     const wrapper = mountList(releases)
 
-    expect((wrapper.vm as any).allExpanded).toBe(false)
     expect(wrapper.find('.repo-group-body').exists()).toBe(false)
   })
 
-  it('toggleRepo 展开后渲染组内条目，再点收起', async () => {
+  it('点击组头展开后渲染组内条目，再点收起', async () => {
     const releases = [
       createRelease({ id: 1, published_at: '2025-06-01T00:00:00Z' }),
       createRelease({ id: 2, published_at: '2025-06-02T00:00:00Z' }),
     ]
     const wrapper = mountList(releases)
-    const key = groups(wrapper)[0].key
 
     await wrapper.find('.repo-group-toggle').trigger('click')
-    expect((wrapper.vm as any).expandedRepos.has(key)).toBe(true)
     expect(wrapper.findAll('.repo-group-body')).toHaveLength(1)
+    expect(wrapper.findAll('.stub-release-item')).toHaveLength(2)
 
     await wrapper.find('.repo-group-toggle').trigger('click')
-    expect((wrapper.vm as any).expandedRepos.has(key)).toBe(false)
+    expect(wrapper.findAll('.repo-group-body')).toHaveLength(0)
   })
 
-  it('expandAll / toggleAllRepos 全展开与收起', async () => {
+  it('全部展开/收起按钮切换所有分组', async () => {
     const releases = [
       createRelease({ id: 1, owner: 'a', repo: 'r1', published_at: '2025-06-01T00:00:00Z' }),
       createRelease({ id: 2, owner: 'b', repo: 'r2', published_at: '2025-06-02T00:00:00Z' }),
@@ -162,12 +135,12 @@ describe('ReleaseAggregatedList.vue — 展开/折叠', () => {
     const wrapper = mountList(releases)
 
     await wrapper.find('.repo-toolbar .btn-sm').trigger('click')
-    expect((wrapper.vm as any).allExpanded).toBe(true)
     expect(wrapper.findAll('.repo-group-body')).toHaveLength(2)
+    expect(wrapper.find('.repo-toolbar .btn-sm').text()).toContain(t('release.collapse_all'))
 
     await wrapper.find('.repo-toolbar .btn-sm').trigger('click')
-    expect((wrapper.vm as any).allExpanded).toBe(false)
     expect(wrapper.findAll('.repo-group-body')).toHaveLength(0)
+    expect(wrapper.find('.repo-toolbar .btn-sm').text()).toContain(t('release.expand_all'))
   })
 })
 
@@ -179,14 +152,14 @@ describe('ReleaseAggregatedList.vue — open-detail 导航序列', () => {
       createRelease({ id: 3, owner: 'b', repo: 'r2', published_at: '2025-06-03T00:00:00Z' }),
     ]
     const wrapper = mountList(releases)
-    const g = groups(wrapper)
-    const groupA = g.find(x => x.key === 'github|a|r1')!
 
-    ;(wrapper.vm as any).forwardOpenDetail(groupA.releases[0])
+    // 展开 a/r1 组（最新版本较旧，排第二），点击组内第一条（id 2，组内降序）
+    await wrapper.findAll('.repo-group-toggle')[1].trigger('click')
+    await wrapper.findAll('.stub-release-item')[0].trigger('click')
 
     const events = wrapper.emitted('open-detail')!
     expect(events).toBeTruthy()
-    expect(events[0][0]).toEqual(groupA.releases[0])
+    expect(events[0][0]).toMatchObject({ id: 2 })
     // 序列 = 组内全部（降序），不含 b|r2 的 release
     expect((events[0][1] as ReleaseInfo[]).map(r => r.id)).toEqual([2, 1])
   })

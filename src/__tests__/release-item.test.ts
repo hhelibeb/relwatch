@@ -1,9 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { shallowMount } from '@vue/test-utils'
-import { nextTick, ref } from 'vue'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { shallowMount, mount } from '@vue/test-utils'
+import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
+import { t, setLocale } from '../i18n'
+import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../api/releases', () => ({
@@ -16,11 +18,6 @@ vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
 }))
 
-vi.mock('../i18n', () => ({
-  t: vi.fn((key: string) => key),
-  getLocale: vi.fn(() => 'zh-CN'),
-}))
-
 // 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
 // 必须引用 utils 真实实现——曾在此处复制实现，utils 语义变化时测试按旧语义放行（见阶段 2-4）
 vi.mock('../utils', async importOriginal => {
@@ -31,40 +28,18 @@ vi.mock('../utils', async importOriginal => {
   }
 })
 
-vi.mock('../composables/contextMenuBus', () => ({
-  registerCloser: vi.fn(),
-  unregisterCloser: vi.fn(),
-  closeAllContextMenus: vi.fn(),
-}))
-
+// contextMenuBus 为纯内存模块，用真实实现（互斥关闭是菜单行为的一部分）
 import { setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
-import { registerCloser, unregisterCloser } from '../composables/contextMenuBus'
+import { closeAllContextMenus } from '../composables/contextMenuBus'
 
-function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
-  return {
-    id: 1,
-    source_id: 1,
-    source_type: 'github',
-    owner: 'tauri-apps',
-    repo: 'tauri',
-    tag_name: 'v2.0.0',
-    release_name: 'Tauri 2.0 Stable',
-    html_url: 'https://github.com/tauri-apps/tauri/releases/tag/v2.0.0',
-    published_at: '2025-06-01T00:00:00Z',
-    prerelease: false,
-    body: null,
-    detected_at: '2025-06-01T00:00:00Z',
-    notification_status: 'pending',
-    snooze_until: null,
-    ai_summary: null,
-    ai_importance: null,
-    body_translated: null,
-    extra_metadata: null,
-    source_description: null,
-    ...overrides,
-  }
-}
+// ContextMenu 自定义 stub：渲染菜单项文本，供右键菜单行为断言
+const ContextMenuStub = defineComponent({
+  name: 'ContextMenu',
+  props: { x: Number, y: Number, items: Array },
+  emits: ['action', 'close'],
+  template: '<div class="stub-menu"><span v-for="item in items" :key="item.id" class="stub-menu-item">{{ item.label }}</span></div>',
+})
 
 function mountRelease(release: ReleaseInfo) {
   return shallowMount(ReleaseItem, {
@@ -77,17 +52,36 @@ function mountRelease(release: ReleaseInfo) {
   })
 }
 
+// 菜单测试专用：真实渲染 + ContextMenu stub（右键菜单为事件入口）
+function mountWithMenus(release: ReleaseInfo, aiEnabled = true) {
+  return mount(ReleaseItem, {
+    props: { release },
+    global: {
+      provide: {
+        [ShowToastKey as symbol]: vi.fn(),
+        [AiEnabledKey as symbol]: ref(aiEnabled),
+      },
+      stubs: { MarkdownContent: true, ContextMenu: ContextMenuStub },
+    },
+  })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  setLocale('zh-CN')
+})
+
+afterEach(() => {
+  setLocale('zh-CN')
 })
 
 /**
- * ReleaseItem.vue 真实运行场景测试
+ * ReleaseItem.vue 真实运行场景测试（真实 i18n 字典）
  *
  * 版本列表中的单个版本卡片，提供：
  * - 版本信息展示（仓库/标签/标题/日期/状态/预发布标记）
  * - AI 摘要与截断悬浮提示
- * - 右键菜单（打开链接/复制链接/删除）和摘要右键菜单（复制摘要）
+ * - 右键菜单（打开链接/复制链接/删除）和摘要右键菜单（阅读全文/复制摘要/翻译）
  * - 通知状态变更（点击链接自动标记、稍后提醒、忽略）
  */
 describe('ReleaseItem.vue — 渲染', () => {
@@ -113,13 +107,13 @@ describe('ReleaseItem.vue — 渲染', () => {
   it('预发布版显示 prerelease badge', () => {
     const wrapper = mountRelease(createRelease({ prerelease: true }))
 
-    expect(wrapper.text()).toContain('release.prerelease')
+    expect(wrapper.text()).toContain(t('release.prerelease'))
   })
 
   it('正式版不显示 prerelease badge', () => {
     const wrapper = mountRelease(createRelease({ prerelease: false }))
 
-    expect(wrapper.text()).not.toContain('release.prerelease')
+    expect(wrapper.text()).not.toContain(t('release.prerelease'))
   })
 
   it('snoozed 且 snooze_until 有值时显示提醒时间', () => {
@@ -128,7 +122,7 @@ describe('ReleaseItem.vue — 渲染', () => {
       snooze_until: '2025-06-10T00:00:00Z',
     }))
 
-    expect(wrapper.text()).toContain('release.snooze_until')
+    expect(wrapper.text()).toContain(t('release.snooze_until', '2024-06-15'))
   })
 
   it('AI 摘要存在时渲染摘要行', () => {
@@ -149,20 +143,20 @@ describe('ReleaseItem.vue — 通知状态操作', () => {
   it('未读版本（pending）上显示 Ignore 按钮', () => {
     const wrapper = mountRelease(createRelease({ notification_status: 'pending' }))
 
-    expect(wrapper.text()).toContain('release.ignore')
+    expect(wrapper.text()).toContain(t('release.ignore'))
   })
 
   it('已读版本（clicked）上显示 Snooze 按钮，无 Ignore', () => {
     const wrapper = mountRelease(createRelease({ notification_status: 'clicked' }))
 
-    expect(wrapper.text()).toContain('release.snooze')
-    expect(wrapper.text()).not.toContain('release.ignore')
+    expect(wrapper.text()).toContain(t('release.snooze'))
+    expect(wrapper.text()).not.toContain(t('release.ignore'))
   })
 
   it('已读版本（ignored）上显示 Snooze 按钮', () => {
     const wrapper = mountRelease(createRelease({ notification_status: 'ignored' }))
 
-    expect(wrapper.text()).toContain('release.snooze')
+    expect(wrapper.text()).toContain(t('release.snooze'))
   })
 
   it('点击 Ignore 调用 setNotificationState("ignored")', async () => {
@@ -197,7 +191,7 @@ describe('ReleaseItem.vue — 通知状态操作', () => {
     await wrapper.find('.btn-danger-soft').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    expect(toast).toHaveBeenCalledWith(expect.stringContaining('release.status_failed'))
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.status_failed')))
   })
 
   it('未读版本点击链接 → 打开 URL + 设置 clicked + emit update', async () => {
@@ -237,7 +231,7 @@ describe('ReleaseItem.vue — 通知状态操作', () => {
     vi.mocked(setNotificationState).mockResolvedValue(undefined)
     const wrapper = mountRelease(createRelease({ id: 7, notification_status: 'clicked' }))
 
-    const snoozeBtn = wrapper.findAll('button').find(b => b.text().includes('release.snooze'))
+    const snoozeBtn = wrapper.findAll('button').find(b => b.text().includes(t('release.snooze')))
     expect(snoozeBtn).toBeTruthy()
     await snoozeBtn!.trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -246,18 +240,17 @@ describe('ReleaseItem.vue — 通知状态操作', () => {
   })
 })
 
-describe('ReleaseItem.vue — 生命周期', () => {
-  it('挂载时注册 contextMenuBus', () => {
-    mountRelease(createRelease())
+describe('ReleaseItem.vue — contextMenuBus 集成', () => {
+  it('挂载后菜单可被总线统一关闭（真实 registerCloser 链路）', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body' }))
 
-    expect(registerCloser).toHaveBeenCalled()
-  })
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    expect(wrapper.find('.stub-menu').exists()).toBe(true)
 
-  it('卸载时注销 contextMenuBus', () => {
-    const wrapper = mountRelease(createRelease())
-    wrapper.unmount()
+    closeAllContextMenus()
+    await nextTick()
 
-    expect(unregisterCloser).toHaveBeenCalled()
+    expect(wrapper.find('.stub-menu').exists()).toBe(false)
   })
 })
 
@@ -307,7 +300,7 @@ describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
     expect(setNotificationState).toHaveBeenCalledWith(5, 'clicked')
     // 标记失败 → 不应打开链接，避免“链接已开但列表仍显示未读”
     expect(openReleaseUrl).not.toHaveBeenCalled()
-    expect(toast).toHaveBeenCalledWith(expect.stringContaining('release.status_failed'))
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.status_failed')))
   })
 
   it('未读版本标记成功后才打开链接（调用顺序：先标记后打开）', async () => {
@@ -395,56 +388,68 @@ describe('ReleaseItem.vue — 打开详情弹窗', () => {
   })
 })
 
-describe('ReleaseItem.vue — 翻译入口', () => {
-  function mountWithAi(release: ReleaseInfo) {
-    return shallowMount(ReleaseItem, {
-      props: { release },
-      global: {
-        provide: {
-          [ShowToastKey as symbol]: vi.fn(),
-          [AiEnabledKey as symbol]: ref(true),
-        },
-      },
-    })
-  }
+describe('ReleaseItem.vue — 翻译入口（右键菜单事件入口）', () => {
+  it('有原文无译文且 AI 启用时，摘要右键菜单含「翻译」', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body' }))
 
-  it('有原文无译文且 AI 启用时，右键菜单含「翻译」', () => {
-    const wrapper = mountWithAi(createRelease({ body: '## Body' }))
+    await wrapper.find('.release-summary-text').trigger('contextmenu')
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
 
-    expect((wrapper.vm as any).canTranslate).toBe(true)
-    const items = (wrapper.vm as any).summaryMenuItems as { id: string }[]
-    expect(items.map(i => i.id)).toContain('translate')
+    expect(labels).toContain(t('context.translate'))
+    expect(labels).toContain(t('context.copy_content'))
   })
 
-  it('已有译文时不提供「翻译」选项', () => {
-    const wrapper = mountWithAi(createRelease({ body: '## Body', body_translated: '译文' }))
+  it('已有译文时不提供「翻译」选项', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body', body_translated: '译文' }))
 
-    expect((wrapper.vm as any).canTranslate).toBe(false)
+    await wrapper.find('.release-summary-text').trigger('contextmenu')
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
+
+    expect(labels).not.toContain(t('context.translate'))
   })
 
-  it('无原文时不提供「翻译」选项', () => {
-    const wrapper = mountWithAi(createRelease({ ai_summary: '仅摘要' }))
+  it('无原文时不提供「翻译」选项', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '仅摘要' }))
 
-    expect((wrapper.vm as any).canTranslate).toBe(false)
+    await wrapper.find('.release-summary-text').trigger('contextmenu')
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
+
+    expect(labels).not.toContain(t('context.translate'))
   })
 })
 
 describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
-  it('语言切换后 releaseMenuItems/summaryMenuItems 的 label 实时更新', async () => {
-    const { t } = await import('../i18n')
-    // 先用默认实现（返回 key）挂载
-    const wrapper = mountRelease(createRelease({ ai_summary: '摘要内容' }))
+  it('语言切换后右键菜单 label 实时更新（真实 setLocale）', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body' }))
 
-    // 切换到“英文”实现：返回 key 大写以模拟语言切换后的不同文案
-    vi.mocked(t).mockImplementation((key: string) => `EN:${key}`)
-    // 访问 computed 触发重新求值，验证 label 随 t 的实现变化而更新
-    expect((wrapper.vm as any).releaseMenuItems).toEqual([
-      { id: 'openLink', label: 'EN:context.open' },
-      { id: 'copyLink', label: 'EN:context.copy_link' },
-      { id: 'deleteRelease', label: 'EN:context.delete_release' },
+    // 版本链接右键菜单（zh-CN）
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      t('context.open'),
+      t('context.copy_link'),
+      t('context.delete_release'),
     ])
-    expect((wrapper.vm as any).summaryMenuItems).toEqual([
-      { id: 'copyContent', label: 'EN:context.copy_content' },
+
+    // 摘要右键菜单（zh-CN）
+    await wrapper.find('.release-summary-text').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      t('release.read_full'),
+      t('context.copy_content'),
+      t('context.translate'),
+    ])
+
+    // 切换到英文（真实 i18n 模块）
+    setLocale('en-US')
+    await nextTick()
+
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      'Open', 'Copy Link', 'Delete Version',
+    ])
+
+    await wrapper.find('.release-summary-text').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      'Read full note', 'Copy Content', 'Translate',
     ])
   })
 })
@@ -560,7 +565,6 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
   })
 
   it('播放量与阅读全文按钮同行（底部行，不额外占行）', async () => {
-    const { t } = await import('../i18n')
     const wrapper = mountRelease(yt({ extra_metadata: JSON.stringify({ kind: 'video', view_count: 1234567 }) }))
     const footer = wrapper.find('.yt-footer-row')
     expect(footer.exists()).toBe(true)
@@ -570,8 +574,8 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     // 播放量与按钮在同一底部行
     expect(footer.find('.yt-view-count').exists()).toBe(true)
     expect(footer.find('.release-expand-btn').exists()).toBe(true)
-    // 中文环境：1234567 → 123.5万，走 i18n key release.yt_views
-    expect(vi.mocked(t)).toHaveBeenCalledWith('release.yt_views', '123.5万')
+    // 中文环境：1234567 → 123.5万，渲染真实 i18n 文案
+    expect(footer.find('.yt-view-count').text()).toBe(t('release.yt_views', '123.5万'))
   })
 
   it('无播放量（YouTube RSS 模式）时底部行只有阅读全文按钮', () => {
@@ -582,7 +586,6 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
   })
 
   it('B 站播放量同样显示在底部行', async () => {
-    const { t } = await import('../i18n')
     const wrapper = mountRelease(createRelease({
       source_type: 'bilibili',
       owner: '476599099',
@@ -595,8 +598,8 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     }))
     const view = wrapper.find('.yt-view-count')
     expect(view.exists()).toBe(true)
-    // 中文环境：99999999 → 1亿，走 i18n key release.yt_views
-    expect(vi.mocked(t)).toHaveBeenCalledWith('release.yt_views', '1亿')
+    // 中文环境：99999999 → 1亿，渲染真实 i18n 文案
+    expect(view.text()).toBe(t('release.yt_views', '1亿'))
   })
 
   it('http 封面自动升级为 https（兼容 CSP img-src 限制与 B 站旧数据）', () => {
