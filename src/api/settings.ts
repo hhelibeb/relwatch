@@ -1,15 +1,15 @@
 import { invokeI18nFn } from './client'
 import { commands } from '../bindings'
-import type { AppSettings, UpdateSettingsPayload } from '../bindings'
+import type { AppSettings } from '../bindings'
 
 // 类型由 tauri-specta 从 Rust 生成（src/bindings.ts），此处 re-export 保持调用方路径不变
-export type { AppSettings, UpdateSettingsPayload } from '../bindings'
+export type { AppSettings } from '../bindings'
 
 export async function getSettings(): Promise<AppSettings> {
   return invokeI18nFn(commands.getSettings)
 }
 
-export async function updateSettings(payload: UpdateSettingsPayload): Promise<void> {
+export async function updateSettings(payload: AppSettings): Promise<void> {
   await invokeI18nFn(() => commands.updateSettings(payload))
 }
 

@@ -147,28 +147,34 @@ async function handleSave() {
     // 先验证提示词、持久化主设置，再写敏感凭据：保证 updateSettings 失败时凭据不会被误写入，
     // 避免“凭据已持久化但用户以为整体保存失败”的非原子状态。
     setLocale(form.language)
+    // payload 与后端 AppSettings 结构一一对应（snake_case）：字段清单不再单独维护，
+    // 新增设置项后端加字段后，TS 类型强制此处补齐。
     await updateSettings({
-      pollIntervalMinutes: s.poll_interval_minutes,
-      proxyMode: s.proxy_mode,
-      proxyUrl: s.proxy_url.trim(),
-      autoStart: s.auto_start,
-      minimizeToTray: s.minimize_to_tray,
-      logRetentionDays: s.log_retention_days,
-      deepseekEnabled: s.deepseek_enabled,
-      deepseekModel: s.deepseek_model.trim() || 'deepseek-v4-flash',
-      deepseekBaseUrl: s.deepseek_base_url.trim() || 'https://api.deepseek.com',
-      deepseekProxyBypass: s.deepseek_proxy_bypass,
-      deepseekPrompt: s.deepseek_prompt,
-      deepseekMinImportance: s.deepseek_min_importance,
-      deepseekTranslateRelease: s.deepseek_translate_release,
+      poll_interval_minutes: s.poll_interval_minutes,
+      proxy_mode: s.proxy_mode,
+      proxy_url: s.proxy_url.trim(),
+      auto_start: s.auto_start,
+      minimize_to_tray: s.minimize_to_tray,
+      log_retention_days: s.log_retention_days,
+      deepseek_enabled: s.deepseek_enabled,
+      deepseek_model: s.deepseek_model.trim() || 'deepseek-v4-flash',
+      deepseek_base_url: s.deepseek_base_url.trim() || 'https://api.deepseek.com',
+      deepseek_api_key_set: s.deepseek_api_key_set,
+      deepseek_proxy_bypass: s.deepseek_proxy_bypass,
+      deepseek_prompt: s.deepseek_prompt,
+      deepseek_min_importance: s.deepseek_min_importance,
+      deepseek_translate_release: s.deepseek_translate_release,
 
-      checkPrereleases: s.check_prereleases,
-      fetchHistory: s.fetch_history,
-      fetchHistoryCount: s.fetch_history_count ?? 1,
+      check_prereleases: s.check_prereleases,
+      fetch_history: s.fetch_history,
+      fetch_history_count: s.fetch_history_count ?? 1,
       language: s.language,
       theme: s.theme,
-      showSourceTypeIcons: s.show_source_type_icons,
-      enableUsageStats: s.enable_usage_stats,
+      show_source_type_icons: s.show_source_type_icons,
+      enable_usage_stats: s.enable_usage_stats,
+      github_token_set: s.github_token_set,
+      youtube_api_key_set: s.youtube_api_key_set,
+      bilibili_cookie_set: s.bilibili_cookie_set,
     })
     // 主设置持久化成功后再写凭据；若凭据写入失败，走外层 catch 提示 save_failed，
     // 此时主设置已存、凭据未存，用户可重试凭据。

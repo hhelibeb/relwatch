@@ -3,10 +3,14 @@
  * 显示名、解析规则、展示行为）收敛为每类型一条定义。
  *
  * 新增监控源类型的完整清单：
- * 1. 后端 `src-tauri/src/source.rs::get_adapter` + 新 adapter 文件
+ * 1. 后端 `src-tauri/src/source.rs::ADAPTERS` 注册表 + 新 adapter 文件
  * 2. 本文件加一条 `SourceTypeDef`（解析器/URL/图标/标题/展示行为）
  * 3. i18n 两个语言文件加 `source.type_<type>` key
  * 4. 若类型需要独立鉴权，后端 `AuthKind` 加枚举并注册 settings token
+ *
+ * 防漂移防线：`src/__tests__/source-registry-sync.test.ts` 对拍本文件与后端
+ * ADAPTERS 的类型集合和能力位（aiSummary ↔ ai_eligible）；后端只读命令
+ * `list_source_types` 动态下发能力元数据。
  */
 import type { Source } from './sources'
 import type { SourceType } from '../components/releaseTypes'

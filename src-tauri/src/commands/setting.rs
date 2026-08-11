@@ -71,38 +71,13 @@ use serde_json::json;
     })
 }
 
-/// 仅用于 `update_settings` 接收前端参数
-#[derive(serde::Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct UpdateSettingsPayload {
-    poll_interval_minutes: i64,
-    proxy_url: String,
-    proxy_mode: String,
-    auto_start: bool,
-    minimize_to_tray: bool,
-    log_retention_days: i64,
-    deepseek_enabled: bool,
-    deepseek_model: String,
-    deepseek_base_url: String,
-    deepseek_proxy_bypass: bool,
-    deepseek_prompt: String,
-    deepseek_min_importance: String,
-    deepseek_translate_release: bool,
-
-    check_prereleases: bool,
-    fetch_history: bool,
-    fetch_history_count: i64,
-    language: String,
-    theme: String,
-    show_source_type_icons: bool,
-    enable_usage_stats: bool,
-}
-
+/// 设置读写共用 `AppSettings`（types.rs）：不再维护第二份与 AppSettings
+/// 逐字段重复的 payload 结构，新增设置项少一处同步点。
 #[tauri::command]
 
 #[specta::specta]pub async fn update_settings(
     app: tauri::AppHandle,
-    payload: UpdateSettingsPayload,
+    payload: AppSettings,
 ) -> Result<(), String> {
     let poll_interval_minutes = payload.poll_interval_minutes.clamp(5, 1440);
     let log_retention_days = payload.log_retention_days.clamp(0, 3650);
@@ -181,6 +156,8 @@ pub struct UpdateSettingsPayload {
             let next = chrono::Utc::now().timestamp() + poll_interval_minutes * 60;
             next_poll_at.store(next, Ordering::Relaxed);
             let _ = settings::set_setting(&conn, KEY_NEXT_POLL_AT, &next.to_string());
+            // 唤醒轮询线程重算下次执行时间，新间隔立即生效（不再等逐秒轮询）
+            crate::poll::notify_poll_wake();
         }
 
         // 开机自启动变化时，立即执行系统注册/注销（注册表写入是阻塞 I/O，已在 spawn_blocking 内）
@@ -332,20 +309,16 @@ pub struct TestDeepseekPayload {
         "max_tokens": 10,
         "temperature": 0.0
     });
-    let resp = client
-        .post(format!(
-            "{}/v1/chat/completions",
-            base_url.trim_end_matches('/')
-        ))
-        .json(&body)
-        .send()
+    // 复用 deepseek::chat_completion 的 POST 模板（连接测试不再自写第 4 份）
+    let _ = deepseek::chat_completion(&client, &base_url, &body)
         .await
-        .map_err(|e| format!("err.request_failed|{}", e))?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(format!("err.api_error|{}|{}", status, text));
-    }
+        .map_err(|(status, msg)| {
+            if status > 0 {
+                format!("err.api_error|{}|{}", status, msg)
+            } else {
+                format!("err.request_failed|{}", msg)
+            }
+        })?;
     // 成功不返回任何文案：命令只承诺“测试通过”，提示语由前端按 i18n key 渲染
     // （settings.connection_success），避免后端硬编码语言与调用方无法预判返回语义。
     Ok(())
@@ -618,38 +591,42 @@ mod tests {
         }
     }
 
-    /// 新增配置项漏改 UpdateSettingsPayload 时会触发此测试失败。
+    /// 新增配置项漏改 update_settings 参数（AppSettings）时会触发此测试失败。
     #[test]
     fn test_payload_field_count() {
-        // 如果新增了配置项，请同步增加期望值并更新 UpdateSettingsPayload struct
+        // 如果新增了配置项，请同步增加期望值并更新 AppSettings 结构体
         const EXPECTED_SETTING_FIELDS: usize = 20;
         let json = serde_json::json!({
-            "pollIntervalMinutes": 30,
-            "proxyMode": "none",
-            "proxyUrl": "",
-            "autoStart": false,
-            "minimizeToTray": true,
-            "logRetentionDays": 0,
-            "deepseekEnabled": false,
-            "deepseekModel": "m",
-            "deepseekBaseUrl": "u",
-            "deepseekProxyBypass": false,
-            "deepseekPrompt": "",
-            "deepseekMinImportance": "小",
-            "deepseekTranslateRelease": false,
+            "poll_interval_minutes": 30,
+            "proxy_mode": "none",
+            "proxy_url": "",
+            "auto_start": false,
+            "minimize_to_tray": true,
+            "log_retention_days": 0,
+            "deepseek_enabled": false,
+            "deepseek_model": "m",
+            "deepseek_base_url": "u",
+            "deepseek_api_key_set": false,
+            "deepseek_proxy_bypass": false,
+            "deepseek_prompt": "",
+            "deepseek_min_importance": "小",
+            "deepseek_translate_release": false,
 
-            "checkPrereleases": false,
-            "fetchHistory": true,
-            "fetchHistoryCount": 3,
+            "check_prereleases": false,
+            "fetch_history": true,
+            "fetch_history_count": 3,
             "language": "zh-CN",
             "theme": "system",
-            "showSourceTypeIcons": true,
-            "enableUsageStats": true,
+            "show_source_type_icons": true,
+            "enable_usage_stats": true,
+            "github_token_set": false,
+            "youtube_api_key_set": false,
+            "bilibili_cookie_set": false,
         });
-        let payload: UpdateSettingsPayload = serde_json::from_value(json)
-            .expect("UpdateSettingsPayload 反序列化失败，前端字段名可能不匹配");
+        let payload: AppSettings = serde_json::from_value(json)
+            .expect("AppSettings 反序列化失败，前端字段名可能不匹配");
         // 无法直接检测字段数量，但可验证反序列化成功即所有字段均存在。
-        // 如果后端新增了字段但前端未传，serde 会因缺少字段而失败（除非字段是 Option）。
+        // 如果后端新增了字段但前端未传，serde 会因缺少字段而失败。
         assert_eq!(payload.poll_interval_minutes, 30);
         assert_eq!(payload.proxy_url, "");
         assert!(payload.minimize_to_tray);

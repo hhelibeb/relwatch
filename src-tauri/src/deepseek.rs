@@ -67,6 +67,31 @@ pub fn read_translate_config(conn: &Connection) -> (bool, String) {
     (translate_enabled, target_lang)
 }
 
+/// 读取 DeepSeek 网络配置（proxy 直连/自定义 + 连接测试专用 bypass 开关）。
+/// 摘要与翻译两个入口共用，避免逐字重复。
+/// 返回 (proxy_url, proxy_mode)，bypass 时强制直连。
+pub fn load_ai_network_config(conn: &Connection) -> (String, String) {
+    let bypass = db::settings::get_setting(conn, KEY_DEEPSEEK_PROXY_BYPASS)
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    if bypass {
+        return (String::new(), "none".to_string());
+    }
+    let proxy_url = db::settings::get_setting(conn, KEY_PROXY_URL)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let proxy_mode = db::settings::get_setting(conn, db::settings::KEY_PROXY_MODE)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
+        });
+    (proxy_url, proxy_mode)
+}
+
 /// 判断 base_url 是否为 DeepSeek 官方 API 域名。
 ///
 /// 官方域名 = `https` + `deepseek.com` 或其子域（如 `api.deepseek.com`）。
@@ -98,12 +123,15 @@ pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<
     })
 }
 
-async fn call_summary_inner(
+/// 通用 chat/completions 调用：POST → 判 success → 取 content → 错误映射。
+/// 三个 call_*（摘要/语言检测/翻译）与连接测试共用此模板，
+/// 改超时/重试/错误格式只需动此处一处。
+/// 返回 (status, msg)：status>0 时 msg 为 API 原始响应文本；status=0 时 msg 为网络/解析错误描述。
+pub(crate) async fn chat_completion(
     client: &reqwest::Client,
-    _model: &str,
     base_url: &str,
     body_json: &serde_json::Value,
-) -> Result<(String, String), (u16, String)> {
+) -> Result<String, (u16, String)> {
     let resp = client
         .post(format!(
             "{}/v1/chat/completions",
@@ -120,20 +148,36 @@ async fn call_summary_inner(
             .unwrap_or("")
             .trim()
             .to_string();
-        let parsed: serde_json::Value = serde_json::from_str(&content)
-            .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content)))?;
-        let summary = parsed["summary"].as_str().unwrap_or("").to_string();
-        let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
-        if summary.is_empty() {
-            return Err((0, "摘要为空".to_string()));
-        }
-        return Ok((summary, importance));
+        return Ok(content);
     }
-
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
-    let msg = format!("DeepSeek API 返回错误 {}: {}", status, text);
-    Err((status, msg))
+    Err((status, text))
+}
+
+async fn call_summary_inner(
+    client: &reqwest::Client,
+    _model: &str,
+    base_url: &str,
+    body_json: &serde_json::Value,
+) -> Result<(String, String), (u16, String)> {
+    let content = chat_completion(client, base_url, body_json)
+        .await
+        .map_err(|(status, msg)| {
+            if status > 0 {
+                (status, format!("DeepSeek API 返回错误 {}: {}", status, msg))
+            } else {
+                (0, msg)
+            }
+        })?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content)))?;
+    let summary = parsed["summary"].as_str().unwrap_or("").to_string();
+    let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
+    if summary.is_empty() {
+        return Err((0, "摘要为空".to_string()));
+    }
+    Ok((summary, importance))
 }
 
 async fn call_summary(
@@ -210,32 +254,16 @@ async fn call_detect_language(
         }
         false
     }, || async {
-        let resp = client
-            .post(format!("{}/v1/chat/completions", base_url.trim_end_matches('/')))
-            .json(&body_json)
-            .send()
-            .await
-            .map_err(|e| (0, format!("DeepSeek 请求失败: {}", e)))?;
-        if resp.status().is_success() {
-            let json: serde_json::Value = resp.json().await.map_err(|e| (0, format!("解析响应失败: {}", e)))?;
-            let content = json["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if content.is_empty() {
-                return Err((0, "语言检测结果为空".to_string()));
-            }
-            return Ok(content);
+        let content = chat_completion(client, base_url, &body_json).await?;
+        if content.is_empty() {
+            return Err((0, "语言检测结果为空".to_string()));
         }
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        Err((status, format!("DeepSeek API 返回错误 {}: {}", status, text)))
+        Ok(content)
     })
     .await
     .map_err(|(status, msg)| {
         if status > 0 {
-            format!("[{}] {}", status, msg)
+            format!("[{}] DeepSeek API 返回错误 {}: {}", status, status, msg)
         } else {
             msg
         }
@@ -271,32 +299,16 @@ async fn call_translate(
         }
         false
     }, || async {
-        let resp = client
-            .post(format!("{}/v1/chat/completions", base_url.trim_end_matches('/')))
-            .json(&body_json)
-            .send()
-            .await
-            .map_err(|e| (0, format!("DeepSeek 请求失败: {}", e)))?;
-        if resp.status().is_success() {
-            let json: serde_json::Value = resp.json().await.map_err(|e| (0, format!("解析响应失败: {}", e)))?;
-            let content = json["choices"][0]["message"]["content"]
-                .as_str()
-                .unwrap_or("")
-                .trim()
-                .to_string();
-            if content.is_empty() {
-                return Err((0, "翻译结果为空".to_string()));
-            }
-            return Ok(content);
+        let content = chat_completion(client, base_url, &body_json).await?;
+        if content.is_empty() {
+            return Err((0, "翻译结果为空".to_string()));
         }
-        let status = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        Err((status, format!("DeepSeek API 返回错误 {}: {}", status, text)))
+        Ok(content)
     })
     .await
     .map_err(|(status, msg)| {
         if status > 0 {
-            format!("[{}] {}", status, msg)
+            format!("[{}] DeepSeek API 返回错误 {}: {}", status, status, msg)
         } else {
             msg
         }
@@ -324,26 +336,9 @@ pub async fn generate_summaries_for_new(
         base_url = cfg.base_url;
         api_key = cfg.api_key;
         prompt = cfg.prompt;
-        let bypass = db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS)
-            .ok()
-            .flatten()
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        if bypass {
-            proxy_url = String::new();
-            proxy_mode = "none".to_string();
-        } else {
-            proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            proxy_mode = db::settings::get_setting(&conn, db::settings::KEY_PROXY_MODE)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| {
-                    if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-                });
-        }
+        let (p_url, p_mode) = load_ai_network_config(&conn);
+        proxy_url = p_url;
+        proxy_mode = p_mode;
     }
 
     if !enabled {
@@ -476,26 +471,9 @@ pub async fn generate_translations_for_new(
         base_url = cfg.base_url;
         api_key = cfg.api_key;
         // cfg.prompt = 摘要 prompt，翻译不使用用户可编辑的摘要 prompt
-        let bypass = db::settings::get_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS)
-            .ok()
-            .flatten()
-            .map(|v| v == "true")
-            .unwrap_or(false);
-        if bypass {
-            proxy_url = String::new();
-            proxy_mode = "none".to_string();
-        } else {
-            proxy_url = db::settings::get_setting(&conn, KEY_PROXY_URL)
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            proxy_mode = db::settings::get_setting(&conn, db::settings::KEY_PROXY_MODE)
-                .ok()
-                .flatten()
-                .unwrap_or_else(|| {
-                    if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-                });
-        }
+        let (p_url, p_mode) = load_ai_network_config(&conn);
+        proxy_url = p_url;
+        proxy_mode = p_mode;
         let (t_enabled, t_lang) = read_translate_config(&conn);
         translate_enabled = t_enabled;
         target_lang = t_lang;

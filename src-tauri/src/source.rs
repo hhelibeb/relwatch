@@ -35,6 +35,18 @@ pub enum AuthKind {
     BilibiliCookie,
 }
 
+impl AuthKind {
+    /// 稳定字符串标识（下发前端展示/对拍用）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AuthKind::None => "none",
+            AuthKind::GitHubToken => "github_token",
+            AuthKind::YouTubeApiKey => "youtube_api_key",
+            AuthKind::BilibiliCookie => "bilibili_cookie",
+        }
+    }
+}
+
 /// 根据适配器声明的鉴权方式，从 settings 中选出对应 token。
 /// 无鉴权源返回 None（适配器实现忽略 token 即可）。
 #[allow(clippy::too_many_arguments)]
@@ -214,6 +226,39 @@ mod tests {
         for t in ["github", "huggingface", "youtube", "bilibili"] {
             assert!(get_adapter(t).is_ok(), "{} 应注册适配器", t);
         }
+    }
+
+    /// ADAPTERS 注册表的能力位快照：与前端 sourceTypeDefs 对拍的锚点之一
+    /// （前端侧另有静态对拍测试读取本文件做集合对比）。
+    #[test]
+    fn test_adapter_capability_snapshot() {
+        let infos: Vec<(String, &'static str, bool, bool, bool)> = list_adapters()
+            .into_iter()
+            .map(|a| {
+                (
+                    a.source_type().to_string(),
+                    a.auth_kind().as_str(),
+                    a.ai_eligible(),
+                    a.always_fetch_history(),
+                    a.refresh_description_after_check(),
+                )
+            })
+            .collect();
+        let expect: Vec<(String, &'static str, bool, bool, bool)> = vec![
+            ("github".into(), "github_token", true, false, true),
+            ("huggingface".into(), "none", true, false, false),
+            ("youtube".into(), "youtube_api_key", false, true, true),
+            ("bilibili".into(), "bilibili_cookie", false, false, true),
+        ];
+        assert_eq!(infos, expect, "ADAPTERS 能力位与预期不符，请同步检查前端 sourceTypeDefs");
+    }
+
+    #[test]
+    fn test_auth_kind_as_str() {
+        assert_eq!(AuthKind::None.as_str(), "none");
+        assert_eq!(AuthKind::GitHubToken.as_str(), "github_token");
+        assert_eq!(AuthKind::YouTubeApiKey.as_str(), "youtube_api_key");
+        assert_eq!(AuthKind::BilibiliCookie.as_str(), "bilibili_cookie");
     }
 
     #[test]

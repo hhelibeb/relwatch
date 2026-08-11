@@ -43,6 +43,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         ])
         .commands(collect_commands![
         commands::add_source,
+        commands::list_source_types,
         commands::remove_source,
         commands::update_source,
         commands::list_sources,
@@ -166,40 +167,9 @@ pub fn run() {
             next_poll_at: next_poll.clone(),
             deepseek_semaphore,
         })
-        .invoke_handler(tauri::generate_handler![
-            commands::add_source,
-            commands::remove_source,
-            commands::update_source,
-            commands::list_sources,
-            commands::get_releases,
-            commands::set_notification_state,
-            commands::delete_release,
-            commands::translate_release,
-            commands::clear_logs,
-            commands::trigger_poll,
-            commands::check_single_source,
-            commands::get_settings,
-            commands::update_settings,
-            commands::get_poll_countdown,
-            commands::set_deepseek_api_key,
-            commands::set_github_token,
-            commands::set_youtube_api_key,
-            commands::set_bilibili_cookie,
-            commands::is_official_deepseek_base_url,
-            commands::read_bilibili_login_cookie,
-            commands::close_bilibili_login_window,
-            commands::test_deepseek_connection,
-            commands::search_logs,
-            commands::export_backup,
-            commands::import_backup,
-            commands::hide_to_tray,
-            commands::fetch_url_bytes,
-            commands::set_clipboard_text,
-            commands::set_clipboard_image,
-            commands::record_usage,
-            commands::get_usage_stats,
-            commands::clear_usage_stats,
-        ])
+        // 命令清单单一来源：invoke_handler 从同一个 specta Builder 生成，
+        // 与 collect_commands! 共用一份清单，不再存在第二份手工副本。
+        .invoke_handler(specta_builder().invoke_handler())
         .setup(|app| {
             // 注册事件名映射（release 构建的 emit 同样依赖），必须在 emit 之前挂载
             specta_builder().mount_events(app);

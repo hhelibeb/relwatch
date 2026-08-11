@@ -237,7 +237,7 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     await flushPromises()
 
     expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
-      deepseekModel: 'deepseek-v4-flash',
+      deepseek_model: 'deepseek-v4-flash',
     }))
   })
 
@@ -249,7 +249,7 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     await flushPromises()
 
     expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
-      deepseekBaseUrl: 'https://api.deepseek.com',
+      deepseek_base_url: 'https://api.deepseek.com',
     }))
   })
 })
@@ -350,7 +350,7 @@ describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #
       expect.objectContaining({ kind: 'warning' }),
     )
     expect(updateSettingsMock).toHaveBeenCalledOnce()
-    expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ deepseekBaseUrl: 'https://evil.com' }))
+    expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ deepseek_base_url: 'https://evil.com' }))
   })
 
   it('保存非官方 base_url：取消确认则不提交', async () => {

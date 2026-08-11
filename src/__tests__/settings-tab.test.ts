@@ -146,10 +146,10 @@ describe('SettingsTab — 表单保护性行为', () => {
 
     expect(updateSettingsMock).toHaveBeenCalledOnce()
     expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({
-      pollIntervalMinutes: 25,
-      proxyMode: 'none',
-      deepseekEnabled: true,
-      deepseekModel: 'deepseek-v4-flash',
+      poll_interval_minutes: 25,
+      proxy_mode: 'none',
+      deepseek_enabled: true,
+      deepseek_model: 'deepseek-v4-flash',
       language: 'zh-CN',
       theme: 'light',
     }))

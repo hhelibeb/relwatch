@@ -101,6 +101,9 @@ pub struct LogSearchResult {
     pub page_size: i64,
 }
 
+/// 设置读写共用同一结构：get_settings 返回它，update_settings 直接接收它。
+/// 前端 payload 与后端结构字段一一对应（snake_case），
+/// 新增设置项只需改 AppSettings 一处 + get_settings/apply_settings 两处。
 #[derive(Serialize, Deserialize, Type)]
 pub struct AppSettings {
     pub poll_interval_minutes: i64,
@@ -112,6 +115,7 @@ pub struct AppSettings {
     pub deepseek_enabled: bool,
     pub deepseek_model: String,
     pub deepseek_base_url: String,
+    /// 派生只读标志（凭据是否已设置），update_settings 忽略其值。
     pub deepseek_api_key_set: bool,
     pub deepseek_proxy_bypass: bool,
     pub deepseek_prompt: String,

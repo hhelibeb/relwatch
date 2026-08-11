@@ -5,6 +5,37 @@ use db::settings::{get_setting, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_GITHUB_TOKEN,
 use serde_json::json;
 use tauri_specta::Event;
 
+/// 源类型的能力元数据：由 `ADAPTERS` 注册表动态枚举，供前端注册表对拍/展示。
+/// 新增源类型只需在 source.rs::ADAPTERS 登记，本命令自动下发。
+#[derive(serde::Serialize, specta::Type)]
+pub struct SourceTypeInfo {
+    /// 与后端 source_type 一致的标识（如 "github"）。
+    pub source_type: String,
+    /// 鉴权方式标识（none / github_token / youtube_api_key / bilibili_cookie）。
+    pub auth_kind: String,
+    /// 是否参与 AI 摘要/翻译（对应前端 SourceTypeDef.aiSummary）。
+    pub ai_eligible: bool,
+    /// 是否每次检查都按 fetch_history_count 拉历史。
+    pub always_fetch_history: bool,
+    /// 检查成功后是否刷新 description。
+    pub refresh_description_after_check: bool,
+}
+
+#[tauri::command]
+
+#[specta::specta]pub fn list_source_types() -> Vec<SourceTypeInfo> {
+    source::list_adapters()
+        .into_iter()
+        .map(|a| SourceTypeInfo {
+            source_type: a.source_type().to_string(),
+            auth_kind: a.auth_kind().as_str().to_string(),
+            ai_eligible: a.ai_eligible(),
+            always_fetch_history: a.always_fetch_history(),
+            refresh_description_after_check: a.refresh_description_after_check(),
+        })
+        .collect()
+}
+
 #[tauri::command]
 
 #[specta::specta]pub async fn add_source(

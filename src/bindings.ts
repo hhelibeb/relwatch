@@ -7,6 +7,7 @@ import * as __TAURI_EVENT from "@tauri-apps/api/event";
 /** Commands */
 export const commands = {
 	addSource: (sourceType: string, owner: string, repo: string, config: string | null) => __TAURI_INVOKE<number>("add_source", { sourceType, owner, repo, config }),
+	listSourceTypes: () => __TAURI_INVOKE<SourceTypeInfo[]>("list_source_types"),
 	removeSource: (id: number) => __TAURI_INVOKE<null>("remove_source", { id }),
 	updateSource: (id: number, enabled: boolean, pollIntervalMinutes: number, muted: boolean | null, config: string | null) => __TAURI_INVOKE<null>("update_source", { id, enabled, pollIntervalMinutes, muted, config }),
 	listSources: () => __TAURI_INVOKE<Source[]>("list_sources"),
@@ -23,7 +24,11 @@ export const commands = {
 	triggerPoll: () => __TAURI_INVOKE<PollResult>("trigger_poll"),
 	checkSingleSource: (id: number) => __TAURI_INVOKE<PollResult>("check_single_source", { id }),
 	getSettings: () => __TAURI_INVOKE<AppSettings>("get_settings"),
-	updateSettings: (payload: UpdateSettingsPayload) => __TAURI_INVOKE<null>("update_settings", { payload }),
+	/**
+	 *  设置读写共用 `AppSettings`（types.rs）：不再维护第二份与 AppSettings
+	 *  逐字段重复的 payload 结构，新增设置项少一处同步点。
+	 */
+	updateSettings: (payload: AppSettings) => __TAURI_INVOKE<null>("update_settings", { payload }),
 	getPollCountdown: () => __TAURI_INVOKE<number>("get_poll_countdown"),
 	setDeepseekApiKey: (apiKey: string) => __TAURI_INVOKE<null>("set_deepseek_api_key", { apiKey }),
 	setGithubToken: (token: string) => __TAURI_INVOKE<null>("set_github_token", { token }),
@@ -103,6 +108,11 @@ export const events = {
 };
 
 /* Types */
+/**
+ *  设置读写共用同一结构：get_settings 返回它，update_settings 直接接收它。
+ *  前端 payload 与后端结构字段一一对应（snake_case），
+ *  新增设置项只需改 AppSettings 一处 + get_settings/apply_settings 两处。
+ */
 export type AppSettings = {
 	poll_interval_minutes: number,
 	proxy_url: string,
@@ -113,6 +123,7 @@ export type AppSettings = {
 	deepseek_enabled: boolean,
 	deepseek_model: string,
 	deepseek_base_url: string,
+	/**  派生只读标志（凭据是否已设置），update_settings 忽略其值。 */
 	deepseek_api_key_set: boolean,
 	deepseek_proxy_bypass: boolean,
 	deepseek_prompt: string,
@@ -212,6 +223,23 @@ export type SourceAutoDisabled = {
 };
 
 /**
+ *  源类型的能力元数据：由 `ADAPTERS` 注册表动态枚举，供前端注册表对拍/展示。
+ *  新增源类型只需在 source.rs::ADAPTERS 登记，本命令自动下发。
+ */
+export type SourceTypeInfo = {
+	/**  与后端 source_type 一致的标识（如 "github"）。 */
+	source_type: string,
+	/**  鉴权方式标识（none / github_token / youtube_api_key / bilibili_cookie）。 */
+	auth_kind: string,
+	/**  是否参与 AI 摘要/翻译（对应前端 SourceTypeDef.aiSummary）。 */
+	ai_eligible: boolean,
+	/**  是否每次检查都按 fetch_history_count 拉历史。 */
+	always_fetch_history: boolean,
+	/**  检查成功后是否刷新 description。 */
+	refresh_description_after_check: boolean,
+};
+
+/**
  *  测试连接的可选覆盖参数：前端把表单当前值（含未保存修改）传入，
  *  留空的项回退到已保存配置，实现"先试后存"。
  */
@@ -222,30 +250,6 @@ export type TestDeepseekPayload = {
 	proxyBypass: boolean | null,
 	proxyUrl: string | null,
 	proxyMode: string | null,
-};
-
-/**  仅用于 `update_settings` 接收前端参数 */
-export type UpdateSettingsPayload = {
-	pollIntervalMinutes: number,
-	proxyUrl: string,
-	proxyMode: string,
-	autoStart: boolean,
-	minimizeToTray: boolean,
-	logRetentionDays: number,
-	deepseekEnabled: boolean,
-	deepseekModel: string,
-	deepseekBaseUrl: string,
-	deepseekProxyBypass: boolean,
-	deepseekPrompt: string,
-	deepseekMinImportance: string,
-	deepseekTranslateRelease: boolean,
-	checkPrereleases: boolean,
-	fetchHistory: boolean,
-	fetchHistoryCount: number,
-	language: string,
-	theme: string,
-	showSourceTypeIcons: boolean,
-	enableUsageStats: boolean,
 };
 
 /**  单日计数（按本地时区 YYYY-MM-DD 分桶）。 */

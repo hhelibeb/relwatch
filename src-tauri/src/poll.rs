@@ -20,6 +20,9 @@ use crate::types::{AppState, PollResult, ReleaseNotifyParams};
 
 static POLL_LOCK: AtomicBool = AtomicBool::new(false);
 static POLL_RUNNING: AtomicBool = AtomicBool::new(true);
+/// 轮询线程唤醒通知：设置变更（update_settings 改间隔）或 stop_poll 时
+/// 唤醒 start_poll_thread 的 sleep，不再依赖逐秒轮询。
+static POLL_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const MAX_CONCURRENCY: usize = 10;
 /// 单源网络拉取超时（秒）：约束每个源的 fetch（含适配器内部重试）总耗时，
 /// 防止某源接口异常（如 B 站 offset 死循环的兜底）无限挂起、占用信号量 permit
@@ -30,8 +33,15 @@ pub fn is_poll_running() -> bool {
     POLL_RUNNING.load(Ordering::Relaxed)
 }
 
+/// 唤醒轮询线程重新计算下一次执行时间（设置变更后调用）。
+pub fn notify_poll_wake() {
+    POLL_WAKE.notify_waiters();
+}
+
 pub fn stop_poll() {
     POLL_RUNNING.store(false, Ordering::SeqCst);
+    // 立即打断轮询线程的长 sleep，退出延迟从最长一个轮询间隔缩短到即时
+    POLL_WAKE.notify_waiters();
 }
 
 pub(crate) struct PollGuard;
@@ -230,24 +240,19 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 }
 
 /// 两个 do_*_poll_async 函数的公共核心：拉取所有源 → AI 摘要 → 通知 → 重试失败摘要
-#[allow(clippy::too_many_arguments)]
 async fn do_poll_core(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     emitter: &dyn crate::types::Emitter,
     sources: &[db::sources::Source],
-    proxy_url: &str,
-    proxy_mode: &str,
-    github_token: Option<&str>,
-    youtube_api_key: Option<&str>,
-    bilibili_cookie: Option<&str>,
-    fetch_history: bool,
-    fetch_history_count: usize,
+    settings: &PollSettings,
     is_manual: bool,
 ) -> (Vec<i64>, Vec<db::releases::ReleaseInfo>) {
     let (all_new_ids, all_saved) = poll_all_sources_async(
-        db_pool, sources, proxy_url, proxy_mode, github_token, youtube_api_key, bilibili_cookie,
-        fetch_history, fetch_history_count,
+        db_pool, sources, &settings.proxy_url, &settings.proxy_mode,
+        settings.github_token.as_deref(), settings.youtube_api_key.as_deref(),
+        settings.bilibili_cookie.as_deref(),
+        settings.fetch_history, settings.fetch_history_count,
     )
     .await;
 
@@ -302,7 +307,7 @@ async fn do_poll_core(
 }
 
 async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, String> {
-    let (sources, proxy_url, proxy_mode, github_token, youtube_api_key, bilibili_cookie, fetch_history, fetch_history_count);
+    let (sources, settings);
 
     {
         let state = app.state::<AppState>();
@@ -311,14 +316,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
             .into_iter()
             .filter(|s| s.enabled)
             .collect::<Vec<_>>();
-        let settings = load_poll_settings(&conn)?;
-        proxy_url = settings.proxy_url;
-        proxy_mode = settings.proxy_mode;
-        github_token = settings.github_token;
-        youtube_api_key = settings.youtube_api_key;
-        bilibili_cookie = settings.bilibili_cookie;
-        fetch_history = settings.fetch_history;
-        fetch_history_count = settings.fetch_history_count;
+        settings = load_poll_settings(&conn)?;
     }
 
     let (db_pool, deepseek_semaphore) = {
@@ -327,8 +325,7 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
     };
     let emitter: &dyn crate::types::Emitter = &app;
     let (_, new_releases) = do_poll_core(
-        &db_pool, &deepseek_semaphore, emitter, &sources, &proxy_url, &proxy_mode,
-        github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref(), fetch_history, fetch_history_count, true,
+        &db_pool, &deepseek_semaphore, emitter, &sources, &settings, true,
     ).await;
 
     // 手动触发特有逻辑：更新 next_poll_at
@@ -356,6 +353,124 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
     })
 }
 
+/// 单源检查的结果：本轮新增 release id 与 save 产物（供后续 AI 摘要/翻译）。
+struct CheckOutcome {
+    new_ids: Vec<i64>,
+    saved: Vec<(i64, Option<String>)>,
+}
+
+/// 单源检查上下文：依赖与配置的集合，两条调用路径（手动/定时）各自构造一次。
+struct CheckCtx<'a> {
+    db_pool: &'a r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    adapter: &'a dyn source::SourceAdapter,
+    client: &'a reqwest::Client,
+    token: Option<&'a str>,
+    fetch_history: bool,
+    fetch_history_count: usize,
+    /// 成功日志键（"check.manual" / "check.auto"）。
+    log_key: &'static str,
+}
+
+/// 单源检查核心链路：fetch（超时保护）→ save → post_save + 日志。
+/// 手动检查（check_single_source）与定时轮询（poll_all_sources_async）两条路径
+/// 共用此实现，差异仅 CheckCtx.log_key；
+/// 失败统一记为 check.failed（临时性错误 WARN / 其余 ERROR）并返回 Err。
+async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> Result<CheckOutcome, String> {
+    let is_first_query = source.last_checked_at.is_none()
+        || source.last_checked_at.as_deref() == Some("");
+    // 日志展示标识：YouTube 源用频道名替代 channel_id（repo 置空），避免 `owner/` 残废格式
+    let (log_owner, log_repo) = db::logs::source_log_ident(
+        &source.source_type,
+        &source.owner,
+        &source.repo,
+        source.description.as_deref(),
+    );
+    // YouTube 源开启历史拉取时，每次检查都按 fetch_history_count 拉取历史：
+    // save 阶段按 UNIQUE(source_id, tag_name) 去重跳过已存在条目，因此
+    // 重新配置 Data API Key 后无需删除源即可补拉历史视频。RSS 模式单页拉取，不受影响。
+    let history_query = ctx.fetch_history && (is_first_query || ctx.adapter.always_fetch_history());
+    let (max_count, per_page, needs_pagination) = compute_fetch_plan(ctx.fetch_history, history_query, ctx.fetch_history_count);
+
+    // 单源超时保护：fetch（含适配器内部重试）整体约束在 SOURCE_FETCH_TIMEOUT_SECS 内，
+    // 超时转临时故障错误走统一失败分支（记 check.failed），下轮自动重试。
+    let fetch_result = tokio::time::timeout(
+        std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
+        async {
+            if needs_pagination {
+                ctx.adapter.fetch_all(ctx.client, source, max_count, ctx.token).await
+            } else {
+                ctx.adapter.fetch(ctx.client, source, per_page, ctx.token).await
+            }
+        },
+    )
+    .await
+    .unwrap_or_else(|_| Err((0, format!("err.source_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS))));
+
+    match fetch_result {
+        Ok(releases) => {
+            // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
+            let saved = ctx
+                .adapter
+                .save(ctx.db_pool, source, &releases, max_count.unwrap_or(usize::MAX), ctx.client)
+                .await;
+            // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
+            let db_pool_blk = ctx.db_pool.clone();
+            let source_id = source.id;
+            let owner = log_owner;
+            let repo = log_repo;
+            let log_key = ctx.log_key;
+            let result = tokio::task::spawn_blocking(move || {
+                let conn = match db_pool_blk.get() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        log::error!("err.db_lock|{}", e);
+                        return (vec![], saved);
+                    }
+                };
+                let (ids, saved) = post_save_mark_record(&conn, source_id, &saved);
+                let new_count = ids.len();
+                db::logs::write_log_key(
+                    &conn,
+                    "INFO",
+                    log_key,
+                    &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
+                );
+                (ids, saved)
+            })
+            .await;
+            match result {
+                Ok((new_ids, saved)) => Ok(CheckOutcome { new_ids, saved }),
+                Err(e) => {
+                    log::error!("{} post-save spawn_blocking panic: {}", log_key, e);
+                    Ok(CheckOutcome { new_ids: vec![], saved: vec![] })
+                }
+            }
+        }
+        Err((status, msg)) => {
+            // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
+            let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+            let db_pool_blk = ctx.db_pool.clone();
+            let source_id = source.id;
+            let owner = log_owner;
+            let repo = log_repo;
+            let msg_for_log = msg.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                if let Ok(conn) = db_pool_blk.get() {
+                    let _ = db::sources::record_check_failure(&conn, source_id, &msg_for_log);
+                    db::logs::write_log_key(
+                        &conn,
+                        level,
+                        "check.failed",
+                        &json!({"owner": &owner, "repo": &repo, "error": &msg_for_log}).to_string(),
+                    );
+                }
+            })
+            .await;
+            Err(msg)
+        }
+    }
+}
+
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
@@ -379,8 +494,6 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         source_obj = source;
     }
 
-    let is_first_query = source_obj.last_checked_at.is_none()
-        || source_obj.last_checked_at.as_deref() == Some("");
     // 日志展示标识：YouTube 源用频道名替代 channel_id（repo 置空），避免 `owner/` 残废格式
     let (log_owner, log_repo) = db::logs::source_log_ident(
         &source_obj.source_type,
@@ -400,11 +513,6 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         youtube_api_key.as_deref(),
         bilibili_cookie.as_deref(),
     );
-    // YouTube 源开启历史拉取时，每次检查都按 fetch_history_count 拉取历史：
-    // save 阶段按 UNIQUE(source_id, tag_name) 去重跳过已存在条目，因此
-    // 重新配置 Data API Key 后无需删除源即可补拉历史视频。RSS 模式单页拉取，不受影响。
-    let history_query = fetch_history && (is_first_query || adapter.always_fetch_history());
-    let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, fetch_history_count);
 
     // 从 AppHandle 提取依赖，注入提纯后的核心函数
     let (db_pool, deepseek_semaphore) = {
@@ -436,69 +544,20 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         }
     };
 
-    // 单源超时保护：与轮询路径一致，fetch（含适配器内部重试）整体约束在
-    // SOURCE_FETCH_TIMEOUT_SECS 内，超时转临时故障错误走统一失败分支。
-    let releases = match tokio::time::timeout(
-        std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
-        async {
-            if needs_pagination {
-                adapter.fetch_all(&client, &source_obj, max_count, token).await
-            } else {
-                adapter.fetch(&client, &source_obj, per_page, token).await
-            }
-        },
-    )
-    .await
-    .unwrap_or_else(|_| Err((0, format!("err.source_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS))))
-    {
-        Ok(releases) => releases,
-        Err((status, msg)) => {
-            if let Ok(conn) = db_pool.get() {
-                let _ = db::sources::record_check_failure(&conn, source_obj.id, &msg);
-                // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
-                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-                db::logs::write_log_key(
-                    &conn,
-                    level,
-                    "check.failed",
-                    &json!({"owner": &log_owner, "repo": &log_repo, "error": &msg}).to_string(),
-                );
-            }
-            return Err(msg);
-        }
+    // 单源检查核心链路（fetch→save→post_save→日志）与轮询路径共用 check_one_source，
+    // 超时/错误分级/去重语义两处保持一致，修单源超时只改一处。
+    let ctx = CheckCtx {
+        db_pool: &db_pool,
+        adapter: adapter.as_ref(),
+        client: &client,
+        token,
+        fetch_history,
+        fetch_history_count,
+        log_key: "check.manual",
     };
-    // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
-    let saved: Vec<(i64, Option<String>)> = adapter.save(&db_pool, &source_obj, &releases, max_count.unwrap_or(usize::MAX), &client).await;
-    // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
-    let db_pool_blk = db_pool.clone();
-    let source_id = source_obj.id;
-    let owner = log_owner;
-    let repo = log_repo;
-    let result = tokio::task::spawn_blocking(move || {
-        let conn = match db_pool_blk.get() {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("err.db_lock|{}", e);
-                return (vec![], saved);
-            }
-        };
-        let (ids, saved) = post_save_mark_record(&conn, source_id, &saved);
-        let new_count = ids.len();
-        db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "check.manual",
-            &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
-        );
-        (ids, saved)
-    })
-    .await;
-    let (new_ids, saved) = match result {
-        Ok((ids, saved)) => (ids, saved),
-        Err(e) => {
-            log::error!("check_single_source post-save spawn_blocking panic: {}", e);
-            (vec![], vec![])
-        }
+    let (new_ids, saved) = match check_one_source(&ctx, &source_obj).await {
+        Ok(outcome) => (outcome.new_ids, outcome.saved),
+        Err(msg) => return Err(msg),
     };
 
     // 检查成功后按源类型能力刷新描述（GitHub 仓库描述 / YouTube 真实频道名），
@@ -561,7 +620,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
-    let (sources, proxy_url, proxy_mode, retention_days, github_token, youtube_api_key, bilibili_cookie, fetch_history, fetch_history_count);
+    let (sources, settings, retention_days);
     {
         let state = app.state::<AppState>();
         let conn = match state.db.get() {
@@ -572,14 +631,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
             }
         };
         sources = db::sources::list_sources(&conn).unwrap_or_default();
-        let settings = load_poll_settings(&conn).unwrap_or_default();
-        proxy_url = settings.proxy_url;
-        proxy_mode = settings.proxy_mode;
-        github_token = settings.github_token;
-        youtube_api_key = settings.youtube_api_key;
-        bilibili_cookie = settings.bilibili_cookie;
-        fetch_history = settings.fetch_history;
-        fetch_history_count = settings.fetch_history_count;
+        settings = load_poll_settings(&conn).unwrap_or_default();
         retention_days = db::settings::get_setting(&conn, KEY_LOG_RETENTION)
             .ok()
             .flatten()
@@ -644,8 +696,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
         let semaphore = state.deepseek_semaphore.clone();
         let emitter: &dyn crate::types::Emitter = &app;
         do_poll_core(
-            &db_pool, &semaphore, emitter, &enabled, &proxy_url, &proxy_mode,
-            github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref(), fetch_history, fetch_history_count, false,
+            &db_pool, &semaphore, emitter, &enabled, &settings, false,
         ).await;
     }
 
@@ -706,13 +757,6 @@ async fn poll_all_sources_async(
         let token = source::token_for(adapter.as_ref(), github_token, youtube_api_key, bilibili_cookie)
             .map(|s| s.to_string());
 
-        let is_first_query = source.last_checked_at.is_none()
-            || source.last_checked_at.as_deref() == Some("");
-        // 同 check_single_source：YouTube 源开启历史拉取时每次检查都按 count 拉历史
-        // （API 模式翻页拉取 + save 去重，支持配 key 后补拉历史；RSS 模式单页不受影响）
-        let history_query = fetch_history && (is_first_query || adapter.always_fetch_history());
-        let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, fetch_history_count);
-
         handles.push(tokio::spawn(async move {
             // 背压信号量获取改为 graceful：不再 expect 后被 handle.await 静默吞掉
             let _permit = match sem.acquire_owned().await {
@@ -722,74 +766,20 @@ async fn poll_all_sources_async(
                     return (vec![], vec![]);
                 }
             };
-            // 单源超时保护：fetch（含适配器内部重试）整体约束在 SOURCE_FETCH_TIMEOUT_SECS 内，
-            // 超时后转成临时故障错误走统一的失败分支（记 check.failed），下轮自动重试。
-            let fetch_result = tokio::time::timeout(
-                std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
-                async {
-                    if needs_pagination {
-                        adapter.fetch_all(&client, &source, max_count, token.as_deref()).await
-                    } else {
-                        adapter.fetch(&client, &source, per_page, token.as_deref()).await
-                    }
-                },
-            )
-            .await
-            .unwrap_or_else(|_| Err((0, format!("err.source_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS))));
-            match fetch_result {
-                Ok(releases) => {
-                    // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
-                    let saved = adapter.save(&db_pool, &source, &releases, max_count.unwrap_or(usize::MAX), &client).await;
-                    // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
-                    let db_pool_blk = db_pool.clone();
-                    let source_id = source.id;
-                    let (owner, repo) = db::logs::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
-                    let result = tokio::task::spawn_blocking(move || {
-                        let conn = match db_pool_blk.get() {
-                            Ok(c) => c,
-                            Err(e) => {
-                                log::error!("err.db_lock|{}", e);
-                                return (vec![], saved);
-                            }
-                        };
-                        let (ids, saved) = post_save_mark_record(&conn, source_id, &saved);
-                        let new_count = ids.len();
-                        db::logs::write_log_key(
-                            &conn,
-                            "INFO",
-                            "check.auto",
-                            &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
-                        );
-                        (ids, saved)
-                    })
-                    .await;
-                    match result {
-                        Ok((ids, saved)) => (ids, saved),
-                        Err(e) => {
-                            log::error!("poll post-save spawn_blocking panic: {}", e);
-                            (vec![], vec![])
-                        }
-                    }
-                }
-                Err((status, msg)) => {
-                    let db_pool_blk = db_pool.clone();
-                    let source_id = source.id;
-                    let (owner, repo) = db::logs::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
-                    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-                    let _ = tokio::task::spawn_blocking(move || {
-                        if let Ok(conn) = db_pool_blk.get() {
-                            let _ = db::sources::record_check_failure(&conn, source_id, &msg);
-                            db::logs::write_log_key(
-                                &conn,
-                                level,
-                                "check.failed",
-                                &json!({"owner": &owner, "repo": &repo, "error": &msg}).to_string(),
-                            );
-                        }
-                    })
-                    .await;
-                    (vec![], vec![])
-                }
+            // 单源检查核心链路（fetch→save→post_save→日志）与手动检查共用
+            // check_one_source；失败已记 check.failed，此处仅跳过本轮。
+            let ctx = CheckCtx {
+                db_pool: &db_pool,
+                adapter: adapter.as_ref(),
+                client: &client,
+                token: token.as_deref(),
+                fetch_history,
+                fetch_history_count,
+                log_key: "check.auto",
+            };
+            match check_one_source(&ctx, &source).await {
+                Ok(outcome) => (outcome.new_ids, outcome.saved),
+                Err(_) => (vec![], vec![]),
             }
         }));
     }
@@ -928,18 +918,17 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
         }
 
         loop {
+            if !is_poll_running() {
+                return;
+            }
             let target = next_poll.load(Ordering::Relaxed);
             let now = chrono::Utc::now().timestamp();
-            let sleep_secs = (target - now).max(0) as u64;
-
-            for _ in 0..sleep_secs {
-                if !is_poll_running() {
-                    return;
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                if chrono::Utc::now().timestamp() >= target {
-                    break;
-                }
+            let until = std::time::Duration::from_secs((target - now).max(0) as u64);
+            // 一次性睡到下一个轮询点；设置变更（update_settings 改间隔）或 stop_poll
+            // 通过 POLL_WAKE 提前唤醒重算，替代逐秒 sleep 轮询。
+            tokio::select! {
+                _ = POLL_WAKE.notified() => continue,
+                _ = tokio::time::sleep(until) => {}
             }
 
             do_poll_async(app_handle.clone()).await;

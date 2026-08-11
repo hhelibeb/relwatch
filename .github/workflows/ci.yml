@@ -46,6 +46,9 @@ jobs:
       # 覆盖率插桩运行全部测试；低于 70% 行覆盖率时非零退出
       - run: cargo llvm-cov --all-features --fail-under-lines 70
         working-directory: src-tauri
+      # bindings.ts 同步校验：Rust 侧命令/类型/事件变更后必须重新生成并提交
+      - name: check bindings.ts in sync
+        run: bash scripts/check-bindings.sh
 
   backend-linux:
     runs-on: ubuntu-latest

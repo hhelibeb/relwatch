@@ -22,7 +22,7 @@ import {
   exportBackup,
   importBackup,
 } from '../api/settings'
-import type { UpdateSettingsPayload } from '../api/settings'
+import type { AppSettings } from '../api/settings'
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -49,27 +49,31 @@ describe('getSettings', () => {
 })
 
 describe('updateSettings', () => {
-  const payload: UpdateSettingsPayload = {
-    pollIntervalMinutes: 15,
-    proxyMode: 'none',
-    proxyUrl: '',
-    autoStart: true,
-    minimizeToTray: true,
-    logRetentionDays: 30,
-    deepseekEnabled: false,
-    deepseekModel: 'deepseek-v4-flash',
-    deepseekBaseUrl: 'https://api.deepseek.com',
-    deepseekProxyBypass: false,
-    deepseekPrompt: '',
-    deepseekMinImportance: '小',
-    deepseekTranslateRelease: false,
-    checkPrereleases: false,
-    fetchHistory: false,
-    fetchHistoryCount: 1,
+  const payload: AppSettings = {
+    poll_interval_minutes: 15,
+    proxy_mode: 'none',
+    proxy_url: '',
+    auto_start: true,
+    minimize_to_tray: true,
+    log_retention_days: 30,
+    deepseek_enabled: false,
+    deepseek_model: 'deepseek-v4-flash',
+    deepseek_base_url: 'https://api.deepseek.com',
+    deepseek_api_key_set: false,
+    deepseek_proxy_bypass: false,
+    deepseek_prompt: '',
+    deepseek_min_importance: '小',
+    deepseek_translate_release: false,
+    check_prereleases: false,
+    fetch_history: false,
+    fetch_history_count: 1,
     language: 'zh-CN',
     theme: 'light',
-    showSourceTypeIcons: true,
-    enableUsageStats: true,
+    show_source_type_icons: true,
+    enable_usage_stats: true,
+    github_token_set: false,
+    youtube_api_key_set: false,
+    bilibili_cookie_set: false,
   }
 
   it('调起 update_settings 命令并传递 payload', async () => {
@@ -85,7 +89,7 @@ describe('updateSettings', () => {
 
     await updateSettings({ ...payload, language: 'en-US', theme: 'dark' })
 
-    const callArgs = vi.mocked(invoke).mock.calls[0][1] as { payload: UpdateSettingsPayload }
+    const callArgs = vi.mocked(invoke).mock.calls[0][1] as { payload: AppSettings }
     expect(callArgs.payload.language).toBe('en-US')
     expect(callArgs.payload.theme).toBe('dark')
   })
