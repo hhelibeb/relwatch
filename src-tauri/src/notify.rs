@@ -34,6 +34,8 @@ pub(crate) fn notification_body(tag: &str, name: &str, importance: Option<&str>)
 }
 
 /// Windows 通知按钮动作（toast 按钮回调字符串格式 `go:<rid>` 等）。
+/// 仅 Windows 分支与跨平台测试引用，非 Windows 平台属死代码（CI 以 -D warnings 编译）。
+#[cfg_attr(not(windows), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WinNotificationAction {
     Go,
@@ -42,15 +44,14 @@ pub(crate) enum WinNotificationAction {
 }
 
 /// 解析 Windows 按钮动作字符串；rid 解析失败回退 0（与原 `unwrap_or(0)` 行为一致）。
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn parse_win_action(action: &str) -> Option<(WinNotificationAction, i64)> {
     let (kind, rest) = if let Some(rest) = action.strip_prefix("go:") {
         (WinNotificationAction::Go, rest)
     } else if let Some(rest) = action.strip_prefix("ignore:") {
         (WinNotificationAction::Ignore, rest)
-    } else if let Some(rest) = action.strip_prefix("snooze:") {
-        (WinNotificationAction::Snooze, rest)
     } else {
-        return None;
+        (WinNotificationAction::Snooze, action.strip_prefix("snooze:")?)
     };
     Some((kind, rest.parse().unwrap_or(0)))
 }
