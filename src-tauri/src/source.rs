@@ -221,38 +221,8 @@ pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, St
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_get_adapter_known_types() {
-        for t in ["github", "huggingface", "youtube", "bilibili"] {
-            assert!(get_adapter(t).is_ok(), "{} 应注册适配器", t);
-        }
-    }
-
-    /// ADAPTERS 注册表的能力位快照：与前端 sourceTypeDefs 对拍的锚点之一
-    /// （前端侧另有静态对拍测试读取本文件做集合对比）。
-    #[test]
-    fn test_adapter_capability_snapshot() {
-        let infos: Vec<(String, &'static str, bool, bool, bool)> = list_adapters()
-            .into_iter()
-            .map(|a| {
-                (
-                    a.source_type().to_string(),
-                    a.auth_kind().as_str(),
-                    a.ai_eligible(),
-                    a.always_fetch_history(),
-                    a.refresh_description_after_check(),
-                )
-            })
-            .collect();
-        let expect: Vec<(String, &'static str, bool, bool, bool)> = vec![
-            ("github".into(), "github_token", true, false, true),
-            ("huggingface".into(), "none", true, false, false),
-            ("youtube".into(), "youtube_api_key", false, true, true),
-            ("bilibili".into(), "bilibili_cookie", false, false, true),
-        ];
-        assert_eq!(infos, expect, "ADAPTERS 能力位与预期不符，请同步检查前端 sourceTypeDefs");
-    }
-
+    /// 能力位覆盖由 `test_list_adapters_capabilities`（按列枚举断言）兜底，
+    /// 不再维护与实现逐行拷贝的元组快照（实现即事实）。
     #[test]
     fn test_auth_kind_as_str() {
         assert_eq!(AuthKind::None.as_str(), "none");

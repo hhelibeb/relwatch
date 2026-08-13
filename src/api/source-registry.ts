@@ -8,10 +8,12 @@
  * 3. i18n 两个语言文件加 `source.type_<type>` key
  * 4. 若类型需要独立鉴权，后端 `AuthKind` 加枚举并注册 settings token
  *
- * 防漂移防线：`src/__tests__/source-registry-sync.test.ts` 对拍本文件与后端
- * ADAPTERS 的类型集合和能力位（aiSummary ↔ ai_eligible）；后端只读命令
- * `list_source_types` 动态下发能力元数据。
+ * 防漂移防线：
+ * - 类型集合一致性由 `src/__tests__/source-registry-sync.test.ts` 静态对拍本文件与后端 ADAPTERS；
+ * - 能力位（aiSummary ↔ ai_eligible）由运行时同步 `syncSourceCapabilities` 从后端只读命令
+ *   `list_source_types`（ADAPTERS 动态枚举）下发，不再手工镜像。
  */
+import { commands } from '../bindings'
 import type { Source } from './sources'
 import type { SourceType } from '../components/releaseTypes'
 
@@ -251,6 +253,27 @@ export const sourceTypeDefs: SourceTypeDef[] = [
 /** 按类型查注册表；未知类型返回 null（调用方回退默认行为）。 */
 export function getSourceTypeDef(type: string): SourceTypeDef | undefined {
   return sourceTypeDefs.find(def => def.type === type)
+}
+
+/**
+ * 运行时能力同步：以后端只读命令 `list_source_types`（ADAPTERS 动态枚举）为权威出口，
+ * 覆写各 def 的 aiSummary。静态默认值保留（vitest 无 Tauri 环境时行为不变），
+ * 运行时以后端为准——新增 ai_eligible=false 的类型无需改前端静态表。
+ *
+ * App 启动时调用一次；命令失败（非 Tauri 环境 / 后端异常）时静默降级为静态默认。
+ * 注：覆写不触发 Vue 响应式重渲染，但 release 数据异步到达晚于本同步，
+ * 实际渲染时已读到权威值；极端时序下下次 release 更新即纠正。
+ */
+export async function syncSourceCapabilities(): Promise<void> {
+  try {
+    const infos = await commands.listSourceTypes()
+    for (const def of sourceTypeDefs) {
+      const info = infos.find(i => i.source_type === def.type)
+      if (info) def.aiSummary = info.ai_eligible
+    }
+  } catch {
+    // 静默降级：保持静态默认值
+  }
 }
 
 /** 构造源标识键（source_type|owner|repo），避免不同类型同 owner/repo 串源。 */

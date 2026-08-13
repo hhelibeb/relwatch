@@ -14,6 +14,7 @@ export {
   sourceRepoKey,
   sourceDisplayName,
   sourceSearchQuery,
+  syncSourceCapabilities,
 } from './source-registry'
 export type { ParsedSource, SourceTypeDef, HfMetaView } from './source-registry'
 

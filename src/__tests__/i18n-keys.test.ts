@@ -1,12 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import fs from 'node:fs'
 import path from 'node:path'
+import { sourceTypeDefs } from '../api/source-registry'
 
 /**
  * i18n 键一致性测试：
  * 1. zh-CN 与 en-US 字典键集合必须完全相等（防漏译/多余键）；
  * 2. Rust 命令层使用的每个 `err.*` key 都必须在前端两个字典中有翻译
- *    （否则错误会以裸 key 形式显示给用户）。
+ *    （否则错误会以裸 key 形式显示给用户）；
+ * 3. sourceTypeDefs 的每个 titleKey 都必须在两个字典中有翻译。
  */
 
 const I18N_DIR = path.resolve(process.cwd(), 'src/i18n')
@@ -113,5 +115,14 @@ describe('i18n 键一致性', () => {
     const missingEn = rustLogKeys().filter((k) => !enSet.has(k))
     expect(missingZh, `zh-CN 缺失日志键: ${missingZh.join(', ')}`).toEqual([])
     expect(missingEn, `en-US 缺失日志键: ${missingEn.join(', ')}`).toEqual([])
+  })
+
+  it('sourceTypeDefs 的每个 titleKey 在 zh-CN 与 en-US 中都有翻译', () => {
+    const zhSet = new Set(zhKeys)
+    const enSet = new Set(enKeys)
+    const missing = sourceTypeDefs
+      .filter((d) => !zhSet.has(d.titleKey) || !enSet.has(d.titleKey))
+      .map((d) => d.titleKey)
+    expect(missing, `缺失 source.type_* 翻译: ${missing.join(', ')}`).toEqual([])
   })
 })

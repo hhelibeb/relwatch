@@ -3,17 +3,16 @@
  *
  * 前端 `sourceTypeDefs`（src/api/source-registry.ts）与后端 `ADAPTERS`
  * （src-tauri/src/source.rs）是两份独立清单。本测试直接读取 Rust 源码文本，
- * 静态提取后端注册表内容，与前端注册表逐项对比：
- * - 类型集合必须一致（新增源漏登记任一侧即失败）；
- * - aiSummary=false 与后端 ai_eligible=false 覆写一一对应。
+ * 静态提取后端注册表内容，与前端注册表对比类型集合（新增源漏登记任一侧即失败）。
  *
- * 能力位的权威出口是后端只读命令 list_source_types（由 ADAPTERS 动态枚举），
- * 前端如接入该命令则本测试可作为补充防线。
+ * 能力位不再静态对拍：aiSummary 由运行时同步 `syncSourceCapabilities` 从后端
+ * 只读命令 `list_source_types`（ADAPTERS 动态枚举）下发，实现即事实。
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { sourceTypeDefs } from '../api/source-registry'
+import { sourceTypeDefs, getSourceTypeDef, sourceDisplayName } from '../api/source-registry'
+import type { Source } from '../api/sources'
 
 // vitest 工作目录为仓库根，Rust 源码在 src-tauri/src/
 const rustDir = resolve(process.cwd(), 'src-tauri/src')
@@ -39,16 +38,10 @@ describe('前端 sourceTypeDefs 与后端 ADAPTERS 对拍', () => {
     expect(frontend).toEqual(backend)
   })
 
-  it('aiSummary=false 与后端 ai_eligible=false 覆写一一对应', () => {
-    const frontendDisabled = sourceTypeDefs
-      .filter(d => d.aiSummary === false)
-      .map(d => d.type)
-      .sort()
-    // 后端覆写 ai_eligible=false 的适配器：以独立文件方式枚举（文件即适配器）。
-    // 若新增 adapter 文件，请同时加入此数组，并保持与 ADAPTERS 登记一致。
-    const backendDisabled = ['youtube', 'bilibili']
-      .filter(t => /fn ai_eligible\(&self\) -> bool\s*\{\s*false\s*\}/.test(readRust(`${t}.rs`)))
-      .sort()
-    expect(backendDisabled).toEqual(frontendDisabled)
+  it('未知类型优雅降级：getSourceTypeDef 返回 undefined，展示回退 owner/repo', () => {
+    // 前端静态表只登记已知类型；后端新增类型未登记时 UI 不应崩溃
+    expect(getSourceTypeDef('gitlab')).toBeUndefined()
+    const src = { source_type: 'gitlab', owner: 'foo', repo: 'bar' } as unknown as Source
+    expect(sourceDisplayName(src)).toBe('foo/bar')
   })
 })

@@ -4,7 +4,7 @@ import { ShowToastKey, AiEnabledKey } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events } from './bindings'
-import { type Source, listSources, sourceRepoKey } from './api/sources'
+import { type Source, listSources, sourceRepoKey, syncSourceCapabilities } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
 import { t, setLocale } from './i18n'
@@ -325,6 +325,7 @@ useEscapeToTray(computed(() => settings.value.minimize_to_tray))
 useExternalLinkGuard()
 
 onMounted(async () => {
+  syncSourceCapabilities() // 源类型能力位以后端 list_source_types 为权威（不阻塞，失败静默降级）
   await loadAll()
   watchSystemTheme()
   startCountdown()
