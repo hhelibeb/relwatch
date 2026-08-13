@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-08-13
+
+### Added
+- 版本列表与监控源搜索框显示当前符合条件的数量徽标。
+
+### Fixed
+- YouTube / B 站通知标题显示频道名 / UP 主名并带来源标签，正文只保留视频标题。
+
+### Changed
+- README 功能清单按当前能力重写并更新界面截图。
+
 ## [1.11.0] - 2026-08-10
 
 ### Added
@@ -303,7 +314,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.11.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.11.1...HEAD
+[1.11.1]: https://github.com/hhelibeb/relwatch/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/hhelibeb/relwatch/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/hhelibeb/relwatch/compare/v1.9.0...v1.10.0
 [1.9.0]: https://github.com/hhelibeb/relwatch/compare/v1.8.0...v1.9.0
