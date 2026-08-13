@@ -146,6 +146,7 @@ function navigateReleaseDetail(delta: number) {
       v-model:importance-filter="importanceFilter"
       v-model:source-filter="sourceFilter"
       v-model:view-mode="viewMode"
+      :count="filteredReleases.length"
       @search-enter="handleSearchEnter"
     />
 

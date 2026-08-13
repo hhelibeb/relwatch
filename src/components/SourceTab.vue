@@ -566,6 +566,12 @@ function hideHealthTooltip() {
             :placeholder="t('source.search')"
             class="search-input"
           />
+          <span
+            v-if="headerMode === 'search'"
+            class="source-count"
+            :class="{ 'has-clear': sourceSearch !== '' }"
+            :title="t('source.search_result_count', String(sortedSources.length))"
+          >({{ sortedSources.length }})</span>
           <button
             v-if="headerMode === 'add' && urlInput"
             type="button"
@@ -795,6 +801,25 @@ function hideHealthTooltip() {
 
 .source-header .input-clear-wrap .search-input {
   max-width: none;
+  /* 为计数徽标 + 清空按钮预留右侧空间，避免输入长文本时重叠 */
+  padding-right: 72px;
+}
+
+/* 搜索计数徽标：与版本 tab 同款交互（贴右缘 / 有输入时让位给清空按钮），仅搜索模式显示 */
+.source-count {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: right 0.15s ease;
+}
+
+.source-count.has-clear {
+  right: 34px;
 }
 
 .btn-add-source {

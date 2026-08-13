@@ -666,6 +666,36 @@ describe('SourceTab — 搜索过滤', () => {
     expect(wrapper.find('.source-search-status').text()).toContain(t('source.search_result_count', '2'))
   })
 
+  it('搜索模式下显示计数徽标，数量随过滤变化', async () => {
+    const sources = [
+      createSource({ id: 1, owner: 'vuejs', repo: 'core' }),
+      createSource({ id: 2, owner: 'vuejs', repo: 'vue' }),
+      createSource({ id: 3, owner: 'facebook', repo: 'react' }),
+    ]
+    const { wrapper } = mountSourceTab(sources)
+
+    // 默认添加模式：不显示徽标
+    expect(wrapper.find('.source-count').exists()).toBe(false)
+
+    // 切到搜索模式：显示总数，徽标贴右缘（无 has-clear）
+    await wrapper.get('.btn-mode-toggle').trigger('click')
+    expect(wrapper.find('.source-count').exists()).toBe(true)
+    expect(wrapper.find('.source-count').text()).toBe('(3)')
+    expect(wrapper.find('.source-count').attributes('title')).toBe(t('source.search_result_count', '3'))
+    expect(wrapper.find('.source-count').classes()).not.toContain('has-clear')
+
+    // 输入关键词过滤：数量更新，徽标让位给清空按钮
+    const input = searchInput(wrapper)
+    await input.setValue('vue')
+    await flushPromises()
+    expect(wrapper.find('.source-count').text()).toBe('(2)')
+    expect(wrapper.find('.source-count').classes()).toContain('has-clear')
+
+    // 切回添加模式：徽标隐藏
+    await wrapper.get('.btn-mode-toggle').trigger('click')
+    expect(wrapper.find('.source-count').exists()).toBe(false)
+  })
+
   it('清空搜索框后，恢复显示所有 source', async () => {
     const sources = [
       createSource({ id: 1, owner: 'vuejs', repo: 'core' }),

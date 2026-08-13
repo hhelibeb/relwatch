@@ -13,6 +13,7 @@ const props = withDefaults(defineProps<{
   sourceFilter: ReleaseSourceFilter
   viewMode: ViewMode
   showSearch?: boolean
+  count?: number
 }>(), {
   showSearch: true,
 })
@@ -113,6 +114,7 @@ function selectViewMode(value: ViewMode) {
         @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
         @keydown.enter.prevent="onSearchEnter"
       />
+      <span v-if="count !== undefined" class="release-count" :class="{ 'has-clear': modelValue !== '' }" :title="t('release.versions', String(count))">({{ count }})</span>
       <button v-if="modelValue" type="button" class="input-clear-btn" :title="t('input.clear')" @click="emit('update:modelValue', '')">✕</button>
     </div>
     <div class="filter-group" @mouseleave="filterDropdown.hoverLeave()">
@@ -171,6 +173,29 @@ function selectViewMode(value: ViewMode) {
   </div>
 </template>
 <style scoped>
+/* 版本计数徽标：绝对定位在搜索框右内侧，不占用 flex 布局宽度。
+   默认贴右缘；有输入（显示清空按钮）时让位到清空按钮左侧，避免重叠。 */
+.release-count {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
+  transition: right 0.15s ease;
+}
+
+.release-count.has-clear {
+  right: 34px;
+}
+
+/* 为计数徽标 + 清空按钮预留右侧空间，避免输入长文本时重叠 */
+.input-clear-wrap .search-input {
+  padding-right: 72px;
+}
+
 /* 类型徽标图标（来源筛选触发按钮与下拉选项共用） */
 .filter-type-icon {
   display: inline-flex;

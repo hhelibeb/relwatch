@@ -10,6 +10,7 @@ const expandAll = vi.fn()
 
 const SearchBarStub = defineComponent({
   name: 'ReleaseSearchBarStub',
+  props: ['count'],
   emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'searchEnter'],
   template: '<div class="toolbar-stub" />',
 })
@@ -152,6 +153,18 @@ describe('ReleaseTab 渲染与过滤', () => {
   it('无过滤时 isFiltering 为 false', () => {
     const wrapper = mountTab()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
+  })
+
+  it('将 filteredReleases.length 作为 count 传给搜索栏（随筛选变化）', async () => {
+    const wrapper = mountTab()
+    const bar = wrapper.findComponent({ name: 'ReleaseSearchBarStub' })
+    expect(bar.props('count')).toBe(3)
+
+    bar.vm.$emit('update:statusFilter', 'read')
+    await nextTick()
+    await wrapper.setProps({ statusFilter: 'read' } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+    expect(bar.props('count')).toBe(1)
   })
 
   it('切换 aggregated 视图渲染聚合列表', async () => {

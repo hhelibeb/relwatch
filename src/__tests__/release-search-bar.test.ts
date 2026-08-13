@@ -88,6 +88,37 @@ describe('ReleaseSearchBar — 搜索框', () => {
   })
 })
 
+// ============ 版本计数徽标 ============
+
+describe('ReleaseSearchBar — 版本计数徽标', () => {
+  it('传入 count 时在搜索框内渲染数字徽标', () => {
+    const wrapper = createWrapper({ count: 128 })
+
+    expect(wrapper.find('.release-count').exists()).toBe(true)
+    expect(wrapper.find('.release-count').text()).toBe('(128)')
+  })
+
+  it('count 徽标显示「N 个版本」的悬停提示', () => {
+    const wrapper = createWrapper({ count: 128 })
+
+    expect(wrapper.find('.release-count').attributes('title')).toBe(t('release.versions', '128'))
+  })
+
+  it('未传 count 时不渲染徽标', () => {
+    const wrapper = createWrapper()
+
+    expect(wrapper.find('.release-count').exists()).toBe(false)
+  })
+
+  it('无输入时徽标贴右缘；有输入时让位给清空按钮', () => {
+    const wrapperEmpty = createWrapper({ count: 128 })
+    expect(wrapperEmpty.find('.release-count').classes()).not.toContain('has-clear')
+
+    const wrapperWithInput = createWrapper({ count: 128, modelValue: 'vue' })
+    expect(wrapperWithInput.find('.release-count').classes()).toContain('has-clear')
+  })
+})
+
 // ============ 视图切换（折叠下拉） ============
 
 describe('ReleaseSearchBar — 视图切换（折叠下拉）', () => {
