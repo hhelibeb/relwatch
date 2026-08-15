@@ -39,6 +39,8 @@ pub const KEY_AGENT_PI_MODEL: &str = "agent_pi_model";
 pub const KEY_AGENT_PROMPT_SUFFIX: &str = "agent_prompt_suffix";
 pub const KEY_AGENT_TIMEOUT_SECONDS: &str = "agent_timeout_seconds";
 pub const KEY_AGENT_SKILLS: &str = "agent_skills";
+/// Agent 工作区面板宽度（逻辑 px；未设置时前端回退默认 440）。
+pub const KEY_AGENT_WS_WIDTH: &str = "agent_ws_width";
 
 /// 声明为加密存储的设置键（master key 加密）。
 /// 所有经 `crypto::encrypt` 存储的设置必须登记于此：

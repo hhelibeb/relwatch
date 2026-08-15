@@ -12,6 +12,9 @@ const { mockUnlisten, mockListen, mockWindow } = vi.hoisted(() => {
     innerSize: vi.fn(),
     scaleFactor: vi.fn(),
     setSize: vi.fn(),
+    isMaximized: vi.fn().mockResolvedValue(false),
+    outerPosition: vi.fn().mockResolvedValue({ x: 0, y: 0 }),
+    onResized: vi.fn().mockResolvedValue(mockUnlisten),
   }
   return { mockUnlisten, mockListen, mockWindow }
 })
@@ -931,7 +934,7 @@ describe('App.vue — SettingsTab update 回调（事件入口）', () => {
 })
 
 describe('App.vue — Agent 工作区窗口尺寸', () => {
-  it('展开仅加宽、收起完整恢复、多次开关循环尺寸稳定', async () => {
+  it('展开仅加宽、收起仅缩窄 Agent 宽度、多次开关循环尺寸稳定', async () => {
     // 高 DPI 环境：窗口缩放 1.25，innerSize 返回物理像素 1600×900
     mockWindow.innerSize.mockResolvedValue({ width: 1600, height: 900 })
     mockWindow.scaleFactor.mockResolvedValue(1.25)
@@ -945,9 +948,9 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     await flushPromises()
     expect(calls()).toEqual([[1600 / 1.25 + 440, 900 / 1.25]])
 
-    await btn.trigger('click') // 2. 收起：恢复展开前的完整尺寸（宽+高）
+    await btn.trigger('click') // 2. 收起：仅缩窄 Agent 面板宽度，主界面宽度保持不变
     await flushPromises()
-    expect(calls()[1]).toEqual([1600 / 1.25, 900 / 1.25])
+    expect(calls()[1]).toEqual([1600 / 1.25 - 440, 900 / 1.25])
 
     // 3-6. 再开关两次：尺寸参数完全一致，不累积放大
     await btn.trigger('click')
@@ -959,12 +962,12 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     await btn.trigger('click')
     await flushPromises()
     expect(calls()[2]).toEqual([1600 / 1.25 + 440, 900 / 1.25])
-    expect(calls()[3]).toEqual([1600 / 1.25, 900 / 1.25])
+    expect(calls()[3]).toEqual([1600 / 1.25 - 440, 900 / 1.25])
     expect(calls()[4]).toEqual([1600 / 1.25 + 440, 900 / 1.25])
-    expect(calls()[5]).toEqual([1600 / 1.25, 900 / 1.25])
+    expect(calls()[5]).toEqual([1600 / 1.25 - 440, 900 / 1.25])
 
-    // 收起不再读当前窗口尺寸（恢复依赖保存值，避免固化展开中被放大的尺寸）
-    expect(mockWindow.innerSize).toHaveBeenCalledTimes(3)
+    // 收起基于当前窗口宽度扣除面板宽度（不依赖展开前保存值）
+    expect(mockWindow.innerSize).toHaveBeenCalledTimes(6)
     wrapper.unmount()
   })
 
@@ -986,6 +989,86 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     await flushPromises()
     // 收起：恢复原始逻辑尺寸，高度仍是 533.33（物理 800），不放大
     expect(calls()[1][1]).toBeCloseTo(800 / 1.5)
+    wrapper.unmount()
+  })
+
+  it('展开期间拖窗口右边框调宽面板、拖左边框不动面板（边框判定）', async () => {
+    // 模拟 DOM 窗口状态：innerWidth/screenX（逻辑 px，与 WebView2 同步口径一致）
+    let innerW = 1920
+    let screenX = 100
+    Object.defineProperty(window, 'innerWidth', { configurable: true, get: () => innerW })
+    Object.defineProperty(window, 'screenX', { configurable: true, get: () => screenX })
+    mockWindow.innerSize.mockResolvedValue({ width: 2400, height: 900 }) // 物理 = 1920 逻辑 ×1.25
+    mockWindow.scaleFactor.mockResolvedValue(1.25)
+    mockWindow.setSize.mockResolvedValue(undefined)
+
+    const wrapper = await mountRealApp()
+    const btn = wrapper.find('.stub-agent-toggle')
+    const calls = () => mockWindow.setSize.mock.calls.map((c) => [c[0].width, c[0].height])
+
+    await btn.trigger('click') // 展开
+    await flushPromises()
+
+    // 程序性 setSize 生效（窗口加宽 440）→ 首个 resize 事件被抑制，仅校准基准
+    innerW += 440
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    // 拖右边框：窗口拉宽 +400 逻辑，x 不动 → 面板 440+400=840
+    innerW += 400
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    // 拖左边框：窗口再拉宽 +200 逻辑，x 同步左移（右边固定）→ 面板不动
+    innerW += 200
+    screenX -= 200
+    mockWindow.innerSize.mockResolvedValue({ width: innerW * 1.25, height: 900 })
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    await btn.trigger('click') // 收起
+    await flushPromises()
+    // 面板宽 = 840（左边框的 +200 归主界面，不叠加）；
+    // 收起 = 当前窗口宽 − 面板宽，主界面宽度保持不变
+    expect(calls().at(-1)).toEqual([innerW - 840, 720])
+    wrapper.unmount()
+  })
+
+  it('窗口收窄到主界面下限后，拖左边框面板同步收缩（状态与显示一致）', async () => {
+    let innerW = 1920
+    let screenX = 100
+    Object.defineProperty(window, 'innerWidth', { configurable: true, get: () => innerW })
+    Object.defineProperty(window, 'screenX', { configurable: true, get: () => screenX })
+    mockWindow.innerSize.mockResolvedValue({ width: 2400, height: 900 })
+    mockWindow.scaleFactor.mockResolvedValue(1.25)
+    mockWindow.setSize.mockResolvedValue(undefined)
+
+    const wrapper = await mountRealApp()
+    const btn = wrapper.find('.stub-agent-toggle')
+    const calls = () => mockWindow.setSize.mock.calls.map((c) => [c[0].width, c[0].height])
+
+    await btn.trigger('click') // 展开（窗口宽 1920 逻辑）
+    await flushPromises()
+    innerW += 440
+    window.dispatchEvent(new Event('resize')) // 抑制期校准
+    await flushPromises()
+
+    // 拖左边框收窄：窗口 2360→1500 逻辑，x 右移（右边固定）→ 面板不动
+    innerW = 1500
+    screenX = 100 + (2360 - 1500)
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    // 继续收窄：窗口 1500→1100 逻辑 → 1100−440=660 < 710，面板收缩到 1100−710=390
+    innerW = 1100
+    screenX += 1500 - 1100
+    mockWindow.innerSize.mockResolvedValue({ width: innerW * 1.25, height: 900 })
+    window.dispatchEvent(new Event('resize'))
+    await flushPromises()
+
+    await btn.trigger('click') // 收起：当前宽 1100 − 面板 390 = 710（主界面下限）
+    await flushPromises()
+    expect(calls().at(-1)).toEqual([1100 - 390, 720])
     wrapper.unmount()
   })
 

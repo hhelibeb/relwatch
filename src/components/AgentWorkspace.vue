@@ -22,9 +22,11 @@ import { t } from '../i18n'
 import { formatDate, skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
 
-const props = defineProps<{ seed?: AgentWorkspaceSeed | null }>()
+const props = defineProps<{ seed?: AgentWorkspaceSeed | null; width?: number }>()
 const emit = defineEmits<{ close: [] }>()
 const showToast = inject(ShowToastKey, () => {})
+// 面板宽度：默认 440（CSS 兜底同值），App.vue 展开时传入持久化宽度
+const panelWidth = computed(() => props.width ?? 440)
 
 // ── 会话元信息（localStorage 持久化，窗口重开可继续对话）──────────
 interface SessionMeta {
@@ -737,7 +739,7 @@ watch(
 </script>
 
 <template>
-  <div class="agent-ws" :class="{ 'drag-over': dragOver }" @dragover.prevent="dragOver = true" @dragleave="dragOver = false" @drop.prevent="handleDrop">
+  <div class="agent-ws" :class="{ 'drag-over': dragOver }" :style="{ width: panelWidth + 'px', flexBasis: panelWidth + 'px' }" @dragover.prevent="dragOver = true" @dragleave="dragOver = false" @drop.prevent="handleDrop">
     <!-- 头部 -->
     <header class="agent-ws-header">
       <div class="agent-ws-title">
@@ -1034,6 +1036,9 @@ function runEntities(run: AgentRun | undefined): AgentEntityRefSeed[] {
 .agent-ws {
   width: 440px;
   flex: 0 0 440px;
+  /* 与 App.vue AGENT_PANEL_MIN_WIDTH 同步：窗口过窄时主界面先被 min-width 710 保护，
+   * 剩余压缩不再由面板承担（flex-shrink 默认 1 会把面板压到很窄，且显示与状态宽度脱节） */
+  min-width: 280px;
   height: 100%;
   display: flex;
   flex-direction: column;

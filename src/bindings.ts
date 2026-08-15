@@ -102,6 +102,10 @@ export const commands = {
 	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
 	/**  读取全局 Agent 配置。 */
 	getAgentConfig: () => __TAURI_INVOKE<AgentConfig>("get_agent_config"),
+	/**  读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。 */
+	getAgentWsWidth: () => __TAURI_INVOKE<number>("get_agent_ws_width"),
+	/**  保存 Agent 工作区面板宽度（前端拖窗口右边框调节后写入）。 */
+	saveAgentWsWidth: (width: number) => __TAURI_INVOKE<null>("save_agent_ws_width", { width }),
 	/**
 	 *  工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
 	 * 

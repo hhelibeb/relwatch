@@ -16,7 +16,7 @@ use specta::Type;
 use super::settings::{
     get_setting_bool, get_setting_i64, get_setting_str, set_setting,
     KEY_AGENT_ENABLED, KEY_AGENT_PI_BINARY, KEY_AGENT_PI_MODEL, KEY_AGENT_PROMPT_SUFFIX,
-    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS,
+    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_WS_WIDTH,
 };
 
 /// 全局 Agent 配置（设置页「AI → Agent」分区读写）。
@@ -92,6 +92,16 @@ pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), Str
     set_setting(conn, KEY_AGENT_TIMEOUT_SECONDS, &cfg.timeout_seconds.max(1).to_string())?;
     set_setting(conn, KEY_AGENT_SKILLS, &skills_json)?;
     Ok(())
+}
+
+/// 读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。
+pub fn load_agent_ws_width(conn: &Connection) -> Result<i64, String> {
+    get_setting_i64(conn, KEY_AGENT_WS_WIDTH, 0)
+}
+
+/// 保存 Agent 工作区面板宽度（前端拖窗口右边框后写入）。
+pub fn save_agent_ws_width(conn: &Connection, width: i64) -> Result<(), String> {
+    set_setting(conn, KEY_AGENT_WS_WIDTH, &width.max(1).to_string())
 }
 
 fn non_empty(s: String) -> Option<String> {

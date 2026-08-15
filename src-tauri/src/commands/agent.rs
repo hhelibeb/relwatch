@@ -70,6 +70,29 @@ pub fn save_agent_config(
     Ok(())
 }
 
+/// 读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_ws_width(state: tauri::State<'_, AppState>) -> Result<i64, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::load_agent_ws_width(&conn)
+}
+
+/// 保存 Agent 工作区面板宽度（前端拖窗口右边框调节后写入）。
+#[tauri::command]
+#[specta::specta]
+pub fn save_agent_ws_width(
+    state: tauri::State<'_, AppState>,
+    width: i64,
+) -> Result<(), String> {
+    // 防御：面板宽度只允许合理范围（1..=2000 逻辑 px）
+    if !(1..=2000).contains(&width) {
+        return Err("err.agent.ws_width_range".to_string());
+    }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::save_agent_ws_width(&conn, width)
+}
+
 /// 工作区提交的完整输入。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct AgentJobInput {

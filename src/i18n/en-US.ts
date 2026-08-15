@@ -491,5 +491,6 @@ export default {
   'err.agent.rpc_serialize': 'Failed to serialize agent command: {0}',
   'err.agent.rpc_timeout': 'Agent process unresponsive, please retry',
   'err.agent.rpc_write': 'Failed to write command to agent process',
+  'err.agent.ws_width_range': 'Workspace panel width is out of range',
 
 }

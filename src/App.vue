@@ -3,7 +3,7 @@ import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type
 import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
-import { events } from './bindings'
+import { events, commands } from './bindings'
 import { type Source, listSources, sourceRepoKey, syncSourceCapabilities } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
@@ -38,16 +38,93 @@ const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
 const agentConfig = ref<AgentConfig | null>(null)
 
 // ── Agent 工作区右栏：窗口整体加宽，主界面宽度不变，工作区占新增宽度 ──
-const AGENT_PANEL_WIDTH = 440
+const AGENT_PANEL_DEFAULT_WIDTH = 440
+const AGENT_PANEL_MIN_WIDTH = 280
+const MAIN_MIN_WIDTH = 710
 const agentPanelOpen = ref(false)
 const agentPanelSeed = ref<AgentWorkspaceSeed | null>(null)
-// 打开面板前的窗口尺寸（物理 px，inner 口径）：宽高都记录，收起时完整恢复，
-// 保证多次开关循环后窗口尺寸不变。注意必须用 innerSize：setSize 设置的是
-// inner（内容区）尺寸，若用 outerSize 读数当 inner 目标，每次循环会把标题栏/边框
-// 高度再叠加一遍，窗口逐次放大（历史 bug）。
-let mainSizeBeforePanel: { width: number; height: number } | null = null
+// Agent 工作区当前宽度（逻辑 px）：拖窗口右边框调节，持久化到 app_settings
+const agentPanelWidth = ref(AGENT_PANEL_DEFAULT_WIDTH)
 // 开关互斥锁：innerSize/setSize 是异步的，防快速连点导致交错竞态
 let panelBusy = false
+
+// ── 窗口边框拖拽跟踪（面板展开期间生效）──
+// 目标：拖窗口右边框 → 调 Agent 工作区宽度（主界面宽度不变）；
+//       拖窗口左边框 → 调主界面宽度（Agent 宽度不变）。
+// 判定依据：拖右边框时窗口左上角 x 不变、宽度变；拖左边框时 x 与宽度同步变化。
+// 基准为逻辑像素（innerWidth + screenX）快照，每帧滚动更新；跨 DPI 场景下
+// 逻辑宽度不变时仅刷新基准不误判。
+let panelResizeBase: { w: number; x: number } | null = null
+let panelWidthSaveTimer: ReturnType<typeof setTimeout> | null = null
+// 面板宽度追踪改为 DOM resize（同步、零 IPC）：窗口尺寸与位置（screenX）在事件
+// 派发时已是新值，面板宽度与视口宽度同帧生效，flex 布局不再出现
+// 「主界面先宽后缩」的中间态。相比 Tauri onResized（IPC 异步派发 + 快照读取），
+// 消除了更新滞后导致的抖动。
+let panelDomResizeHandler: (() => void) | null = null
+
+function clampPanelWidth(w: number, windowW: number): number {
+  // 下限保证可读性；上限为主界面最小宽度之外的剩余空间（主界面永不被挤爆）
+  const maxW = Math.max(AGENT_PANEL_MIN_WIDTH, windowW - MAIN_MIN_WIDTH)
+  return Math.round(Math.min(Math.max(w, AGENT_PANEL_MIN_WIDTH), maxW))
+}
+
+function startPanelResizeTracking() {
+  stopPanelResizeTracking()
+  // 程序性 setSize（open 加宽窗口）的 resize 余波可能在本函数之后才派发：
+  // 首个 resize 事件只校准基准不参与判定，避免把程序性加宽误判为用户拖拽
+  let suppressFirst = true
+  panelResizeBase = { w: window.innerWidth, x: window.screenX }
+  panelDomResizeHandler = () => {
+    if (suppressFirst) {
+      suppressFirst = false
+      panelResizeBase = { w: window.innerWidth, x: window.screenX }
+      return
+    }
+    const base = panelResizeBase
+    if (!base) return
+    const newW = window.innerWidth // 逻辑 px（CSS），与 setSize/面板宽度同口径
+    const newX = window.screenX // 逻辑 px 窗口位置：拖右边框时不变，拖左边框时同步变化
+    const deltaW = newW - base.w
+    const deltaX = newX - base.x
+    if (Math.abs(deltaW) >= 0.5 && Math.abs(deltaX) <= 2) {
+      // 右边框拖动：宽度变化全部归 Agent 面板，主界面宽度不变
+      const next = clampPanelWidth(agentPanelWidth.value + deltaW, newW)
+      if (next !== agentPanelWidth.value) {
+        agentPanelWidth.value = next
+        schedulePanelWidthSave()
+      }
+    } else if (Math.abs(deltaW) >= 0.5) {
+      // 左边框拖动：主界面吸收宽度变化；窗口收窄到主界面下限（710）后，
+      // 面板同步收缩，保持状态与 flex 实际显示一致（避免拉宽时跳变）
+      if (newW - agentPanelWidth.value < MAIN_MIN_WIDTH) {
+        const next = Math.max(newW - MAIN_MIN_WIDTH, AGENT_PANEL_MIN_WIDTH)
+        if (next !== agentPanelWidth.value) {
+          agentPanelWidth.value = next
+          schedulePanelWidthSave()
+        }
+      }
+    }
+    // 纯平移 / 缩放变化：Agent 宽度不动，仅刷新基准
+    panelResizeBase = { w: newW, x: newX }
+  }
+  window.addEventListener('resize', panelDomResizeHandler)
+}
+
+function stopPanelResizeTracking() {
+  if (panelDomResizeHandler) {
+    window.removeEventListener('resize', panelDomResizeHandler)
+    panelDomResizeHandler = null
+  }
+  panelResizeBase = null
+}
+
+function schedulePanelWidthSave() {
+  if (panelWidthSaveTimer) clearTimeout(panelWidthSaveTimer)
+  panelWidthSaveTimer = setTimeout(() => {
+    panelWidthSaveTimer = null
+    void commands.saveAgentWsWidth(agentPanelWidth.value).catch(() => {})
+  }, 600)
+}
 
 // 打开（或聚焦）右侧工作区；预置实体经 seed 直接注入（同一窗口，无事件桥）
 async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
@@ -55,14 +132,22 @@ async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
   if (agentPanelOpen.value || panelBusy) return
   panelBusy = true
   try {
+    // 读取上次保存的面板宽度（未设置/失败回退默认 440）
+    try {
+      const saved = await commands.getAgentWsWidth()
+      if (saved > 0) agentPanelWidth.value = saved
+    } catch { /* 保持默认 */ }
     const win = getCurrentWindow()
     const size = await win.innerSize() // 物理像素（inner，与 setSize 口径一致）
     // 缩放用窗口 scaleFactor（与 setSize 内部换算一致）；window.devicePixelRatio
     // 在高 DPI 环境可能与窗口缩放不同步，导致尺寸换算失真。
     const scale = await win.scaleFactor()
-    mainSizeBeforePanel = { width: size.width, height: size.height }
-    await win.setSize(new LogicalSize(size.width / scale + AGENT_PANEL_WIDTH, size.height / scale))
+    // 持久化宽度不得超过当前窗口能容纳的上限（主界面至少保留 710），
+    // 防止上次在大窗口调宽的宽度恢复后超出实际容纳能力（状态与显示不一致）
+    agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, size.width / scale)
+    await win.setSize(new LogicalSize(size.width / scale + agentPanelWidth.value, size.height / scale))
     agentPanelOpen.value = true
+    await startPanelResizeTracking()
   } catch (e) {
     showToast(String(e))
   } finally {
@@ -82,20 +167,23 @@ async function toggleAgentWorkspace() {
 async function closeAgentPanel() {
   if (panelBusy) return
   panelBusy = true
+  stopPanelResizeTracking()
   agentPanelOpen.value = false
-  const saved = mainSizeBeforePanel
-  mainSizeBeforePanel = null
-  if (saved && saved.width > 0) {
-    try {
-      const win = getCurrentWindow()
-      const scale = await win.scaleFactor()
-      // 恢复展开前的完整 inner 尺寸（宽+高）；不读当前尺寸，展开中被放大的部分必须还原
-      await win.setSize(new LogicalSize(saved.width / scale, saved.height / scale))
-    } catch {
-      // 恢复尺寸失败不影响面板关闭
-    }
+  try {
+    const win = getCurrentWindow()
+    // 最大化时边框不可拖、宽度调节无意义：保持最大化，不缩窄窗口
+    if (await win.isMaximized()) return
+    const scale = await win.scaleFactor()
+    const size = await win.innerSize()
+    // 窗口缩窄 Agent 面板宽度 → 主界面宽度保持不变
+    // （面板展开期间拖左边框调出的主界面宽度不被撤销）
+    const targetW = Math.max(size.width / scale - agentPanelWidth.value, MAIN_MIN_WIDTH)
+    await win.setSize(new LogicalSize(targetW, size.height / scale))
+  } catch {
+    // 恢复尺寸失败不影响面板关闭
+  } finally {
+    panelBusy = false
   }
-  panelBusy = false
 }
 
 async function loadAgentConfig() {
@@ -479,6 +567,12 @@ onUnmounted(() => {
     unlisten()
   }
   unlisteners.length = 0
+  // 面板展开期间的边框拖拽跟踪与宽度保存定时器
+  stopPanelResizeTracking()
+  if (panelWidthSaveTimer) {
+    clearTimeout(panelWidthSaveTimer)
+    panelWidthSaveTimer = null
+  }
   // 清理定时器与媒体监听，避免卸载后回调修改已销毁组件的 ref（HMR/测试场景）
   if (countdownTimer) {
     clearInterval(countdownTimer)
@@ -545,7 +639,7 @@ onUnmounted(() => {
     <StatsDevPanelComp v-if="showStatsDev && StatsDevPanelComp" @close="showStatsDev = false" />
       </div>
     </div>
-    <AgentWorkspace v-if="agentPanelOpen && agentConfig?.enabled" :seed="agentPanelSeed" @close="closeAgentPanel" />
+    <AgentWorkspace v-if="agentPanelOpen && agentConfig?.enabled" :seed="agentPanelSeed" :width="agentPanelWidth" @close="closeAgentPanel" />
   </div>
 </template>
 

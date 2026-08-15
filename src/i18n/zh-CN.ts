@@ -491,5 +491,6 @@ export default {
   'err.agent.rpc_serialize': 'Agent 命令序列化失败: {0}',
   'err.agent.rpc_timeout': 'Agent 进程无响应，请重试',
   'err.agent.rpc_write': '无法向 Agent 进程写入命令',
+  'err.agent.ws_width_range': '工作区面板宽度超出允许范围',
 
 }
