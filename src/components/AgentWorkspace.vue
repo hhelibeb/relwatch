@@ -79,6 +79,7 @@ function switchSession(key: string) {
   activeRunId.value = null
   cancelling.value = false
   liveMessages.value = []
+  historySnapshot.value = []
   void loadChat()
   entities.value = []
   skillPath.value = null
@@ -93,6 +94,8 @@ function startNewSession() {
   instruction.value = ''
   messages.value = []
   runs.value = []
+  liveMessages.value = []
+  historySnapshot.value = []
   activeRunId.value = null
   cancelling.value = false
   void loadChat()
@@ -146,10 +149,15 @@ const cancelling = ref(false)
 
 // ── 流式渲染：RPC 事件实时追加的消息（终态后 loadChat 全量校准）──
 const liveMessages = ref<AgentChatMessage[]>([])
-// 流式进行中只显示流式（与轮询全量互斥，避免同一轮内容重复显示两遍）；
+// 提交时刻的历史快照：流式期间显示「快照历史 + 流式内容」，
+// 保证 AI 生成中前文始终可见（与 pi GUI 一致）；终态后清空回落全量校准。
+const historySnapshot = ref<AgentChatMessage[]>([])
+// 流式进行中 = 历史快照 + 实时流式（不再二选一丢弃历史）；
 // 终态（agent_settled）清空流式后回落全量校准结果。
 const displayedMessages = computed(() =>
-  liveMessages.value.length > 0 ? liveMessages.value : messages.value,
+  liveMessages.value.length > 0
+    ? [...historySnapshot.value, ...liveMessages.value]
+    : messages.value,
 )
 
 /** 当前流式 assistant 消息（没有则创建一条）。 */
@@ -214,12 +222,16 @@ function handleRpcStream(payload: { session_key: string; run_id: number; event: 
       cur.blocks.push({ kind: 'bash', command: '', output: delta, exit_code: null, truncated: false })
     }
   } else if (type === 'agent_settled') {
-    // 整轮完成：停轮询 + 全量校准（与 JSONL 一致）
+    // 整轮完成：停轮询 + 清流式/快照 + 全量校准（与 JSONL 一致）
     stopPolling()
     liveMessages.value = []
+    historySnapshot.value = []
     void loadChat()
   }
 }
+
+// 流式期间跟随滚动（仅当用户停留在底部附近时）
+watch(liveMessages, () => scrollToBottomIfNear(), { deep: true })
 
 // ── 引用菜单状态 ──
 const showSkillMenu = ref(false)
@@ -363,9 +375,18 @@ async function handleSubmit() {
   }
   submitting.value = true
   try {
-    // 新 run 开始：清掉上一轮流式残留（多 tool 轮次的 agent_start 不再清空，
-    // 避免中途丢消息；终态由 agent_settled 统一校准）
-    liveMessages.value = []
+    // 新 run 开始：冻结历史快照 + 本地回显用户消息（pi 落盘有延迟），
+    // 流式期间界面显示「历史 + 用户消息 + AI 实时输出」；
+    // 终态由 agent_settled 统一清流式并全量校准（与 JSONL 一致）。
+    historySnapshot.value = [...messages.value]
+    liveMessages.value = [
+      {
+        role: 'user',
+        blocks: [{ kind: 'text', text: cleaned.trim() }],
+        timestamp: new Date().toISOString(),
+        model: null,
+      },
+    ]
     const runId = await runAgentJob({
       sessionKey: activeKey.value,
       entities: merged,
@@ -650,6 +671,10 @@ async function onRunFinished(payload: { run_id: number; session_key: string; sta
   stopPolling()
   activeRunId.value = null
   cancelling.value = false
+  // 兜底清理：正常路径 agent_settled 已清；abort / 超时 / 模型错误等
+  // 场景下 agent_settled 可能不达，run 终态事件统一收尾
+  liveMessages.value = []
+  historySnapshot.value = []
   await loadChat()
 }
 
@@ -769,7 +794,7 @@ watch(
                   </span>
                   <span v-if="runForMessage(idx)?.skill_path" class="agent-ws-skill-badge">@{{ skillShortName(runForMessage(idx)!.skill_path ?? '') }}</span>
                 </div>
-                <p class="agent-ws-msg-text">{{ stripSkillBlock(blockText(msg.blocks)) || '…' }}</p>
+                <p class="agent-ws-msg-text">{{ stripUserInstructionWrapper(stripSkillBlock(blockText(msg.blocks))) || '…' }}</p>
               </div>
 
               <!-- assistant 消息：左对齐，Markdown + 思考/工具折叠 -->
@@ -957,6 +982,13 @@ function escapeRegExp(s: string): string {
  * 折叠为空白：skill 徽章由 run.skill_path 渲染，避免全文刷屏（对齐 pi TUI 的「加载 Skill」提示）。 */
 function stripSkillBlock(text: string): string {
   return text.replace(/<skill name="[^"]*"[^>]*>[\s\S]*?<\/skill>\s*/, '')
+}
+
+/** 剥离整条被 <用户指令> 标签包裹的消息外层标签（多轮精简消息的显示美化）。
+ * 仅当标签完整包裹整条消息（开头 <用户指令>、结尾 </用户指令>）时剥离；
+ * 标签位于消息中间时（如首轮完整模板）保留原样，保证完整上下文可见。 */
+function stripUserInstructionWrapper(text: string): string {
+  return text.replace(/^\s*<用户指令>\s*([\s\S]*?)\s*<\/用户指令>\s*$/, '$1').trim()
 }
 
 function isToolError(msg: AgentChatMessage): boolean {

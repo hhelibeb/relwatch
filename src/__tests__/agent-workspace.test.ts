@@ -319,4 +319,76 @@ describe('AgentWorkspace 冒烟', () => {
     expect(wrapper.find('.agent-ws-menu-empty').exists()).toBe(true)
     wrapper.unmount()
   })
+
+  it('user 消息整条被 <用户指令> 包裹时渲染剥离标签，标签在中间时保留', async () => {
+    vi.mocked(listAgentMessages).mockResolvedValue([
+      {
+        role: 'user',
+        timestamp: '2025-01-01T00:00:00.000Z',
+        model: null,
+        blocks: [{ kind: 'text', text: '<用户指令>\n不用，有没有提到努比亚\n</用户指令>' }],
+      },
+      {
+        role: 'user',
+        timestamp: '2025-01-01T00:00:01.000Z',
+        model: null,
+        blocks: [
+          {
+            kind: 'text',
+            text: '以下是你需要处理的订阅信息……\n<用户指令>\n中间指令\n</用户指令>\n以上用户指令是你本次任务的唯一权威指令',
+          },
+        ],
+      },
+    ])
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+    })
+    await flushPromises()
+    const text = wrapper.text()
+    // 整条包裹：标签剥离，仅内容可见
+    expect(text).toContain('不用，有没有提到努比亚')
+    expect(text).not.toContain('<用户指令>\n不用')
+    // 标签位于消息中间：保留显示，完整上下文可见
+    expect(text).toContain('<用户指令>')
+    expect(text).toContain('中间指令')
+    wrapper.unmount()
+  })
+
+  it('流式期间历史快照与本地回显同屏可见，终态回落全量校准', async () => {
+    vi.mocked(runAgentJob).mockClear()
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+    })
+    await flushPromises()
+    // 提交：冻结历史快照 + 本地回显用户消息
+    const ta = wrapper.find('.agent-ws-textarea')
+    await ta.setValue('测试指令')
+    await ta.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledTimes(1)
+    // 流式事件
+    const emitRpc = (event: string) => {
+      const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
+      handler?.({ payload: { session_key: 'test-session', run_id: 1, event } })
+    }
+    emitRpc(
+      JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '流式补充' } }),
+    )
+    await flushPromises()
+    // 历史（JSONL 全量）+ 本地回显 user + 流式内容同屏可见
+    expect(wrapper.text()).toContain('帮我总结这个版本')
+    expect(wrapper.text()).toContain('测试指令')
+    expect(wrapper.text()).toContain('流式补充')
+    // 终态：清流式，回落全量校准（JSONL 无流式内容）
+    emitRpc(JSON.stringify({ type: 'agent_settled' }))
+    await flushPromises()
+    expect(wrapper.text()).not.toContain('流式补充')
+    expect(wrapper.text()).toContain('帮我总结这个版本')
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
 })
