@@ -69,6 +69,7 @@ vi.mock('../composables/useEscapeToTray', () => ({ useEscapeToTray: vi.fn() }))
 import { listSources } from '../api/sources'
 import { getReleases, getPollCountdown, triggerPoll } from '../api/releases'
 import { getSettings } from '../api/settings'
+import { invoke } from '@tauri-apps/api/core'
 import { AgentToggleKey } from '../injection-keys'
 import { useEscapeToTray } from '../composables/useEscapeToTray'
 import { closeAllContextMenus } from '../composables/contextMenuBus'
@@ -1032,6 +1033,31 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     // 收起 = 当前窗口宽 − 面板宽，主界面宽度保持不变
     expect(calls().at(-1)).toEqual([innerW - 840, 720])
     wrapper.unmount()
+  })
+
+  it('窄窗口打开时完整恢复保存的面板宽度，不被当前窗口宽压缩（回归）', async () => {
+    // 应用默认启动窗口宽 750 逻辑 px，DB 中已保存面板宽 700
+    mockWindow.innerSize.mockResolvedValue({ width: 750, height: 750 })
+    mockWindow.scaleFactor.mockResolvedValue(1)
+    mockWindow.setSize.mockResolvedValue(undefined)
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'get_agent_ws_width' ? 700 : undefined,
+    )
+    try {
+      const wrapper = await mountRealApp()
+      await wrapper.find('.stub-agent-toggle').trigger('click')
+      await flushPromises()
+
+      // 面板恢复保存值 700（而非被当前窗口宽 750 压缩到 280），窗口加宽到 750+700
+      const openCall = mockWindow.setSize.mock.calls[0][0] as { width: number; height: number }
+      expect(openCall.width).toBe(750 + 700)
+      // AgentWorkspace 收到的宽度 prop 为保存值
+      const ws = wrapper.findComponent({ name: 'AgentWorkspace' })
+      expect(ws.props('width')).toBe(700)
+      wrapper.unmount()
+    } finally {
+      vi.mocked(invoke).mockImplementation(async () => undefined)
+    }
   })
 
   it('窗口收窄到主界面下限后，拖左边框面板同步收缩（状态与显示一致）', async () => {

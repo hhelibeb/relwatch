@@ -142,10 +142,12 @@ async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
     // 缩放用窗口 scaleFactor（与 setSize 内部换算一致）；window.devicePixelRatio
     // 在高 DPI 环境可能与窗口缩放不同步，导致尺寸换算失真。
     const scale = await win.scaleFactor()
-    // 持久化宽度不得超过当前窗口能容纳的上限（主界面至少保留 710），
-    // 防止上次在大窗口调宽的宽度恢复后超出实际容纳能力（状态与显示不一致）
-    agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, size.width / scale)
-    await win.setSize(new LogicalSize(size.width / scale + agentPanelWidth.value, size.height / scale))
+    // 窗口将同步加宽到「当前主界面 + 面板」：clamp 上限按加宽后的窗口计算，
+    // 保存的宽度可完整恢复（主界面仍保 710 下限）；若按当前窗口宽（未含面板）
+    // 计算，窄窗口会把恢复宽度错误压缩到主界面下限附近（面板越收越窄）。
+    const windowW = size.width / scale
+    agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW + agentPanelWidth.value)
+    await win.setSize(new LogicalSize(windowW + agentPanelWidth.value, size.height / scale))
     agentPanelOpen.value = true
     await startPanelResizeTracking()
   } catch (e) {
