@@ -77,7 +77,7 @@ git log --pretty=%s -n 20 2>/dev/null || true
 5. **Execute upon confirmation:**
    - Use `git add` with specific files (never use `-A` or `.`)
    - Create commits with your planned messages
-   - Show the result with `git log --oneline -n X` (where X = number of commits you just created)
+   - Show the result with `git log --oneline --stat -n X` (where X = number of commits you just created) — `--stat` 会列出每个 commit 的增减行数（insertions/deletions），让用户直观看到每次提交的规模
 
 ## Important:
 
