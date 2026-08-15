@@ -136,6 +136,10 @@ impl RpcManager {
 
         let mut cmd = tokio::process::Command::new("cmd");
         cmd.arg("/C").arg(&binary);
+        // Windows 下 GUI 父进程 spawn 控制台程序默认会分配新控制台窗口（弹出黑框），
+        // 必须显式 CREATE_NO_WINDOW；stdin/stdout 重定向不影响控制台分配。
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         cmd.args(["--mode", "rpc", "--no-context-files", "--no-approve", "--no-extensions"]);
         for skill in &config.skills {
             cmd.args(["--skill", skill]);
@@ -212,7 +216,15 @@ pub fn resolve_pi_binary(config: &AgentConfig) -> Result<String, String> {
         return Ok(bin.clone());
     }
     let probe = if cfg!(windows) { "where" } else { "which" };
-    if let Ok(out) = std::process::Command::new(probe).arg("pi").output() {
+    let mut probe_cmd = std::process::Command::new(probe);
+    probe_cmd.arg("pi");
+    // Windows 下同样禁止弹出控制台窗口（GUI 父进程 spawn 控制台程序默认弹窗）
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        probe_cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    if let Ok(out) = probe_cmd.output() {
         if out.status.success() {
             if let Ok(s) = String::from_utf8(out.stdout) {
                 if let Some(line) = s.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()) {

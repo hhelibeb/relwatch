@@ -41,21 +41,32 @@ const agentConfig = ref<AgentConfig | null>(null)
 const AGENT_PANEL_WIDTH = 440
 const agentPanelOpen = ref(false)
 const agentPanelSeed = ref<AgentWorkspaceSeed | null>(null)
-let mainWidthBeforePanel = 0 // 打开面板前的窗口宽度（物理 px）
+// 打开面板前的窗口尺寸（物理 px，inner 口径）：宽高都记录，收起时完整恢复，
+// 保证多次开关循环后窗口尺寸不变。注意必须用 innerSize：setSize 设置的是
+// inner（内容区）尺寸，若用 outerSize 读数当 inner 目标，每次循环会把标题栏/边框
+// 高度再叠加一遍，窗口逐次放大（历史 bug）。
+let mainSizeBeforePanel: { width: number; height: number } | null = null
+// 开关互斥锁：innerSize/setSize 是异步的，防快速连点导致交错竞态
+let panelBusy = false
 
 // 打开（或聚焦）右侧工作区；预置实体经 seed 直接注入（同一窗口，无事件桥）
 async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
   agentPanelSeed.value = seed ?? null
-  if (agentPanelOpen.value) return
+  if (agentPanelOpen.value || panelBusy) return
+  panelBusy = true
   try {
     const win = getCurrentWindow()
-    const size = await win.outerSize()
-    mainWidthBeforePanel = size.width
-    const scale = window.devicePixelRatio || 1
+    const size = await win.innerSize() // 物理像素（inner，与 setSize 口径一致）
+    // 缩放用窗口 scaleFactor（与 setSize 内部换算一致）；window.devicePixelRatio
+    // 在高 DPI 环境可能与窗口缩放不同步，导致尺寸换算失真。
+    const scale = await win.scaleFactor()
+    mainSizeBeforePanel = { width: size.width, height: size.height }
     await win.setSize(new LogicalSize(size.width / scale + AGENT_PANEL_WIDTH, size.height / scale))
     agentPanelOpen.value = true
   } catch (e) {
     showToast(String(e))
+  } finally {
+    panelBusy = false
   }
 }
 
@@ -69,18 +80,22 @@ async function toggleAgentWorkspace() {
 }
 
 async function closeAgentPanel() {
+  if (panelBusy) return
+  panelBusy = true
   agentPanelOpen.value = false
-  if (mainWidthBeforePanel > 0) {
+  const saved = mainSizeBeforePanel
+  mainSizeBeforePanel = null
+  if (saved && saved.width > 0) {
     try {
       const win = getCurrentWindow()
-      const size = await win.outerSize()
-      const scale = window.devicePixelRatio || 1
-      await win.setSize(new LogicalSize(mainWidthBeforePanel / scale, size.height / scale))
+      const scale = await win.scaleFactor()
+      // 恢复展开前的完整 inner 尺寸（宽+高）；不读当前尺寸，展开中被放大的部分必须还原
+      await win.setSize(new LogicalSize(saved.width / scale, saved.height / scale))
     } catch {
-      // 恢复宽度失败不影响面板关闭
+      // 恢复尺寸失败不影响面板关闭
     }
-    mainWidthBeforePanel = 0
   }
+  panelBusy = false
 }
 
 async function loadAgentConfig() {
