@@ -49,6 +49,7 @@ import { listAgentMessages, listAgentRuns, runAgentJob, getAgentConfig } from '.
 import { listSources } from '../api/sources'
 import { getReleases } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
+import { ShowToastKey } from '../injection-keys'
 
 function sampleMessages(): AgentChatMessage[] {
   return [
@@ -318,6 +319,78 @@ describe('AgentWorkspace 冒烟', () => {
     await flushPromises()
     expect(wrapper.find('.agent-ws-menu-empty').exists()).toBe(true)
     wrapper.unmount()
+  })
+
+  it('拖到标题栏：切换新会话并预置实体引用', async () => {
+    const showToast = vi.fn()
+    // 预置一个历史会话：初始处于旧会话（非新会话状态）
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'old-session', title: '旧会话', updatedAt: Date.now() }]),
+    )
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    // 初始：处于旧会话、无引用 chip
+    expect(wrapper.find('.agent-ws-session-item-new').exists()).toBe(false)
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(0)
+
+    const header = wrapper.find('.agent-ws-header')
+    // 拖拽悬停：标题栏出现虚线框 + 提示文本，工作区主体不高亮
+    await header.trigger('dragenter')
+    expect(header.classes()).toContain('drop-over')
+    expect(wrapper.find('.agent-ws-drop-hint-header').exists()).toBe(true)
+    expect(wrapper.find('.agent-ws-main').classes()).not.toContain('drag-over')
+    // 把版本实体放到标题栏
+    await header.trigger('drop', {
+      dataTransfer: {
+        getData: (fmt: string) =>
+          fmt === 'application/x-relwatch-entity' ? JSON.stringify({ kind: 'release', id: 7 }) : '',
+      },
+    })
+    await flushPromises()
+    // 已切换为新会话 + 引用 chip 放入 + toast 仅一次（未冒泡重复附加）
+    expect(wrapper.find('.agent-ws-session-item-new').exists()).toBe(true)
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
+    expect(showToast).toHaveBeenCalledTimes(1)
+    // 拖放结束提示层消失
+    expect(wrapper.find('.agent-ws-drop-hint-header').exists()).toBe(false)
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('拖到工作区主体：添加到当前会话（不新建）', async () => {
+    const showToast = vi.fn()
+    // 预置一个历史会话：初始处于旧会话
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'old-session', title: '旧会话', updatedAt: Date.now() }]),
+    )
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    const main = wrapper.find('.agent-ws-main')
+    // 拖拽悬停：工作区主体出现虚线框 + 提示文本，标题栏不高亮
+    await main.trigger('dragover')
+    expect(main.classes()).toContain('drag-over')
+    expect(wrapper.find('.agent-ws-drop-hint-main').exists()).toBe(true)
+    expect(wrapper.find('.agent-ws-header').classes()).not.toContain('drop-over')
+    // 把监控源实体放到工作区
+    await main.trigger('drop', {
+      dataTransfer: {
+        getData: (fmt: string) =>
+          fmt === 'application/x-relwatch-entity' ? JSON.stringify({ kind: 'source', id: 3 }) : '',
+      },
+    })
+    await flushPromises()
+    // 仍处于旧会话（未新建）+ 引用加入当前会话 + toast 一次
+    expect(wrapper.find('.agent-ws-session-item-new').exists()).toBe(false)
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
+    expect(showToast).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
   })
 
   it('user 消息整条被 <用户指令> 包裹时渲染剥离标签，标签在中间时保留', async () => {

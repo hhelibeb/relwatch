@@ -434,6 +434,8 @@ export default {
   'agent.cancelling': '正在停止…',
   'agent.session_new': '新会话',
   'agent.session_switch': '切换会话',
+  'agent.drop_new_session': '拖到这里：新建会话',
+  'agent.drop_current_session': '拖到这里：添加到当前会话',
   'agent.skill_pick': '选择 Skill',
   'agent.entity_pick': '引用实体',
   'agent.entity_source': '监控源',

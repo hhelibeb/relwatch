@@ -434,6 +434,8 @@ export default {
   'agent.cancelling': 'Stopping…',
   'agent.session_new': 'New session',
   'agent.session_switch': 'Switch session',
+  'agent.drop_new_session': 'Drop here: new session',
+  'agent.drop_current_session': 'Drop here: add to current session',
   'agent.skill_pick': 'Pick a skill',
   'agent.entity_pick': 'Reference an entity',
   'agent.entity_source': 'Source',

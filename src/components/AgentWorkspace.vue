@@ -706,6 +706,34 @@ function handleDrop(e: DragEvent) {
   }
 }
 
+// ── 拖到头部标题栏：切换新会话并把实体引用放进新会话 ──
+const headerDropOver = ref(false)
+
+function onHeaderDragLeave(e: DragEvent) {
+  // 仅当真正离开标题栏时才取消高亮（子元素间移动不闪烁）
+  const el = e.currentTarget as HTMLElement
+  if (!el.contains(e.relatedTarget as Node | null)) {
+    headerDropOver.value = false
+  }
+}
+
+function handleDropNewSession(e: DragEvent) {
+  dragOver.value = false
+  headerDropOver.value = false
+  const raw = e.dataTransfer?.getData('application/x-relwatch-entity')
+  if (!raw) return
+  try {
+    const entity = JSON.parse(raw) as AgentEntityRefSeed
+    if (entity.kind === 'source' || entity.kind === 'release') {
+      startNewSession()
+      addEntity(entity)
+      showToast(t('agent.attached'))
+    }
+  } catch {
+    // 非本应用拖入内容，忽略
+  }
+}
+
 onMounted(async () => {
   applySeed()
   await Promise.all([loadCatalog(), loadChat()])
@@ -739,9 +767,16 @@ watch(
 </script>
 
 <template>
-  <div class="agent-ws" :class="{ 'drag-over': dragOver }" :style="{ width: panelWidth + 'px', flexBasis: panelWidth + 'px' }" @dragover.prevent="dragOver = true" @dragleave="dragOver = false" @drop.prevent="handleDrop">
-    <!-- 头部 -->
-    <header class="agent-ws-header">
+  <div class="agent-ws" :style="{ width: panelWidth + 'px', flexBasis: panelWidth + 'px' }">
+    <!-- 头部标题栏：拖入 = 新建会话并放入引用 -->
+    <header
+      class="agent-ws-header"
+      :class="{ 'drop-over': headerDropOver }"
+      @dragenter.prevent="headerDropOver = true"
+      @dragover.prevent="headerDropOver = true"
+      @dragleave.prevent="onHeaderDragLeave"
+      @drop.prevent.stop="handleDropNewSession"
+    >
       <div class="agent-ws-title">
         <svg class="agent-ws-title-icon"><use href="/icons.svg#agent-icon" /></svg>
         <span>{{ t('agent.workspace_title') }}</span>
@@ -759,9 +794,20 @@ watch(
           <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
         </button>
       </div>
+      <!-- 拖拽悬停提示：虚线框 + 目的说明 -->
+      <div v-if="headerDropOver" class="agent-ws-drop-hint agent-ws-drop-hint-header">{{ t('agent.drop_new_session') }}</div>
     </header>
 
-    <div class="agent-ws-main">
+    <!-- 工作区主体：拖入 = 添加到当前会话 -->
+    <div
+      class="agent-ws-main"
+      :class="{ 'drag-over': dragOver }"
+      @dragover.prevent="dragOver = true"
+      @dragleave="dragOver = false"
+      @drop.prevent="handleDrop"
+    >
+      <!-- 拖拽悬停提示：虚线框 + 目的说明 -->
+      <div v-if="dragOver" class="agent-ws-drop-hint agent-ws-drop-hint-main">{{ t('agent.drop_current_session') }}</div>
       <!-- 左侧：聊天区（会话侧栏折叠时占满全宽） -->
       <section class="agent-ws-chat">
         <!-- 最近 run 状态横幅 -->
@@ -1047,19 +1093,54 @@ function runEntities(run: AgentRun | undefined): AgentEntityRefSeed[] {
   border-left: 1px solid var(--border);
   overflow: hidden;
 }
-.agent-ws.drag-over {
+.agent-ws-main.drag-over {
   outline: 2px dashed var(--accent, #2e6fd0);
   outline-offset: -4px;
 }
 
+/* 拖拽悬停提示层：虚线框内居中说明文字，不拦截事件 */
+.agent-ws-drop-hint {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--accent, #2e6fd0);
+  background: color-mix(in srgb, var(--accent, #2e6fd0) 10%, var(--bg));
+  pointer-events: none;
+  z-index: 30;
+}
+/* 标题栏提示：覆盖整栏 */
+.agent-ws-drop-hint-header {
+  inset: 0;
+}
+/* 工作区提示：顶部居中悬浮条 */
+.agent-ws-drop-hint-main {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 16px;
+  border-radius: 999px;
+  white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+
 /* 头部 */
 .agent-ws-header {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
   border-bottom: 1px solid var(--border);
   background: var(--bg);
+}
+/* 拖到标题栏：独立虚线框 */
+.agent-ws-header.drop-over {
+  outline: 2px dashed var(--accent, #2e6fd0);
+  outline-offset: -4px;
 }
 .agent-ws-title {
   display: flex;
@@ -1118,6 +1199,7 @@ function runEntities(run: AgentRun | undefined): AgentEntityRefSeed[] {
 
 /* 主体：边栏 + 聊天 */
 .agent-ws-main {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
