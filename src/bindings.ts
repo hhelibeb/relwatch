@@ -98,10 +98,44 @@ export const commands = {
 	getUsageStats: (days: number | null) => __TAURI_INVOKE<UsageStatRow[]>("get_usage_stats", { days }),
 	/**  清空全部使用统计。 */
 	clearUsageStats: () => __TAURI_INVOKE<null>("clear_usage_stats"),
+	/**  保存全局 Agent 配置。 */
+	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
+	/**  读取全局 Agent 配置。 */
+	getAgentConfig: () => __TAURI_INVOKE<AgentConfig>("get_agent_config"),
+	/**
+	 *  工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
+	 * 
+	 *  - Agent 未启用、skill 未配置、实体无效时拒绝；
+	 *  - 会话文件已存在（历史提交）则复用，实现多轮继续；
+	 *  - 实际执行在后台任务完成，终态经 `AgentRunFinished` 事件推送。
+	 */
+	runAgentJob: (input: AgentJobInput) => __TAURI_INVOKE<number>("run_agent_job", { input }),
+	/**  查询工作区会话的提交记录（倒序，默认最近 20 条）。 */
+	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRun[]>("list_agent_runs", { sessionKey, limit }),
+	/**
+	 *  读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
+	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
+	 */
+	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage[]>("list_agent_messages", { sessionKey }),
+	/**
+	 *  取消一次正在运行（或排队中）的 Agent 提交。
+	 *  「停止」= 向 RPC 常驻进程发 `abort`（不杀进程）：会话上下文保留在进程内存
+	 *  与 JSONL 文件，继续对话直接再提交即可，无需恢复流程。
+	 *  终态由调度器统一写入（cancelled），本命令不直接写库，避免竞态覆盖。
+	 */
+	cancelAgentRun: (runId: number) => __TAURI_INVOKE<null>("cancel_agent_run", { runId }),
+	/**  删除一个工作区会话：移除会话文件与全部运行记录。 */
+	deleteAgentSession: (sessionKey: string) => __TAURI_INVOKE<null>("delete_agent_session", { sessionKey }),
+	/**  返回在终端恢复该次会话的命令字符串（供复制）。 */
+	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),
+	/**  在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。 */
+	openAgentSession: (runId: number) => __TAURI_INVOKE<null>("open_agent_session", { runId }),
 };
 
 /** Events */
 export const events = {
+	agentRpcStream: makeEvent<AgentRpcStream>("agent-rpc-stream"),
+	agentRunFinished: makeEvent<AgentRunFinished>("agent-run-finished"),
 	navigate: makeEvent<Navigate>("navigate"),
 	pollCompleted: makeEvent<PollCompleted>("poll-completed"),
 	releaseStateChanged: makeEvent<ReleaseStateChanged>("release-state-changed"),
@@ -109,6 +143,111 @@ export const events = {
 };
 
 /* Types */
+/**  一条消息中的内容块（前端按 kind 渲染）。 */
+export type AgentChatBlock = 
+/**  普通文本（用户提问 / 助手回复 / 自定义消息）。 */
+{ kind: "text"; text: string } | 
+/**  思考过程（assistant thinking 块，默认折叠展示）。 */
+{ kind: "thinking"; text: string } | 
+/**  工具调用（assistant toolCall 块，默认折叠展示参数）。 */
+{ kind: "toolCall"; id: string; name: string; args: string } | 
+/**  工具结果（toolResult 消息，默认折叠展示输出）。 */
+{ kind: "toolResult"; id: string; tool_name: string; text: string; is_error: boolean } | 
+/**  pi 的 bash 执行消息（命令 + 输出 + 退出码）。 */
+{ kind: "bash"; command: string; output: string; exit_code: number | null; truncated: boolean };
+
+/**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
+export type AgentChatMessage = {
+	/**  user | assistant | tool | bash | custom */
+	role: string,
+	blocks: AgentChatBlock[],
+	/**  ISO 时间戳（entry 级别，非 message 内嵌）。 */
+	timestamp: string,
+	/**  生成该消息的模型（仅 assistant）。 */
+	model: string | null,
+};
+
+/**  全局 Agent 配置（设置页「AI → Agent」分区读写）。 */
+export type AgentConfig = {
+	/**  总开关：关闭时唤起按钮隐藏，运行命令拒绝执行。 */
+	enabled: boolean,
+	/**  pi 可执行文件显式路径（None = 自动探测 where/which pi）。 */
+	pi_binary: string | null,
+	/**  pi 模型（None = pi 默认模型）。 */
+	pi_model: string | null,
+	/**  追加在每次提交 prompt 末尾的固定后缀（如"请输出中文"）。 */
+	prompt_suffix: string | null,
+	/**  子进程超时秒数（超时 kill）。 */
+	timeout_seconds: number,
+	/**  全局 skill 备选列表（`@` 菜单数据源；运行前校验存在性）。 */
+	skills: string[],
+};
+
+/**  一次工作区提交引用的实体（拖拽 / `[[]]` 引用统一入口）。 */
+export type AgentEntityRef = {
+	/**  "source" | "release" */
+	kind: string,
+	id: number,
+};
+
+/**  工作区提交的完整输入。 */
+export type AgentJobInput = {
+	/**  工作区会话标识（前端 UUID）。同会话多次提交共享 pi 会话文件（多轮继续）。 */
+	session_key: string,
+	/**  本次提交引用的实体（拖拽 / `[[]]` 解析结果）。 */
+	entities: AgentEntityRef[],
+	/**  本次提交使用的 skill 路径（`@` 选择；None = 全局列表首个）。 */
+	skill_path: string | null,
+	/**  用户输入文本（引用已解析剥离）。 */
+	instruction: string,
+};
+
+/**
+ *  pi RPC 事件流实时转发（打字机文本 / 工具状态 / 流式 bash 输出）。
+ *  `event` 为 pi RPC 协议的原始事件 JSON 序列化字符串（前端 JSON.parse 还原）。
+ */
+export type AgentRpcStream = {
+	session_key: string,
+	run_id: number,
+	event: string,
+};
+
+/**  一次工作区提交的运行记录。 */
+export type AgentRun = {
+	id: number,
+	/**  工作区会话标识（前端 UUID）；同一会话多次提交共享 pi 会话文件实现多轮继续。 */
+	session_key: string,
+	/**  本次提交使用的 skill 路径（未选为 None）。 */
+	skill_path: string | null,
+	/**  本次提交引用的实体（JSON 数组，`[{"kind":"source","id":1}]`）。 */
+	entities: string,
+	/**  用户输入文本（`[[]]` 引用已解析剥离，实体归入 entities 列）。 */
+	instruction: string,
+	/**  本次提交落盘的 pi 会话文件（`pi --session <path>` 恢复/继续）。 */
+	session_path: string | null,
+	/**  pending | running | success | failed | timeout。 */
+	status: string,
+	exit_code: number | null,
+	stdout: string | null,
+	stderr: string | null,
+	/**  启动失败等非进程类错误信息。 */
+	error: string | null,
+	started_at: string | null,
+	finished_at: string | null,
+	created_at: string,
+};
+
+/**  一次 Agent 提交运行结束（成功/失败/超时/取消），前端据此刷新工作区记录。 */
+export type AgentRunFinished = {
+	run_id: number,
+	/**  所属工作区会话标识（前端按 session_key 过滤刷新）。 */
+	session_key: string,
+	/**  success | failed | timeout | cancelled */
+	status: string,
+	/**  失败/超时的人类可读原因（成功时 null）。 */
+	message: string | null,
+};
+
 /**
  *  设置读写共用同一结构：get_settings 返回它，update_settings 直接接收它。
  *  前端 payload 与后端结构字段一一对应（snake_case），
@@ -165,6 +304,7 @@ export type Navigate = string;
 /**  一次轮询完成（手动或定时），前端据此刷新列表与倒计时。 */
 export type PollCompleted = null;
 
+/**  Agent 类型能力描述（前端配置表单驱动）。 */
 export type PollResult = {
 	new_releases: ReleaseInfo[],
 };

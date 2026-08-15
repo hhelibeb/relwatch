@@ -17,6 +17,9 @@ pub mod source;
 mod deepseek;
 mod poll;
 mod retry;
+pub mod agent;
+pub mod agent_rpc;
+pub mod agent_session;
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Arc;
@@ -40,6 +43,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::PollCompleted,
             events::SourceAutoDisabled,
             events::Navigate,
+            events::AgentRunFinished,
+            events::AgentRpcStream,
         ])
         .commands(collect_commands![
         commands::add_source,
@@ -72,6 +77,15 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::record_usage,
         commands::get_usage_stats,
         commands::clear_usage_stats,
+        commands::save_agent_config,
+        commands::get_agent_config,
+        commands::run_agent_job,
+        commands::list_agent_runs,
+        commands::list_agent_messages,
+        commands::cancel_agent_run,
+        commands::delete_agent_session,
+        commands::get_agent_session_command,
+        commands::open_agent_session,
     ])
 }
 
@@ -131,6 +145,8 @@ pub fn run() {
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
     let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(50));
+    // Agent 子进程并发上限：LLM 进程较重（token 流式 + 工具调用），同时 2 个已足够
+    let agent_semaphore = Arc::new(tokio::sync::Semaphore::new(2));
 
     // 开发/测试构建时把最新 TS 绑定写入前端（CI 亦可通过 cargo test 触发）
     #[cfg(debug_assertions)]
@@ -160,9 +176,12 @@ pub fn run() {
                 .build()
         })
         .manage(AppState {
+            agent_rpc: std::sync::Arc::new(crate::agent_rpc::RpcManager::new(pool.clone())),
+            agent_cancelled: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             db: pool,
             next_poll_at: next_poll.clone(),
             deepseek_semaphore,
+            agent_semaphore,
         })
         // 命令清单单一来源：invoke_handler 从同一个 specta Builder 生成，
         // 与 collect_commands! 共用一份清单，不再存在第二份手工副本。
@@ -229,10 +248,18 @@ pub fn run() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // 应用退出：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理子进程）
+            if let tauri::RunEvent::Exit = event {
+                let rpc = app_handle.state::<AppState>().agent_rpc.clone();
+                tauri::async_runtime::block_on(async move {
+                    rpc.shutdown().await;
+                });
+            }
+        });
 }
-
 #[cfg(test)]
 mod tests {
     /// 触发 TS 绑定导出：`cargo test` 即重新生成 src/bindings.ts，CI 可据此检查同步。

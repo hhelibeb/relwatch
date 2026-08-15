@@ -31,6 +31,15 @@ pub const KEY_YOUTUBE_API_KEY: &str = "youtube_api_key";
 pub const KEY_BILIBILI_COOKIE: &str = "bilibili_cookie";
 pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 
+// ── Agent 全局配置键（不走 SETTING_SPECS 注册表：含 JSON 数组字段，
+// 由 db::agent 的 load/save_agent_config 统一读写）──
+pub const KEY_AGENT_ENABLED: &str = "agent_enabled";
+pub const KEY_AGENT_PI_BINARY: &str = "agent_pi_binary";
+pub const KEY_AGENT_PI_MODEL: &str = "agent_pi_model";
+pub const KEY_AGENT_PROMPT_SUFFIX: &str = "agent_prompt_suffix";
+pub const KEY_AGENT_TIMEOUT_SECONDS: &str = "agent_timeout_seconds";
+pub const KEY_AGENT_SKILLS: &str = "agent_skills";
+
 /// 声明为加密存储的设置键（master key 加密）。
 /// 所有经 `crypto::encrypt` 存储的设置必须登记于此：
 /// - `crypto::verify_master_key_consistency` 依赖它做启动时一致性检查，

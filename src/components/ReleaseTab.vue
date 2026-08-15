@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, inject } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { isReadStatus, isUnreadStatus, releaseMatchesSearch } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
@@ -10,6 +10,8 @@ import ReleaseSearchBar from './ReleaseSearchBar.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import type { ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
 import { track } from '../composables/useUsageTracking'
+import { AgentEnabledKey, AgentPanelOpenKey, AgentToggleKey } from '../injection-keys'
+import { t } from '../i18n'
 
 type AggregatedListInstance = InstanceType<typeof ReleaseAggregatedList> & {
   expandAll: () => void
@@ -136,6 +138,17 @@ function navigateReleaseDetail(delta: number) {
   const nextId = detailSequenceIds.value[detailIndex.value + delta]
   if (nextId !== undefined) detailReleaseId.value = nextId
 }
+
+// ========== Agent 工作区唤起（工具栏按钮：开合切换） ==========
+const agentEnabledRef = inject(AgentEnabledKey, ref(false))
+const agentEnabled = computed(() => agentEnabledRef.value)
+const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
+const toggleAgentWorkspace = inject(AgentToggleKey, () => {})
+
+function handleToggleAgentWorkspace() {
+  track(agentPanelOpen.value ? 'release.collapse_agent_workspace' : 'release.open_agent_workspace')
+  toggleAgentWorkspace()
+}
 </script>
 
 <template>
@@ -148,7 +161,14 @@ function navigateReleaseDetail(delta: number) {
       v-model:view-mode="viewMode"
       :count="filteredReleases.length"
       @search-enter="handleSearchEnter"
-    />
+    >
+      <button v-if="agentEnabled" class="release-agent-btn" :class="{ open: agentPanelOpen }"
+        :title="agentPanelOpen ? t('agent.collapse_workspace') : t('agent.expand_workspace')"
+        @click="handleToggleAgentWorkspace">
+        <svg class="release-agent-btn-icon"><use href="/icons.svg#agent-icon"/></svg>
+        <svg class="release-agent-btn-arrow"><use :href="agentPanelOpen ? '/icons.svg#chevron-left-icon' : '/icons.svg#chevron-right-icon'"/></svg>
+      </button>
+    </ReleaseSearchBar>
 
     <ReleaseSimpleList
       v-if="viewMode === 'simple'"
@@ -198,5 +218,6 @@ function navigateReleaseDetail(delta: number) {
       @navigate="navigateReleaseDetail"
       @update="emit('update')"
     />
+
   </section>
 </template>

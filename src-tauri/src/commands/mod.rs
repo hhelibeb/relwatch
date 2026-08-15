@@ -9,6 +9,7 @@ pub mod download;
 pub mod clipboard;
 pub mod bilibili_login;
 pub mod usage;
+pub mod agent;
 
 pub use bilibili_login::*;
 
@@ -22,3 +23,4 @@ pub use window::*;
 pub use download::*;
 pub use clipboard::*;
 pub use usage::*;
+pub use agent::*;

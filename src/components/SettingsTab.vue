@@ -13,14 +13,19 @@ import {
   importBackup,
 } from '../api/settings'
 import { openReleaseUrl } from '../api/client'
+import { getAgentConfig, saveAgentConfig } from '../api/agent'
 import { t, setLocale, languages } from '../i18n'
+import { skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
 import { applyTheme } from '../composables/useTheme'
 import { usePreviewSelect } from '../composables/usePreviewSelect'
 import { useBilibiliLogin } from '../composables/useBilibiliLogin'
 
 const props = defineProps<{ settings: AppSettings }>()
-const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
+const emit = defineEmits<{
+  update: [pollIntervalChanged: boolean, forceReload?: boolean]
+  agentConfigChanged: []
+}>()
 const showToast = inject(ShowToastKey)!
 
 const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai'>('general')
@@ -32,6 +37,69 @@ const bilibiliCookie = ref('')
 
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
+
+// ── Agent 分区（独立于 AppSettings：后端全局单例配置，单独保存）───────
+const agentEnabled = ref(false)
+const agentPiBinary = ref('')
+const agentPiModel = ref('')
+const agentPromptSuffix = ref('')
+const agentTimeout = ref(300)
+const agentSkills = ref<string[]>([])
+const newAgentSkill = ref('')
+const agentSaving = ref(false)
+
+async function loadAgentConfig() {
+  try {
+    const cfg = await getAgentConfig()
+    agentEnabled.value = cfg.enabled
+    agentPiBinary.value = cfg.pi_binary ?? ''
+    agentPiModel.value = cfg.pi_model ?? ''
+    agentPromptSuffix.value = cfg.prompt_suffix ?? ''
+    agentTimeout.value = cfg.timeout_seconds
+    agentSkills.value = [...cfg.skills]
+  } catch {
+    // 加载失败保持默认空表单
+  }
+}
+
+function addAgentSkill() {
+  const p = newAgentSkill.value.trim()
+  if (!p) return
+  if (agentSkills.value.includes(p)) {
+    showToast(t('agent.skill_duplicated'))
+    return
+  }
+  agentSkills.value.push(p)
+  newAgentSkill.value = ''
+}
+
+function removeAgentSkill(index: number) {
+  agentSkills.value.splice(index, 1)
+}
+
+async function handleSaveAgentConfig() {
+  agentSaving.value = true
+  try {
+    await saveAgentConfig({
+      enabled: agentEnabled.value,
+      pi_binary: agentPiBinary.value.trim() || null,
+      pi_model: agentPiModel.value.trim() || null,
+      prompt_suffix: agentPromptSuffix.value.trim() || null,
+      timeout_seconds: Math.max(1, agentTimeout.value),
+      skills: agentSkills.value,
+    })
+    await loadAgentConfig()
+    showToast(t('agent.saved'))
+    // 通知全局刷新 agentEnabled（版本列表/监控源的唤起按钮与拖拽立即生效）
+    emit('agentConfigChanged')
+  } catch (e) {
+    showToast(String(e))
+  } finally {
+    agentSaving.value = false
+  }
+}
+
+void loadAgentConfig()
 
 // 本地 form 副本用于 v-model 双向绑定，避免直接修改 props
 const form = reactive({ ...props.settings })
@@ -543,6 +611,79 @@ async function handleImportBackup() {
             <span class="setting-hint">{{ t('settings.test_connection_hint') }}</span>
           </div>
           </template>
+
+          <div class="setting-section-sep"></div>
+          <div class="setting-section-title">{{ t('agent.section_title') }}</div>
+          <p class="setting-section-desc">{{ t('agent.section_desc') }}</p>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="agentEnabled" />
+            <span class="setting-label">{{ t('agent.enabled_global') }}</span>
+          </label>
+          <template v-if="agentEnabled">
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.pi_binary_path') }}</span>
+            <input
+              type="text"
+              v-model="agentPiBinary"
+              :placeholder="t('agent.pi_binary_path_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.pi_model') }}</span>
+            <input
+              type="text"
+              v-model="agentPiModel"
+              :placeholder="t('agent.pi_model_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.pi_prompt_suffix') }}</span>
+            <input
+              type="text"
+              v-model="agentPromptSuffix"
+              :placeholder="t('agent.pi_prompt_suffix_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.timeout_seconds') }}</span>
+            <input
+              type="number"
+              v-model.number="agentTimeout"
+              min="1"
+              class="setting-input setting-input-narrow"
+              style="width:calc(8ch * 1.25)"
+            />
+          </label>
+          <div class="setting-row setting-row-skills">
+            <span class="setting-label">{{ t('agent.skill_path') }}</span>
+            <div class="agent-skill-list">
+              <div v-for="(sp, i) in agentSkills" :key="sp" class="agent-skill-item">
+                <span class="agent-skill-path" :title="sp">{{ skillShortName(sp) }}</span>
+                <button type="button" class="agent-skill-remove" :title="t('agent.remove_skill')" @click="removeAgentSkill(i)">
+                  <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+                </button>
+              </div>
+              <div class="agent-skill-add">
+                <input
+                  v-model="newAgentSkill"
+                  class="setting-input"
+                  :placeholder="t('agent.skill_path_placeholder')"
+                  @keydown.enter.prevent="addAgentSkill"
+                />
+                <button type="button" class="btn-secondary" :disabled="!newAgentSkill.trim()" @click="addAgentSkill">{{ t('agent.add_skill') }}</button>
+              </div>
+            </div>
+          </div>
+          <div class="setting-row">
+            <button class="btn-primary" :disabled="agentSaving" @click="handleSaveAgentConfig">
+              {{ agentSaving ? t('agent.saving') : t('agent.save') }}
+            </button>
+            <span class="setting-hint">{{ t('agent.save_hint') }}</span>
+          </div>
+          </template>
         </div>
         <div v-if="settingsTab === 'appearance'" class="settings-form">
           <div class="setting-row">
@@ -1002,5 +1143,65 @@ select.setting-input {
 
 .theme-select-option.selected {
   font-weight: 600;
+}
+.setting-row-skills {
+  align-items: flex-start;
+}
+.setting-row-skills .setting-label {
+  padding-top: 8px;
+}
+.agent-skill-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-skill-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+}
+.agent-skill-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: var(--mono-font, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-skill-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.agent-skill-remove:hover {
+  color: #d64545;
+  background: var(--bg-hover);
+}
+.agent-skill-remove svg {
+  width: 12px;
+  height: 12px;
+}
+.agent-skill-add {
+  display: flex;
+  gap: 6px;
+}
+.agent-skill-add .setting-input {
+  flex: 1;
 }
 </style>

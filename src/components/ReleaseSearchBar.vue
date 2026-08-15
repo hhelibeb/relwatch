@@ -170,6 +170,7 @@ function selectViewMode(value: ViewMode) {
         </div>
       </div>
     </div>
+    <slot />
   </div>
 </template>
 <style scoped>

@@ -7,6 +7,7 @@ import {
   statusClass,
   isUnreadStatus,
   isReadStatus,
+  skillShortName,
 } from '../utils'
 
 // ── releaseMatchesSearch ──────────────────────────────────────────
@@ -220,5 +221,31 @@ describe('releaseMatchesSearch — source_description', () => {
   it('无 source_description 时不影响其它字段匹配', () => {
     const release = makeRelease({ owner: 'UCXuqSBlHAE6Xw', repo: '' })
     expect(releaseMatchesSearch(release, 'UCXuqSBlHAE6Xw')).toBe(true)
+  })
+})
+
+// ── skillShortName ────────────────────────────────────────────────
+
+describe('skillShortName', () => {
+  it('路径指向 SKILL.md 文件时取目录名（skill 名）', () => {
+    expect(skillShortName('E:\\project\\relwatch\\.pi\\skills\\commit\\SKILL.md')).toBe('commit')
+    expect(skillShortName('skills/commit/SKILL.md')).toBe('commit')
+    expect(skillShortName('.pi/skills/release/SKILL.md')).toBe('release')
+  })
+
+  it('纯目录路径取最后一段', () => {
+    expect(skillShortName('skills/commit')).toBe('commit')
+    expect(skillShortName('E:\\pi\\skills')).toBe('skills')
+    expect(skillShortName('commit')).toBe('commit')
+  })
+
+  it('去掉尾部分隔符', () => {
+    expect(skillShortName('skills/commit/')).toBe('commit')
+    expect(skillShortName('skills\\commit\\')).toBe('commit')
+  })
+
+  it('短名含特殊字符（点/横线）不受影响', () => {
+    expect(skillShortName('.pi/skills/code-review/SKILL.md')).toBe('code-review')
+    expect(skillShortName('my.skill')).toBe('my.skill')
   })
 })

@@ -319,6 +319,9 @@ mod tests {
             db: db::init::init_memory_pool().unwrap(),
             next_poll_at: Arc::new(std::sync::atomic::AtomicI64::new(0)),
             deepseek_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(50)),
+            agent_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
+            agent_rpc: std::sync::Arc::new(crate::agent_rpc::RpcManager::new(db::init::init_memory_pool().unwrap())),
+            agent_cancelled: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
         }
     }
 

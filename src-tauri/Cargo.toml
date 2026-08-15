@@ -49,7 +49,7 @@ async-trait = "0.1"
 quick-xml = "0.39"
 # 前后端类型单一来源：为 Tauri 命令自动生成 TS 绑定（阶段 0 试点，pin 精确版本防 rc 漂移）
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript", "derive"] }
-specta = { version = "=2.0.0-rc.25", features = ["derive"] }
+specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
 specta-typescript = "=0.0.12"
 
 [dev-dependencies]

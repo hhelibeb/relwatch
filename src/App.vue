@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type Component, type Ref } from 'vue'
-import { ShowToastKey, AiEnabledKey } from './injection-keys'
+import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events } from './bindings'
@@ -18,6 +18,9 @@ import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
 import LogTab from './components/LogTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
+import AgentWorkspace from './components/AgentWorkspace.vue'
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+import { getAgentConfig, type AgentConfig } from './api/agent'
 
 const activeTab = ref<'sources' | 'releases' | 'logs' | 'settings'>('sources')
 const mainScrolled = ref(false)
@@ -31,6 +34,62 @@ const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
 const logRefreshKey = ref(0)
 const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
+// Agent 全局配置（独立于 AppSettings：含 JSON 数组字段，不走设置注册表）
+const agentConfig = ref<AgentConfig | null>(null)
+
+// ── Agent 工作区右栏：窗口整体加宽，主界面宽度不变，工作区占新增宽度 ──
+const AGENT_PANEL_WIDTH = 440
+const agentPanelOpen = ref(false)
+const agentPanelSeed = ref<AgentWorkspaceSeed | null>(null)
+let mainWidthBeforePanel = 0 // 打开面板前的窗口宽度（物理 px）
+
+// 打开（或聚焦）右侧工作区；预置实体经 seed 直接注入（同一窗口，无事件桥）
+async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
+  agentPanelSeed.value = seed ?? null
+  if (agentPanelOpen.value) return
+  try {
+    const win = getCurrentWindow()
+    const size = await win.outerSize()
+    mainWidthBeforePanel = size.width
+    const scale = window.devicePixelRatio || 1
+    await win.setSize(new LogicalSize(size.width / scale + AGENT_PANEL_WIDTH, size.height / scale))
+    agentPanelOpen.value = true
+  } catch (e) {
+    showToast(String(e))
+  }
+}
+
+// 切换开合：ReleaseTab 工具栏按钮用（已打开则收回，未打开则展开）
+async function toggleAgentWorkspace() {
+  if (agentPanelOpen.value) {
+    await closeAgentPanel()
+  } else {
+    await openAgentWorkspace()
+  }
+}
+
+async function closeAgentPanel() {
+  agentPanelOpen.value = false
+  if (mainWidthBeforePanel > 0) {
+    try {
+      const win = getCurrentWindow()
+      const size = await win.outerSize()
+      const scale = window.devicePixelRatio || 1
+      await win.setSize(new LogicalSize(mainWidthBeforePanel / scale, size.height / scale))
+    } catch {
+      // 恢复宽度失败不影响面板关闭
+    }
+    mainWidthBeforePanel = 0
+  }
+}
+
+async function loadAgentConfig() {
+  try {
+    agentConfig.value = await getAgentConfig()
+  } catch {
+    agentConfig.value = null
+  }
+}
 
 const countdown = ref('')
 const releaseSearch = ref('')
@@ -181,6 +240,11 @@ function handleToastMouseLeave() {
 
 provide(ShowToastKey, showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
+// Agent 总开关：独立于 DeepSeek（本地 pi CLI 与在线 API 互不依赖）
+provide(AgentEnabledKey, computed(() => agentConfig.value?.enabled ?? false))
+provide(AgentWorkspaceKey, openAgentWorkspace)
+provide(AgentPanelOpenKey, agentPanelOpen)
+provide(AgentToggleKey, toggleAgentWorkspace)
 // 诊断统计开关：跟随设置项启停（关闭时 track() no-op + 丢弃未上报计数）
 watch(() => settings.value.enable_usage_stats, v => setUsageTrackingEnabled(v), { immediate: true })
 
@@ -212,7 +276,7 @@ const totalReleaseCounts = computed<Record<string, number>>(() => {
 })
 
 async function loadAll() {
-  await Promise.allSettled([loadSources(), loadReleases(), loadSettings()])
+  await Promise.allSettled([loadSources(), loadReleases(), loadSettings(), loadAgentConfig()])
 }
 
 async function loadSources() {
@@ -422,8 +486,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app">
-    <header class="app-header">
+  <div class="app-shell">
+    <div class="app-main-col">
+      <div class="app">
+        <header class="app-header">
       <div class="header-top">
         <h1>{{ t('app.title') }}</h1>
         <button class="btn-primary" :disabled="polling || sourceChecking" @click="handlePoll">
@@ -450,7 +516,9 @@ onUnmounted(() => {
         @open-unread-releases="openSourceUnreadReleases" />
       <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="loadReleases(); refreshLogs()" />
       <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }" />
+      <SettingsTab v-show="activeTab === 'settings'" :settings="settings"
+        @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"
+        @agent-config-changed="loadAgentConfig()" />
     </main>
 
     <Transition name="toast">
@@ -460,10 +528,31 @@ onUnmounted(() => {
     <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" @close="selectionMenu = null" />
     <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" @close="inputContextMenu = null" />
     <StatsDevPanelComp v-if="showStatsDev && StatsDevPanelComp" @close="showStatsDev = false" />
+      </div>
+    </div>
+    <AgentWorkspace v-if="agentPanelOpen && agentConfig?.enabled" :seed="agentPanelSeed" @close="closeAgentPanel" />
   </div>
 </template>
 
 <style scoped>
+/* 壳布局：主界面列 + 右侧 Agent 工作区列，两列各自独立滚动 */
+.app-shell {
+  height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+.app-main-col {
+  flex: 1 1 auto;
+  min-width: 710px;
+  display: flex;
+  overflow: hidden;
+}
+.app-main-col .app {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
 /* Toast */
 .toast {
   position: fixed;

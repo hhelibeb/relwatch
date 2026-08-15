@@ -3,7 +3,7 @@ import { shallowMount, mount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, setLocale } from '../i18n'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
@@ -17,6 +17,7 @@ vi.mock('../api/releases', () => ({
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
 }))
+
 
 // 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
 // 必须引用 utils 真实实现——曾在此处复制实现，utils 语义变化时测试按旧语义放行（见阶段 2-4）
@@ -33,12 +34,15 @@ import { setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { closeAllContextMenus } from '../composables/contextMenuBus'
 
-// ContextMenu 自定义 stub：渲染菜单项文本，供右键菜单行为断言
+// ContextMenu 自定义 stub：渲染菜单项文本，点击触发 action 事件
 const ContextMenuStub = defineComponent({
   name: 'ContextMenu',
   props: { x: Number, y: Number, items: Array },
   emits: ['action', 'close'],
-  template: '<div class="stub-menu"><span v-for="item in items" :key="item.id" class="stub-menu-item">{{ item.label }}</span></div>',
+  template: `
+    <div class="stub-menu">
+      <span v-for="item in items" :key="item.id" class="stub-menu-item" @click="$emit('action', item.id)">{{ item.label }}</span>
+    </div>`,
 })
 
 function mountRelease(release: ReleaseInfo) {
@@ -52,14 +56,25 @@ function mountRelease(release: ReleaseInfo) {
   })
 }
 
+// 最近一次挂载注入的 openAgentWorkspace spy（「发送到 Agent」行为断言用）
+let lastAgentOpen: ReturnType<typeof vi.fn> | null = null
+export function lastOpenAgentWorkspace() {
+  return lastAgentOpen
+}
+
 // 菜单测试专用：真实渲染 + ContextMenu stub（右键菜单为事件入口）
-function mountWithMenus(release: ReleaseInfo, aiEnabled = true) {
+// agentEnabled=true 时菜单含「发送到 Agent」；openAgentWorkspace 记录调用供行为断言
+function mountWithMenus(release: ReleaseInfo, aiEnabled = true, agentEnabled = false) {
+  const openAgentWorkspace = vi.fn()
+  lastAgentOpen = openAgentWorkspace
   return mount(ReleaseItem, {
     props: { release },
     global: {
       provide: {
         [ShowToastKey as symbol]: vi.fn(),
         [AiEnabledKey as symbol]: ref(aiEnabled),
+        [AgentEnabledKey as symbol]: ref(agentEnabled),
+        [AgentWorkspaceKey as symbol]: openAgentWorkspace,
       },
       stubs: { MarkdownContent: true, ContextMenu: ContextMenuStub },
     },
@@ -422,7 +437,7 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
   it('语言切换后右键菜单 label 实时更新（真实 setLocale）', async () => {
     const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body' }))
 
-    // 版本链接右键菜单（zh-CN）
+    // Agent 未启用 → 菜单保持分支前形态（无 Agent 项）
     await wrapper.find('.release-link-action').trigger('contextmenu')
     expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
       t('context.open'),
@@ -430,7 +445,7 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
       t('context.delete_release'),
     ])
 
-    // 摘要右键菜单（zh-CN）
+    // 摘要右键菜单（zh-CN）：无 Agent 项
     await wrapper.find('.release-summary-text').trigger('contextmenu')
     expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
       t('release.read_full'),
@@ -450,6 +465,38 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
     await wrapper.find('.release-summary-text').trigger('contextmenu')
     expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
       'Read full note', 'Copy Content', 'Translate',
+    ])
+  })
+})
+
+describe('ReleaseItem.vue — 发送到 Agent', () => {
+  it('Agent 启用时菜单含「发送到 Agent」，点击唤起工作区并携带版本引用', async () => {
+    const release = createRelease({ id: 7, ai_summary: '摘要', body: '## Body' })
+    const wrapper = mountWithMenus(release, true, true)
+
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
+    expect(labels).toEqual([
+      t('context.open'),
+      t('context.copy_link'),
+      t('agent.send_to'),
+      t('context.delete_release'),
+    ])
+
+    await wrapper.findAll('.stub-menu-item')[2].trigger('click')
+    expect(lastOpenAgentWorkspace()).toHaveBeenCalledWith({ entities: [{ kind: 'release', id: 7 }] })
+  })
+
+  it('Agent 启用时摘要右键菜单也含「发送到 Agent」', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body' }), true, true)
+
+    await wrapper.find('.release-summary-text').trigger('contextmenu')
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
+    expect(labels).toEqual([
+      t('release.read_full'),
+      t('context.copy_content'),
+      t('context.translate'),
+      t('agent.send_to'),
     ])
   })
 })

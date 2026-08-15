@@ -27,3 +27,24 @@ pub struct SourceAutoDisabled {
 /// 托盘菜单请求前端切换标签页，payload 为目标标签名。
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct Navigate(pub String);
+
+/// 一次 Agent 提交运行结束（成功/失败/超时/取消），前端据此刷新工作区记录。
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct AgentRunFinished {
+    pub run_id: i64,
+    /// 所属工作区会话标识（前端按 session_key 过滤刷新）。
+    pub session_key: String,
+    /// success | failed | timeout | cancelled
+    pub status: String,
+    /// 失败/超时的人类可读原因（成功时 null）。
+    pub message: Option<String>,
+}
+
+/// pi RPC 事件流实时转发（打字机文本 / 工具状态 / 流式 bash 输出）。
+/// `event` 为 pi RPC 协议的原始事件 JSON 序列化字符串（前端 JSON.parse 还原）。
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct AgentRpcStream {
+    pub session_key: String,
+    pub run_id: i64,
+    pub event: String,
+}
