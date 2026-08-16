@@ -464,6 +464,8 @@ export default {
   'agent.open_session': '在 Agent 中打开',
   'agent.copy_command': '复制命令',
   'agent.copy_command_hint': '复制在终端恢复该会话的命令',
+  'agent.expand_actions': '展开快捷操作',
+  'agent.collapse_actions': '收起快捷操作',
   'agent.command_copied': '命令已复制到剪贴板',
   'agent.status_pending': '排队中',
   'agent.status_running': '执行中',

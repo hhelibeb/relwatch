@@ -168,6 +168,35 @@ const entities = ref<AgentEntityRefSeed[]>([])
 const skillPath = ref<string | null>(null)
 const instruction = ref('')
 const submitting = ref(false)
+
+// ── 引用 chip 全文悬浮提示（仅文本被截断时显示，跟随鼠标）──
+const chipTooltip = ref<{ x: number; y: number; text: string } | null>(null)
+
+function chipTextTruncated(el: HTMLElement): boolean {
+  return el.scrollWidth > el.clientWidth + 1
+}
+
+function placeChipTooltip(x: number, y: number, text: string) {
+  const maxWidth = 480
+  const margin = 16
+  const left = Math.max(margin, Math.min(x + 12, window.innerWidth - maxWidth - margin))
+  chipTooltip.value = { x: left, y: y + 12, text }
+}
+
+function handleChipEnter(e: MouseEvent, text: string) {
+  const el = e.currentTarget as HTMLElement
+  if (!chipTextTruncated(el)) return
+  placeChipTooltip(e.clientX, e.clientY, text)
+}
+
+function handleChipMove(e: MouseEvent) {
+  if (!chipTooltip.value) return
+  placeChipTooltip(e.clientX, e.clientY, chipTooltip.value.text)
+}
+
+function hideChipTooltip() {
+  chipTooltip.value = null
+}
 const runs = ref<AgentRunSummary[]>([])
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
@@ -183,6 +212,8 @@ const activeRunId = computed<number | null>(() => activeRun.value?.id ?? submitt
 // 是否处于可停止状态：会话内有活跃 run（运行中或排队中）
 const canStop = computed(() => activeRunId.value !== null)
 const cancelling = ref(false)
+// 横幅快捷操作（在 Agent 中打开 / 复制命令）折叠状态：默认折叠节省空间，点击 << 展开、>> 收起
+const actionsExpanded = ref(false)
 
 // ── 流式渲染：RPC 事件实时追加的消息（终态后 loadChat 全量校准）──
 const liveMessages = ref<AgentChatMessage[]>([])
@@ -902,8 +933,15 @@ watch(
           <span class="agent-ws-banner-text">{{ latestRun.instruction || sessionTitle }}</span>
           <span v-if="latestRun.status === 'running' || latestRun.status === 'pending'" class="agent-ws-banner-spinner" aria-hidden="true"></span>
           <span v-if="latestRun.session_path" class="agent-ws-banner-actions">
-            <button class="btn-sm" :title="t('agent.open_session')" @click="handleOpenSession(latestRun)">{{ t('agent.open_session') }}</button>
-            <button class="btn-sm" :title="t('agent.copy_command_hint')" @click="handleCopySessionCommand(latestRun)">{{ t('agent.copy_command') }}</button>
+            <template v-if="actionsExpanded">
+              <button class="btn-sm" :title="t('agent.open_session')" @click="handleOpenSession(latestRun)">{{ t('agent.open_session') }}</button>
+              <button class="btn-sm" :title="t('agent.copy_command_hint')" @click="handleCopySessionCommand(latestRun)">{{ t('agent.copy_command') }}</button>
+            </template>
+            <button
+              class="btn-sm agent-ws-banner-toggle"
+              :title="actionsExpanded ? t('agent.collapse_actions') : t('agent.expand_actions')"
+              @click="actionsExpanded = !actionsExpanded"
+            >{{ actionsExpanded ? '>>' : '<<' }}</button>
           </span>
         </div>
 
@@ -924,7 +962,12 @@ watch(
               <div v-if="msg.role === 'user'" class="agent-ws-bubble agent-ws-bubble-user">
                 <div v-if="runForMessage(idx)" class="agent-ws-bubble-meta">
                   <span v-for="e in runEntities(runForMessage(idx))" :key="`${e.kind}:${e.id}`" class="agent-ws-chip">
-                    {{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}
+                    <span
+                      class="agent-ws-chip-text"
+                      @mouseenter="handleChipEnter($event, `${entityKindLabel(e.kind)} · ${entityLabel(e)}`)"
+                      @mousemove="handleChipMove"
+                      @mouseleave="hideChipTooltip"
+                    >{{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}</span>
                   </span>
                   <span v-if="runForMessage(idx)?.skill_path" class="agent-ws-skill-badge">@{{ skillShortName(runForMessage(idx)!.skill_path ?? '') }}</span>
                 </div>
@@ -989,7 +1032,12 @@ watch(
         <footer class="agent-ws-input">
           <div class="agent-ws-input-meta">
             <span v-for="(e, i) in entities" :key="`${e.kind}:${e.id}`" class="agent-ws-chip agent-ws-chip-attached">
-              {{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}
+              <span
+                class="agent-ws-chip-text"
+                @mouseenter="handleChipEnter($event, `${entityKindLabel(e.kind)} · ${entityLabel(e)}`)"
+                @mousemove="handleChipMove"
+                @mouseleave="hideChipTooltip"
+              >{{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}</span>
               <button class="agent-ws-chip-remove" :title="t('agent.remove_entity')" @click="removeEntity(i)">
                 <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
               </button>
@@ -1112,6 +1160,11 @@ watch(
           {{ t('agent.session_clear') }}
         </button>
       </aside>
+
+      <!-- 引用 chip 全文悬浮提示（跟随鼠标，仅文本截断时显示） -->
+      <div v-if="chipTooltip" class="agent-ws-chip-tooltip" :style="{ left: chipTooltip.x + 'px', top: chipTooltip.y + 'px' }">
+        {{ chipTooltip.text }}
+      </div>
     </div>
   </div>
 </template>
@@ -1458,8 +1511,17 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   gap: 8px;
   padding: 6px 14px;
   font-size: 12px;
+  min-height: 38px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
+}
+/* 横幅按钮固定高度：避免中文/ASCII 字体行盒差异导致展开/折叠时条高变化 */
+.agent-ws-banner .btn-sm {
+  height: 24px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
 }
 .agent-ws-banner-status {
   font-weight: 600;
@@ -1497,6 +1559,12 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 .agent-ws-banner-actions {
   display: flex;
   gap: 6px;
+}
+.agent-ws-banner-toggle {
+  opacity: 0.6;
+}
+.agent-ws-banner-toggle:hover {
+  opacity: 1;
 }
 .agent-ws-banner-spinner {
   width: 12px;
@@ -1557,6 +1625,9 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   color: var(--text);
 }
 .agent-ws-bubble-assistant {
+  /* 覆盖 .agent-ws-bubble 的 max-width:86%——右侧留白由 margin-right 保证与左侧 padding(14px) 一致 */
+  max-width: none;
+  margin-right: 14px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-top-left-radius: 3px;
@@ -1640,7 +1711,8 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 
 /* 工具卡片（toolCall / toolResult / bash） */
 .agent-ws-tool-card {
-  max-width: 86%;
+  /* 右侧留白与消息区左侧 padding(14px) 一致，与 assistant 气泡同步 */
+  margin-right: 14px;
   align-self: flex-start;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -1695,10 +1767,30 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--bg-subtle);
-  max-width: 220px;
   white-space: nowrap;
+  /* 截断限制移到 .agent-ws-chip-text——之前 max-width+overflow 会把删除按钮一起裁掉 */
+}
+.agent-ws-chip-text {
+  max-width: 170px;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 引用 chip 全文悬浮提示（fixed 避免被消息区滚动容器裁剪） */
+.agent-ws-chip-tooltip {
+  position: fixed;
+  z-index: 10002;
+  max-width: min(480px, calc(100vw - 32px));
+  padding: 9px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 8px);
+  box-shadow: var(--shadow-lg, 0 4px 16px rgba(0, 0, 0, 0.25));
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 .agent-ws-chip-remove {
   display: flex;

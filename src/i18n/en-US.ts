@@ -464,6 +464,8 @@ export default {
   'agent.open_session': 'Open in Agent',
   'agent.copy_command': 'Copy command',
   'agent.copy_command_hint': 'Copy the command to resume this session in a terminal',
+  'agent.expand_actions': 'Expand quick actions',
+  'agent.collapse_actions': 'Collapse quick actions',
   'agent.command_copied': 'Command copied to clipboard',
   'agent.status_pending': 'Queued',
   'agent.status_running': 'Running',
