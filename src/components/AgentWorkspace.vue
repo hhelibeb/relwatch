@@ -76,15 +76,11 @@ function newSessionKey(): string {
 
 function switchSession(key: string) {
   if (key === activeKey.value) return
-  // 当前会话有运行中的 run：先中止（RPC abort），避免切换会话打断生成；
-  // 中止是静默副作用，必须 toast 告知用户，避免「原会话为什么停了」的困惑
-  if (activeRunId.value !== null) {
-    void cancelAgentRun(activeRunId.value).catch(() => {})
-    showToast(t('agent.session_switch_stopped'))
-  }
+  // 不中止原会话的 run：后端并发上限 1、其余排队执行（pending 取消只插标记不碰进程），
+  // 切回会话时由 loadChat 从 runs 推导恢复停止按钮——各会话独立启停，互不误杀
   activeKey.value = key
   stopPolling()
-  activeRunId.value = null
+  submittedRunId.value = null
   cancelling.value = false
   liveMessages.value = []
   historySnapshot.value = []
@@ -104,7 +100,7 @@ function startNewSession() {
   runs.value = []
   liveMessages.value = []
   historySnapshot.value = []
-  activeRunId.value = null
+  submittedRunId.value = null
   cancelling.value = false
   void loadChat()
   nextTick(() => textareaRef.value?.focus())
@@ -173,15 +169,17 @@ const submitting = ref(false)
 const runs = ref<AgentRunSummary[]>([])
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
-// 当前会话正在运行的 run_id（提交后设置，终态事件后清空；用于「停止」）
-const activeRunId = ref<number | null>(null)
-// 是否处于可停止状态：提交后、且对应 run 尚未终态
-const canStop = computed(() => {
-  if (activeRunId.value === null) return false
-  const run = runs.value.find((r) => r.id === activeRunId.value)
-  if (!run) return true // 提交后 runs 尚未刷新，视为运行中
-  return run.status === 'pending' || run.status === 'running'
-})
+// 当前会话活跃 run：runs（倒序）中 status 为 pending/running 的最新一条。
+// 从 runs 推导而非独立字段：切换/新建会话后 loadChat 即恢复停止能力，
+// 不依赖流式事件回填（无输出的 run 也能停），后端排队中的 run 同样可停。
+const activeRun = computed<AgentRunSummary | undefined>(() =>
+  runs.value.find((r) => r.status === 'pending' || r.status === 'running'),
+)
+// 提交回执兜底：run 刚创建、runs 尚未刷新时保持可停止（等价旧逻辑「run 未在列表视为运行中」）
+const submittedRunId = ref<number | null>(null)
+const activeRunId = computed<number | null>(() => activeRun.value?.id ?? submittedRunId.value)
+// 是否处于可停止状态：会话内有活跃 run（运行中或排队中）
+const canStop = computed(() => activeRunId.value !== null)
 const cancelling = ref(false)
 
 // ── 流式渲染：RPC 事件实时追加的消息（终态后 loadChat 全量校准）──
@@ -218,8 +216,6 @@ function handleRpcStream(payload: { session_key: string; run_id: number; event: 
   }
   if (!ev || typeof ev.type !== 'string') return
   const type = ev.type
-  const run = runs.value.find((r) => r.id === payload.run_id)
-  if (run) activeRunId.value = payload.run_id
 
   if (type === 'message_update') {
     const ae = ev.assistantMessageEvent as { type?: string; delta?: string } | undefined
@@ -328,6 +324,8 @@ async function loadChat() {
   messagesLoading.value = true
   try {
     await Promise.all([loadRuns(), loadMessages()])
+    // runs 已刷新：提交兜底使命结束，活跃 run 由 activeRun 推导接管
+    submittedRunId.value = null
   } finally {
     messagesLoading.value = false
     scrollToBottom()
@@ -430,7 +428,7 @@ async function handleSubmit() {
       skillPath: skillPath.value,
       instruction: cleaned.trim(),
     })
-    activeRunId.value = runId
+    submittedRunId.value = runId
     track('agent.submit')
     instruction.value = ''
     // 会话登记（标题取首次指令前 40 字）
@@ -712,7 +710,6 @@ function handleMenuKeydown(e: KeyboardEvent) {
 async function onRunFinished(payload: AgentRunFinished) {
   if (payload.session_key !== activeKey.value) return
   stopPolling()
-  activeRunId.value = null
   cancelling.value = false
   // 兜底清理：正常路径 agent_settled 已清；abort / 超时 / 模型错误等
   // 场景下 agent_settled 可能不达，run 终态事件统一收尾

@@ -38,7 +38,7 @@ const bilibiliCookie = ref('')
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
 
-// ── Agent 分区（独立 Tab：后端全局单例配置，单独保存）───────
+// ── Agent 分区（独立 Tab：后端全局单例配置，随「保存设置」统一提交）───────
 const agentEnabled = ref(false)
 const agentType = ref('pi')
 const agentBinary = ref('')
@@ -712,9 +712,6 @@ async function handleImportBackup() {
                 <button type="button" class="btn-secondary" :disabled="!newAgentSkill.trim()" @click="addAgentSkill">{{ t('agent.add_skill') }}</button>
               </div>
             </div>
-          </div>
-          <div class="setting-row">
-            <span class="setting-hint">{{ t('agent.save_hint') }}</span>
           </div>
           </template>
         </div>
