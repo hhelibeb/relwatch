@@ -94,8 +94,6 @@ pub struct AppState {
     pub agent_cancelled: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
 }
 
-/// Agent 类型能力描述（前端配置表单驱动）。
-
 #[derive(Serialize, Type)]
 pub struct PollResult {
     pub new_releases: Vec<ReleaseInfo>,

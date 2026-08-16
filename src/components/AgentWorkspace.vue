@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { UnlistenFn } from '@tauri-apps/api/event'
 import MarkdownContent from './common/MarkdownContent.vue'
-import { events } from '../bindings'
+import { events, type AgentRunFinished } from '../bindings'
 import { ShowToastKey, type AgentEntityRefSeed, type AgentWorkspaceSeed } from '../injection-keys'
 import {
   getAgentConfig,
@@ -674,7 +674,7 @@ function handleMenuKeydown(e: KeyboardEvent) {
 }
 
 // ── 事件 ──
-async function onRunFinished(payload: { run_id: number; session_key: string; status: string }) {
+async function onRunFinished(payload: AgentRunFinished) {
   if (payload.session_key !== activeKey.value) return
   stopPolling()
   activeRunId.value = null
@@ -684,6 +684,15 @@ async function onRunFinished(payload: { run_id: number; session_key: string; sta
   liveMessages.value = []
   historySnapshot.value = []
   await loadChat()
+}
+
+/** 失败原因文案：run.error 形如 `err.agent.timeout|300`（i18n 键|参数）。 */
+function runErrorText(run: AgentRunSummary | undefined): string | null {
+  if (!run?.error) return null
+  const [key, ...args] = run.error.split('|')
+  const text = t(key, ...args)
+  // i18n 未命中时 t() 原样返回 key：不渲染裸键
+  return text === key ? null : text
 }
 
 // ── 预置实体（右键「发送到 Agent」入口携带）：打开时写入 chips ──
@@ -743,7 +752,7 @@ function handleDropNewSession(e: DragEvent) {
 onMounted(async () => {
   applySeed()
   await Promise.all([loadCatalog(), loadChat()])
-  unlistenRunFinished = await listen<{ run_id: number; session_key: string; status: string }>('agent-run-finished', (e) => {
+  unlistenRunFinished = await events.agentRunFinished.listen((e) => {
     void onRunFinished(e.payload)
   })
   unlistenRpcStream = await events.agentRpcStream.listen((e) => {
@@ -819,6 +828,7 @@ watch(
         <!-- 最近 run 状态横幅 -->
         <div v-if="latestRun" class="agent-ws-banner" :class="`status-${latestRun.status}`">
           <span class="agent-ws-banner-status">{{ runStatusLabel(latestRun.status) }}</span>
+          <span v-if="runErrorText(latestRun)" class="agent-ws-banner-error" :title="runErrorText(latestRun) ?? ''">{{ runErrorText(latestRun) }}</span>
           <span class="agent-ws-banner-text">{{ latestRun.instruction || sessionTitle }}</span>
           <span v-if="latestRun.status === 'running' || latestRun.status === 'pending'" class="agent-ws-banner-spinner" aria-hidden="true"></span>
           <span v-if="latestRun.session_path" class="agent-ws-banner-actions">
@@ -1336,6 +1346,14 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 }
 .agent-ws-banner-status {
   font-weight: 600;
+}
+.agent-ws-banner-error {
+  color: #d64545;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 240px;
+  flex-shrink: 1;
 }
 .agent-ws-banner.status-running .agent-ws-banner-status { color: #2e6fd0; }
 .agent-ws-banner.status-pending .agent-ws-banner-status { color: #2e6fd0; }

@@ -1,7 +1,8 @@
 //! pi 会话 JSONL 解析 —— Agent 工作区聊天渲染的数据源。
 //!
-//! 工作区每次提交都以 `pi -p --session <file>` 运行，pi 会把完整对话
-//! （user / assistant / toolResult / bashExecution 等）逐行 append 到会话文件。
+//! 工作区采用 RPC 常驻进程模型（`pi --mode rpc`，见 agent_rpc.rs），每次提交向
+//! 常驻进程发 `prompt` 命令，pi 把完整对话（user / assistant / toolResult /
+//! bashExecution 等）逐行 append 到会话文件（`pi --session <file>` 语义）。
 //! 本模块把该 JSONL 解析为前端可渲染的结构化消息流（树结构取当前 leaf 路径）。
 //! 格式依据 pi 官方文档 `docs/session-format.md`（v3：id/parentId 树形）。
 

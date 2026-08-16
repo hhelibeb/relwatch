@@ -65,6 +65,13 @@ async function loadAgentConfig() {
   }
 }
 
+/** 超时秒数归一化：输入框清空时 v-model.number 得 NaN，
+ *  Math.max(1, NaN) 仍是 NaN → JSON 序列化为 null → 后端 serde 反序列化报错。 */
+function normalizedAgentTimeout(): number {
+  const v = agentTimeout.value
+  return Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1
+}
+
 /** Agent 分区当前表单的快照（与「保存设置」提交值对齐）。 */
 function agentSnapshot(): string {
   return JSON.stringify({
@@ -73,7 +80,7 @@ function agentSnapshot(): string {
     binary: agentBinary.value.trim() || null,
     model: agentModel.value.trim() || null,
     suffix: agentPromptSuffix.value.trim() || null,
-    timeout: Math.max(1, agentTimeout.value),
+    timeout: normalizedAgentTimeout(),
     skills: agentSkills.value,
   })
 }
@@ -275,7 +282,7 @@ async function handleSave() {
         binary: agentBinary.value.trim() || null,
         model: agentModel.value.trim() || null,
         prompt_suffix: agentPromptSuffix.value.trim() || null,
-        timeout_seconds: Math.max(1, agentTimeout.value),
+        timeout_seconds: normalizedAgentTimeout(),
         skills: agentSkills.value,
       })
       await loadAgentConfig() // 刷新脏点基线
