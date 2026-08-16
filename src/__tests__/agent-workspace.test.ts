@@ -23,6 +23,7 @@ vi.mock('../api/agent', async (importOriginal) => {
     getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
     listAgentRuns: vi.fn().mockResolvedValue([]),
     listAgentMessages: vi.fn().mockResolvedValue([]),
+    getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [] }),
     runAgentJob: vi.fn().mockResolvedValue(1),
     deleteAgentSession: vi.fn().mockResolvedValue(undefined),
     openAgentSession: vi.fn().mockResolvedValue(undefined),
@@ -45,7 +46,7 @@ vi.mock('../utils', async (importOriginal) => {
 })
 
 import AgentWorkspace from '../components/AgentWorkspace.vue'
-import { listAgentMessages, listAgentRuns, runAgentJob, getAgentConfig } from '../api/agent'
+import { listAgentMessages, listAgentRuns, runAgentJob, getAgentConfig, getAgentQueueStatus } from '../api/agent'
 import { listSources } from '../api/sources'
 import { getReleases } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
@@ -464,6 +465,103 @@ describe('AgentWorkspace 冒烟', () => {
     await flushPromises()
     expect(wrapper.text()).not.toContain('流式补充')
     expect(wrapper.text()).toContain('帮我总结这个版本')
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('排队中横幅：其他会话执行中时显示占用提示与队列位置', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    // 当前会话 latest run 为 pending；全局队列显示其他会话 running、位置 2
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      {
+        id: 11,
+        session_key: 'test-session',
+        skill_path: null,
+        entities: '[]',
+        instruction: '帮我总结这个版本',
+        session_path: null,
+        status: 'pending',
+        exit_code: null,
+        error: null,
+        started_at: null,
+        finished_at: null,
+        created_at: '2025-01-01T00:00:00.000Z',
+      },
+    ])
+    vi.mocked(getAgentQueueStatus).mockResolvedValue({
+      position: 2,
+      other_running: true,
+      running_sessions: ['ws-other'],
+    })
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const banner = wrapper.find('.agent-ws-banner')
+    expect(banner.exists()).toBe(true)
+    expect(banner.text()).toContain(t('agent.status_pending'))
+    expect(banner.text()).toContain(t('agent.queue_other_running_pos', '2'))
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('失败 run 在对应 user 气泡下内联显示错误原因（可追溯）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    // 两轮对话：第一轮失败（超时），第二轮成功
+    const failed: AgentChatMessage[] = [
+      sampleMessages()[0],
+      sampleMessages()[1],
+      sampleMessages()[2],
+      {
+        role: 'user',
+        timestamp: '2025-01-01T00:01:00.000Z',
+        model: null,
+        blocks: [{ kind: 'text', text: '再试一次' }],
+      },
+    ]
+    vi.mocked(listAgentMessages).mockResolvedValue(failed)
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      {
+        id: 21,
+        session_key: 'test-session',
+        skill_path: null,
+        entities: '[]',
+        instruction: '再试一次',
+        session_path: null,
+        status: 'success',
+        exit_code: 0,
+        error: null,
+        started_at: null,
+        finished_at: null,
+        created_at: '2025-01-01T00:01:00.000Z',
+      },
+      {
+        id: 20,
+        session_key: 'test-session',
+        skill_path: null,
+        entities: '[]',
+        instruction: '帮我总结这个版本',
+        session_path: null,
+        status: 'failed',
+        exit_code: null,
+        error: 'err.agent.timeout|300',
+        started_at: null,
+        finished_at: null,
+        created_at: '2025-01-01T00:00:00.000Z',
+      },
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const notes = wrapper.findAll('.agent-ws-run-failed')
+    expect(notes.length).toBe(1)
+    expect(notes[0].text()).toContain(t('agent.status_timeout'))
+    expect(notes[0].text()).toContain('300')
+    // 成功轮次无内联备注
+    expect(notes[0].text()).not.toContain('再试一次')
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })

@@ -83,6 +83,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::save_agent_ws_width,
         commands::run_agent_job,
         commands::list_agent_runs,
+        commands::get_agent_queue_status,
         commands::list_agent_messages,
         commands::cancel_agent_run,
         commands::delete_agent_session,

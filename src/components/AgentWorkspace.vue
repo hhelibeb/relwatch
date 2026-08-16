@@ -14,7 +14,9 @@ import {
   cancelAgentRun,
   openAgentSession,
   getAgentSessionCommand,
+  getAgentQueueStatus,
   type AgentChatMessage,
+  type AgentQueueStatus,
   type AgentRunSummary,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
@@ -320,10 +322,33 @@ async function loadMessages() {
   }
 }
 
+// ── 全局队列状态（「排队中」提示：其他会话占用 + 队列位置）──
+const queueInfo = ref<AgentQueueStatus | null>(null)
+
+async function loadQueueInfo() {
+  try {
+    queueInfo.value = await getAgentQueueStatus(activeKey.value)
+  } catch {
+    queueInfo.value = null
+  }
+}
+
+/** 横幅「排队中」补充提示：其他会话执行中 / 队列位置。 */
+const queueHint = computed<string | null>(() => {
+  const q = queueInfo.value
+  if (!q || latestRun.value?.status !== 'pending') return null
+  if (q.other_running) {
+    return q.position && q.position > 1
+      ? t('agent.queue_other_running_pos', String(q.position))
+      : t('agent.queue_other_running')
+  }
+  return q.position && q.position > 1 ? t('agent.queue_position', String(q.position)) : null
+})
+
 async function loadChat() {
   messagesLoading.value = true
   try {
-    await Promise.all([loadRuns(), loadMessages()])
+    await Promise.all([loadRuns(), loadMessages(), loadQueueInfo()])
     // runs 已刷新：提交兜底使命结束，活跃 run 由 activeRun 推导接管
     submittedRunId.value = null
   } finally {
@@ -708,7 +733,10 @@ function handleMenuKeydown(e: KeyboardEvent) {
 
 // ── 事件 ──
 async function onRunFinished(payload: AgentRunFinished) {
-  if (payload.session_key !== activeKey.value) return
+  // 不按 session_key 过滤：当前会话若有活跃 run（pending/running），任意会话的
+  // run 结束都可能影响它（其他会话结束 → 本会话排队 run 开始执行；本会话结束 →
+  // 横幅/停止按钮收尾）。统一刷新，保证「排队中」横幅在别的会话结束后自动更新。
+  if (activeRunId.value === null) return
   stopPolling()
   cancelling.value = false
   // 兜底清理：正常路径 agent_settled 已清；abort / 超时 / 模型错误等
@@ -725,6 +753,15 @@ function runErrorText(run: AgentRunSummary | undefined): string | null {
   const text = t(key, ...args)
   // i18n 未命中时 t() 原样返回 key：不渲染裸键
   return text === key ? null : text
+}
+
+/** 失败 run 的内联备注（failed/timeout 且可解析出文案时返回；否则 null）。
+ * 挂在对应 user 消息气泡下，让「哪一轮为什么挂了」在对话流里可追溯——
+ * 横幅只展示最近一次 run，历史失败原因不再随新提交成功而消失。 */
+function runFailedNote(run: AgentRunSummary | undefined): string | null {
+  if (!run) return null
+  if (run.status !== 'failed' && run.status !== 'timeout') return null
+  return runErrorText(run)
 }
 
 // ── 预置实体（右键「发送到 Agent」入口携带）：打开时写入 chips ──
@@ -860,6 +897,7 @@ watch(
         <!-- 最近 run 状态横幅 -->
         <div v-if="latestRun" class="agent-ws-banner" :class="`status-${latestRun.status}`">
           <span class="agent-ws-banner-status">{{ runStatusLabel(latestRun.status) }}</span>
+          <span v-if="latestRun.status === 'pending' && queueHint" class="agent-ws-banner-queue" :title="queueHint">{{ queueHint }}</span>
           <span v-if="runErrorText(latestRun)" class="agent-ws-banner-error" :title="runErrorText(latestRun) ?? ''">{{ runErrorText(latestRun) }}</span>
           <span class="agent-ws-banner-text">{{ latestRun.instruction || sessionTitle }}</span>
           <span v-if="latestRun.status === 'running' || latestRun.status === 'pending'" class="agent-ws-banner-spinner" aria-hidden="true"></span>
@@ -895,6 +933,11 @@ watch(
                   <summary>{{ t('agent.prompt_full') }}</summary>
                   <pre class="agent-ws-fold-body">{{ splitUserBlocks(msg.blocks).folded }}</pre>
                 </details>
+                <!-- 失败 run 内联备注：这轮为什么挂了，对话流里可追溯（横幅只显示最近一次） -->
+                <div v-if="runFailedNote(runForMessage(idx))" class="agent-ws-run-failed" :title="runFailedNote(runForMessage(idx)) ?? ''">
+                  <span class="agent-ws-run-failed-status">{{ runStatusLabel(runForMessage(idx)!.status) }}</span>
+                  <span class="agent-ws-run-failed-text">{{ runFailedNote(runForMessage(idx)) }}</span>
+                </div>
               </div>
 
               <!-- assistant 消息：左对齐，Markdown + 思考/工具折叠 -->
@@ -1429,6 +1472,14 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   max-width: 240px;
   flex-shrink: 1;
 }
+.agent-ws-banner-queue {
+  color: #b0882e;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 260px;
+  flex-shrink: 1;
+}
 .agent-ws-banner.status-running .agent-ws-banner-status { color: #2e6fd0; }
 .agent-ws-banner.status-pending .agent-ws-banner-status { color: #2e6fd0; }
 .agent-ws-banner.status-success .agent-ws-banner-status { color: #2e9e5b; }
@@ -1525,6 +1576,29 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 .agent-ws-msg-text {
   margin: 0;
   white-space: pre-wrap;
+  word-break: break-word;
+}
+/* 失败 run 内联备注（挂在对应 user 气泡下） */
+.agent-ws-run-failed {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 7px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid rgba(214, 69, 69, 0.35);
+  background: rgba(214, 69, 69, 0.08);
+  font-size: 11px;
+  line-height: 1.45;
+  max-width: 100%;
+}
+.agent-ws-run-failed-status {
+  font-weight: 600;
+  color: #d64545;
+  flex-shrink: 0;
+}
+.agent-ws-run-failed-text {
+  color: var(--text-muted);
   word-break: break-word;
 }
 

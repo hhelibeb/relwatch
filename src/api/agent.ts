@@ -1,8 +1,8 @@
 import { invokeI18nFn } from './client'
 import { commands } from '../bindings'
-import type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentRunSummary } from '../bindings'
+import type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentQueueStatus, AgentRunSummary } from '../bindings'
 
-export type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentRunSummary } from '../bindings'
+export type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentQueueStatus, AgentRunSummary } from '../bindings'
 
 /** 读取全局 Agent 配置。 */
 export async function getAgentConfig(): Promise<AgentConfig> {
@@ -37,6 +37,11 @@ export async function runAgentJob(input: AgentJobInput): Promise<number> {
 /** 查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段）。 */
 export async function listAgentRuns(sessionKey: string, limit: number | null = 20): Promise<AgentRunSummary[]> {
   return invokeI18nFn(() => commands.listAgentRuns(sessionKey, limit))
+}
+
+/** 查询全局 Agent 队列状态（「排队中」提示：队列位置 + 其他会话占用）。 */
+export async function getAgentQueueStatus(sessionKey: string): Promise<AgentQueueStatus> {
+  return invokeI18nFn(() => commands.getAgentQueueStatus(sessionKey))
 }
 
 /** 读取会话的完整聊天消息流（pi 落盘 JSONL，时间正序）。 */

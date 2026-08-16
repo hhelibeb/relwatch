@@ -123,6 +123,12 @@ export const commands = {
 	/**  查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。 */
 	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRunSummary[]>("list_agent_runs", { sessionKey, limit }),
 	/**
+	 *  查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
+	 *  「排队中」提示的数据源：调度器全局单并发（Semaphore::new(1)），
+	 *  本会话 pending 说明有其他 run 占用执行位，前端据此提示「其他会话执行中」。
+	 */
+	getAgentQueueStatus: (sessionKey: string) => __TAURI_INVOKE<AgentQueueStatus>("get_agent_queue_status", { sessionKey }),
+	/**
 	 *  读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
 	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
 	 */
@@ -212,6 +218,16 @@ export type AgentJobInput = {
 	skill_path: string | null,
 	/**  用户输入文本（引用已解析剥离）。 */
 	instruction: string,
+};
+
+/**  全局 Agent 队列状态（「排队中」提示的数据源）。 */
+export type AgentQueueStatus = {
+	/**  本会话最新 pending run 的全局队列位置（1 = 下一个执行；无 pending → None）。 */
+	position: number | null,
+	/**  是否存在其他会话的 running run（执行位被占用）。 */
+	other_running: boolean,
+	/**  其他会话 running run 的 session_key（前端可映射为会话标题）。 */
+	running_sessions: string[],
 };
 
 /**

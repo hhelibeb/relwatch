@@ -228,6 +228,22 @@ pub fn list_agent_runs(
     agent::list_run_summaries(&conn, &session_key, limit).map_err(|e| e.to_string())
 }
 
+/// 查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
+/// 「排队中」提示的数据源：调度器全局单并发（Semaphore::new(1)），
+/// 本会话 pending 说明有其他 run 占用执行位，前端据此提示「其他会话执行中」。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_queue_status(
+    state: tauri::State<'_, AppState>,
+    session_key: String,
+) -> Result<agent::AgentQueueStatus, String> {
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::agent_queue_status(&conn, &session_key).map_err(|e| e.to_string())
+}
+
 /// 读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
 /// 会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
 #[tauri::command]

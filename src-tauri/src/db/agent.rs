@@ -297,6 +297,60 @@ pub fn list_runs(conn: &Connection, session_key: &str, limit: i64) -> Result<Vec
     rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
+/// 全局 Agent 队列状态（「排队中」提示的数据源）。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentQueueStatus {
+    /// 本会话最新 pending run 的全局队列位置（1 = 下一个执行；无 pending → None）。
+    pub position: Option<i64>,
+    /// 是否存在其他会话的 running run（执行位被占用）。
+    pub other_running: bool,
+    /// 其他会话 running run 的 session_key（前端可映射为会话标题）。
+    pub running_sessions: Vec<String>,
+}
+
+/// 查询全局队列状态：本会话最新 pending run 的队列位置 + 其他会话占用情况。
+///
+/// 调度器为全局单并发（Semaphore::new(1)），pending run 按创建顺序排队；
+/// 队列位置 = 全局 status ∈ {pending, running} 且 id 更小的 run 数 + 1。
+pub fn agent_queue_status(conn: &Connection, session_key: &str) -> Result<AgentQueueStatus, String> {
+    let latest_pending: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM agent_runs WHERE session_key = ?1 AND status = 'pending' ORDER BY id DESC LIMIT 1",
+            params![session_key],
+            |row| row.get(0),
+        )
+        .map_err(|e| e.to_string())
+        .ok();
+    let position = match latest_pending {
+        Some(run_id) => {
+            let ahead: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending','running') AND id < ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            Some(ahead + 1)
+        }
+        None => None,
+    };
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT session_key FROM agent_runs WHERE status = 'running' AND session_key != ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let running_sessions: Vec<String> = stmt
+        .query_map(params![session_key], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(AgentQueueStatus {
+        position,
+        other_running: !running_sessions.is_empty(),
+        running_sessions,
+    })
+}
+
 /// 删除某会话的全部运行记录（会话文件删除由命令层负责）。
 pub fn delete_runs_for_session(conn: &Connection, session_key: &str) -> Result<(), String> {
     conn.execute(
@@ -428,6 +482,53 @@ mod tests {
             Some("C:/data/agent-sessions/ws-abc.jsonl")
         );
         assert!(get_session_path(&conn, "ws-none").unwrap().is_none());
+    }
+
+    #[test]
+    fn queue_status_reports_position_and_other_running() {
+        let conn = init_memory_db().unwrap();
+        // 空：无 pending
+        let st = agent_queue_status(&conn, "ws-a").unwrap();
+        assert_eq!(st.position, None);
+        assert!(!st.other_running);
+        assert!(st.running_sessions.is_empty());
+
+        // 会话 A 先建 run（running），会话 B 建 pending → B 队列位置 2、other_running
+        let ra = create_run(&conn, "ws-a", None, &[], "任务A", None).unwrap();
+        mark_run_started(&conn, ra).unwrap();
+        let rb = create_run(&conn, "ws-b", None, &[], "任务B", None).unwrap();
+        let st = agent_queue_status(&conn, "ws-b").unwrap();
+        assert_eq!(st.position, Some(2));
+        assert!(st.other_running);
+        assert_eq!(st.running_sessions, vec!["ws-a"]);
+
+        // A 自己视角：无其他会话 running
+        let st = agent_queue_status(&conn, "ws-a").unwrap();
+        assert!(!st.other_running);
+        assert!(st.running_sessions.is_empty());
+
+        // 第三个会话 pending：位置 3
+        let rc = create_run(&conn, "ws-c", None, &[], "任务C", None).unwrap();
+        let st = agent_queue_status(&conn, "ws-c").unwrap();
+        assert_eq!(st.position, Some(3));
+
+        // A 结束、B 开始执行 → B 无 pending（position None）；C 位置 2、other_running
+        finish_run(&conn, ra, "success", Some(0), Some(""), None, None).unwrap();
+        mark_run_started(&conn, rb).unwrap();
+        let st = agent_queue_status(&conn, "ws-b").unwrap();
+        assert_eq!(st.position, None);
+        assert!(!st.other_running);
+        let st = agent_queue_status(&conn, "ws-c").unwrap();
+        assert_eq!(st.position, Some(2));
+        assert!(st.other_running);
+        assert_eq!(st.running_sessions, vec!["ws-b"]);
+
+        // 本会话自己的 pending 不算 other_running
+        let st = agent_queue_status(&conn, "ws-c").unwrap();
+        assert_eq!(st.running_sessions, vec!["ws-b"]);
+        // 无 pending 的会话：position None
+        let st = agent_queue_status(&conn, "ws-none").unwrap();
+        assert_eq!(st.position, None);
     }
 
     #[test]
