@@ -58,13 +58,19 @@ pub fn get_agent_config(state: tauri::State<'_, AppState>) -> Result<AgentConfig
 }
 
 /// 保存全局 Agent 配置。
+/// 进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
+/// spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
+/// 会回到 /skill: 透传失效，改 model 会静默用旧模型）；下次提交 ensure_started 自动
+/// 重启并恢复会话。timeout / prompt_suffix / enabled 每次调度重读，无需重启。
 #[tauri::command]
 #[specta::specta]
-pub fn save_agent_config(
+#[allow(clippy::needless_pass_by_value)]
+pub async fn save_agent_config(
     state: tauri::State<'_, AppState>,
     config: AgentConfig,
 ) -> Result<(), String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let old = agent::load_agent_config(&conn)?;
     agent::save_agent_config(&conn, &config)?;
     logs::write_log_key(
         &conn,
@@ -72,7 +78,19 @@ pub fn save_agent_config(
         "agent.config_saved",
         &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
     );
+    if agent_process_level_changed(&old, &config) {
+        log::info!("agent config process-level fields changed, restarting RPC process");
+        state.agent_rpc.kill_now().await;
+    }
     Ok(())
+}
+
+/// 进程级配置字段是否变化（变化需重启常驻进程生效）。
+fn agent_process_level_changed(a: &AgentConfig, b: &AgentConfig) -> bool {
+    a.agent_type != b.agent_type
+        || a.binary != b.binary
+        || a.model != b.model
+        || a.skills != b.skills
 }
 
 /// 读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。
@@ -240,8 +258,36 @@ pub async fn cancel_agent_run(state: tauri::State<'_, AppState>, run_id: i64) ->
     if run.status != "pending" && run.status != "running" {
         return Ok(());
     }
-    state.agent_rpc.abort_force().await;
+    let was_running = run.status == "running";
+    // 必须先插取消标记再 abort：pi 的 abort 命令 = session.abort() → waitForIdle()，
+    // 响应一定晚于 agent_end；dispatch 收到 agent_end(aborted) 即返回并同步消费标记。
+    // 若先 abort 后插标记，dispatch 会在标记插入前完成 → run 误记 failed + aborted。
     state.agent_cancelled.lock().unwrap().insert(run_id);
+    if was_running {
+        // 仅 running（已拿到 semaphore、占用进程的当前 run）才需要 abort 打断生成；
+        // pending（排队中）尚未占用进程，abort 是进程级的、会误伤当前正在跑的 run。
+        // 插标记与 abort 之间 dispatch 可能已完成（run 结束、下一 run 开始），
+        // 二次校验收窄该窗口：run 已落终态则跳过 abort 并移除滞留标记。
+        let still_running = state
+            .db
+            .get()
+            .ok()
+            .and_then(|conn| agent::get_run(&conn, run_id).ok().flatten())
+            .map(|r| r.status == "running")
+            .unwrap_or(false);
+        if still_running {
+            state.agent_rpc.abort_force().await;
+        }
+    }
+    // 二次校验（收窄 TOCTOU）：run 恰在插入标记前完成（dispatch 已落库终态并消费）
+    // → 移除滞留标记，与 dispatch 出口的 clear_cancel_marker 呼应，防集合无界增长。
+    if let Ok(conn) = state.db.get() {
+        if let Ok(Some(r)) = agent::get_run(&conn, run_id) {
+            if r.status != "pending" && r.status != "running" {
+                state.agent_cancelled.lock().unwrap().remove(&run_id);
+            }
+        }
+    }
     Ok(())
 }
 

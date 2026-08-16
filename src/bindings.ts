@@ -98,7 +98,13 @@ export const commands = {
 	getUsageStats: (days: number | null) => __TAURI_INVOKE<UsageStatRow[]>("get_usage_stats", { days }),
 	/**  清空全部使用统计。 */
 	clearUsageStats: () => __TAURI_INVOKE<null>("clear_usage_stats"),
-	/**  保存全局 Agent 配置。 */
+	/**
+	 *  保存全局 Agent 配置。
+	 *  进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
+	 *  spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
+	 *  会回到 /skill: 透传失效，改 model 会静默用旧模型）；下次提交 ensure_started 自动
+	 *  重启并恢复会话。timeout / prompt_suffix / enabled 每次调度重读，无需重启。
+	 */
 	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
 	/**  读取全局 Agent 配置。 */
 	getAgentConfig: () => __TAURI_INVOKE<AgentConfig>("get_agent_config"),
@@ -304,7 +310,6 @@ export type Navigate = string;
 /**  一次轮询完成（手动或定时），前端据此刷新列表与倒计时。 */
 export type PollCompleted = null;
 
-/**  Agent 类型能力描述（前端配置表单驱动）。 */
 export type PollResult = {
 	new_releases: ReleaseInfo[],
 };

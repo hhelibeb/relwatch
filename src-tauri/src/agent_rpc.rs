@@ -153,6 +153,13 @@ impl RpcManager {
         // 必须显式 CREATE_NO_WINDOW；stdin/stdout 重定向不影响控制台分配。
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        // Unix：pi 作为新进程组首领（setsid 语义），使 kill_process_tree 的负 pid
+        // 能整树击杀（含 pi spawn 的 bash 等子进程），且不误伤 relwatch 自身进程组。
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
         cmd.args(["--mode", "rpc", "--no-context-files", "--no-approve", "--no-extensions"]);
         for skill in &config.skills {
             cmd.args(["--skill", skill]);
@@ -201,6 +208,9 @@ impl RpcManager {
             for (_, tx) in pending_clone.lock().unwrap().drain() {
                 let _ = tx.send(json!({"type": "response", "success": false, "error": "err.agent.rpc_exited"}));
             }
+            // 广播合成事件：正在等待事件流的 executor 立即失败返回，而不是干等超时
+            // （此前崩溃场景 run 会挂到 deadline 才以 timeout 收敛，前端期间看不到进展）
+            let _ = events.send(json!({"type": "rpc_exited"}));
         });
 
         Ok(RpcProcess {

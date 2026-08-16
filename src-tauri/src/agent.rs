@@ -1,11 +1,12 @@
 //! Agent 执行器抽象层（全局配置驱动）。
 //!
-//! P0 目标：支持 pi（`pi -p --skill <path>` 无头模式）作为第一个 Agent 实现；
+//! P0 实现：pi RPC 常驻进程（`pi --mode rpc`，见 agent_rpc.rs / RpcExecutor），
+//! 每次提交向常驻进程发 `prompt` 命令，不再每次 spawn 一次性进程。
 //! `AgentExecutor` trait 预留 claude / codex 等扩展，新增实现零迁移。
 //! Agent 配置来自全局单例（db::agent::AgentConfig），不再逐源绑定。
 //!
 //! 工作区会话模型：同一 `session_key` 的多次提交共享一个 pi 会话文件
-//! （`pi --session <path>`），文件存在时 pi 继续该会话（多轮对话），
+//! （`switch_session <path>` 绑定），文件存在时 pi 继续该会话（多轮对话），
 //! 不存在时新建 —— 已通过 pi SessionManager.open 语义确认。
 //!
 //! 安全基线（P0 固定）：
@@ -39,7 +40,8 @@ pub const STATUS_CANCELLED: &str = "cancelled";
 pub struct AgentContext<'a> {
     /// 本次提交使用的 skill 路径（run 记录固化；None = 不带 skill 运行）。
     pub skill_path: Option<&'a str>,
-    /// 本次提交落盘的 pi 会话文件（None = --no-session 临时模式，不落盘）。
+    /// 本次提交绑定的 pi 会话文件（run 记录固化，生产路径恒为 Some；
+    /// None 仅防御历史脏数据，此时退化为不带会话运行）。
     pub session_path: Option<&'a str>,
     /// 已渲染的实体上下文段（source / release → 文本，实体渲染器输出）。
     pub entity_texts: &'a [String],
@@ -86,12 +88,27 @@ pub fn executor_for(
 // ---- pi RPC 实现 ----
 
 /// skill 路径短名（`/skill:<name>` 命令前缀用）。
+///
+/// 与前端 `src/utils.ts` 的 `skillShortName` 行为必须一致（对拍测试见下方 tests）：
+/// pi 按 skill 注册名（frontmatter `name`，缺省为父目录名）精确匹配 `/skill:<name>`，
+/// 路径指向文件（如 `…/commit/SKILL.md`）时若取末段会得到 `SKILL.md`，pi 找不到该名
+/// 会原样透传（skill 静默失效），因此必须取所属目录名。
 pub fn skill_short_name(path: &str) -> String {
-    path.trim_end_matches(['/', '\\'])
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(path)
-        .to_string()
+    let trimmed = path.trim_end_matches(['/', '\\']);
+    let mut segs: Vec<&str> = trimmed.split(['/', '\\']).collect();
+    let mut seg = segs.pop().unwrap_or("");
+    // 末段是文件（带扩展名）：取上一段目录名，避免显示成 SKILL.md
+    if !seg.is_empty() && !segs.is_empty() && has_file_extension(seg) {
+        seg = segs.pop().unwrap_or(seg);
+    }
+    if seg.is_empty() { trimmed.to_string() } else { seg.to_string() }
+}
+
+/// 末段形如 `name.<字母数字>`（与 TS 侧 `\.[A-Za-z0-9]+$` 正则等价）。
+fn has_file_extension(seg: &str) -> bool {
+    seg.rsplit_once('.')
+        .map(|(_, ext)| !ext.is_empty() && ext.chars().all(|c| c.is_ascii_alphanumeric()))
+        .unwrap_or(false)
 }
 
 /// pi RPC 执行器：`pi --mode rpc` 常驻进程 + stdin/stdout JSON 协议。
@@ -196,6 +213,9 @@ impl AgentExecutor for RpcExecutor {
                         return Err("err.agent.aborted".to_string());
                     }
                 }
+                // 读循环 EOF（进程崩溃 / 被 kill）时广播的合成事件：立即失败返回，
+                // 不再干等 deadline（此前会挂到超时才收敛，前端期间看不到任何进展）
+                Some("rpc_exited") => return Err("err.agent.rpc_exited".to_string()),
                 Some("agent_settled") => settled = true,
                 _ => {}
             }
@@ -367,6 +387,12 @@ pub fn build_prompt(
     out
 }
 
+/// 强杀进程树。
+/// Windows：taskkill /F /T（真杀树）。
+/// Unix：杀进程组（-9 -pid）。pi 由本模块 spawn 且带 process_group(0)（新会话首领），
+/// 其 spawn 的子进程（bash 等）继承同组，负 pid 一次杀整树；
+/// 若 pid 不是组首领（历史进程等），负 pid 会引用其所属组（可能含父进程），
+/// 因此先探测 pgid，仅当 pid == pgid（首领）才杀组，否则退回单进程。
 pub fn kill_process_tree(pid: u32) {
     #[cfg(windows)]
     {
@@ -379,9 +405,25 @@ pub fn kill_process_tree(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
-            .output();
+        // 探测进程组：ps -o pgid= -p <pid>（macOS/Linux 均支持）；pid == pgid → 组首领
+        let is_group_leader = std::process::Command::new("ps")
+            .args(["-o", "pgid=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .map(|pgid| pgid == pid)
+            .unwrap_or(false);
+        if is_group_leader {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &format!("-{}", pid)])
+                .output();
+        } else {
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
     }
 }
 
@@ -644,25 +686,45 @@ async fn emit_run_finished(ctx: &AgentDispatchCtx, run: &AgentRun, status: &str,
     }
 }
 
+/// 实体上下文聚合预算（字符）：单实体上限 8000，但一次拖入大量实体（如 10 个
+/// release）累计可达数万字符撑爆模型上下文，超出后剩余实体省略并追加说明。
+const MAX_TOTAL_ENTITY_CHARS: usize = 60000;
+
 /// 解析 run.entities 并按 id 查库渲染为上下文文本段。
 /// 实体已被删除时静默跳过（历史提交回放不因数据清理崩溃）。
 fn render_run_entities(conn: &rusqlite::Connection, run: &AgentRun) -> Vec<String> {
     let refs: Vec<AgentEntityRef> = serde_json::from_str(&run.entities).unwrap_or_default();
     let mut texts = Vec::new();
+    let mut total = 0usize;
+    let mut skipped = 0usize;
     for r in refs {
-        match r.kind.as_str() {
-            "source" => {
-                if let Ok(Some(s)) = crate::db::sources::get_source(conn, r.id) {
-                    texts.push(render_source_entity(&s));
-                }
-            }
-            "release" => {
-                if let Ok(Some(rel)) = crate::db::releases::get_release(conn, r.id) {
-                    texts.push(render_release_entity(&rel));
-                }
-            }
-            _ => {}
+        if total >= MAX_TOTAL_ENTITY_CHARS {
+            skipped += 1;
+            continue;
         }
+        let text = match r.kind.as_str() {
+            "source" => crate::db::sources::get_source(conn, r.id)
+                .ok()
+                .flatten()
+                .map(|s| render_source_entity(&s)),
+            "release" => crate::db::releases::get_release(conn, r.id)
+                .ok()
+                .flatten()
+                .map(|rel| render_release_entity(&rel)),
+            _ => None,
+        };
+        if let Some(t) = text {
+            let len = t.chars().count();
+            if total + len > MAX_TOTAL_ENTITY_CHARS {
+                skipped += 1;
+                continue;
+            }
+            total += len;
+            texts.push(t);
+        }
+    }
+    if skipped > 0 {
+        texts.push(format!("- 另有 {} 个实体因总篇幅限制省略（当前批次超过 {} 字符预算）", skipped, MAX_TOTAL_ENTITY_CHARS));
     }
     texts
 }
@@ -1183,5 +1245,65 @@ mod tests {
         assert!(c.enabled);
         assert_eq!(c.agent_type, "pi");
         assert_eq!(c.skills, vec!["/s1"]);
+    }
+
+    #[test]
+    fn skill_short_name_matches_ts_impl() {
+        // 与 src/utils.ts 的 skillShortName 对拍（前端 @ 徽章展示与后端 /skill: 命令
+        // 必须一致，否则 pi 按注册名精确匹配失败、skill 原样透传静默失效）。
+        // 用例与 src/__tests__/utils.test.ts 的 skillShortName 用例一一对应。
+        assert_eq!(skill_short_name(r"E:\.pi\skills\commit\SKILL.md"), "commit");
+        assert_eq!(skill_short_name("skills/commit/SKILL.md"), "commit");
+        assert_eq!(skill_short_name(".pi/skills/release/SKILL.md"), "release");
+        assert_eq!(skill_short_name("/tmp/skill"), "skill");
+        assert_eq!(skill_short_name("skills/commit"), "commit");
+        assert_eq!(skill_short_name("E:/pi/skills"), "skills");
+        assert_eq!(skill_short_name("commit"), "commit");
+        assert_eq!(skill_short_name("skills/commit/"), "commit");
+        assert_eq!(skill_short_name("/"), "");
+        // 无扩展名的文件路径（非 SKILL.md 场景）保持末段
+        assert_eq!(skill_short_name("skills/release/notes"), "notes");
+    }
+
+    #[test]
+    fn render_run_entities_enforces_total_budget() {
+        // 大量实体（每个 8000 上限）累计超聚合预算 → 后续实体省略并追加说明
+        let pool = init_memory_pool().unwrap();
+        let run = {
+            let conn = pool.get().unwrap();
+            let body = "x".repeat(8000);
+            let sid = crate::db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+            let mut refs = Vec::new();
+            for i in 1..=8 {
+                let rid = crate::db::releases::insert_release(
+                    &conn, sid, &format!("v{}", i), "v", "https://example.com",
+                    "2024-01-01T00:00:00Z", false, Some(&body),
+                ).unwrap();
+                refs.push(AgentEntityRef { kind: "release".into(), id: rid });
+            }
+            AgentRun {
+                id: 1,
+                session_key: "ws-1".into(),
+                skill_path: None,
+                entities: serde_json::to_string(&refs).unwrap(),
+                instruction: "x".into(),
+                session_path: None,
+                status: "pending".into(),
+                exit_code: None,
+                stdout: None,
+                stderr: None,
+                error: None,
+                started_at: None,
+                finished_at: None,
+                created_at: "".into(),
+            }
+        };
+        let conn = pool.get().unwrap();
+        let texts = render_run_entities(&conn, &run);
+        // 8 × 8000 字符实体超过 60000 预算：必有省略说明
+        let omitted = texts.iter().find(|t| t.contains("省略")).expect("应有省略说明");
+        assert!(omitted.contains("实体因总篇幅限制省略"));
+        let total: usize = texts.iter().map(|t| t.chars().count()).sum();
+        assert!(total <= MAX_TOTAL_ENTITY_CHARS + 200);
     }
 }
