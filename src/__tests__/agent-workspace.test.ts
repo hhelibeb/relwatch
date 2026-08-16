@@ -392,7 +392,7 @@ describe('AgentWorkspace 冒烟', () => {
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })
 
-  it('user 消息整条被 <用户指令> 包裹时渲染剥离标签，标签在中间时保留', async () => {
+  it('user 消息整条被 <用户指令> 包裹时剥离标签，首轮模板折叠为可展开详情', async () => {
     vi.mocked(listAgentMessages).mockResolvedValue([
       {
         role: 'user',
@@ -420,9 +420,13 @@ describe('AgentWorkspace 冒烟', () => {
     // 整条包裹：标签剥离，仅内容可见
     expect(text).toContain('不用，有没有提到努比亚')
     expect(text).not.toContain('<用户指令>\n不用')
-    // 标签位于消息中间：保留显示，完整上下文可见
-    expect(text).toContain('<用户指令>')
+    // 首轮模板（标签在中间）：主文本仅显示用户指令，脚手架折叠进可展开详情
     expect(text).toContain('中间指令')
+    expect(text).not.toContain('<用户指令>')
+    expect(text).toContain('查看发送给 Agent 的完整指令')
+    // 折叠内容仍在 DOM（details 内），完整上下文仍可见
+    expect(text).toContain('以下是你需要处理的订阅信息')
+    expect(text).toContain('以上用户指令是你本次任务的唯一权威指令')
     wrapper.unmount()
   })
 

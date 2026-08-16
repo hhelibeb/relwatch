@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { events, type AgentRunFinished } from '../bindings'
 import { ShowToastKey, type AgentEntityRefSeed, type AgentWorkspaceSeed } from '../injection-keys'
@@ -37,6 +38,9 @@ interface SessionMeta {
 const SESSIONS_STORAGE_KEY = 'relwatch.agent.sessions.v1'
 // 会话侧栏折叠状态（默认折叠，聊天区全宽；localStorage 持久化）
 const SIDEBAR_STORAGE_KEY = 'relwatch.agent.sidebar.v1'
+// 会话 meta 持久化上限：每条约 150 字节，200 条仅 ~30KB，
+// 远低于 localStorage 配额；超出部分由「清理旧会话」入口回收磁盘文件与 DB 记录
+const SESSIONS_META_LIMIT = 200
 const sidebarOpen = ref(localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1')
 
 function toggleSidebar() {
@@ -54,7 +58,7 @@ function loadSessions(): SessionMeta[] {
   }
 }
 function persistSessions() {
-  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions.value.slice(0, 30)))
+  localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions.value.slice(0, SESSIONS_META_LIMIT)))
 }
 
 const sessions = ref<SessionMeta[]>(loadSessions())
@@ -72,9 +76,11 @@ function newSessionKey(): string {
 
 function switchSession(key: string) {
   if (key === activeKey.value) return
-  // 当前会话有运行中的 run：先中止（RPC abort），避免切换会话打断生成
+  // 当前会话有运行中的 run：先中止（RPC abort），避免切换会话打断生成；
+  // 中止是静默副作用，必须 toast 告知用户，避免「原会话为什么停了」的困惑
   if (activeRunId.value !== null) {
     void cancelAgentRun(activeRunId.value).catch(() => {})
+    showToast(t('agent.session_switch_stopped'))
   }
   activeKey.value = key
   stopPolling()
@@ -105,6 +111,12 @@ function startNewSession() {
 }
 
 async function handleDeleteSession(key: string) {
+  // 删除 = 移除会话文件 + 全部 run 记录，不可逆：先确认再执行
+  const confirmed = await confirm(t('agent.delete_session_confirm'), {
+    title: t('agent.delete_session'),
+    kind: 'warning',
+  })
+  if (!confirmed) return
   try {
     await deleteAgentSession(key)
     const idx = sessions.value.findIndex((s) => s.key === key)
@@ -121,6 +133,29 @@ async function handleDeleteSession(key: string) {
   } catch (e) {
     showToast(String(e))
   }
+}
+
+// 一键清理：删除除当前会话外的全部历史会话（文件 + DB 记录），带确认
+async function handleClearSessions() {
+  const targets = sessions.value.filter((s) => s.key !== activeKey.value)
+  if (targets.length === 0) return
+  const confirmed = await confirm(t('agent.clear_sessions_confirm'), {
+    title: t('agent.session_clear'),
+    kind: 'warning',
+  })
+  if (!confirmed) return
+  let failed = 0
+  for (const s of targets) {
+    try {
+      await deleteAgentSession(s.key)
+    } catch {
+      failed++
+    }
+  }
+  sessions.value = sessions.value.filter((s) => s.key === activeKey.value)
+  persistSessions()
+  if (failed > 0) showToast(t('agent.clear_sessions_partial', String(failed)))
+  else showToast(t('agent.sessions_cleared', String(targets.length - failed)))
 }
 
 // ── 数据源：全局 skill 列表 + 实体目录（[[]] 菜单/名称映射）────
@@ -858,7 +893,11 @@ watch(
                   </span>
                   <span v-if="runForMessage(idx)?.skill_path" class="agent-ws-skill-badge">@{{ skillShortName(runForMessage(idx)!.skill_path ?? '') }}</span>
                 </div>
-                <p class="agent-ws-msg-text">{{ stripUserInstructionWrapper(stripSkillBlock(blockText(msg.blocks))) || '…' }}</p>
+                <p class="agent-ws-msg-text">{{ splitUserBlocks(msg.blocks).main || '…' }}</p>
+                <details v-if="splitUserBlocks(msg.blocks).folded" class="agent-ws-fold agent-ws-fold-prompt">
+                  <summary>{{ t('agent.prompt_full') }}</summary>
+                  <pre class="agent-ws-fold-body">{{ splitUserBlocks(msg.blocks).folded }}</pre>
+                </details>
               </div>
 
               <!-- assistant 消息：左对齐，Markdown + 思考/工具折叠 -->
@@ -1028,6 +1067,10 @@ watch(
           </li>
           <li v-if="sessions.length === 0 && !isNewSession" class="agent-ws-session-empty">{{ t('agent.session_empty') }}</li>
         </ul>
+        <button v-if="sessions.length > 1" class="agent-ws-session-clear" :title="t('agent.session_clear')" @click="handleClearSessions">
+          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+          {{ t('agent.session_clear') }}
+        </button>
       </aside>
     </div>
   </div>
@@ -1048,11 +1091,21 @@ function stripSkillBlock(text: string): string {
   return text.replace(/<skill name="[^"]*"[^>]*>[\s\S]*?<\/skill>\s*/, '')
 }
 
-/** 剥离整条被 <用户指令> 标签包裹的消息外层标签（多轮精简消息的显示美化）。
- * 仅当标签完整包裹整条消息（开头 <用户指令>、结尾 </用户指令>）时剥离；
- * 标签位于消息中间时（如首轮完整模板）保留原样，保证完整上下文可见。 */
-function stripUserInstructionWrapper(text: string): string {
-  return text.replace(/^\s*<用户指令>\s*([\s\S]*?)\s*<\/用户指令>\s*$/, '$1').trim()
+/** 用户气泡显示文本拆分（模块级纯函数）：
+ * - main：<用户指令> 标签内的用户真实指令（skill 块已剥离）
+ * - folded：标签外的模板脚手架（订阅说明 / 外部数据区 / 不可信声明等）
+ * 首轮完整模板不再整段刷屏，折叠为可展开的详情块，完整上下文仍可见；
+ * 无标签（旧格式 / 多轮精简）时整段作为主文本，行为不变。 */
+function splitUserBlocks(blocks: AgentChatBlock[]): { main: string; folded: string | null } {
+  const text = blocks
+    .filter((b) => b.kind === 'text')
+    .map((b) => (b as { kind: 'text'; text?: string }).text ?? '')
+    .join('\n')
+  const cleaned = stripSkillBlock(text)
+  const m = cleaned.match(/<用户指令>\s*([\s\S]*?)\s*<\/用户指令>/)
+  if (!m) return { main: cleaned.trim(), folded: null }
+  const folded = cleaned.replace(m[0], '').trim()
+  return { main: m[1].trim(), folded: folded || null }
 }
 
 function isToolError(msg: AgentChatMessage): boolean {
@@ -1324,6 +1377,30 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   opacity: 0.5;
   text-align: center;
 }
+.agent-ws-session-clear {
+  margin: 2px 8px 10px;
+  padding: 6px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+.agent-ws-session-clear:hover {
+  color: #d64545;
+  border-color: rgba(214, 69, 69, 0.4);
+  background: var(--bg-hover);
+}
+.agent-ws-session-clear svg {
+  width: 10px;
+  height: 10px;
+}
 
 /* 聊天区 */
 .agent-ws-chat {
@@ -1360,6 +1437,7 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 .agent-ws-banner.status-success .agent-ws-banner-status { color: #2e9e5b; }
 .agent-ws-banner.status-failed .agent-ws-banner-status { color: #d64545; }
 .agent-ws-banner.status-timeout .agent-ws-banner-status { color: #d08a2e; }
+.agent-ws-banner.status-cancelled .agent-ws-banner-status { color: #8a8a8a; }
 .agent-ws-banner-text {
   flex: 1;
   min-width: 0;
@@ -1470,6 +1548,9 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 }
 .agent-ws-fold-thinking summary {
   color: #8a6d3b;
+}
+.agent-ws-fold-prompt summary {
+  color: var(--text-muted);
 }
 .agent-ws-fold-body {
   margin: 0;

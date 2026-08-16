@@ -2,7 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
@@ -20,6 +20,8 @@ const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
 const agentEnabledRef = inject(AgentEnabledKey, ref(false))
 const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
+// 工作区打开状态：拖拽落点存在时才启用卡片拖拽，否则恢复文本选择（拖动选字不被拖拽劫持）
+const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
 
 const aiEnabled = computed(() => aiEnabledRef.value)
 const agentEnabled = computed(() => agentEnabledRef.value)
@@ -223,7 +225,7 @@ function handleSendToAgent() {
 
 // ---- 拖拽：把版本作为实体拖入 Agent 工作区 ----
 function handleDragStart(e: DragEvent) {
-  if (!agentEnabled.value) return
+  if (!agentEnabled.value || !agentPanelOpen.value) return
   const data = JSON.stringify({ kind: 'release', id: props.release.id })
   e.dataTransfer?.setData('application/x-relwatch-entity', data)
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
@@ -434,7 +436,7 @@ const youtubeViewTitle = computed(() =>
 <template>
   <div class="release-item"
     :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]"
-    :draggable="agentEnabled"
+    :draggable="agentEnabled && agentPanelOpen"
     @dragstart="handleDragStart">
     <div class="release-header">
       <div class="release-heading">

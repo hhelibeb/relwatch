@@ -9,7 +9,7 @@ import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
-import { AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 
@@ -91,6 +91,8 @@ const moreDropdown = useDropdown({
 const agentEnabledRef = inject(AgentEnabledKey, ref(false))
 const agentEnabled = computed(() => agentEnabledRef.value)
 const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
+// 工作区打开状态：拖拽落点存在时才启用源拖拽，否则恢复文本选择
+const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
 
 function handleSendToAgent(source: Source) {
   moreDropdown.close()
@@ -100,7 +102,7 @@ function handleSendToAgent(source: Source) {
 
 // ---- 拖拽：把监控源作为实体拖入 Agent 工作区 ----
 function handleDragStart(e: DragEvent, source: Source) {
-  if (!agentEnabled.value) return
+  if (!agentEnabled.value || !agentPanelOpen.value) return
   const data = JSON.stringify({ kind: 'source', id: source.id })
   e.dataTransfer?.setData('application/x-relwatch-entity', data)
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
@@ -683,7 +685,7 @@ function hideHealthTooltip() {
     <div class="source-list">
       <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
       <div v-else-if="hasActiveSourceSearch && sortedSources.length === 0" class="empty source-search-status">{{ t('source.search_empty') }}</div>
-      <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }" :draggable="agentEnabled" @dragstart="handleDragStart($event, source)">
+      <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }" :draggable="agentEnabled && agentPanelOpen" @dragstart="handleDragStart($event, source)">
       <div v-if="selectionMode" class="source-checkbox">
         <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @change="toggleSelection(source.id)" />
       </div>
