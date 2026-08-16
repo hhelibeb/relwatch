@@ -47,7 +47,6 @@ const agentPromptSuffix = ref('')
 const agentTimeout = ref(300)
 const agentSkills = ref<string[]>([])
 const newAgentSkill = ref('')
-const agentSaving = ref(false)
 
 async function loadAgentConfig() {
   try {
@@ -66,7 +65,7 @@ async function loadAgentConfig() {
   }
 }
 
-/** Agent 分区当前表单的快照（与 handleSaveAgentConfig 提交值对齐）。 */
+/** Agent 分区当前表单的快照（与「保存设置」提交值对齐）。 */
 function agentSnapshot(): string {
   return JSON.stringify({
     enabled: agentEnabled.value,
@@ -79,8 +78,10 @@ function agentSnapshot(): string {
   })
 }
 
-/** 已保存的 Agent 配置基线（loadAgentConfig / 保存成功后刷新）。 */
-const agentSavedSnapshot = ref('')
+/** 已保存的 Agent 配置基线（loadAgentConfig / 保存成功后刷新）。
+ * 初始值取当前表单快照：loadAgentConfig 异步完成前 agentDirty 保持 false，
+ * 避免打开设置页瞬间误闪「未保存修改」横幅。 */
+const agentSavedSnapshot = ref(agentSnapshot())
 
 /** Agent 分区是否有未保存修改（与其他 Tab 的脏点一致）。 */
 const agentDirty = computed(() => agentSnapshot() !== agentSavedSnapshot.value)
@@ -98,29 +99,6 @@ function addAgentSkill() {
 
 function removeAgentSkill(index: number) {
   agentSkills.value.splice(index, 1)
-}
-
-async function handleSaveAgentConfig() {
-  agentSaving.value = true
-  try {
-    await saveAgentConfig({
-      enabled: agentEnabled.value,
-      agent_type: agentType.value.trim() || 'pi',
-      binary: agentBinary.value.trim() || null,
-      model: agentModel.value.trim() || null,
-      prompt_suffix: agentPromptSuffix.value.trim() || null,
-      timeout_seconds: Math.max(1, agentTimeout.value),
-      skills: agentSkills.value,
-    })
-    await loadAgentConfig()
-    showToast(t('agent.saved'))
-    // 通知全局刷新 agentEnabled（版本列表/监控源的唤起按钮与拖拽立即生效）
-    emit('agentConfigChanged')
-  } catch (e) {
-    showToast(String(e))
-  } finally {
-    agentSaving.value = false
-  }
 }
 
 void loadAgentConfig()
@@ -288,6 +266,22 @@ async function handleSave() {
       bilibiliCookie.value = ''
       form.bilibili_cookie_set = true
     }
+    // Agent 配置（独立 Tab，与主设置共用「保存设置」按钮统一提交）：
+    // 有未保存修改才写库；失败走外层 catch（主设置已存、Agent 未存，部分成功语义与凭据一致）
+    if (agentDirty.value) {
+      await saveAgentConfig({
+        enabled: agentEnabled.value,
+        agent_type: agentType.value.trim() || 'pi',
+        binary: agentBinary.value.trim() || null,
+        model: agentModel.value.trim() || null,
+        prompt_suffix: agentPromptSuffix.value.trim() || null,
+        timeout_seconds: Math.max(1, agentTimeout.value),
+        skills: agentSkills.value,
+      })
+      await loadAgentConfig() // 刷新脏点基线
+      // 通知全局刷新 agentEnabled（版本列表/监控源的唤起按钮与拖拽立即生效）
+      emit('agentConfigChanged')
+    }
     showToast(t('settings.saved'))
     const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
@@ -328,7 +322,7 @@ const dirtyFields = computed(() => {
   return dirty
 })
 
-const dirtyCount = computed(() => dirtyFields.value.size)
+const dirtyCount = computed(() => dirtyFields.value.size + (agentDirty.value ? 1 : 0))
 
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
@@ -337,7 +331,7 @@ const dirtyByTab = computed(() => {
     accounts: TAB_SETTING_KEYS.accounts.filter(k => f.has(k)).length,
     appearance: TAB_SETTING_KEYS.appearance.filter(k => f.has(k)).length,
     ai: TAB_SETTING_KEYS.ai.filter(k => f.has(k)).length,
-    // Agent 分区独立保存，脏点单独比较表单与已保存基线
+    // Agent 分区与主设置共用「保存设置」按钮，脏点单独比较表单与已保存基线
     agent: agentDirty.value ? 1 : 0,
   }
 })
@@ -355,6 +349,8 @@ function discardChanges() {
   githubToken.value = ''
   youtubeApiKey.value = ''
   bilibiliCookie.value = ''
+  // Agent 表单未保存的修改一并放弃（回到已保存基线）
+  void loadAgentConfig()
 }
 
 async function handleTestDeepseek() {
@@ -711,9 +707,6 @@ async function handleImportBackup() {
             </div>
           </div>
           <div class="setting-row">
-            <button class="btn-primary" :disabled="agentSaving" @click="handleSaveAgentConfig">
-              {{ agentSaving ? t('agent.saving') : t('agent.save') }}
-            </button>
             <span class="setting-hint">{{ t('agent.save_hint') }}</span>
           </div>
           </template>
