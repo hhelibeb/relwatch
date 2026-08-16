@@ -71,13 +71,39 @@ pub fn init_pool(
         let conn = pool.get().map_err(|e| e.to_string())?;
         apply_schema(&conn).map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
+        // 启动清理：上次进程遗留的 pending/running run 置 cancelled（防永久悬挂）
+        cleanup_stale_agent_runs(&conn).map_err(|e| e.to_string())?;
     }
 
     Ok(pool)
 }
 
+/// agent_runs 建表列定义（apply_schema 与 Migration 14 共用，避免两份字面 SQL 脱节）。
+/// status 带 CHECK 约束（防御非法状态值）；注意旧库（未走 Migration 14 重建的）
+/// agent_runs 表没有该 CHECK，仅新建库与重建库生效。
+const AGENT_RUNS_COLUMNS: &str = "(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL,
+            skill_path TEXT,
+            entities TEXT NOT NULL DEFAULT '[]',
+            instruction TEXT NOT NULL DEFAULT '',
+            session_path TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout', 'cancelled')),
+            exit_code INTEGER,
+            stdout TEXT,
+            stderr TEXT,
+            error TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL
+        )";
+
+/// agent_runs 会话键索引（列表/会话路径查询均按 session_key）。
+const AGENT_RUNS_SESSION_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_key);";
+
 pub fn apply_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
+    conn.execute_batch(&(
         "CREATE TABLE IF NOT EXISTS sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_type TEXT NOT NULL,
@@ -143,22 +169,11 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (key, day)
         );
 
-        CREATE TABLE IF NOT EXISTS agent_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_key TEXT NOT NULL,
-            skill_path TEXT,
-            entities TEXT NOT NULL DEFAULT '[]',
-            instruction TEXT NOT NULL DEFAULT '',
-            session_path TEXT,
-            status TEXT NOT NULL DEFAULT 'pending',
-            exit_code INTEGER,
-            stdout TEXT,
-            stderr TEXT,
-            error TEXT,
-            started_at TEXT,
-            finished_at TEXT,
-            created_at TEXT NOT NULL
-        );",
+        CREATE TABLE IF NOT EXISTS agent_runs "
+            .to_string()
+            + AGENT_RUNS_COLUMNS
+            + ";\n\n        "
+            + AGENT_RUNS_SESSION_INDEX),
     )?;
     Ok(())
 }
@@ -323,26 +338,28 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         .unwrap_or(false);
     if has_old_runs {
         conn.execute_batch("DROP TABLE agent_runs;")?;
+        // 与 apply_schema 共用同一份列定义（含 CHECK 约束）；表重建后索引丢失需重建
         conn.execute_batch(
-            "CREATE TABLE agent_runs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_key TEXT NOT NULL,
-                skill_path TEXT,
-                entities TEXT NOT NULL DEFAULT '[]',
-                instruction TEXT NOT NULL DEFAULT '',
-                session_path TEXT,
-                status TEXT NOT NULL DEFAULT 'pending',
-                exit_code INTEGER,
-                stdout TEXT,
-                stderr TEXT,
-                error TEXT,
-                started_at TEXT,
-                finished_at TEXT,
-                created_at TEXT NOT NULL
-            );",
+            &format!(
+                "CREATE TABLE agent_runs {};\n{}",
+                AGENT_RUNS_COLUMNS, AGENT_RUNS_SESSION_INDEX
+            ),
         )?;
     }
 
+    Ok(())
+}
+
+/// 启动清理：把上次进程遗留的 pending / running run 批量置 cancelled。
+/// 调度器随进程消亡，这些 run 不会有终态写入，不清理则永远挂着。
+/// 在应用启动（init_pool）时调用一次。
+pub fn cleanup_stale_agent_runs(conn: &Connection) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE agent_runs SET status = 'cancelled', error = 'err.agent.startup_cleanup', finished_at = ?1
+         WHERE status IN ('pending', 'running')",
+        [now],
+    )?;
     Ok(())
 }
 

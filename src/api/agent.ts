@@ -1,8 +1,8 @@
 import { invokeI18nFn } from './client'
 import { commands } from '../bindings'
-import type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentRun } from '../bindings'
+import type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentRunSummary } from '../bindings'
 
-export type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentRun } from '../bindings'
+export type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentRunSummary } from '../bindings'
 
 /** 读取全局 Agent 配置。 */
 export async function getAgentConfig(): Promise<AgentConfig> {
@@ -34,8 +34,8 @@ export async function runAgentJob(input: AgentJobInput): Promise<number> {
   )
 }
 
-/** 查询工作区会话的提交记录（倒序）。 */
-export async function listAgentRuns(sessionKey: string, limit: number | null = 20): Promise<AgentRun[]> {
+/** 查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段）。 */
+export async function listAgentRuns(sessionKey: string, limit: number | null = 20): Promise<AgentRunSummary[]> {
   return invokeI18nFn(() => commands.listAgentRuns(sessionKey, limit))
 }
 

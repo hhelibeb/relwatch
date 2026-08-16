@@ -28,7 +28,7 @@ const emit = defineEmits<{
 }>()
 const showToast = inject(ShowToastKey)!
 
-const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai'>('general')
+const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai' | 'agent'>('general')
 const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
@@ -38,10 +38,11 @@ const bilibiliCookie = ref('')
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
 
-// ── Agent 分区（独立于 AppSettings：后端全局单例配置，单独保存）───────
+// ── Agent 分区（独立 Tab：后端全局单例配置，单独保存）───────
 const agentEnabled = ref(false)
-const agentPiBinary = ref('')
-const agentPiModel = ref('')
+const agentType = ref('pi')
+const agentBinary = ref('')
+const agentModel = ref('')
 const agentPromptSuffix = ref('')
 const agentTimeout = ref(300)
 const agentSkills = ref<string[]>([])
@@ -52,15 +53,37 @@ async function loadAgentConfig() {
   try {
     const cfg = await getAgentConfig()
     agentEnabled.value = cfg.enabled
-    agentPiBinary.value = cfg.pi_binary ?? ''
-    agentPiModel.value = cfg.pi_model ?? ''
+    agentType.value = cfg.agent_type
+    agentBinary.value = cfg.binary ?? ''
+    agentModel.value = cfg.model ?? ''
     agentPromptSuffix.value = cfg.prompt_suffix ?? ''
     agentTimeout.value = cfg.timeout_seconds
     agentSkills.value = [...cfg.skills]
+    // 刷新已保存基线（脏点判定基准）
+    agentSavedSnapshot.value = agentSnapshot()
   } catch {
     // 加载失败保持默认空表单
   }
 }
+
+/** Agent 分区当前表单的快照（与 handleSaveAgentConfig 提交值对齐）。 */
+function agentSnapshot(): string {
+  return JSON.stringify({
+    enabled: agentEnabled.value,
+    type: agentType.value.trim() || 'pi',
+    binary: agentBinary.value.trim() || null,
+    model: agentModel.value.trim() || null,
+    suffix: agentPromptSuffix.value.trim() || null,
+    timeout: Math.max(1, agentTimeout.value),
+    skills: agentSkills.value,
+  })
+}
+
+/** 已保存的 Agent 配置基线（loadAgentConfig / 保存成功后刷新）。 */
+const agentSavedSnapshot = ref('')
+
+/** Agent 分区是否有未保存修改（与其他 Tab 的脏点一致）。 */
+const agentDirty = computed(() => agentSnapshot() !== agentSavedSnapshot.value)
 
 function addAgentSkill() {
   const p = newAgentSkill.value.trim()
@@ -82,8 +105,9 @@ async function handleSaveAgentConfig() {
   try {
     await saveAgentConfig({
       enabled: agentEnabled.value,
-      pi_binary: agentPiBinary.value.trim() || null,
-      pi_model: agentPiModel.value.trim() || null,
+      agent_type: agentType.value.trim() || 'pi',
+      binary: agentBinary.value.trim() || null,
+      model: agentModel.value.trim() || null,
       prompt_suffix: agentPromptSuffix.value.trim() || null,
       timeout_seconds: Math.max(1, agentTimeout.value),
       skills: agentSkills.value,
@@ -313,6 +337,8 @@ const dirtyByTab = computed(() => {
     accounts: TAB_SETTING_KEYS.accounts.filter(k => f.has(k)).length,
     appearance: TAB_SETTING_KEYS.appearance.filter(k => f.has(k)).length,
     ai: TAB_SETTING_KEYS.ai.filter(k => f.has(k)).length,
+    // Agent 分区独立保存，脏点单独比较表单与已保存基线
+    agent: agentDirty.value ? 1 : 0,
   }
 })
 
@@ -402,6 +428,7 @@ async function handleImportBackup() {
         <button :class="{ active: settingsTab === 'accounts' }" @click="settingsTab = 'accounts'">{{ t('settings.accounts') }}<span v-if="dirtyByTab.accounts" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}<span v-if="dirtyByTab.appearance" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}<span v-if="dirtyByTab.ai" class="sidebar-dirty-dot"></span></button>
+        <button :class="{ active: settingsTab === 'agent' }" @click="settingsTab = 'agent'">{{ t('settings.agent') }}<span v-if="dirtyByTab.agent" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'data' }" @click="settingsTab = 'data'">{{ t('settings.data') }}</button>
         <div class="version-row">
           <button class="version-github-btn" @click="openReleaseUrl('https://github.com/hhelibeb/relwatch')" title="GitHub">
@@ -611,8 +638,8 @@ async function handleImportBackup() {
             <span class="setting-hint">{{ t('settings.test_connection_hint') }}</span>
           </div>
           </template>
-
-          <div class="setting-section-sep"></div>
+        </div>
+        <div v-if="settingsTab === 'agent'" class="settings-form">
           <div class="setting-section-title">{{ t('agent.section_title') }}</div>
           <p class="setting-section-desc">{{ t('agent.section_desc') }}</p>
           <label class="setting-row setting-row-checkbox">
@@ -621,29 +648,35 @@ async function handleImportBackup() {
           </label>
           <template v-if="agentEnabled">
           <label class="setting-row">
-            <span class="setting-label">{{ t('agent.pi_binary_path') }}</span>
+            <span class="setting-label">{{ t('agent.type') }}</span>
+            <select v-model="agentType" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+              <option value="pi">{{ t('agent.type_pi') }}</option>
+            </select>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.binary_path') }}</span>
             <input
               type="text"
-              v-model="agentPiBinary"
-              :placeholder="t('agent.pi_binary_path_placeholder')"
+              v-model="agentBinary"
+              :placeholder="t('agent.binary_path_placeholder')"
               class="setting-input"
             />
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('agent.pi_model') }}</span>
+            <span class="setting-label">{{ t('agent.model') }}</span>
             <input
               type="text"
-              v-model="agentPiModel"
-              :placeholder="t('agent.pi_model_placeholder')"
+              v-model="agentModel"
+              :placeholder="t('agent.model_placeholder')"
               class="setting-input"
             />
           </label>
           <label class="setting-row">
-            <span class="setting-label">{{ t('agent.pi_prompt_suffix') }}</span>
+            <span class="setting-label">{{ t('agent.prompt_suffix') }}</span>
             <input
               type="text"
               v-model="agentPromptSuffix"
-              :placeholder="t('agent.pi_prompt_suffix_placeholder')"
+              :placeholder="t('agent.prompt_suffix_placeholder')"
               class="setting-input"
             />
           </label>

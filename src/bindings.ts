@@ -114,8 +114,8 @@ export const commands = {
 	 *  - 实际执行在后台任务完成，终态经 `AgentRunFinished` 事件推送。
 	 */
 	runAgentJob: (input: AgentJobInput) => __TAURI_INVOKE<number>("run_agent_job", { input }),
-	/**  查询工作区会话的提交记录（倒序，默认最近 20 条）。 */
-	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRun[]>("list_agent_runs", { sessionKey, limit }),
+	/**  查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。 */
+	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRunSummary[]>("list_agent_runs", { sessionKey, limit }),
 	/**
 	 *  读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
 	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
@@ -171,14 +171,16 @@ export type AgentChatMessage = {
 	model: string | null,
 };
 
-/**  全局 Agent 配置（设置页「AI → Agent」分区读写）。 */
+/**  全局 Agent 配置（设置页「Agent」分区读写）。 */
 export type AgentConfig = {
 	/**  总开关：关闭时唤起按钮隐藏，运行命令拒绝执行。 */
 	enabled: boolean,
-	/**  pi 可执行文件显式路径（None = 自动探测 where/which pi）。 */
-	pi_binary: string | null,
-	/**  pi 模型（None = pi 默认模型）。 */
-	pi_model: string | null,
+	/**  Agent 类型（"pi" = 本地 pi CLI；新类型在 agent::executor_for 登记）。 */
+	agent_type: string,
+	/**  Agent 可执行文件显式路径（None = 按类型自动探测，如 where/which pi）。 */
+	binary: string | null,
+	/**  模型（None = 该 Agent 默认模型）。 */
+	model: string | null,
 	/**  追加在每次提交 prompt 末尾的固定后缀（如"请输出中文"）。 */
 	prompt_suffix: string | null,
 	/**  子进程超时秒数（超时 kill）。 */
@@ -216,31 +218,6 @@ export type AgentRpcStream = {
 	event: string,
 };
 
-/**  一次工作区提交的运行记录。 */
-export type AgentRun = {
-	id: number,
-	/**  工作区会话标识（前端 UUID）；同一会话多次提交共享 pi 会话文件实现多轮继续。 */
-	session_key: string,
-	/**  本次提交使用的 skill 路径（未选为 None）。 */
-	skill_path: string | null,
-	/**  本次提交引用的实体（JSON 数组，`[{"kind":"source","id":1}]`）。 */
-	entities: string,
-	/**  用户输入文本（`[[]]` 引用已解析剥离，实体归入 entities 列）。 */
-	instruction: string,
-	/**  本次提交落盘的 pi 会话文件（`pi --session <path>` 恢复/继续）。 */
-	session_path: string | null,
-	/**  pending | running | success | failed | timeout。 */
-	status: string,
-	exit_code: number | null,
-	stdout: string | null,
-	stderr: string | null,
-	/**  启动失败等非进程类错误信息。 */
-	error: string | null,
-	started_at: string | null,
-	finished_at: string | null,
-	created_at: string,
-};
-
 /**  一次 Agent 提交运行结束（成功/失败/超时/取消），前端据此刷新工作区记录。 */
 export type AgentRunFinished = {
 	run_id: number,
@@ -250,6 +227,25 @@ export type AgentRunFinished = {
 	status: string,
 	/**  失败/超时的人类可读原因（成功时 null）。 */
 	message: string | null,
+};
+
+/**
+ *  一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
+ *  stdout 存的是模型完整输出，列表接口最多拉 100 条，全列返回会拖慢查询与序列化。
+ */
+export type AgentRunSummary = {
+	id: number,
+	session_key: string,
+	skill_path: string | null,
+	entities: string,
+	instruction: string,
+	session_path: string | null,
+	status: string,
+	exit_code: number | null,
+	error: string | null,
+	started_at: string | null,
+	finished_at: string | null,
+	created_at: string,
 };
 
 /**

@@ -103,10 +103,22 @@ impl RpcManager {
     }
 
     /// 中止当前生成（不杀进程；无进程时静默忽略）。
-    pub async fn abort(&self) {
+    /// 返回 Err 表示 abort 命令本身无响应（RPC 进程卡死），调用方应升级为强杀。
+    pub async fn abort(&self) -> Result<(), String> {
         let guard = self.inner.lock().await;
         if let Some(proc) = guard.as_ref() {
-            let _ = proc.command(json!({"type": "abort"})).await;
+            proc.command(json!({"type": "abort"})).await.map(|_| ())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 中止当前生成；abort 命令无响应（进程卡死）时升级为强杀进程树，
+    /// 下次 ensure_started 自动重启并恢复会话。
+    pub async fn abort_force(&self) {
+        if self.abort().await.is_err() {
+            log::warn!("agent rpc abort 无响应，强杀进程树");
+            self.kill_now().await;
         }
     }
 
@@ -132,7 +144,8 @@ impl RpcManager {
             let conn = self.db_pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
             load_agent_config(&conn)?
         };
-        let binary = resolve_pi_binary(&config)?;
+        ensure_supported_type(&config)?;
+        let binary = resolve_agent_binary(&config)?;
 
         let mut cmd = tokio::process::Command::new("cmd");
         cmd.arg("/C").arg(&binary);
@@ -144,7 +157,7 @@ impl RpcManager {
         for skill in &config.skills {
             cmd.args(["--skill", skill]);
         }
-        if let Some(m) = &config.pi_model {
+        if let Some(m) = &config.model {
             cmd.args(["--model", m]);
         }
         cmd.stdin(std::process::Stdio::piped())
@@ -210,9 +223,17 @@ fn normalize_path(p: &str) -> String {
     s.trim_end_matches('/').to_string()
 }
 
-/// 解析 pi 可执行文件：显式配置 > PATH 探测 > 常见 npm 全局路径。
-pub fn resolve_pi_binary(config: &AgentConfig) -> Result<String, String> {
-    if let Some(bin) = &config.pi_binary {
+/// 校验 Agent 类型受支持（目前仅 pi；新类型在 agent::executor_for 登记）。
+pub fn ensure_supported_type(config: &AgentConfig) -> Result<(), String> {
+    match config.agent_type.as_str() {
+        "pi" => Ok(()),
+        other => Err(format!("err.agent.unsupported_type|{}", other)),
+    }
+}
+
+/// 解析 Agent 可执行文件：显式配置 > PATH 探测 > 常见 npm 全局路径。
+pub fn resolve_agent_binary(config: &AgentConfig) -> Result<String, String> {
+    if let Some(bin) = &config.binary {
         return Ok(bin.clone());
     }
     let probe = if cfg!(windows) { "where" } else { "which" };

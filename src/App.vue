@@ -353,6 +353,18 @@ provide(AgentToggleKey, toggleAgentWorkspace)
 // 诊断统计开关：跟随设置项启停（关闭时 track() no-op + 丢弃未上报计数）
 watch(() => settings.value.enable_usage_stats, v => setUsageTrackingEnabled(v), { immediate: true })
 
+// 面板悬空修复：设置页关掉 Agent 总开关时，面板组件被 v-if 卸载但 agentPanelOpen
+// 仍为 true → 窗口保持加宽且无法经面板收回。监听配置变化，enabled 变 false 且
+// 面板开着时自动收回（closeAgentPanel 内部有 panelBusy 防重入）。
+watch(
+  () => agentConfig.value?.enabled,
+  (enabled) => {
+    if (!enabled && agentPanelOpen.value) {
+      void closeAgentPanel()
+    }
+  },
+)
+
 function repoKey(sourceType: string, owner: string, repo: string): string {
   return sourceRepoKey(sourceType, owner, repo)
 }

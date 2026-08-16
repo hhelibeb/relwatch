@@ -147,8 +147,11 @@ pub fn run() {
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
     let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(50));
-    // Agent 子进程并发上限：LLM 进程较重（token 流式 + 工具调用），同时 2 个已足够
-    let agent_semaphore = Arc::new(tokio::sync::Semaphore::new(2));
+    // Agent 子进程并发上限：RpcManager 是「单常驻进程」模型——
+    // 1) ensure_session 与 prompt 是两次独立加锁操作，并发提交会互相切走会话（A 切完 B 切走，A 的 prompt 落进 B 的会话文件）；
+    // 2) 事件流是全局 broadcast 且不带 run 标识，并行 run 会互收对方的 delta/settled/agent_end，串流且可能误判终态。
+    // 因此并发上限必须为 1（多个会话的提交排队串行执行）；如需并行，中期方案是事件按 run_id 打标或一会话一进程。
+    let agent_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
 
     // 开发/测试构建时把最新 TS 绑定写入前端（CI 亦可通过 cargo test 触发）
     #[cfg(debug_assertions)]

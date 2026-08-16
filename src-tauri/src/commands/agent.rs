@@ -7,7 +7,7 @@
 
 use crate::agent as agent_runner;
 use crate::agent_session::{self, AgentChatMessage};
-use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentRun};
+use crate::db::agent::{self, AgentConfig, AgentEntityRef};
 use crate::db::logs;
 use crate::types::AppState;
 use serde::{Deserialize, Serialize};
@@ -38,10 +38,15 @@ fn is_valid_session_key(key: &str) -> bool {
 
 /// 校验 DB 中固化的会话文件路径仍位于 agent-sessions 目录内
 /// （防御历史脏数据 / DB 被篡改导致的路径穿越）。
+/// 用 strip_prefix + 分隔符边界校验，避免 `agent-sessions2/evil` 这类前缀穿透。
 fn is_safe_session_path(path: &str) -> bool {
     let dir = agent_sessions_dir();
     let norm = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
-    norm(std::path::Path::new(path)).starts_with(&norm(&dir))
+    let p = norm(std::path::Path::new(path));
+    let d = norm(&dir);
+    p.strip_prefix(&d)
+        .map(|rest| rest.is_empty() || rest.starts_with('/'))
+        .unwrap_or(false)
 }
 
 /// 读取全局 Agent 配置。
@@ -138,7 +143,9 @@ pub async fn run_agent_job(
             continue;
         }
         let exists = match r.kind.as_str() {
-            "source" => crate::db::sources::get_source(&conn, r.id).is_ok(),
+            // 注意：get_source 返回 Result<Option<_>>，已删除的源是 Ok(None)，
+            // 必须用 is_some() 判定存在（is_ok() 会把已删除实体误判为存在）
+            "source" => crate::db::sources::get_source(&conn, r.id)?.is_some(),
             "release" => crate::db::releases::get_release(&conn, r.id)?.is_some(),
             _ => false,
         };
@@ -187,20 +194,20 @@ pub async fn run_agent_job(
     Ok(run_id)
 }
 
-/// 查询工作区会话的提交记录（倒序，默认最近 20 条）。
+/// 查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。
 #[tauri::command]
 #[specta::specta]
 pub fn list_agent_runs(
     state: tauri::State<'_, AppState>,
     session_key: String,
     limit: Option<i64>,
-) -> Result<Vec<AgentRun>, String> {
+) -> Result<Vec<agent::AgentRunSummary>, String> {
     if !is_valid_session_key(&session_key) {
         return Err("err.agent.invalid_session".to_string());
     }
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let limit = limit.unwrap_or(20).clamp(1, 100);
-    agent::list_runs(&conn, &session_key, limit).map_err(|e| e.to_string())
+    agent::list_run_summaries(&conn, &session_key, limit).map_err(|e| e.to_string())
 }
 
 /// 读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
@@ -225,7 +232,15 @@ pub fn list_agent_messages(session_key: String) -> Result<Vec<AgentChatMessage>,
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_agent_run(state: tauri::State<'_, AppState>, run_id: i64) -> Result<(), String> {
-    state.agent_rpc.abort().await;
+    // 仅当 run 仍处于 pending / running 时才取消：
+    // 对已结束的 run 调用 abort 会误伤当前正在跑的另一 run，
+    // 且 run_id 会滞留取消集合无人消费（无界增长）。
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let run = agent::get_run(&conn, run_id)?.ok_or_else(|| "err.agent.run_not_found".to_string())?;
+    if run.status != "pending" && run.status != "running" {
+        return Ok(());
+    }
+    state.agent_rpc.abort_force().await;
     state.agent_cancelled.lock().unwrap().insert(run_id);
     Ok(())
 }
@@ -259,7 +274,8 @@ pub fn get_agent_session_command(
     let binary = {
         let conn = state.db.get().map_err(|e| e.to_string())?;
         let config = agent::load_agent_config(&conn)?;
-        crate::agent_rpc::resolve_pi_binary(&config)?
+        crate::agent_rpc::ensure_supported_type(&config)?;
+        crate::agent_rpc::resolve_agent_binary(&config)?
     };
     Ok(format!("\"{}\" --session \"{}\"", binary, path))
 }
@@ -278,7 +294,8 @@ pub fn open_agent_session(
     let binary = {
         let conn = state.db.get().map_err(|e| e.to_string())?;
         let config = agent::load_agent_config(&conn)?;
-        crate::agent_rpc::resolve_pi_binary(&config)?
+        crate::agent_rpc::ensure_supported_type(&config)?;
+        crate::agent_rpc::resolve_agent_binary(&config)?
     };
     spawn_terminal(&binary, &path)
 }

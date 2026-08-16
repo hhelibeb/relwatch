@@ -14,7 +14,7 @@ import {
   openAgentSession,
   getAgentSessionCommand,
   type AgentChatMessage,
-  type AgentRun,
+  type AgentRunSummary,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
 import { getReleases, type ReleaseInfo } from '../api/releases'
@@ -135,7 +135,7 @@ const entities = ref<AgentEntityRefSeed[]>([])
 const skillPath = ref<string | null>(null)
 const instruction = ref('')
 const submitting = ref(false)
-const runs = ref<AgentRun[]>([])
+const runs = ref<AgentRunSummary[]>([])
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
 // 当前会话正在运行的 run_id（提交后设置，终态事件后清空；用于「停止」）
@@ -412,6 +412,10 @@ async function handleSubmit() {
     startPolling()
   } catch (e) {
     showToast(String(e))
+    // 提交被拒（未创建 run，不会有 AgentRunFinished 事件兜底）：
+    // 清掉本地回显与历史快照，避免失败消息永久滞留成「幽灵消息」
+    liveMessages.value = []
+    historySnapshot.value = []
   } finally {
     submitting.value = false
   }
@@ -433,8 +437,8 @@ async function handleCancel() {
 
 // ── 消息渲染辅助 ──
 // runs（倒序）按顺序对位 user 消息（时间窗校验，防对位错乱）
-const userRunMap = computed<Map<number, AgentRun>>(() => {
-  const map = new Map<number, AgentRun>()
+const userRunMap = computed<Map<number, AgentRunSummary>>(() => {
+  const map = new Map<number, AgentRunSummary>()
   const runsAsc = [...runs.value].reverse()
   let userIdx = 0
   for (let i = 0; i < messages.value.length; i++) {
@@ -453,12 +457,12 @@ const userRunMap = computed<Map<number, AgentRun>>(() => {
   return map
 })
 
-function runForMessage(idx: number): AgentRun | undefined {
+function runForMessage(idx: number): AgentRunSummary | undefined {
   return userRunMap.value.get(idx)
 }
 
 /** 最近一次 run（状态横幅用）。 */
-const latestRun = computed<AgentRun | undefined>(() => runs.value[0])
+const latestRun = computed<AgentRunSummary | undefined>(() => runs.value[0])
 
 function runStatusLabel(status: string): string {
   return t(`agent.status_${status}`)
@@ -478,7 +482,7 @@ function toolArgsSummary(args: string): string {
 }
 
 // ── 运行操作（终端恢复，高级功能保留）──
-async function handleOpenSession(run: AgentRun) {
+async function handleOpenSession(run: AgentRunSummary) {
   if (!run.session_path) return
   try {
     await openAgentSession(run.id)
@@ -487,7 +491,7 @@ async function handleOpenSession(run: AgentRun) {
   }
 }
 
-async function handleCopySessionCommand(run: AgentRun) {
+async function handleCopySessionCommand(run: AgentRunSummary) {
   if (!run.session_path) return
   try {
     const cmd = await getAgentSessionCommand(run.id)
@@ -609,6 +613,8 @@ function pickEntity(kind: 'source' | 'release', id: number) {
 // 菜单打开时：按键先交给菜单（Enter/Tab 选择项、Escape 关闭），一律不触发提交；
 // 无菜单时：无修饰键 Enter 提交。避免「选菜单项的同时消息被自动发出」。
 function handleKeydown(e: KeyboardEvent) {
+  // 输入法组合期（中文候选词确认回车）不触发提交/菜单导航
+  if (e.isComposing) return
   if (showSkillMenu.value || showEntityMenu.value) {
     handleMenuKeydown(e)
     return
@@ -1068,7 +1074,7 @@ function toolCardBody(msg: AgentChatMessage): string {
   return parts.filter((p) => p.trim()).join('\n')
 }
 
-function runEntities(run: AgentRun | undefined): AgentEntityRefSeed[] {
+function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   if (!run) return []
   try {
     return JSON.parse(run.entities) as AgentEntityRefSeed[]

@@ -35,8 +35,9 @@ vi.mock('../api/agent', async (importOriginal) => {
     ...actual,
     getAgentConfig: vi.fn().mockResolvedValue({
       enabled: true,
-      pi_binary: null,
-      pi_model: null,
+      agent_type: 'pi',
+      binary: null,
+      model: null,
       prompt_suffix: null,
       timeout_seconds: 300,
       skills: [],

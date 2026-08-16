@@ -20,7 +20,7 @@ vi.mock('../api/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/agent')>()
   return {
     ...actual,
-    getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, pi_binary: null, pi_model: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
+    getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
     listAgentRuns: vi.fn().mockResolvedValue([]),
     listAgentMessages: vi.fn().mockResolvedValue([]),
     runAgentJob: vi.fn().mockResolvedValue(1),
@@ -86,7 +86,7 @@ beforeEach(() => {
 describe('AgentWorkspace 冒烟', () => {
   it('渲染标题、会话边栏、输入区', async () => {
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
     })
     await flushPromises()
     expect(wrapper.text()).toContain(t('agent.workspace_title'))
@@ -140,14 +140,15 @@ describe('AgentWorkspace 冒烟', () => {
     const SKILL = 'E:\\project\\relwatch\\.pi\\skills\\commit\\SKILL.md'
     vi.mocked(getAgentConfig).mockResolvedValue({
       enabled: true,
-      pi_binary: null,
-      pi_model: null,
+      agent_type: 'pi',
+      binary: null,
+      model: null,
       prompt_suffix: null,
       timeout_seconds: 300,
       skills: [SKILL],
     })
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
     })
     await flushPromises()
     const ta = wrapper.find('.agent-ws-textarea')
@@ -201,8 +202,6 @@ describe('AgentWorkspace 冒烟', () => {
         session_path: null,
         status: 'success',
         exit_code: 0,
-        stdout: null,
-        stderr: null,
         error: null,
         started_at: '2025-01-01T00:00:00.000Z',
         finished_at: '2025-01-01T00:00:05.000Z',
@@ -210,7 +209,7 @@ describe('AgentWorkspace 冒烟', () => {
       },
     ])
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
     })
     await flushPromises()
     const text = wrapper.text()
@@ -292,7 +291,7 @@ describe('AgentWorkspace 冒烟', () => {
       },
     ])
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
     })
     await flushPromises()
     const ta = wrapper.find('.agent-ws-textarea')
@@ -414,7 +413,7 @@ describe('AgentWorkspace 冒烟', () => {
       },
     ])
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
     })
     await flushPromises()
     const text = wrapper.text()
@@ -434,7 +433,7 @@ describe('AgentWorkspace 冒烟', () => {
       JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
     )
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [Symbol.for('showToast') as never]: vi.fn() } },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
     })
     await flushPromises()
     // 提交：冻结历史快照 + 本地回显用户消息

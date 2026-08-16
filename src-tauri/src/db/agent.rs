@@ -3,8 +3,8 @@
 //! 数据模型（全局化设计）：
 //! - Agent 配置为**全局单例**，存 app_settings 键值（不走 SETTING_SPECS 注册表，
 //!   因其含 JSON 数组字段，与注册表的标量序列化规则不符）：
-//!   `agent_enabled` / `agent_pi_binary` / `agent_pi_model` / `agent_prompt_suffix` /
-//!   `agent_timeout_seconds` / `agent_skills`（JSON 数组）。
+//!   `agent_enabled` / `agent_type` / `agent_binary` / `agent_model` /
+//!   `agent_prompt_suffix` / `agent_timeout_seconds` / `agent_skills`（JSON 数组）。
 //! - `agent_runs`：一次工作区提交的运行记录。同一 `session_key`（前端 UUID）的多次
 //!   提交共享一个 pi 会话文件（`pi --session <path>` 继续），构成多轮对话；
 //!   `entities` 固化本次提交引用的实体（JSON: `[{"kind":"source"|"release","id":N}]`）。
@@ -15,19 +15,21 @@ use specta::Type;
 
 use super::settings::{
     get_setting_bool, get_setting_i64, get_setting_str, set_setting,
-    KEY_AGENT_ENABLED, KEY_AGENT_PI_BINARY, KEY_AGENT_PI_MODEL, KEY_AGENT_PROMPT_SUFFIX,
-    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_WS_WIDTH,
+    KEY_AGENT_BINARY, KEY_AGENT_ENABLED, KEY_AGENT_MODEL, KEY_AGENT_PROMPT_SUFFIX,
+    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_TYPE, KEY_AGENT_WS_WIDTH,
 };
 
-/// 全局 Agent 配置（设置页「AI → Agent」分区读写）。
+/// 全局 Agent 配置（设置页「Agent」分区读写）。
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
 pub struct AgentConfig {
     /// 总开关：关闭时唤起按钮隐藏，运行命令拒绝执行。
     pub enabled: bool,
-    /// pi 可执行文件显式路径（None = 自动探测 where/which pi）。
-    pub pi_binary: Option<String>,
-    /// pi 模型（None = pi 默认模型）。
-    pub pi_model: Option<String>,
+    /// Agent 类型（"pi" = 本地 pi CLI；新类型在 agent::executor_for 登记）。
+    pub agent_type: String,
+    /// Agent 可执行文件显式路径（None = 按类型自动探测，如 where/which pi）。
+    pub binary: Option<String>,
+    /// 模型（None = 该 Agent 默认模型）。
+    pub model: Option<String>,
     /// 追加在每次提交 prompt 末尾的固定后缀（如"请输出中文"）。
     pub prompt_suffix: Option<String>,
     /// 子进程超时秒数（超时 kill）。
@@ -40,8 +42,9 @@ impl Default for AgentConfig {
     fn default() -> Self {
         AgentConfig {
             enabled: false,
-            pi_binary: None,
-            pi_model: None,
+            agent_type: "pi".to_string(),
+            binary: None,
+            model: None,
             prompt_suffix: None,
             timeout_seconds: 300,
             skills: Vec::new(),
@@ -67,8 +70,12 @@ pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
         .collect();
     Ok(AgentConfig {
         enabled: get_setting_bool(conn, KEY_AGENT_ENABLED, false)?,
-        pi_binary: non_empty(get_setting_str(conn, KEY_AGENT_PI_BINARY, "")?),
-        pi_model: non_empty(get_setting_str(conn, KEY_AGENT_PI_MODEL, "")?),
+        agent_type: {
+            let t = get_setting_str(conn, KEY_AGENT_TYPE, "pi")?;
+            if t.trim().is_empty() { "pi".to_string() } else { t }
+        },
+        binary: non_empty(get_setting_str(conn, KEY_AGENT_BINARY, "")?),
+        model: non_empty(get_setting_str(conn, KEY_AGENT_MODEL, "")?),
         prompt_suffix: non_empty(get_setting_str(conn, KEY_AGENT_PROMPT_SUFFIX, "")?),
         timeout_seconds: get_setting_i64(conn, KEY_AGENT_TIMEOUT_SECONDS, 300)?.max(1),
         skills,
@@ -76,7 +83,13 @@ pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
 }
 
 /// 保存全局 Agent 配置（skills 去重、trim；空串可选字段归一为 None）。
+/// agent_type 必须为受支持类型（与 agent::executor_for 登记集合同步），
+/// 保存时即拒绝未知类型，避免运行时才报错。
 pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), String> {
+    match cfg.agent_type.as_str() {
+        "pi" => {}
+        other => return Err(format!("err.agent.unsupported_type|{}", other)),
+    }
     let mut skills: Vec<String> = Vec::new();
     for s in &cfg.skills {
         let t = s.trim();
@@ -86,8 +99,9 @@ pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), Str
     }
     let skills_json = serde_json::to_string(&skills).map_err(|e| e.to_string())?;
     set_setting(conn, KEY_AGENT_ENABLED, &cfg.enabled.to_string())?;
-    set_setting(conn, KEY_AGENT_PI_BINARY, cfg.pi_binary.as_deref().unwrap_or(""))?;
-    set_setting(conn, KEY_AGENT_PI_MODEL, cfg.pi_model.as_deref().unwrap_or(""))?;
+    set_setting(conn, KEY_AGENT_TYPE, &cfg.agent_type)?;
+    set_setting(conn, KEY_AGENT_BINARY, cfg.binary.as_deref().unwrap_or(""))?;
+    set_setting(conn, KEY_AGENT_MODEL, cfg.model.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_PROMPT_SUFFIX, cfg.prompt_suffix.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_TIMEOUT_SECONDS, &cfg.timeout_seconds.max(1).to_string())?;
     set_setting(conn, KEY_AGENT_SKILLS, &skills_json)?;
@@ -214,6 +228,59 @@ pub fn get_run(conn: &Connection, run_id: i64) -> Result<Option<AgentRun>, Strin
     }
 }
 
+/// 一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
+/// stdout 存的是模型完整输出，列表接口最多拉 100 条，全列返回会拖慢查询与序列化。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentRunSummary {
+    pub id: i64,
+    pub session_key: String,
+    pub skill_path: Option<String>,
+    pub entities: String,
+    pub instruction: String,
+    pub session_path: Option<String>,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub error: Option<String>,
+    pub started_at: Option<String>,
+    pub finished_at: Option<String>,
+    pub created_at: String,
+}
+
+/// 按工作区会话列出提交记录摘要（倒序，不含 stdout/stderr 大字段）。
+pub fn list_run_summaries(
+    conn: &Connection,
+    session_key: &str,
+    limit: i64,
+) -> Result<Vec<AgentRunSummary>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_key, skill_path, entities, instruction, session_path, status, exit_code,
+                    error, started_at, finished_at, created_at
+             FROM agent_runs WHERE session_key = ?1
+             ORDER BY id DESC LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![session_key, limit], |row| {
+            Ok(AgentRunSummary {
+                id: row.get(0)?,
+                session_key: row.get(1)?,
+                skill_path: row.get(2)?,
+                entities: row.get(3)?,
+                instruction: row.get(4)?,
+                session_path: row.get(5)?,
+                status: row.get(6)?,
+                exit_code: row.get(7)?,
+                error: row.get(8)?,
+                started_at: row.get(9)?,
+                finished_at: row.get(10)?,
+                created_at: row.get(11)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
 /// 按工作区会话列出提交记录（倒序）。
 pub fn list_runs(conn: &Connection, session_key: &str, limit: i64) -> Result<Vec<AgentRun>, String> {
     let mut stmt = conn
@@ -287,7 +354,8 @@ mod tests {
         // 默认值
         let cfg = load_agent_config(&conn).unwrap();
         assert!(!cfg.enabled);
-        assert!(cfg.pi_binary.is_none());
+        assert_eq!(cfg.agent_type, "pi");
+        assert!(cfg.binary.is_none());
         assert_eq!(cfg.timeout_seconds, 300);
         assert!(cfg.skills.is_empty());
 
@@ -296,8 +364,9 @@ mod tests {
             &conn,
             &AgentConfig {
                 enabled: true,
-                pi_binary: Some("C:/pi.cmd".into()),
-                pi_model: Some("m1".into()),
+                agent_type: "pi".into(),
+                binary: Some("C:/pi.cmd".into()),
+                model: Some("m1".into()),
                 prompt_suffix: Some("请输出中文".into()),
                 timeout_seconds: 120,
                 skills: vec!["/s1".into(), "/s1".into(), "  /s2  ".into(), "".into()],
@@ -307,7 +376,8 @@ mod tests {
 
         let loaded = load_agent_config(&conn).unwrap();
         assert!(loaded.enabled);
-        assert_eq!(loaded.pi_binary.as_deref(), Some("C:/pi.cmd"));
+        assert_eq!(loaded.agent_type, "pi");
+        assert_eq!(loaded.binary.as_deref(), Some("C:/pi.cmd"));
         assert_eq!(loaded.skills, vec!["/s1", "/s2"]);
         assert_eq!(loaded.timeout_seconds, 120);
     }

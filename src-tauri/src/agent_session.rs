@@ -94,10 +94,20 @@ pub fn parse_session_jsonl(content: &str) -> Result<Vec<AgentChatMessage>, Strin
         entries.push((id, parent, convert_message(&msg, &timestamp)));
     }
 
-    // 从最后一条消息沿 parentId 回溯到根，反转得到当前 leaf 路径
+    // 从最后一条消息沿 parentId 回溯到根，反转得到当前 leaf 路径。
+    // 损坏文件可能出现 parentId 环（自引用/回指祖先）：visited 集合防死循环，
+    // 深度上限兜底（正常会话数千条消息封顶，同步命令不可被损坏文件拖死）。
     let mut chain: Vec<String> = Vec::new();
     let mut cur = last_id;
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let max_depth = entries.len().max(1) * 2 + 1000; // 正常树深度 ≤ 消息数，留余量
     while let Some(c) = cur {
+        if !visited.insert(c.clone()) {
+            break; // 检测到环
+        }
+        if chain.len() >= max_depth {
+            break;
+        }
         chain.push(c.clone());
         cur = entries
             .iter()

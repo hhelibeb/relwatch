@@ -34,8 +34,9 @@ pub const KEY_NEXT_POLL_AT: &str = "next_poll_at";
 // ── Agent 全局配置键（不走 SETTING_SPECS 注册表：含 JSON 数组字段，
 // 由 db::agent 的 load/save_agent_config 统一读写）──
 pub const KEY_AGENT_ENABLED: &str = "agent_enabled";
-pub const KEY_AGENT_PI_BINARY: &str = "agent_pi_binary";
-pub const KEY_AGENT_PI_MODEL: &str = "agent_pi_model";
+pub const KEY_AGENT_TYPE: &str = "agent_type";
+pub const KEY_AGENT_BINARY: &str = "agent_binary";
+pub const KEY_AGENT_MODEL: &str = "agent_model";
 pub const KEY_AGENT_PROMPT_SUFFIX: &str = "agent_prompt_suffix";
 pub const KEY_AGENT_TIMEOUT_SECONDS: &str = "agent_timeout_seconds";
 pub const KEY_AGENT_SKILLS: &str = "agent_skills";
