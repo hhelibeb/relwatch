@@ -1252,7 +1252,7 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  border-left: 1px solid var(--border);
+  /* 左侧分隔线由 App.vue 的 .agent-divider 承担（可拖拽调节宽度），不再重复画边框 */
   overflow: hidden;
 }
 .agent-ws-main.drag-over {

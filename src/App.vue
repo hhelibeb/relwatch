@@ -126,6 +126,40 @@ function schedulePanelWidthSave() {
   }, 600)
 }
 
+// ── 分隔线拖拽：主界面与 Agent 工作区之间直接拖拽调节宽度（窗口总宽不变）──
+let dividerDragging = false
+let dividerStartX = 0
+let dividerStartWidth = 0
+
+function onDividerMouseDown(e: MouseEvent) {
+  e.preventDefault()
+  dividerDragging = true
+  dividerStartX = e.clientX
+  dividerStartWidth = agentPanelWidth.value
+  document.addEventListener('mousemove', onDividerMouseMove)
+  document.addEventListener('mouseup', onDividerMouseUp)
+  document.body.classList.add('agent-resizing')
+}
+
+function onDividerMouseMove(e: MouseEvent) {
+  if (!dividerDragging) return
+  // 向左拖（clientX 减小）→ 面板变宽；向右拖 → 面板变窄
+  const delta = dividerStartX - e.clientX
+  const next = clampPanelWidth(dividerStartWidth + delta, window.innerWidth)
+  if (next !== agentPanelWidth.value) {
+    agentPanelWidth.value = next
+  }
+}
+
+function onDividerMouseUp() {
+  if (!dividerDragging) return
+  dividerDragging = false
+  document.removeEventListener('mousemove', onDividerMouseMove)
+  document.removeEventListener('mouseup', onDividerMouseUp)
+  document.body.classList.remove('agent-resizing')
+  schedulePanelWidthSave()
+}
+
 // 打开（或聚焦）右侧工作区；预置实体经 seed 直接注入（同一窗口，无事件桥）
 async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
   agentPanelSeed.value = seed ?? null
@@ -653,6 +687,12 @@ onUnmounted(() => {
     <StatsDevPanelComp v-if="showStatsDev && StatsDevPanelComp" @close="showStatsDev = false" />
       </div>
     </div>
+    <div
+      v-if="agentPanelOpen && agentConfig?.enabled"
+      class="agent-divider"
+      title="拖拽调节宽度"
+      @mousedown="onDividerMouseDown"
+    ></div>
     <AgentWorkspace v-if="agentPanelOpen && agentConfig?.enabled" :seed="agentPanelSeed" :width="agentPanelWidth" @close="closeAgentPanel" />
   </div>
 </template>
@@ -674,6 +714,25 @@ onUnmounted(() => {
   flex: 1;
   min-width: 0;
   height: 100%;
+}
+
+/* 分隔线：主界面与 Agent 工作区之间，可拖拽调节两边宽度 */
+.agent-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 10;
+}
+.agent-divider:hover,
+.agent-divider.active {
+  background: var(--accent, #2e6fd0);
+}
+.agent-divider::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
 }
 
 /* Toast */

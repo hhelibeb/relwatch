@@ -155,6 +155,18 @@ body {
   background: var(--primary-soft-border);
 }
 
+/* ── 分隔线拖拽中：全局禁用文本选择 + 保持 col-resize 光标 ── */
+body.agent-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.agent-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 /* ── 细滚动条 ─────────────────────────────────── */
 html {
   scrollbar-width: thin;
