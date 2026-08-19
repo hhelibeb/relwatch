@@ -13,10 +13,10 @@ export const AgentEnabledKey: InjectionKey<Ref<boolean>> = Symbol('agentEnabled'
  * 语义为「打开或聚焦」：面板已打开时仅更新 seed，不关闭。 */
 export const AgentWorkspaceKey: InjectionKey<(seed?: AgentWorkspaceSeed) => void> = Symbol('agentWorkspace')
 
-/** Agent 工作区面板当前是否打开（ReleaseTab 按钮箭头方向等 UI 状态），由 App.vue provide。 */
+/** Agent 工作区面板当前是否打开（标题栏按钮箭头方向等 UI 状态），由 App.vue provide。 */
 export const AgentPanelOpenKey: InjectionKey<Ref<boolean>> = Symbol('agentPanelOpen')
 
-/** 切换 Agent 工作区面板开合：已打开则收回，未打开则展开（ReleaseTab 工具栏按钮用）。 */
+/** 切换 Agent 工作区面板开合：已打开则收回，未打开则展开（全局标题栏按钮用）。 */
 export const AgentToggleKey: InjectionKey<() => void> = Symbol('agentToggle')
 
 /** 工作区唤起时的预置内容：可直接插入输入框的实体引用（按钮入口携带当前上下文）。 */
