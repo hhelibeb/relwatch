@@ -18,3 +18,11 @@
 
 若用户指 pi 自身功能（subagent / Agent 面板 / worktree / watchdog 等），会明确说"pi 的 Agent"。排查用户问题优先查 relwatch 代码与 `%APPDATA%\RelWatch\` 下的数据，不要先去查 pi 的扩展或文档。
 
+# Git 命令约定（重要，防卡住）
+
+执行 git 命令时**统一加 `--no-pager`**（如 `git --no-pager log`、`git --no-pager diff`、`git --no-pager status`），防止分页器挂起。
+
+**原因**：本机 git 未配置 `core.pager`，使用默认分页器 less。在自动化/非交互终端里，less 启动后等待按键输入，导致 `git log`、`git diff` 等分页命令**卡住不返回**。`--no-pager` 仅对当前命令生效、不修改配置、不影响命令功能，是安全的绕过分页器方式。
+
+**注意**：`--no-pager` 只对分页命令（log/diff/status 等）有意义；对 `git add`、`git commit` 等不分页命令无影响，可加可不加。
+
