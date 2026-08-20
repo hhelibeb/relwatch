@@ -109,13 +109,27 @@ function startNewSession() {
 }
 
 async function handleDeleteSession(key: string) {
-  // 删除 = 移除会话文件 + 全部 run 记录，不可逆：先确认再执行
-  const confirmed = await confirm(t('agent.delete_session_confirm'), {
-    title: t('agent.delete_session'),
-    kind: 'warning',
-  })
+  // 检查该会话是否有活跃 run（pending/running）：删除 = 移除会话文件 + 全部 run 记录，
+  // 若正在运行，pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后静默丢弃。
+  // 用户直觉是「删除=停止」，因此先提示「将同时停止」，后端 delete_agent_session 统一
+  // 先取消活跃 run 再删除。
+  let activeRunForSession: AgentRunSummary | undefined
+  try {
+    const sessionRuns = await listAgentRuns(key, 50)
+    activeRunForSession = sessionRuns.find((r) => r.status === 'pending' || r.status === 'running')
+  } catch {
+    // 查询失败不阻塞删除（按无活跃 run 处理）
+  }
+  const confirmed = await confirm(
+    activeRunForSession ? t('agent.delete_session_running_confirm') : t('agent.delete_session_confirm'),
+    {
+      title: t('agent.delete_session'),
+      kind: 'warning',
+    },
+  )
   if (!confirmed) return
   try {
+    // 后端统一处理：先取消活跃 run（若有），再删除会话记录
     await deleteAgentSession(key)
     const idx = sessions.value.findIndex((s) => s.key === key)
     if (idx >= 0) sessions.value.splice(idx, 1)
@@ -137,12 +151,30 @@ async function handleDeleteSession(key: string) {
 async function handleClearSessions() {
   const targets = sessions.value.filter((s) => s.key !== activeKey.value)
   if (targets.length === 0) return
-  const confirmed = await confirm(t('agent.clear_sessions_confirm'), {
-    title: t('agent.session_clear'),
-    kind: 'warning',
-  })
+  // 检查目标会话中是否有活跃 run：清理同样会删除运行记录，正在跑的 run 会继续烧 token
+  // 直到自然结束或超时，产出写入已删除记录后静默丢弃——先提示并同时停止。
+  let runningCount = 0
+  try {
+    for (const s of targets) {
+      const sessionRuns = await listAgentRuns(s.key, 50)
+      const active = sessionRuns.find((r) => r.status === 'pending' || r.status === 'running')
+      if (active) {
+        runningCount++
+      }
+    }
+  } catch {
+    // 查询失败不阻塞清理（按无活跃 run 处理）
+  }
+  const confirmed = await confirm(
+    runningCount > 0 ? t('agent.clear_sessions_running_confirm', String(runningCount)) : t('agent.clear_sessions_confirm'),
+    {
+      title: t('agent.session_clear'),
+      kind: 'warning',
+    },
+  )
   if (!confirmed) return
   let failed = 0
+  // 后端 delete_agent_session 统一处理：先取消活跃 run（若有），再删除会话记录
   for (const s of targets) {
     try {
       await deleteAgentSession(s.key)
@@ -382,6 +414,12 @@ async function loadChat() {
     await Promise.all([loadRuns(), loadMessages(), loadQueueInfo()])
     // runs 已刷新：提交兜底使命结束，活跃 run 由 activeRun 推导接管
     submittedRunId.value = null
+    // 切回正在运行的会话：把已加载的历史冻结进快照，
+    // 新 delta 到达时 displayedMessages = [历史快照, ...流式]，不吞历史。
+    // 提交路径（liveMessages 已有回显）与终态路径（activeRun 已消失）不受影响。
+    if (activeRun.value && liveMessages.value.length === 0) {
+      historySnapshot.value = [...messages.value]
+    }
   } finally {
     messagesLoading.value = false
     scrollToBottom()

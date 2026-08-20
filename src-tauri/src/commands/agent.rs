@@ -266,6 +266,11 @@ pub fn list_agent_messages(session_key: String) -> Result<Vec<AgentChatMessage>,
 #[tauri::command]
 #[specta::specta]
 pub async fn cancel_agent_run(state: tauri::State<'_, AppState>, run_id: i64) -> Result<(), String> {
+    cancel_run_inner(&state, run_id).await
+}
+
+/// 取消一次 run 的核心逻辑（供 cancel_agent_run 与 delete_agent_session 复用）。
+async fn cancel_run_inner(state: &AppState, run_id: i64) -> Result<(), String> {
     // 仅当 run 仍处于 pending / running 时才取消：
     // 对已结束的 run 调用 abort 会误伤当前正在跑的另一 run，
     // 且 run_id 会滞留取消集合无人消费（无界增长）。
@@ -308,20 +313,33 @@ pub async fn cancel_agent_run(state: tauri::State<'_, AppState>, run_id: i64) ->
 }
 
 /// 删除一个工作区会话：移除会话文件与全部运行记录。
+///
+/// 若该会话存在活跃 run（pending / running），先取消（停止）再删除：
+/// 正在运行的 pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后
+/// 静默丢弃——用户直觉是「删除=停止」，因此删除即停止，避免静默丢产出。
+/// 前端在确认对话框中提示「正在运行，删除将同时停止」。
 #[tauri::command]
 #[specta::specta]
-pub fn delete_agent_session(
+pub async fn delete_agent_session(
     state: tauri::State<'_, AppState>,
     session_key: String,
 ) -> Result<(), String> {
     if !is_valid_session_key(&session_key) {
         return Err("err.agent.invalid_session".to_string());
     }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    // 先取消该会话的活跃 run（若有）：删除 = 停止，防止 pi 继续烧 token
+    // 产出写入已删除记录后静默丢弃。
+    let active_run = agent::list_run_summaries(&conn, &session_key, 50)?
+        .into_iter()
+        .find(|r| r.status == "pending" || r.status == "running");
+    if let Some(run) = active_run {
+        cancel_run_inner(&state, run.id).await?;
+    }
     let path = session_path_for_key(&session_key);
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| format!("err.agent.delete_session|{}", e))?;
     }
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     agent::delete_runs_for_session(&conn, &session_key).map_err(|e| e.to_string())
 }
 
