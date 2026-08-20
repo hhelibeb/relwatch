@@ -8,7 +8,7 @@
 
 # 术语约定（重要，防误会）
 
-本项目是 Tauri 桌面应用 **relwatch**。用户提到的以下术语**默认指 relwatch 应用内置功能**，与任何外部 Agent 工具（含 pi 自身）无关：
+本项目是 Tauri 桌面应用 **relwatch**。用户提到的以下术语**默认指 relwatch 应用内置功能**，与任何外部 Agent 工具（如 pi 自身）无关：
 
 - **"Agent 工作区" / "工作区"**：relwatch 右侧聊天面板（`src/components/AgentWorkspace.vue`），可拖入监控源/版本、@ 选 Skill、与本地 pi Agent（RPC 常驻进程）对话。
   - 后端：`src-tauri/src/agent.rs`、`src-tauri/src/agent_rpc.rs`、`src-tauri/src/db/agent.rs`
@@ -20,5 +20,5 @@
 
 # Git 命令约定（重要，防卡住）
 
-执行 `git log`、`git diff`、`git status` 等分页命令时统一加 `--no-pager`（如 `git --no-pager log`），防止默认分页器 less 在非交互终端等待输入而卡住不返回。
+执行 `git log`、`git show` 等分页命令时统一加 `--no-pager`，防止分页器 less 在非交互终端等待输入而卡住不返回。`--no-pager` 是全局选项，须放在子命令之前（如 `git --no-pager log`）。`git status` 及非交互终端中的 `git diff` 默认不分页，无需额外处理。
 
