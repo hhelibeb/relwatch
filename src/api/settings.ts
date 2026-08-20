@@ -51,12 +51,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   bilibili_cookie_set: false,
 }
 
-/** 判断 base_url 是否为 DeepSeek 官方域名（https + deepseek.com 或其子域）。
- *  保存/测试连接前弹二次确认提示用（审计建议 #1）。 */
-export async function isOfficialDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
-  return invokeI18nFn(() => commands.isOfficialDeepseekBaseUrl(baseUrl))
-}
-
 /** 从登录 WebView 读取 SESSDATA（成功返回 true，未登录抛 err.bili_login_not_logged_in）。 */
 export async function readBilibiliLoginCookie(windowLabel: string): Promise<boolean> {
   return invokeI18nFn(() => commands.readBilibiliLoginCookie(windowLabel))

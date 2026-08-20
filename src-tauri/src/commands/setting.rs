@@ -224,14 +224,6 @@ fn set_credential_impl(
     set_credential_impl(&conn, &kind, &value)
 }
 
-/// 判断 base_url 是否为 DeepSeek 官方域名（供前端保存/测试连接前二次确认，
-/// 审计建议 #1）。返回 bool，不阻止配置。
-#[tauri::command]
-
-#[specta::specta]pub fn is_official_deepseek_base_url(base_url: String) -> bool {
-    crate::deepseek::is_official_deepseek_base_url(&base_url)
-}
-
 /// 测试连接的可选覆盖参数：前端把表单当前值（含未保存修改）传入，
 /// 留空的项回退到已保存配置，实现"先试后存"。
 #[derive(serde::Deserialize, specta::Type)]

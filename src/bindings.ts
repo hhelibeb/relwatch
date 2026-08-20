@@ -36,11 +36,6 @@ export const commands = {
 	 */
 	setCredential: (kind: string, value: string) => __TAURI_INVOKE<null>("set_credential", { kind, value }),
 	/**
-	 *  判断 base_url 是否为 DeepSeek 官方域名（供前端保存/测试连接前二次确认，
-	 *  审计建议 #1）。返回 bool，不阻止配置。
-	 */
-	isOfficialDeepseekBaseUrl: (baseUrl: string) => __TAURI_INVOKE<boolean>("is_official_deepseek_base_url", { baseUrl }),
-	/**
 	 *  从登录 WebView 读取 SESSDATA，验证有效后加密存储。
 	 * 
 	 *  - `Ok(true)`：读取并保存成功（前端应关闭登录窗口）
@@ -140,7 +135,14 @@ export const commands = {
 	 *  终态由调度器统一写入（cancelled），本命令不直接写库，避免竞态覆盖。
 	 */
 	cancelAgentRun: (runId: number) => __TAURI_INVOKE<null>("cancel_agent_run", { runId }),
-	/**  删除一个工作区会话：移除会话文件与全部运行记录。 */
+	/**
+	 *  删除一个工作区会话：移除会话文件与全部运行记录。
+	 * 
+	 *  若该会话存在活跃 run（pending / running），先取消（停止）再删除：
+	 *  正在运行的 pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后
+	 *  静默丢弃——用户直觉是「删除=停止」，因此删除即停止，避免静默丢产出。
+	 *  前端在确认对话框中提示「正在运行，删除将同时停止」。
+	 */
 	deleteAgentSession: (sessionKey: string) => __TAURI_INVOKE<null>("delete_agent_session", { sessionKey }),
 	/**  返回在终端恢复该次会话的命令字符串（供复制）。 */
 	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),

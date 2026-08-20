@@ -7,7 +7,6 @@ import {
   updateSettings,
   setCredential,
   testDeepseekConnection,
-  isOfficialDeepseekBaseUrl,
   exportBackup,
   importBackup,
 } from '../api/settings'
@@ -24,7 +23,6 @@ vi.mock('../api/settings', () => ({
   updateSettings: vi.fn().mockResolvedValue(undefined),
   setCredential: vi.fn().mockResolvedValue(undefined),
   testDeepseekConnection: vi.fn().mockResolvedValue(undefined),
-  isOfficialDeepseekBaseUrl: vi.fn().mockResolvedValue(true),
   exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
   importBackup: vi.fn().mockResolvedValue(undefined),
 }))
@@ -36,7 +34,6 @@ vi.mock('../api/client', () => ({
 const updateSettingsMock = vi.mocked(updateSettings)
 const setCredentialMock = vi.mocked(setCredential)
 const testDeepseekConnectionMock = vi.mocked(testDeepseekConnection)
-const isOfficialDeepseekBaseUrlMock = vi.mocked(isOfficialDeepseekBaseUrl)
 const exportBackupMock = vi.mocked(exportBackup)
 const importBackupMock = vi.mocked(importBackup)
 const messageMock = vi.mocked(message)
@@ -102,7 +99,6 @@ beforeEach(() => {
   updateSettingsMock.mockResolvedValue(undefined)
   setCredentialMock.mockResolvedValue(undefined)
   testDeepseekConnectionMock.mockResolvedValue(undefined)
-  isOfficialDeepseekBaseUrlMock.mockResolvedValue(true)
   exportBackupMock.mockResolvedValue('/tmp/relwatch-backup.zip')
   importBackupMock.mockResolvedValue(undefined)
   messageMock.mockResolvedValue(undefined as any)
@@ -319,101 +315,42 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
   })
 })
 
-describe('SettingsTab — 非官方 DeepSeek 地址二次确认（审计建议 #1）', () => {
-  it('保存非官方 base_url：确认后提交 updateSettings', async () => {
-    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
-    confirmMock.mockResolvedValue(true as any)
-    const wrapper = mountSettings()
+describe('SettingsTab — AI 地址端点实时预览', () => {
+  it('填入根地址时预览为 .../v1/chat/completions', async () => {
+    const wrapper = mountSettings(createSettings({ deepseek_enabled: true, deepseek_base_url: 'https://api.deepseek.com' }))
     await clickSidebar(wrapper, 'settings.ai')
+    const input = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
+    const note = wrapper.find('.setting-row .setting-note')
+    expect(note.text()).toContain('https://api.deepseek.com/v1/chat/completions')
 
-    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
-    await urlInput.setValue('https://evil.com')
-    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await input.setValue('https://api.deepseek.com/')
     await flushPromises()
-
-    expect(confirmMock).toHaveBeenCalledWith(
-      t('settings.deepseek_non_official_confirm', 'https://evil.com'),
-      expect.objectContaining({ kind: 'warning' }),
-    )
-    expect(updateSettingsMock).toHaveBeenCalledOnce()
-    expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ deepseek_base_url: 'https://evil.com' }))
+    expect(wrapper.find('.setting-row .setting-note').text()).toContain('https://api.deepseek.com/v1/chat/completions')
   })
 
-  it('保存非官方 base_url：取消确认则不提交', async () => {
-    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
-    confirmMock.mockResolvedValue(false as any)
-    const wrapper = mountSettings()
+  it('填入已含 /v1 的地址时预览补 /chat/completions', async () => {
+    const wrapper = mountSettings(createSettings({ deepseek_enabled: true, deepseek_base_url: 'https://api.cline.bot/api/v1' }))
     await clickSidebar(wrapper, 'settings.ai')
-
-    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
-    await urlInput.setValue('https://evil.com')
-    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    const input = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
+    await input.setValue('https://host.example/api/v1')
     await flushPromises()
-
-    expect(confirmMock).toHaveBeenCalledOnce()
-    expect(updateSettingsMock).not.toHaveBeenCalled()
+    expect(wrapper.find('.setting-row .setting-note').text()).toContain('https://host.example/api/v1/chat/completions')
   })
 
-  it('保存官方 base_url：不弹确认直接提交', async () => {
-    isOfficialDeepseekBaseUrlMock.mockResolvedValue(true)
-    const wrapper = mountSettings()
+  it('已含完整端点时原样预览', async () => {
+    const wrapper = mountSettings(createSettings({ deepseek_enabled: true, deepseek_base_url: 'https://host.example/api/v1/chat/completions' }))
     await clickSidebar(wrapper, 'settings.ai')
-
-    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
-    await urlInput.setValue('https://api.deepseek.com/v1')
-    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    const input = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
+    await input.setValue('https://host.example/api/v1/chat/completions')
     await flushPromises()
-
-    expect(confirmMock).not.toHaveBeenCalled()
-    expect(updateSettingsMock).toHaveBeenCalledOnce()
+    expect(wrapper.find('.setting-row .setting-note').text()).toContain('https://host.example/api/v1/chat/completions')
   })
 
-  it('保存但 base_url 未修改：不弹确认（避免打扰已确认过的用户）', async () => {
-    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
-    const wrapper = mountSettings(createSettings({ deepseek_base_url: 'https://evil.com' }))
+  it('地址为空时不渲染预览', async () => {
+    const wrapper = mountSettings(createSettings({ deepseek_enabled: true, deepseek_base_url: '' }))
     await clickSidebar(wrapper, 'settings.ai')
-
-    // 只改一个无关字段，不触碰 base_url
-    await wrapper.get('.setting-actions .btn-primary').trigger('click')
-    await flushPromises()
-
-    expect(confirmMock).not.toHaveBeenCalled()
-    expect(updateSettingsMock).toHaveBeenCalledOnce()
-  })
-
-  it('测试连接非官方地址：确认后发起测试', async () => {
-    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
-    confirmMock.mockResolvedValue(true as any)
-    const wrapper = mountSettings()
-    await clickSidebar(wrapper, 'settings.ai')
-
-    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
-    await urlInput.setValue('https://evil.com')
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
-    expect(testBtn).toBeTruthy()
-    await testBtn!.trigger('click')
-    await flushPromises()
-
-    expect(confirmMock).toHaveBeenCalledOnce()
-    expect(testDeepseekConnectionMock).toHaveBeenCalledOnce()
-    expect(testDeepseekConnectionMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: 'https://evil.com' }))
-  })
-
-  it('测试连接非官方地址：取消则不发起测试', async () => {
-    isOfficialDeepseekBaseUrlMock.mockResolvedValue(false)
-    confirmMock.mockResolvedValue(false as any)
-    const wrapper = mountSettings()
-    await clickSidebar(wrapper, 'settings.ai')
-
-    const urlInput = wrapper.find(`input[placeholder="${t('settings.deepseek_base_url_placeholder')}"]`)
-    await urlInput.setValue('https://evil.com')
-    const testBtn = wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))
-    expect(testBtn).toBeTruthy()
-    await testBtn!.trigger('click')
-    await flushPromises()
-
-    expect(confirmMock).toHaveBeenCalledOnce()
-    expect(testDeepseekConnectionMock).not.toHaveBeenCalled()
+    const note = wrapper.find('.setting-row .setting-note')
+    expect(note.exists()).toBe(false)
   })
 })
 

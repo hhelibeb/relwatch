@@ -92,23 +92,40 @@ pub fn load_ai_network_config(conn: &Connection) -> (String, String) {
     (proxy_url, proxy_mode)
 }
 
-/// 判断 base_url 是否为 DeepSeek 官方 API 域名。
+/// 把用户填写的 base_url 归一到 chat/completions 的完整 POST 端点。
 ///
-/// 官方域名 = `https` + `deepseek.com` 或其子域（如 `api.deepseek.com`）。
-/// 供前端在保存 / 测试连接前做二次确认提示：非官方地址意味着 API Key 将
-/// 以 Bearer header 发送到该域名（含被配置成内网/恶意地址的可能）。
-/// 仅作提示用途，不阻止用户配置（保留用户自主权，审计建议 #1）。
-pub fn is_official_deepseek_base_url(base_url: &str) -> bool {
-    let Ok(parsed) = reqwest::Url::parse(base_url) else {
-        return false;
-    };
-    if parsed.scheme() != "https" {
-        return false;
+/// 兼容三类填法（OpenAI 兼容生态常见），避免像旧版那样无条件追加 `/v1/chat/completions`：
+/// - 根地址（DeepSeek 官方式）：`https://api.deepseek.com` → `.../v1/chat/completions`
+/// - 带 /api/v1 前缀（Cline/中转官方式）：`https://api.cline.bot/api/v1` → `.../api/v1/chat/completions`
+/// - 完整端点（含 /chat/completions）：`https://host/api/v1/chat/completions` → 原样返回
+///
+/// 规则：已含 `/chat/completions` 直接用；已含 `/v1` 则补 `/chat/completions`；
+/// 否则追加 `/v1/chat/completions`。
+pub fn resolve_chat_completion_url(base_url: &str) -> String {
+    let base = base_url.trim().trim_end_matches('/').to_string();
+    if base.to_ascii_lowercase().ends_with("/chat/completions") {
+        return base;
     }
-    parsed
-        .host_str()
-        .map(|h| h == "deepseek.com" || h.ends_with(".deepseek.com"))
-        .unwrap_or(false)
+    if base.to_ascii_lowercase().ends_with("/v1") {
+        return format!("{}/chat/completions", base);
+    }
+    format!("{}/v1/chat/completions", base)
+}
+
+/// 从 chat/completions 响应中提取 `content` 文本。
+///
+/// 兼容两类 JSON 外壳：标准 OpenAI `{"choices":[...]}` 与 Cline/中转常见的
+/// `{"data":{"choices":[...]}, "success":true}`。取不下 content 时返回空串。
+fn extract_content(json: &serde_json::Value) -> String {
+    let choices = json
+        .get("choices")
+        .or_else(|| json.get("data").and_then(|d| d.get("choices")));
+    if let Some(choice) = choices.and_then(|c| c.get(0)) {
+        if let Some(content) = choice.pointer("/message/content").and_then(|v| v.as_str()) {
+            return content.trim().to_string();
+        }
+    }
+    String::new()
 }
 
 pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<reqwest::Client, String> {
@@ -132,22 +149,25 @@ pub(crate) async fn chat_completion(
     base_url: &str,
     body_json: &serde_json::Value,
 ) -> Result<String, (u16, String)> {
+    let endpoint = resolve_chat_completion_url(base_url);
+    // 显式要求非流式：部分中转（如 Cline）缺省 stream=true 会返回 SSE 流，
+    // 与 relwatch 的 `resp.json()` 解析路径冲突。显式禁止即可规避。
+    let body = body_json.to_owned().clone();
     let resp = client
-        .post(format!(
-            "{}/v1/chat/completions",
-            base_url.trim_end_matches('/')
-        ))
-        .json(body_json)
+        .post(&endpoint)
+        .json(&{
+            let mut b = body;
+            if let Some(obj) = b.as_object_mut() {
+                obj.insert("stream".to_string(), serde_json::Value::Bool(false));
+            }
+            b
+        })
         .send()
         .await
-        .map_err(|e| (0, format!("DeepSeek 请求失败: {}", e)))?;
+        .map_err(|e| (0, format!("请求失败: {}", e)))?;
     if resp.status().is_success() {
         let json: serde_json::Value = resp.json().await.map_err(|e| (0, format!("解析响应失败: {}", e)))?;
-        let content = json["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let content = extract_content(&json);
         return Ok(content);
     }
     let status = resp.status().as_u16();
@@ -160,7 +180,7 @@ pub(crate) async fn chat_completion(
 /// （detect/translate 曾以重复 status 参数拼出与 summary 相同的输出）。
 fn format_chat_error(status: u16, msg: &str) -> String {
     if status > 0 {
-        format!("[{}] DeepSeek API 返回错误 {}: {}", status, status, msg)
+        format!("[{}] AI API 返回错误 {}: {}", status, status, msg)
     } else {
         msg.to_string()
     }
@@ -196,8 +216,9 @@ async fn call_summary(
             {"role": "user", "content": prompt}
         ],
         "temperature": 0.3,
-        "max_tokens": 800,
-        "response_format": {"type": "json_object"}
+        "max_tokens": 800
+        // 注：不传 response_format，以保证对不支持的 OpenAI 兼容供应商可用；
+        // JSON 格式已由 DEEPSEEK_PROMPT_FIXED_SUFFIX 在提示词中强制约束。
     });
 
     crate::retry::retry_with_backoff(
@@ -575,31 +596,6 @@ mod tests {
     use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
 
-    // ── 官方域名判定（审计建议 #1）──
-
-    #[test]
-    fn test_is_official_deepseek_base_url() {
-        // 官方：https + deepseek.com 或其子域（含带路径/带尾部斜杠）
-        assert!(is_official_deepseek_base_url("https://api.deepseek.com"));
-        assert!(is_official_deepseek_base_url("https://api.deepseek.com/v1"));
-        assert!(is_official_deepseek_base_url("https://api.deepseek.com/"));
-        assert!(is_official_deepseek_base_url("https://deepseek.com"));
-        assert!(is_official_deepseek_base_url("https://sub.deepseek.com"));
-
-        // 非官方：非 https、伪造后缀、其他域名、内网、非法输入
-        assert!(!is_official_deepseek_base_url("http://api.deepseek.com"));
-        assert!(!is_official_deepseek_base_url("https://api.deepseek.com.evil.com"));
-        assert!(!is_official_deepseek_base_url("https://deepseek.com.evil.com"));
-        assert!(!is_official_deepseek_base_url("https://evil-deepseek.com"));
-        assert!(!is_official_deepseek_base_url("https://evil.com"));
-        assert!(!is_official_deepseek_base_url("http://127.0.0.1:8080"));
-        assert!(!is_official_deepseek_base_url("http://localhost:8080"));
-        assert!(!is_official_deepseek_base_url("https://169.254.169.254/latest/meta-data"));
-        assert!(!is_official_deepseek_base_url("not-a-url"));
-        assert!(!is_official_deepseek_base_url(""));
-        // 无 host（仅 scheme）
-        assert!(!is_official_deepseek_base_url("https://"));
-    }
 
     fn sample_response() -> serde_json::Value {
         serde_json::json!({
@@ -1121,5 +1117,16 @@ mod tests {
         let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
         assert!(rel.body_translated.is_none(), "翻译失败不应写译文");
         assert!(translate_retry_count(&conn, id) >= 1, "翻译失败应递增 translate_retry_count");
+    }
+    #[test]
+    fn test_resolve_chat_completion_url() {
+        // 根地址 → 补 /v1/chat/completions
+        assert_eq!(resolve_chat_completion_url("https://api.deepseek.com"), "https://api.deepseek.com/v1/chat/completions");
+        assert_eq!(resolve_chat_completion_url("https://api.deepseek.com/"), "https://api.deepseek.com/v1/chat/completions");
+        assert_eq!(resolve_chat_completion_url(" https://api.deepseek.com/ "), "https://api.deepseek.com/v1/chat/completions");
+        // 带 /api/v1 前缀 → 补 /chat/completions
+        assert_eq!(resolve_chat_completion_url("https://api.cline.bot/api/v1"), "https://api.cline.bot/api/v1/chat/completions");
+        // 已含完整端点 → 原样返回
+        assert_eq!(resolve_chat_completion_url("https://host/api/v1/chat/completions"), "https://host/api/v1/chat/completions");
     }
 }

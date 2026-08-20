@@ -20,7 +20,6 @@ vi.mock('../api/settings', () => ({
   updateSettings: vi.fn().mockResolvedValue(undefined),
   setCredential: vi.fn().mockResolvedValue(undefined),
   testDeepseekConnection: vi.fn().mockResolvedValue('ok'),
-  isOfficialDeepseekBaseUrl: vi.fn().mockResolvedValue(true),
   exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
   importBackup: vi.fn().mockResolvedValue(undefined),
 }))

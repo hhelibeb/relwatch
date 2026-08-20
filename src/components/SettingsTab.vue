@@ -7,7 +7,6 @@ import {
   type AppSettings,
   updateSettings,
   setCredential,
-  isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
   importBackup,
@@ -187,18 +186,6 @@ const {
   onSelect: selectTheme,
 })
 
-// ── 非官方 DeepSeek API 地址二次确认（审计建议 #1）──────────
-// 官方域名 = https + deepseek.com 或其子域。非官方地址意味着 API Key 会以
-// Bearer header 发送到该域名（可能是内网或恶意地址），保存/测试前弹窗提示，
-// 但不阻止用户配置（保留自主权）。
-async function confirmDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
-  const official = await isOfficialDeepseekBaseUrl(baseUrl)
-  if (official) return true
-  return confirm(t('settings.deepseek_non_official_confirm', baseUrl), {
-    title: t('settings.deepseek_non_official_title'),
-    kind: 'warning',
-  })
-}
 
 async function handleSave() {
   savingSettings.value = true
@@ -210,13 +197,6 @@ async function handleSave() {
       showToast(t('settings.deepseek_prompt_validate_failed'))
       savingSettings.value = false
       return
-    }
-    // 非官方 DeepSeek 地址二次确认：仅当 base_url 相对已保存值有变更时提示，
-    // 避免每次保存都打扰已确认过的用户；取消则中止保存（dirty 标记保留，可重试）
-    const baseUrl = s.deepseek_base_url.trim()
-    if (baseUrl !== props.settings.deepseek_base_url.trim()) {
-      const ok = await confirmDeepseekBaseUrl(baseUrl)
-      if (!ok) return
     }
     // 先验证提示词、持久化主设置，再写敏感凭据：保证 updateSettings 失败时凭据不会被误写入，
     // 避免“凭据已持久化但用户以为整体保存失败”的非原子状态。
@@ -360,13 +340,30 @@ function discardChanges() {
   void loadAgentConfig()
 }
 
+/** 镜像后端 deepseek.rs::resolve_chat_completion_url 的脚本段拼接逻辑，仅用于
+ *  设置界面实时预览最终 POST 端点（与后端保持一致，减少逻辑漂移）。
+ *  - 已含 /chat/completions → 原样
+ *  - 已含 /v1 → 补 /chat/completions
+ *  - 否则 → 补 /v1/chat/completions */
+function resolveChatCompletionUrl(baseUrl: string): string {
+  const base = baseUrl.trim().replace(/\/+$/, '')
+  const lower = base.toLowerCase()
+  if (lower.endsWith('/chat/completions')) return base
+  if (lower.endsWith('/v1')) return `${base}/chat/completions`
+  return `${base}/v1/chat/completions`
+}
+
+/** 当前表单中 AI 地址最终会拼出的完整端点，用于输入框下方实时预览。空/未填时不显示。 */
+const resolvedEndpointPreview = computed(() => {
+  const url = form.deepseek_base_url.trim()
+  if (!url) return ''
+  return resolveChatCompletionUrl(url)
+})
+
 async function handleTestDeepseek() {
   testingDeepseek.value = true
   track('settings.test_ai')
   try {
-    // 非官方 DeepSeek 地址二次确认：测试会立即用表单地址发起请求（审计建议 #1）
-    const ok = await confirmDeepseekBaseUrl(form.deepseek_base_url.trim())
-    if (!ok) return
     // 传入表单当前值（含未保存修改）测试：API Key 留空时后端回退到已保存的 key
     await testDeepseekConnection({
       model: form.deepseek_model.trim(),
@@ -612,6 +609,7 @@ async function handleImportBackup() {
               :placeholder="t('settings.deepseek_base_url_placeholder')"
               class="setting-input"
             />
+            <span class="setting-note" v-if="resolvedEndpointPreview">{{ t('settings.endpoint_preview', resolvedEndpointPreview) }}</span>
           </label>
           <label class="setting-row setting-row-textarea">
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_prompt') || null">{{ t('settings.deepseek_prompt') }}</span>

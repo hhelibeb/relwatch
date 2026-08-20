@@ -63,7 +63,6 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::update_settings,
         commands::get_poll_countdown,
         commands::set_credential,
-        commands::is_official_deepseek_base_url,
         commands::read_bilibili_login_cookie,
         commands::close_bilibili_login_window,
         commands::test_deepseek_connection,
