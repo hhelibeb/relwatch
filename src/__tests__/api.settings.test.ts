@@ -15,7 +15,6 @@ import {
   getSettings,
   updateSettings,
   setCredential,
-  isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
   importBackup,
@@ -124,17 +123,6 @@ describe('setCredential', () => {
     await setCredential('bilibili_cookie', '')
 
     expect(invoke).toHaveBeenCalledWith('set_credential', { kind: 'bilibili_cookie', value: '' })
-  })
-})
-
-describe('isOfficialDeepseekBaseUrl', () => {
-  it('调起 is_official_deepseek_base_url 命令并透传返回值', async () => {
-    vi.mocked(invoke).mockResolvedValue(false)
-
-    const result = await isOfficialDeepseekBaseUrl('https://evil.com')
-
-    expect(invoke).toHaveBeenCalledWith('is_official_deepseek_base_url', { baseUrl: 'https://evil.com' })
-    expect(result).toBe(false)
   })
 })
 

@@ -136,6 +136,7 @@ function navigateReleaseDetail(delta: number) {
   const nextId = detailSequenceIds.value[detailIndex.value + delta]
   if (nextId !== undefined) detailReleaseId.value = nextId
 }
+
 </script>
 
 <template>
@@ -198,5 +199,6 @@ function navigateReleaseDetail(delta: number) {
       @navigate="navigateReleaseDetail"
       @update="emit('update')"
     />
+
   </section>
 </template>

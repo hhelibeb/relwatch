@@ -72,3 +72,16 @@ export function isUnreadStatus(status: string, snoozeUntil?: string | null): boo
 export function isReadStatus(status: string): boolean {
   return status === 'clicked' || status === 'ignored'
 }
+
+/** skill 路径短名：去掉尾部分隔符，取最后一段；
+ * 路径指向文件（如 …/commit/SKILL.md）时取所属目录名（skill 名），展示用。 */
+export function skillShortName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, '')
+  const segs = trimmed.split(/[\\/]/)
+  let seg = segs.pop()
+  if (seg && segs.length > 0 && /\.[A-Za-z0-9]+$/.test(seg)) {
+    // 末段是文件（带扩展名）：取上一段目录名，避免显示成 SKILL.md
+    seg = segs.pop()
+  }
+  return seg && seg.length > 0 ? seg : trimmed
+}

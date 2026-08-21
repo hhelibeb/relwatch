@@ -71,13 +71,40 @@ pub fn init_pool(
         let conn = pool.get().map_err(|e| e.to_string())?;
         apply_schema(&conn).map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
+        // 启动清理：上次进程遗留的 pending/running run 置 cancelled（防永久悬挂）
+        cleanup_stale_agent_runs(&conn).map_err(|e| e.to_string())?;
     }
 
     Ok(pool)
 }
 
+/// agent_runs 建表列定义（apply_schema 与 Migration 14 共用，避免两份字面 SQL 脱节）。
+/// status 带 CHECK 约束（防御非法状态值）；注意旧库（未走 Migration 14 重建的）
+/// agent_runs 表没有该 CHECK，仅新建库与重建库生效。
+const AGENT_RUNS_COLUMNS: &str = "(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_key TEXT NOT NULL,
+            skill_path TEXT,
+            entities TEXT NOT NULL DEFAULT '[]',
+            instruction TEXT NOT NULL DEFAULT '',
+            model TEXT,
+            session_path TEXT,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout', 'cancelled')),
+            exit_code INTEGER,
+            stdout TEXT,
+            stderr TEXT,
+            error TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL
+        )";
+
+/// agent_runs 会话键索引（列表/会话路径查询均按 session_key）。
+const AGENT_RUNS_SESSION_INDEX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_key);";
+
 pub fn apply_schema(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
+    conn.execute_batch(&(
         "CREATE TABLE IF NOT EXISTS sources (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_type TEXT NOT NULL,
@@ -141,7 +168,13 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
             day TEXT NOT NULL,
             count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (key, day)
-        );",
+        );
+
+        CREATE TABLE IF NOT EXISTS agent_runs "
+            .to_string()
+            + AGENT_RUNS_COLUMNS
+            + ";\n\n        "
+            + AGENT_RUNS_SESSION_INDEX),
     )?;
     Ok(())
 }
@@ -289,6 +322,56 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // ── Migration 14: Agent 全局化重构 ──
+    // 逐源绑定模型（source_agent_bindings + agent_runs 含 binding_id）废弃，
+    // 改为全局 Agent 配置（app_settings key）+ 工作区会话提交记录（agent_runs 重建）。
+    // 该模型随分支引入且未发布，旧表数据直接丢弃重建，无迁移成本。
+    let has_bindings_table: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_agent_bindings'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if has_bindings_table {
+        conn.execute_batch("DROP TABLE source_agent_bindings;")?;
+    }
+    let has_old_runs: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('agent_runs') WHERE name='binding_id'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if has_old_runs {
+        conn.execute_batch("DROP TABLE agent_runs;")?;
+        // 与 apply_schema 共用同一份列定义（含 CHECK 约束）；表重建后索引丢失需重建
+        conn.execute_batch(
+            &format!(
+                "CREATE TABLE agent_runs {};\n{}",
+                AGENT_RUNS_COLUMNS, AGENT_RUNS_SESSION_INDEX
+            ),
+        )?;
+    }
+
+    // ── Migration 15: 工作区提交可选模型（agent_runs.model）──
+    // 提交时显式选择的 pi 模型（`{"provider":..,"model_id":..}` JSON），
+    // None = 跟随 pi 当前/默认模型。老库无此列时补列（新库已含于 AGENT_RUNS_COLUMNS）。
+    let has_run_model: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('agent_runs') WHERE name='model'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_run_model {
+        conn.execute_batch("ALTER TABLE agent_runs ADD COLUMN model TEXT;")?;
+    }
+
+    Ok(())
+}
+
+/// 启动清理：把上次进程遗留的 pending / running run 批量置 cancelled。
+/// 调度器随进程消亡，这些 run 不会有终态写入，不清理则永远挂着。
+/// 在应用启动（init_pool）时调用一次。
+pub fn cleanup_stale_agent_runs(conn: &Connection) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "UPDATE agent_runs SET status = 'cancelled', error = 'err.agent.startup_cleanup', finished_at = ?1
+         WHERE status IN ('pending', 'running')",
+        [now],
+    )?;
     Ok(())
 }
 
@@ -352,6 +435,19 @@ mod tests {
         // Migration 11: sources.config
         assert!(has_column(&conn, "sources", "config"));
 
+        // Migration 14: Agent 全局化 —— 旧绑定表已删除，agent_runs 为工作区提交记录
+        let has_bindings_table: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_agent_bindings'")
+            .and_then(|mut s| s.exists([]))
+            .unwrap_or(false);
+        assert!(!has_bindings_table, "source_agent_bindings 表应已删除");
+        assert!(has_column(&conn, "agent_runs", "session_key"));
+        assert!(has_column(&conn, "agent_runs", "entities"));
+        assert!(has_column(&conn, "agent_runs", "instruction"));
+        // Migration 15: agent_runs.model（提交可选模型）
+        assert!(has_column(&conn, "agent_runs", "model"));
+        assert!(!has_column(&conn, "agent_runs", "binding_id"));
+
         // usage_stats 表（Migration 12：诊断统计）
         let has_table: bool = conn
             .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_stats'")
@@ -380,5 +476,61 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sources", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    /// 验证 Migration 14：旧绑定模型库 → 新工作区模型，旧表被清理重建
+    #[test]
+    fn test_migration_14_drops_old_binding_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_schema(&conn).unwrap();
+        // 模拟旧版库结构：binding 表 + 旧 agent_runs（含 binding_id）
+        conn.execute_batch(
+            "CREATE TABLE source_agent_bindings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL UNIQUE,
+                agent_type TEXT NOT NULL DEFAULT 'pi',
+                skill_paths TEXT NOT NULL DEFAULT '[]',
+                trigger_mode TEXT NOT NULL DEFAULT 'manual',
+                delay_seconds INTEGER NOT NULL DEFAULT 0,
+                timeout_seconds INTEGER NOT NULL DEFAULT 300,
+                working_dir TEXT,
+                extra_args TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                save_session INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            DROP TABLE agent_runs;
+            CREATE TABLE agent_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                binding_id INTEGER NOT NULL,
+                source_id INTEGER NOT NULL,
+                release_id INTEGER,
+                skill_path TEXT,
+                session_path TEXT,
+                trigger TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                exit_code INTEGER,
+                stdout TEXT,
+                stderr TEXT,
+                error TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let has_bindings: bool = conn
+            .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_agent_bindings'")
+            .and_then(|mut s| s.exists([]))
+            .unwrap_or(false);
+        assert!(!has_bindings);
+        assert!(has_column(&conn, "agent_runs", "session_key"));
+        assert!(has_column(&conn, "agent_runs", "entities"));
+        assert!(!has_column(&conn, "agent_runs", "binding_id"));
     }
 }

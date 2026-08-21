@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type Component, type Ref } from 'vue'
-import { ShowToastKey, AiEnabledKey } from './injection-keys'
+import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
-import { events } from './bindings'
+import { events, commands } from './bindings'
 import { type Source, listSources, sourceRepoKey, syncSourceCapabilities } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
@@ -18,6 +18,9 @@ import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
 import LogTab from './components/LogTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
+import AgentWorkspace from './components/AgentWorkspace.vue'
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+import { getAgentConfig, type AgentConfig } from './api/agent'
 
 const activeTab = ref<'sources' | 'releases' | 'logs' | 'settings'>('sources')
 const mainScrolled = ref(false)
@@ -31,6 +34,163 @@ const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
 const logRefreshKey = ref(0)
 const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
+// Agent 全局配置（独立于 AppSettings：含 JSON 数组字段，不走设置注册表）
+const agentConfig = ref<AgentConfig | null>(null)
+
+// ── Agent 工作区右栏：窗口整体加宽，主界面宽度不变，工作区占新增宽度 ──
+const AGENT_PANEL_DEFAULT_WIDTH = 440
+const AGENT_PANEL_MIN_WIDTH = 280
+const MAIN_MIN_WIDTH = 710
+const agentPanelOpen = ref(false)
+const agentPanelSeed = ref<AgentWorkspaceSeed | null>(null)
+// Agent 工作区当前宽度（逻辑 px）：分隔线拖拽调节，持久化到 app_settings
+const agentPanelWidth = ref(AGENT_PANEL_DEFAULT_WIDTH)
+// 本次打开是否加宽过窗口：仅加宽过的关闭时才缩窄，避免「打开没加宽、关闭却缩窄」错位
+const panelWidened = ref(false)
+// 开关互斥锁：innerSize/setSize 是异步的，防快速连点导致交错竞态
+let panelBusy = false
+let panelWidthSaveTimer: ReturnType<typeof setTimeout> | null = null
+
+function clampPanelWidth(w: number, windowW: number): number {
+  // 下限保证可读性；上限为主界面最小宽度之外的剩余空间（主界面永不被挤爆）
+  const maxW = Math.max(AGENT_PANEL_MIN_WIDTH, windowW - MAIN_MIN_WIDTH)
+  return Math.round(Math.min(Math.max(w, AGENT_PANEL_MIN_WIDTH), maxW))
+}
+
+function schedulePanelWidthSave() {
+  if (panelWidthSaveTimer) clearTimeout(panelWidthSaveTimer)
+  panelWidthSaveTimer = setTimeout(() => {
+    panelWidthSaveTimer = null
+    void commands.saveAgentWsWidth(agentPanelWidth.value).catch(() => {})
+  }, 600)
+}
+
+// ── 分隔线拖拽：主界面与 Agent 工作区之间直接拖拽调节宽度（窗口总宽不变）──
+let dividerDragging = false
+let dividerStartX = 0
+let dividerStartWidth = 0
+
+function onDividerMouseDown(e: MouseEvent) {
+  e.preventDefault()
+  dividerDragging = true
+  dividerStartX = e.clientX
+  dividerStartWidth = agentPanelWidth.value
+  document.addEventListener('mousemove', onDividerMouseMove)
+  document.addEventListener('mouseup', onDividerMouseUp)
+  document.body.classList.add('agent-resizing')
+}
+
+function onDividerMouseMove(e: MouseEvent) {
+  if (!dividerDragging) return
+  // 向左拖（clientX 减小）→ 面板变宽；向右拖 → 面板变窄
+  const delta = dividerStartX - e.clientX
+  const next = clampPanelWidth(dividerStartWidth + delta, window.innerWidth)
+  if (next !== agentPanelWidth.value) {
+    agentPanelWidth.value = next
+  }
+}
+
+function onDividerMouseUp() {
+  if (!dividerDragging) return
+  dividerDragging = false
+  document.removeEventListener('mousemove', onDividerMouseMove)
+  document.removeEventListener('mouseup', onDividerMouseUp)
+  document.body.classList.remove('agent-resizing')
+  schedulePanelWidthSave()
+}
+
+// ── 宽度决策 ──
+// 主界面内容在窗口内居中且最大 900px（.header-top/.header-bottom/.tab-content 的
+// max-width:900px + margin:0 auto）。窗口足够宽时两侧本就有空白，面板直接在
+// 内部弹出（不再加宽窗口）；不足时才加宽窗口。最大化场景（窗口尺寸固定）下无论
+// 多宽都无需加宽，面板在窗口内挤压主界面（主界面有 710 下限保护）。
+const mainMaxWidth = 900
+
+/** 当前窗口宽度下，面板能否在内部弹出（≥900+面板宽+分隔线余量）。 */
+function canFitPanelInside(windowW: number): boolean {
+  return windowW >= mainMaxWidth + agentPanelWidth.value
+}
+
+// 打开（或聚焦）右侧工作区；预置实体经 seed 直接注入（同一窗口，无事件桥）
+async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
+  agentPanelSeed.value = seed ?? null
+  if (agentPanelOpen.value || panelBusy) return
+  panelBusy = true
+  try {
+    // 读取上次保存的面板宽度（未设置/失败回退默认 440）
+    try {
+      const saved = await commands.getAgentWsWidth()
+      if (saved > 0) agentPanelWidth.value = saved
+    } catch { /* 保持默认 */ }
+    const win = getCurrentWindow()
+    const size = await win.innerSize() // 物理像素（inner，与 setSize 口径一致）
+    // 缩放用窗口 scaleFactor（与 setSize 内部换算一致）；window.devicePixelRatio
+    // 在高 DPI 环境可能与窗口缩放不同步，导致尺寸换算失真。
+    const scale = await win.scaleFactor()
+    const windowW = size.width / scale
+    panelWidened.value = false
+    if (await win.isMaximized()) {
+      // 最大化：窗口尺寸固定，只能压缩面板到窗口内可容纳的宽度（主界面保 710 下限）
+      agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW)
+    } else if (canFitPanelInside(windowW)) {
+      // 窗口足够宽：内部弹出，不加宽窗口
+      agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW)
+    } else {
+      // 窄窗口：加宽窗口，主界面宽度不变（clamp 上限按加宽后的窗口计算，
+      // 保存的宽度可完整恢复，不被当前窗口宽压缩）
+      const widenedW = windowW + agentPanelWidth.value
+      agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, widenedW)
+      await win.setSize(new LogicalSize(windowW + agentPanelWidth.value, size.height / scale))
+      panelWidened.value = true
+    }
+    agentPanelOpen.value = true
+  } catch (e) {
+    showToast(String(e))
+  } finally {
+    panelBusy = false
+  }
+}
+
+// 切换开合：标题栏按钮用（已打开则收回，未打开则展开）
+async function toggleAgentWorkspace() {
+  if (agentPanelOpen.value) {
+    track('release.collapse_agent_workspace')
+    await closeAgentPanel()
+  } else {
+    track('release.open_agent_workspace')
+    await openAgentWorkspace()
+  }
+}
+
+async function closeAgentPanel() {
+  if (panelBusy) return
+  panelBusy = true
+  agentPanelOpen.value = false
+  try {
+    const win = getCurrentWindow()
+    // 最大化时边框不可拖、宽度调节无意义：保持最大化，不缩窄窗口
+    if (await win.isMaximized()) return
+    // 仅本次打开加宽过窗口才缩窄；内部弹出（未加宽）时窗口尺寸不动
+    if (!panelWidened.value) return
+    const scale = await win.scaleFactor()
+    const size = await win.innerSize()
+    // 窗口缩窄 Agent 面板宽度 → 主界面宽度保持不变
+    const targetW = Math.max(size.width / scale - agentPanelWidth.value, MAIN_MIN_WIDTH)
+    await win.setSize(new LogicalSize(targetW, size.height / scale))
+  } catch {
+    // 恢复尺寸失败不影响面板关闭
+  } finally {
+    panelBusy = false
+  }
+}
+
+async function loadAgentConfig() {
+  try {
+    agentConfig.value = await getAgentConfig()
+  } catch {
+    agentConfig.value = null
+  }
+}
 
 const countdown = ref('')
 const releaseSearch = ref('')
@@ -181,8 +341,25 @@ function handleToastMouseLeave() {
 
 provide(ShowToastKey, showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
+// Agent 总开关：独立于 DeepSeek（本地 pi CLI 与在线 API 互不依赖）
+provide(AgentEnabledKey, computed(() => agentConfig.value?.enabled ?? false))
+provide(AgentWorkspaceKey, openAgentWorkspace)
+provide(AgentPanelOpenKey, agentPanelOpen)
+provide(AgentToggleKey, toggleAgentWorkspace)
 // 诊断统计开关：跟随设置项启停（关闭时 track() no-op + 丢弃未上报计数）
 watch(() => settings.value.enable_usage_stats, v => setUsageTrackingEnabled(v), { immediate: true })
+
+// 面板悬空修复：设置页关掉 Agent 总开关时，面板组件被 v-if 卸载但 agentPanelOpen
+// 仍为 true → 窗口保持加宽且无法经面板收回。监听配置变化，enabled 变 false 且
+// 面板开着时自动收回（closeAgentPanel 内部有 panelBusy 防重入）。
+watch(
+  () => agentConfig.value?.enabled,
+  (enabled) => {
+    if (!enabled && agentPanelOpen.value) {
+      void closeAgentPanel()
+    }
+  },
+)
 
 function repoKey(sourceType: string, owner: string, repo: string): string {
   return sourceRepoKey(sourceType, owner, repo)
@@ -212,7 +389,7 @@ const totalReleaseCounts = computed<Record<string, number>>(() => {
 })
 
 async function loadAll() {
-  await Promise.allSettled([loadSources(), loadReleases(), loadSettings()])
+  await Promise.allSettled([loadSources(), loadReleases(), loadSettings(), loadAgentConfig()])
 }
 
 async function loadSources() {
@@ -400,6 +577,11 @@ onUnmounted(() => {
     unlisten()
   }
   unlisteners.length = 0
+  // 宽度保存定时器
+  if (panelWidthSaveTimer) {
+    clearTimeout(panelWidthSaveTimer)
+    panelWidthSaveTimer = null
+  }
   // 清理定时器与媒体监听，避免卸载后回调修改已销毁组件的 ref（HMR/测试场景）
   if (countdownTimer) {
     clearInterval(countdownTimer)
@@ -422,13 +604,27 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="app">
-    <header class="app-header">
+  <div class="app-shell">
+    <div class="app-main-col">
+      <div class="app">
+        <header class="app-header">
       <div class="header-top">
         <h1>{{ t('app.title') }}</h1>
-        <button class="btn-primary" :disabled="polling || sourceChecking" @click="handlePoll">
-          {{ polling || sourceChecking ? t('app.checking') : t('app.check_now') }}
-        </button>
+        <div class="header-top-actions">
+          <button
+            v-if="agentConfig?.enabled"
+            class="release-agent-btn"
+            :class="{ open: agentPanelOpen }"
+            :title="agentPanelOpen ? t('agent.collapse_workspace') : t('agent.expand_workspace')"
+            @click="toggleAgentWorkspace"
+          >
+            <svg class="release-agent-btn-icon"><use href="/icons.svg#agent-icon"/></svg>
+            <svg class="release-agent-btn-arrow"><use :href="agentPanelOpen ? '/icons.svg#chevron-left-icon' : '/icons.svg#chevron-right-icon'"/></svg>
+          </button>
+          <button class="btn-primary" :disabled="polling || sourceChecking" @click="handlePoll">
+            {{ polling || sourceChecking ? t('app.checking') : t('app.check_now') }}
+          </button>
+        </div>
       </div>
       <div class="header-bottom">
         <nav class="tabs">
@@ -450,7 +646,9 @@ onUnmounted(() => {
         @open-unread-releases="openSourceUnreadReleases" />
       <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="loadReleases(); refreshLogs()" />
       <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings" @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }" />
+      <SettingsTab v-show="activeTab === 'settings'" :settings="settings"
+        @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"
+        @agent-config-changed="loadAgentConfig()" />
     </main>
 
     <Transition name="toast">
@@ -460,10 +658,63 @@ onUnmounted(() => {
     <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" @close="selectionMenu = null" />
     <ContextMenu v-if="inputContextMenu" :x="inputContextMenu.x" :y="inputContextMenu.y" :items="inputMenuItems" @action="execInputAction" @close="inputContextMenu = null" />
     <StatsDevPanelComp v-if="showStatsDev && StatsDevPanelComp" @close="showStatsDev = false" />
+      </div>
+    </div>
+    <div
+      v-if="agentPanelOpen && agentConfig?.enabled"
+      class="agent-divider"
+      title="拖拽调节宽度"
+      @mousedown="onDividerMouseDown"
+    ></div>
+    <AgentWorkspace v-if="agentPanelOpen && agentConfig?.enabled" :seed="agentPanelSeed" :width="agentPanelWidth" @close="closeAgentPanel" />
   </div>
 </template>
 
 <style scoped>
+/* 壳布局：主界面列 + 右侧 Agent 工作区列，两列各自独立滚动 */
+.app-shell {
+  height: 100vh;
+  display: flex;
+  overflow: hidden;
+}
+.app-main-col {
+  flex: 1 1 auto;
+  min-width: 710px;
+  display: flex;
+  overflow: hidden;
+}
+.app-main-col .app {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+
+/* 标题栏右侧操作组：Agent 开合按钮 + 立即检查 */
+.header-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 分隔线：主界面与 Agent 工作区之间，可拖拽调节两边宽度 */
+.agent-divider {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: var(--border);
+  transition: background 0.15s ease;
+  position: relative;
+  z-index: 10;
+}
+.agent-divider:hover,
+.agent-divider.active {
+  background: var(--accent, #2e6fd0);
+}
+.agent-divider::after {
+  content: '';
+  position: absolute;
+  inset: 0 -3px;
+}
+
 /* Toast */
 .toast {
   position: fixed;

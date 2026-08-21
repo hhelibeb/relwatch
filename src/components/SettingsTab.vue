@@ -7,23 +7,27 @@ import {
   type AppSettings,
   updateSettings,
   setCredential,
-  isOfficialDeepseekBaseUrl,
   testDeepseekConnection,
   exportBackup,
   importBackup,
 } from '../api/settings'
 import { openReleaseUrl } from '../api/client'
+import { getAgentConfig, saveAgentConfig } from '../api/agent'
 import { t, setLocale, languages } from '../i18n'
+import { skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
 import { applyTheme } from '../composables/useTheme'
 import { usePreviewSelect } from '../composables/usePreviewSelect'
 import { useBilibiliLogin } from '../composables/useBilibiliLogin'
 
 const props = defineProps<{ settings: AppSettings }>()
-const emit = defineEmits<{ update: [pollIntervalChanged: boolean, forceReload?: boolean] }>()
+const emit = defineEmits<{
+  update: [pollIntervalChanged: boolean, forceReload?: boolean]
+  agentConfigChanged: []
+}>()
 const showToast = inject(ShowToastKey)!
 
-const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai'>('general')
+const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai' | 'agent'>('general')
 const savingSettings = ref(false)
 const deepseekApiKey = ref('')
 const githubToken = ref('')
@@ -32,6 +36,78 @@ const bilibiliCookie = ref('')
 
 const testingDeepseek = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
+
+// ── Agent 分区（独立 Tab：后端全局单例配置，随「保存设置」统一提交）───────
+const agentEnabled = ref(false)
+const agentType = ref('pi')
+const agentBinary = ref('')
+const agentModel = ref('')
+const agentPromptSuffix = ref('')
+const agentTimeout = ref(300)
+const agentSkills = ref<string[]>([])
+const newAgentSkill = ref('')
+
+async function loadAgentConfig() {
+  try {
+    const cfg = await getAgentConfig()
+    agentEnabled.value = cfg.enabled
+    agentType.value = cfg.agent_type
+    agentBinary.value = cfg.binary ?? ''
+    agentModel.value = cfg.model ?? ''
+    agentPromptSuffix.value = cfg.prompt_suffix ?? ''
+    agentTimeout.value = cfg.timeout_seconds
+    agentSkills.value = [...cfg.skills]
+    // 刷新已保存基线（脏点判定基准）
+    agentSavedSnapshot.value = agentSnapshot()
+  } catch {
+    // 加载失败保持默认空表单
+  }
+}
+
+/** 超时秒数归一化：输入框清空时 v-model.number 得 NaN，
+ *  Math.max(1, NaN) 仍是 NaN → JSON 序列化为 null → 后端 serde 反序列化报错。 */
+function normalizedAgentTimeout(): number {
+  const v = agentTimeout.value
+  return Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1
+}
+
+/** Agent 分区当前表单的快照（与「保存设置」提交值对齐）。 */
+function agentSnapshot(): string {
+  return JSON.stringify({
+    enabled: agentEnabled.value,
+    type: agentType.value.trim() || 'pi',
+    binary: agentBinary.value.trim() || null,
+    model: agentModel.value.trim() || null,
+    suffix: agentPromptSuffix.value.trim() || null,
+    timeout: normalizedAgentTimeout(),
+    skills: agentSkills.value,
+  })
+}
+
+/** 已保存的 Agent 配置基线（loadAgentConfig / 保存成功后刷新）。
+ * 初始值取当前表单快照：loadAgentConfig 异步完成前 agentDirty 保持 false，
+ * 避免打开设置页瞬间误闪「未保存修改」横幅。 */
+const agentSavedSnapshot = ref(agentSnapshot())
+
+/** Agent 分区是否有未保存修改（与其他 Tab 的脏点一致）。 */
+const agentDirty = computed(() => agentSnapshot() !== agentSavedSnapshot.value)
+
+function addAgentSkill() {
+  const p = newAgentSkill.value.trim()
+  if (!p) return
+  if (agentSkills.value.includes(p)) {
+    showToast(t('agent.skill_duplicated'))
+    return
+  }
+  agentSkills.value.push(p)
+  newAgentSkill.value = ''
+}
+
+function removeAgentSkill(index: number) {
+  agentSkills.value.splice(index, 1)
+}
+
+void loadAgentConfig()
 
 // 本地 form 副本用于 v-model 双向绑定，避免直接修改 props
 const form = reactive({ ...props.settings })
@@ -110,18 +186,6 @@ const {
   onSelect: selectTheme,
 })
 
-// ── 非官方 DeepSeek API 地址二次确认（审计建议 #1）──────────
-// 官方域名 = https + deepseek.com 或其子域。非官方地址意味着 API Key 会以
-// Bearer header 发送到该域名（可能是内网或恶意地址），保存/测试前弹窗提示，
-// 但不阻止用户配置（保留自主权）。
-async function confirmDeepseekBaseUrl(baseUrl: string): Promise<boolean> {
-  const official = await isOfficialDeepseekBaseUrl(baseUrl)
-  if (official) return true
-  return confirm(t('settings.deepseek_non_official_confirm', baseUrl), {
-    title: t('settings.deepseek_non_official_title'),
-    kind: 'warning',
-  })
-}
 
 async function handleSave() {
   savingSettings.value = true
@@ -133,13 +197,6 @@ async function handleSave() {
       showToast(t('settings.deepseek_prompt_validate_failed'))
       savingSettings.value = false
       return
-    }
-    // 非官方 DeepSeek 地址二次确认：仅当 base_url 相对已保存值有变更时提示，
-    // 避免每次保存都打扰已确认过的用户；取消则中止保存（dirty 标记保留，可重试）
-    const baseUrl = s.deepseek_base_url.trim()
-    if (baseUrl !== props.settings.deepseek_base_url.trim()) {
-      const ok = await confirmDeepseekBaseUrl(baseUrl)
-      if (!ok) return
     }
     // 先验证提示词、持久化主设置，再写敏感凭据：保证 updateSettings 失败时凭据不会被误写入，
     // 避免“凭据已持久化但用户以为整体保存失败”的非原子状态。
@@ -196,6 +253,22 @@ async function handleSave() {
       bilibiliCookie.value = ''
       form.bilibili_cookie_set = true
     }
+    // Agent 配置（独立 Tab，与主设置共用「保存设置」按钮统一提交）：
+    // 有未保存修改才写库；失败走外层 catch（主设置已存、Agent 未存，部分成功语义与凭据一致）
+    if (agentDirty.value) {
+      await saveAgentConfig({
+        enabled: agentEnabled.value,
+        agent_type: agentType.value.trim() || 'pi',
+        binary: agentBinary.value.trim() || null,
+        model: agentModel.value.trim() || null,
+        prompt_suffix: agentPromptSuffix.value.trim() || null,
+        timeout_seconds: normalizedAgentTimeout(),
+        skills: agentSkills.value,
+      })
+      await loadAgentConfig() // 刷新脏点基线
+      // 通知全局刷新 agentEnabled（版本列表/监控源的唤起按钮与拖拽立即生效）
+      emit('agentConfigChanged')
+    }
     showToast(t('settings.saved'))
     const pollChanged = form.poll_interval_minutes !== prevPollInterval.value
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
@@ -236,7 +309,7 @@ const dirtyFields = computed(() => {
   return dirty
 })
 
-const dirtyCount = computed(() => dirtyFields.value.size)
+const dirtyCount = computed(() => dirtyFields.value.size + (agentDirty.value ? 1 : 0))
 
 const dirtyByTab = computed(() => {
   const f = dirtyFields.value
@@ -245,6 +318,8 @@ const dirtyByTab = computed(() => {
     accounts: TAB_SETTING_KEYS.accounts.filter(k => f.has(k)).length,
     appearance: TAB_SETTING_KEYS.appearance.filter(k => f.has(k)).length,
     ai: TAB_SETTING_KEYS.ai.filter(k => f.has(k)).length,
+    // Agent 分区与主设置共用「保存设置」按钮，脏点单独比较表单与已保存基线
+    agent: agentDirty.value ? 1 : 0,
   }
 })
 
@@ -261,15 +336,34 @@ function discardChanges() {
   githubToken.value = ''
   youtubeApiKey.value = ''
   bilibiliCookie.value = ''
+  // Agent 表单未保存的修改一并放弃（回到已保存基线）
+  void loadAgentConfig()
 }
+
+/** 镜像后端 deepseek.rs::resolve_chat_completion_url 的脚本段拼接逻辑，仅用于
+ *  设置界面实时预览最终 POST 端点（与后端保持一致，减少逻辑漂移）。
+ *  - 已含 /chat/completions → 原样
+ *  - 已含 /v1 → 补 /chat/completions
+ *  - 否则 → 补 /v1/chat/completions */
+function resolveChatCompletionUrl(baseUrl: string): string {
+  const base = baseUrl.trim().replace(/\/+$/, '')
+  const lower = base.toLowerCase()
+  if (lower.endsWith('/chat/completions')) return base
+  if (lower.endsWith('/v1')) return `${base}/chat/completions`
+  return `${base}/v1/chat/completions`
+}
+
+/** 当前表单中 AI 地址最终会拼出的完整端点，用于输入框下方实时预览。空/未填时不显示。 */
+const resolvedEndpointPreview = computed(() => {
+  const url = form.deepseek_base_url.trim()
+  if (!url) return ''
+  return resolveChatCompletionUrl(url)
+})
 
 async function handleTestDeepseek() {
   testingDeepseek.value = true
   track('settings.test_ai')
   try {
-    // 非官方 DeepSeek 地址二次确认：测试会立即用表单地址发起请求（审计建议 #1）
-    const ok = await confirmDeepseekBaseUrl(form.deepseek_base_url.trim())
-    if (!ok) return
     // 传入表单当前值（含未保存修改）测试：API Key 留空时后端回退到已保存的 key
     await testDeepseekConnection({
       model: form.deepseek_model.trim(),
@@ -334,6 +428,7 @@ async function handleImportBackup() {
         <button :class="{ active: settingsTab === 'accounts' }" @click="settingsTab = 'accounts'">{{ t('settings.accounts') }}<span v-if="dirtyByTab.accounts" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'appearance' }" @click="settingsTab = 'appearance'">{{ t('settings.appearance') }}<span v-if="dirtyByTab.appearance" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'ai' }" @click="settingsTab = 'ai'">{{ t('settings.ai') }}<span v-if="dirtyByTab.ai" class="sidebar-dirty-dot"></span></button>
+        <button :class="{ active: settingsTab === 'agent' }" @click="settingsTab = 'agent'">{{ t('settings.agent') }}<span v-if="dirtyByTab.agent" class="sidebar-dirty-dot"></span></button>
         <button :class="{ active: settingsTab === 'data' }" @click="settingsTab = 'data'">{{ t('settings.data') }}</button>
         <div class="version-row">
           <button class="version-github-btn" @click="openReleaseUrl('https://github.com/hhelibeb/relwatch')" title="GitHub">
@@ -514,6 +609,7 @@ async function handleImportBackup() {
               :placeholder="t('settings.deepseek_base_url_placeholder')"
               class="setting-input"
             />
+            <span class="setting-note" v-if="resolvedEndpointPreview">{{ t('settings.endpoint_preview', resolvedEndpointPreview) }}</span>
           </label>
           <label class="setting-row setting-row-textarea">
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_prompt') || null">{{ t('settings.deepseek_prompt') }}</span>
@@ -541,6 +637,79 @@ async function handleImportBackup() {
               {{ testingDeepseek ? t('settings.testing') : t('settings.test_connection') }}
             </button>
             <span class="setting-hint">{{ t('settings.test_connection_hint') }}</span>
+          </div>
+          </template>
+        </div>
+        <div v-if="settingsTab === 'agent'" class="settings-form">
+          <div class="setting-section-title">{{ t('agent.section_title') }}</div>
+          <p class="setting-section-desc">{{ t('agent.section_desc') }}</p>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="agentEnabled" />
+            <span class="setting-label">{{ t('agent.enabled_global') }}</span>
+          </label>
+          <template v-if="agentEnabled">
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.type') }}</span>
+            <select v-model="agentType" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+              <option value="pi">{{ t('agent.type_pi') }}</option>
+            </select>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.binary_path') }}</span>
+            <input
+              type="text"
+              v-model="agentBinary"
+              :placeholder="t('agent.binary_path_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.model') }}</span>
+            <input
+              type="text"
+              v-model="agentModel"
+              :placeholder="t('agent.model_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.prompt_suffix') }}</span>
+            <input
+              type="text"
+              v-model="agentPromptSuffix"
+              :placeholder="t('agent.prompt_suffix_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.timeout_seconds') }}</span>
+            <input
+              type="number"
+              v-model.number="agentTimeout"
+              min="1"
+              class="setting-input setting-input-narrow"
+              style="width:calc(8ch * 1.25)"
+            />
+          </label>
+          <div class="setting-row setting-row-skills">
+            <span class="setting-label">{{ t('agent.skill_path') }}</span>
+            <div class="agent-skill-list">
+              <div v-for="(sp, i) in agentSkills" :key="sp" class="agent-skill-item">
+                <span class="agent-skill-path" :title="sp">{{ skillShortName(sp) }}</span>
+                <button type="button" class="agent-skill-remove" :title="t('agent.remove_skill')" @click="removeAgentSkill(i)">
+                  <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+                </button>
+              </div>
+              <div class="agent-skill-add">
+                <input
+                  v-model="newAgentSkill"
+                  class="setting-input"
+                  :placeholder="t('agent.skill_path_placeholder')"
+                  @keydown.enter.prevent="addAgentSkill"
+                />
+                <button type="button" class="btn-secondary" :disabled="!newAgentSkill.trim()" @click="addAgentSkill">{{ t('agent.add_skill') }}</button>
+              </div>
+            </div>
           </div>
           </template>
         </div>
@@ -1002,5 +1171,65 @@ select.setting-input {
 
 .theme-select-option.selected {
   font-weight: 600;
+}
+.setting-row-skills {
+  align-items: flex-start;
+}
+.setting-row-skills .setting-label {
+  padding-top: 8px;
+}
+.agent-skill-list {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.agent-skill-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-subtle);
+}
+.agent-skill-path {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  font-family: var(--mono-font, monospace);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-skill-remove {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.agent-skill-remove:hover {
+  color: #d64545;
+  background: var(--bg-hover);
+}
+.agent-skill-remove svg {
+  width: 12px;
+  height: 12px;
+}
+.agent-skill-add {
+  display: flex;
+  gap: 6px;
+}
+.agent-skill-add .setting-input {
+  flex: 1;
 }
 </style>

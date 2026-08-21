@@ -36,11 +36,6 @@ export const commands = {
 	 */
 	setCredential: (kind: string, value: string) => __TAURI_INVOKE<null>("set_credential", { kind, value }),
 	/**
-	 *  判断 base_url 是否为 DeepSeek 官方域名（供前端保存/测试连接前二次确认，
-	 *  审计建议 #1）。返回 bool，不阻止配置。
-	 */
-	isOfficialDeepseekBaseUrl: (baseUrl: string) => __TAURI_INVOKE<boolean>("is_official_deepseek_base_url", { baseUrl }),
-	/**
 	 *  从登录 WebView 读取 SESSDATA，验证有效后加密存储。
 	 * 
 	 *  - `Ok(true)`：读取并保存成功（前端应关闭登录窗口）
@@ -98,10 +93,72 @@ export const commands = {
 	getUsageStats: (days: number | null) => __TAURI_INVOKE<UsageStatRow[]>("get_usage_stats", { days }),
 	/**  清空全部使用统计。 */
 	clearUsageStats: () => __TAURI_INVOKE<null>("clear_usage_stats"),
+	/**
+	 *  保存全局 Agent 配置。
+	 *  进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
+	 *  spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
+	 *  会回到 /skill: 透传失效，改 model 会静默用旧模型）；下次提交 ensure_started 自动
+	 *  重启并恢复会话。timeout / prompt_suffix / enabled 每次调度重读，无需重启。
+	 */
+	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
+	/**  读取全局 Agent 配置。 */
+	getAgentConfig: () => __TAURI_INVOKE<AgentConfig>("get_agent_config"),
+	/**  读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。 */
+	getAgentWsWidth: () => __TAURI_INVOKE<number>("get_agent_ws_width"),
+	/**  保存 Agent 工作区面板宽度（前端拖窗口右边框调节后写入）。 */
+	saveAgentWsWidth: (width: number) => __TAURI_INVOKE<null>("save_agent_ws_width", { width }),
+	/**
+	 *  查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
+	 *  惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
+	 */
+	getAgentAvailableModels: () => __TAURI_INVOKE<AgentModelsInfo>("get_agent_available_models"),
+	/**
+	 *  工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
+	 * 
+	 *  - Agent 未启用、skill 未配置、实体无效时拒绝；
+	 *  - 会话文件已存在（历史提交）则复用，实现多轮继续；
+	 *  - 实际执行在后台任务完成，终态经 `AgentRunFinished` 事件推送。
+	 */
+	runAgentJob: (input: AgentJobInput) => __TAURI_INVOKE<number>("run_agent_job", { input }),
+	/**  查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。 */
+	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRunSummary[]>("list_agent_runs", { sessionKey, limit }),
+	/**
+	 *  查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
+	 *  「排队中」提示的数据源：调度器全局单并发（Semaphore::new(1)），
+	 *  本会话 pending 说明有其他 run 占用执行位，前端据此提示「其他会话执行中」。
+	 */
+	getAgentQueueStatus: (sessionKey: string) => __TAURI_INVOKE<AgentQueueStatus>("get_agent_queue_status", { sessionKey }),
+	/**
+	 *  读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
+	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
+	 */
+	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage[]>("list_agent_messages", { sessionKey }),
+	/**
+	 *  取消一次正在运行（或排队中）的 Agent 提交。
+	 *  「停止」= 向 RPC 常驻进程发 `abort`（不杀进程）：会话上下文保留在进程内存
+	 *  与 JSONL 文件，继续对话直接再提交即可，无需恢复流程。
+	 *  终态由调度器统一写入（cancelled），本命令不直接写库，避免竞态覆盖。
+	 */
+	cancelAgentRun: (runId: number) => __TAURI_INVOKE<null>("cancel_agent_run", { runId }),
+	/**
+	 *  删除一个工作区会话：移除会话文件与全部运行记录。
+	 * 
+	 *  若该会话存在活跃 run（pending / running），先取消（停止）再删除：
+	 *  正在运行的 pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后
+	 *  静默丢弃——用户直觉是「删除=停止」，因此删除即停止，避免静默丢产出。
+	 *  前端在确认对话框中提示「正在运行，删除将同时停止」。
+	 */
+	deleteAgentSession: (sessionKey: string) => __TAURI_INVOKE<null>("delete_agent_session", { sessionKey }),
+	/**  返回在终端恢复该次会话的命令字符串（供复制）。 */
+	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),
+	/**  在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。 */
+	openAgentSession: (runId: number) => __TAURI_INVOKE<null>("open_agent_session", { runId }),
 };
 
 /** Events */
 export const events = {
+	agentRpcStream: makeEvent<AgentRpcStream>("agent-rpc-stream"),
+	agentRunFinished: makeEvent<AgentRunFinished>("agent-run-finished"),
 	navigate: makeEvent<Navigate>("navigate"),
 	pollCompleted: makeEvent<PollCompleted>("poll-completed"),
 	releaseStateChanged: makeEvent<ReleaseStateChanged>("release-state-changed"),
@@ -109,6 +166,142 @@ export const events = {
 };
 
 /* Types */
+/**  一条消息中的内容块（前端按 kind 渲染）。 */
+export type AgentChatBlock = 
+/**  普通文本（用户提问 / 助手回复 / 自定义消息）。 */
+{ kind: "text"; text: string } | 
+/**  思考过程（assistant thinking 块，默认折叠展示）。 */
+{ kind: "thinking"; text: string } | 
+/**  工具调用（assistant toolCall 块，默认折叠展示参数）。 */
+{ kind: "toolCall"; id: string; name: string; args: string } | 
+/**  工具结果（toolResult 消息，默认折叠展示输出）。 */
+{ kind: "toolResult"; id: string; tool_name: string; text: string; is_error: boolean } | 
+/**  pi 的 bash 执行消息（命令 + 输出 + 退出码）。 */
+{ kind: "bash"; command: string; output: string; exit_code: number | null; truncated: boolean };
+
+/**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
+export type AgentChatMessage = {
+	/**  user | assistant | tool | bash | custom */
+	role: string,
+	blocks: AgentChatBlock[],
+	/**  ISO 时间戳（entry 级别，非 message 内嵌）。 */
+	timestamp: string,
+	/**  生成该消息的模型（仅 assistant）。 */
+	model: string | null,
+};
+
+/**  全局 Agent 配置（设置页「Agent」分区读写）。 */
+export type AgentConfig = {
+	/**  总开关：关闭时唤起按钮隐藏，运行命令拒绝执行。 */
+	enabled: boolean,
+	/**  Agent 类型（"pi" = 本地 pi CLI；新类型在 agent::executor_for 登记）。 */
+	agent_type: string,
+	/**  Agent 可执行文件显式路径（None = 按类型自动探测，如 where/which pi）。 */
+	binary: string | null,
+	/**  模型（None = 该 Agent 默认模型）。 */
+	model: string | null,
+	/**  追加在每次提交 prompt 末尾的固定后缀（如"请输出中文"）。 */
+	prompt_suffix: string | null,
+	/**  子进程超时秒数（超时 kill）。 */
+	timeout_seconds: number,
+	/**  全局 skill 备选列表（`@` 菜单数据源；运行前校验存在性）。 */
+	skills: string[],
+};
+
+/**  一次工作区提交引用的实体（拖拽 / `[[]]` 引用统一入口）。 */
+export type AgentEntityRef = {
+	/**  "source" | "release" */
+	kind: string,
+	id: number,
+};
+
+/**  工作区提交的完整输入。 */
+export type AgentJobInput = {
+	/**  工作区会话标识（前端 UUID）。同会话多次提交共享 pi 会话文件（多轮继续）。 */
+	session_key: string,
+	/**  本次提交引用的实体（拖拽 / `[[]]` 解析结果）。 */
+	entities: AgentEntityRef[],
+	/**  本次提交使用的 skill 路径（`@` 选择；None = 全局列表首个）。 */
+	skill_path: string | null,
+	/**  用户输入文本（引用已解析剥离）。 */
+	instruction: string,
+	/**  本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。 */
+	model: AgentModelRef | null,
+};
+
+/**
+ *  一次提交显式选择的 pi 模型引用（provider + modelId，`set_model` 精确匹配用）。
+ *  `agent_runs.model` 列以 JSON 存储；None = 跟随 pi 当前/默认模型（不发送 set_model）。
+ */
+export type AgentModelRef = {
+	/**  pi 模型提供方（如 "anthropic" / "opencode-go"）。 */
+	provider: string,
+	/**
+	 *  模型 id（如 "deepseek-v4-flash"；注意 id 可能自带 provider 前缀如 "cline-pass/..."，
+	 *  因此必须拆 provider/modelId 两字段，不能用 `provider/id` 拼接做键）。
+	 */
+	model_id: string,
+};
+
+/**  工作区可选模型信息：pi 当前可用模型列表 + 当前激活模型（「默认」选项实际落点）。 */
+export type AgentModelsInfo = {
+	/**  scope model：pi 已配置鉴权、可直接使用的模型列表。 */
+	models: RpcAvailableModel[],
+	/**  pi 进程当前激活模型（None = 无模型）。「默认」选项将使用该模型。 */
+	current: RpcAvailableModel | null,
+};
+
+/**  全局 Agent 队列状态（「排队中」提示的数据源）。 */
+export type AgentQueueStatus = {
+	/**  本会话最新 pending run 的全局队列位置（1 = 下一个执行；无 pending → None）。 */
+	position: number | null,
+	/**  是否存在其他会话的 running run（执行位被占用）。 */
+	other_running: boolean,
+	/**  其他会话 running run 的 session_key（前端可映射为会话标题）。 */
+	running_sessions: string[],
+};
+
+/**
+ *  pi RPC 事件流实时转发（打字机文本 / 工具状态 / 流式 bash 输出）。
+ *  `event` 为 pi RPC 协议的原始事件 JSON 序列化字符串（前端 JSON.parse 还原）。
+ */
+export type AgentRpcStream = {
+	session_key: string,
+	run_id: number,
+	event: string,
+};
+
+/**  一次 Agent 提交运行结束（成功/失败/超时/取消），前端据此刷新工作区记录。 */
+export type AgentRunFinished = {
+	run_id: number,
+	/**  所属工作区会话标识（前端按 session_key 过滤刷新）。 */
+	session_key: string,
+	/**  success | failed | timeout | cancelled */
+	status: string,
+	/**  失败/超时的人类可读原因（成功时 null）。 */
+	message: string | null,
+};
+
+/**
+ *  一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
+ *  stdout 存的是模型完整输出，列表接口最多拉 100 条，全列返回会拖慢查询与序列化。
+ */
+export type AgentRunSummary = {
+	id: number,
+	session_key: string,
+	skill_path: string | null,
+	entities: string,
+	instruction: string,
+	model: string | null,
+	session_path: string | null,
+	status: string,
+	exit_code: number | null,
+	error: string | null,
+	started_at: string | null,
+	finished_at: string | null,
+	created_at: string,
+};
+
 /**
  *  设置读写共用同一结构：get_settings 返回它，update_settings 直接接收它。
  *  前端 payload 与后端结构字段一一对应（snake_case），
@@ -194,6 +387,18 @@ export type ReleaseInfo = {
 
 /**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id。 */
 export type ReleaseStateChanged = number;
+
+/**
+ *  pi 可选模型（scope model：provider 已配置鉴权、可直接使用）。
+ *  来自 RPC `get_available_models` / `get_state` 返回的 Model JSON，仅提取前端需要的字段。
+ *  注意 id 可能自带 provider 前缀（如 `cline-pass/deepseek-v4-flash`），
+ *  因此 `set_model` 必须用 provider + modelId 双字段精确匹配。
+ */
+export type RpcAvailableModel = {
+	provider: string,
+	id: string,
+	name?: string | null,
+};
 
 export type Source = {
 	id: number,

@@ -2,7 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
@@ -18,8 +18,13 @@ const props = defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
+const agentEnabledRef = inject(AgentEnabledKey, ref(false))
+const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
+// 工作区打开状态：拖拽落点存在时才启用卡片拖拽，否则恢复文本选择（拖动选字不被拖拽劫持）
+const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
 
 const aiEnabled = computed(() => aiEnabledRef.value)
+const agentEnabled = computed(() => agentEnabledRef.value)
 
 const snoozeMinutes = 24 * 60
 const isUpdating = ref(false)
@@ -126,6 +131,12 @@ const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(nu
 // 「翻译」选项仅在：有原文、无译文、非 youtube 源、AI 已启用 时出现
 const canTranslate = computed(() => canTranslateRelease(props.release, aiEnabled.value))
 // 使用 computed 保证语言切换后右键菜单 label 实时更新
+// 「发送到 Agent」：Agent 启用时唤起工作区并预置当前版本引用
+function sendToAgentItem(): ContextMenuItem | null {
+  if (!agentEnabled.value) return null
+  return { id: 'sendToAgent', label: t('agent.send_to') }
+}
+
 const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = []
   if (canOpenDetail.value) {
@@ -135,14 +146,21 @@ const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   if (canTranslate.value) {
     items.push({ id: 'translate', label: t('context.translate') })
   }
+  const agentItem = sendToAgentItem()
+  if (agentItem) items.push(agentItem)
   return items
 })
 
-const releaseMenuItems = computed<ContextMenuItem[]>(() => [
-  { id: 'openLink', label: t('context.open') },
-  { id: 'copyLink', label: t('context.copy_link') },
-  { id: 'deleteRelease', label: t('context.delete_release') },
-])
+const releaseMenuItems = computed<ContextMenuItem[]>(() => {
+  const items: ContextMenuItem[] = [
+    { id: 'openLink', label: t('context.open') },
+    { id: 'copyLink', label: t('context.copy_link') },
+  ]
+  const agentItem = sendToAgentItem()
+  if (agentItem) items.push(agentItem)
+  items.push({ id: 'deleteRelease', label: t('context.delete_release') })
+  return items
+})
 
 function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
   if (!text) return
@@ -164,6 +182,8 @@ function handleSummaryMenuAction(actionId: string) {
     handleCopySummary()
   } else if (actionId === 'translate') {
     handleTranslateRelease()
+  } else if (actionId === 'sendToAgent') {
+    handleSendToAgent()
   }
 }
 
@@ -184,14 +204,31 @@ async function handleDeleteRelease() {
   }
 }
 
-function handleReleaseMenuAction(actionId: string) {
+async function handleReleaseMenuAction(actionId: string) {
   if (actionId === 'openLink') {
     handleOpenLink()
   } else if (actionId === 'copyLink') {
     handleCopyLink()
+  } else if (actionId === 'sendToAgent') {
+    handleSendToAgent()
   } else if (actionId === 'deleteRelease') {
     handleDeleteRelease()
   }
+}
+
+// ---- “发送到 Agent”：唤起工作区并预置当前版本引用 ----
+function handleSendToAgent() {
+  closeMenus()
+  track('release.send_agent')
+  openAgentWorkspace({ entities: [{ kind: 'release', id: props.release.id }] })
+}
+
+// ---- 拖拽：把版本作为实体拖入 Agent 工作区 ----
+function handleDragStart(e: DragEvent) {
+  if (!agentEnabled.value || !agentPanelOpen.value) return
+  const data = JSON.stringify({ kind: 'release', id: props.release.id })
+  e.dataTransfer?.setData('application/x-relwatch-entity', data)
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
 }
 onMounted(() => {
   registerCloser(closeMenus)
@@ -398,7 +435,9 @@ const youtubeViewTitle = computed(() =>
 
 <template>
   <div class="release-item"
-    :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]">
+    :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]"
+    :draggable="agentEnabled && agentPanelOpen"
+    @dragstart="handleDragStart">
     <div class="release-header">
       <div class="release-heading">
         <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>

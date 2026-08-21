@@ -155,6 +155,18 @@ body {
   background: var(--primary-soft-border);
 }
 
+/* ── 分隔线拖拽中：全局禁用文本选择 + 保持 col-resize 光标 ── */
+body.agent-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.agent-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
 /* ── 细滚动条 ─────────────────────────────────── */
 html {
   scrollbar-width: thin;
@@ -573,7 +585,44 @@ html {
   color: var(--primary);
 }
 
-/* ── 工具条行（ReleaseSearchBar / LogTab 共享） ────── */
+/* ── 工具条行（ReleaseSearchBar / LogTab 共享） ──────
+ * Agent 工具栏按钮：icon-only（机器人 + 展开/收回箭头），
+ * 与左侧筛选下拉组（filter-trigger）同 padding/border/字号，视觉等高。 */
+.release-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.release-agent-btn:hover {
+  background: var(--bg-subtle);
+  border-color: var(--border-strong);
+}
+/* 展开态：与工作区激活项同源的 accent 高亮，提示面板当前已打开 */
+.release-agent-btn.open {
+  background: rgba(46, 111, 208, 0.1);
+  border-color: rgba(46, 111, 208, 0.4);
+}
+.release-agent-btn-icon {
+  width: 14px;
+  height: 14px;
+}
+.release-agent-btn-arrow {
+  width: 10px;
+  height: 10px;
+  color: var(--text-muted);
+}
+.release-agent-btn.open .release-agent-btn-arrow {
+  color: var(--primary, #2e6fd0);
+}
 .log-search-row {
   position: sticky;
   top: 0;

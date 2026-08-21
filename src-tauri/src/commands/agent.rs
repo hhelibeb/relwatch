@@ -1,0 +1,508 @@
+//! Agent 工作区命令：全局配置读写、工作区提交运行、运行记录查询、会话恢复。
+//!
+//! 交互模型：用户在版本列表 / 监控源唤起工作区（右侧面板），通过拖拽 / `[[]]`
+//! 引用实体（source / release），`@` 选择全局 skill，提交后后台运行 pi 无头进程；
+//! 同一会话（session_key）的后续提交复用 pi 会话文件实现多轮继续。
+//! 结束状态经 `AgentRunFinished` 事件推送前端刷新。
+
+use crate::agent as agent_runner;
+use crate::agent_session::{self, AgentChatMessage};
+use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentModelRef};
+use crate::db::logs;
+use crate::types::AppState;
+use serde::{Deserialize, Serialize};
+use specta::Type;
+
+/// 工作区会话文件目录（RelWatch 数据目录下）。
+fn agent_sessions_dir() -> std::path::PathBuf {
+    crate::db::init::app_data_dir().join("agent-sessions")
+}
+
+/// 工作区会话文件路径：`agent-sessions/ws-<session_key>.jsonl`。
+/// 同一会话的多次提交共享该文件，pi `--session <path>` 存在即继续。
+fn session_path_for_key(session_key: &str) -> std::path::PathBuf {
+    agent_sessions_dir().join(format!("ws-{}.jsonl", session_key))
+}
+
+/// 校验工作区会话 key：仅允许 ASCII 字母数字 / 短横线 / 下划线，长度 1..=128。
+///
+/// 会话 key 会被直接拼入会话文件路径（`agent-sessions/ws-<key>.jsonl`），
+/// 若不限制字符集，`..` / 路径分隔符等可造成路径穿越（任意 .jsonl 文件
+/// 删除 / 读取）。前端用 `crypto.randomUUID()`（UUID v4）天然满足白名单。
+fn is_valid_session_key(key: &str) -> bool {
+    let k = key.trim();
+    !k.is_empty()
+        && k.chars().count() <= 128
+        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// 校验 DB 中固化的会话文件路径仍位于 agent-sessions 目录内
+/// （防御历史脏数据 / DB 被篡改导致的路径穿越）。
+/// 用 strip_prefix + 分隔符边界校验，避免 `agent-sessions2/evil` 这类前缀穿透。
+fn is_safe_session_path(path: &str) -> bool {
+    let dir = agent_sessions_dir();
+    let norm = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+    let p = norm(std::path::Path::new(path));
+    let d = norm(&dir);
+    p.strip_prefix(&d)
+        .map(|rest| rest.is_empty() || rest.starts_with('/'))
+        .unwrap_or(false)
+}
+
+/// 读取全局 Agent 配置。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_config(state: tauri::State<'_, AppState>) -> Result<AgentConfig, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::load_agent_config(&conn)
+}
+
+/// 保存全局 Agent 配置。
+/// 进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
+/// spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
+/// 会回到 /skill: 透传失效，改 model 会静默用旧模型）；下次提交 ensure_started 自动
+/// 重启并恢复会话。timeout / prompt_suffix / enabled 每次调度重读，无需重启。
+#[tauri::command]
+#[specta::specta]
+#[allow(clippy::needless_pass_by_value)]
+pub async fn save_agent_config(
+    state: tauri::State<'_, AppState>,
+    config: AgentConfig,
+) -> Result<(), String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let old = agent::load_agent_config(&conn)?;
+    agent::save_agent_config(&conn, &config)?;
+    logs::write_log_key(
+        &conn,
+        "INFO",
+        "agent.config_saved",
+        &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
+    );
+    if agent_process_level_changed(&old, &config) {
+        log::info!("agent config process-level fields changed, restarting RPC process");
+        state.agent_rpc.kill_now().await;
+    }
+    Ok(())
+}
+
+/// 进程级配置字段是否变化（变化需重启常驻进程生效）。
+fn agent_process_level_changed(a: &AgentConfig, b: &AgentConfig) -> bool {
+    a.agent_type != b.agent_type
+        || a.binary != b.binary
+        || a.model != b.model
+        || a.skills != b.skills
+}
+
+/// 读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_ws_width(state: tauri::State<'_, AppState>) -> Result<i64, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::load_agent_ws_width(&conn)
+}
+
+/// 保存 Agent 工作区面板宽度（前端拖窗口右边框调节后写入）。
+#[tauri::command]
+#[specta::specta]
+pub fn save_agent_ws_width(
+    state: tauri::State<'_, AppState>,
+    width: i64,
+) -> Result<(), String> {
+    // 防御：面板宽度只允许合理范围（1..=2000 逻辑 px）
+    if !(1..=2000).contains(&width) {
+        return Err("err.agent.ws_width_range".to_string());
+    }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::save_agent_ws_width(&conn, width)
+}
+
+/// 工作区提交的完整输入。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentJobInput {
+    /// 工作区会话标识（前端 UUID）。同会话多次提交共享 pi 会话文件（多轮继续）。
+    pub session_key: String,
+    /// 本次提交引用的实体（拖拽 / `[[]]` 解析结果）。
+    pub entities: Vec<AgentEntityRef>,
+    /// 本次提交使用的 skill 路径（`@` 选择；None = 全局列表首个）。
+    pub skill_path: Option<String>,
+    /// 用户输入文本（引用已解析剥离）。
+    pub instruction: String,
+    /// 本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。
+    pub model: Option<AgentModelRef>,
+}
+
+/// 工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
+///
+/// - Agent 未启用、skill 未配置、实体无效时拒绝；
+/// - 会话文件已存在（历史提交）则复用，实现多轮继续；
+/// - 实际执行在后台任务完成，终态经 `AgentRunFinished` 事件推送。
+#[tauri::command]
+#[specta::specta]
+pub async fn run_agent_job(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    input: AgentJobInput,
+) -> Result<i64, String> {
+    let session_key = input.session_key.trim().to_string();
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let instruction = input.instruction.trim().to_string();
+    if instruction.is_empty() && input.entities.is_empty() {
+        return Err("err.agent.empty_job".to_string());
+    }
+    // 实体去重 + 存在性校验（引用解析后 id 必须有效）
+    let mut entities: Vec<AgentEntityRef> = Vec::new();
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let config = agent::load_agent_config(&conn)?;
+    if !config.enabled {
+        return Err("err.agent.disabled".to_string());
+    }
+    for r in &input.entities {
+        if entities.iter().any(|e| e.kind == r.kind && e.id == r.id) {
+            continue;
+        }
+        let exists = match r.kind.as_str() {
+            // 注意：get_source 返回 Result<Option<_>>，已删除的源是 Ok(None)，
+            // 必须用 is_some() 判定存在（is_ok() 会把已删除实体误判为存在）
+            "source" => crate::db::sources::get_source(&conn, r.id)?.is_some(),
+            "release" => crate::db::releases::get_release(&conn, r.id)?.is_some(),
+            _ => false,
+        };
+        if !exists {
+            return Err("err.agent.entity_missing".to_string());
+        }
+        entities.push(r.clone());
+    }
+    // skill：指定时必须在全局列表（`@` 菜单数据源即全局列表）
+    let skill_path = match input.skill_path.as_deref().map(|s| s.trim().to_string()) {
+        Some(p) if !p.is_empty() => {
+            if !config.skills.contains(&p) {
+                return Err("err.agent.skill_not_configured".to_string());
+            }
+            Some(p)
+        }
+        _ => None,
+    };
+
+    // 会话文件：历史提交已有则复用（pi --session 继续），否则新建。
+    // 历史路径须通过目录前缀校验，防脏数据路径穿越。
+    let session_path = match agent::get_session_path(&conn, &session_key)? {
+        Some(p) if is_safe_session_path(&p) => Some(p),
+        _ => {
+            let path = session_path_for_key(&session_key);
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            Some(path.to_string_lossy().to_string())
+        }
+    };
+
+    let model_json: Option<String> = input
+        .model
+        .as_ref()
+        .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
+        .transpose()?;
+
+    let run_id = agent::create_run(
+        &conn,
+        &session_key,
+        skill_path.as_deref(),
+        &entities,
+        &instruction,
+        model_json.as_deref(),
+        session_path.as_deref(),
+    )?;
+
+    let ctx = agent_runner::dispatch_ctx_from_app(&app);
+    tauri::async_runtime::spawn(async move {
+        agent_runner::dispatch_run(&ctx, run_id).await;
+    });
+    Ok(run_id)
+}
+
+/// 工作区可选模型信息：pi 当前可用模型列表 + 当前激活模型（「默认」选项实际落点）。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentModelsInfo {
+    /// scope model：pi 已配置鉴权、可直接使用的模型列表。
+    pub models: Vec<crate::agent_rpc::RpcAvailableModel>,
+    /// pi 进程当前激活模型（None = 无模型）。「默认」选项将使用该模型。
+    pub current: Option<crate::agent_rpc::RpcAvailableModel>,
+}
+
+/// 查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
+/// 惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
+#[tauri::command]
+#[specta::specta]
+pub async fn get_agent_available_models(
+    state: tauri::State<'_, AppState>,
+) -> Result<AgentModelsInfo, String> {
+    // 先确认 Agent 类型受支持（模型枚举/切换目前仅 pi 支持）
+    let config = {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        agent::load_agent_config(&conn)?
+    };
+    crate::agent_rpc::ensure_supported_type(&config)?;
+    let models = state.agent_rpc.get_available_models().await?;
+    // 模型下拉只展示 pi 的 scoped-models（settings.json enabledModels 解析的模型集合）
+    let scoped = crate::agent_rpc::read_scoped_model_patterns();
+    let models = crate::agent_rpc::filter_scoped_models(models, &scoped);
+    let current = state.agent_rpc.get_current_model().await?;
+    Ok(AgentModelsInfo { models, current })
+}
+
+/// 查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。
+#[tauri::command]
+#[specta::specta]
+pub fn list_agent_runs(
+    state: tauri::State<'_, AppState>,
+    session_key: String,
+    limit: Option<i64>,
+) -> Result<Vec<agent::AgentRunSummary>, String> {
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let limit = limit.unwrap_or(20).clamp(1, 100);
+    agent::list_run_summaries(&conn, &session_key, limit).map_err(|e| e.to_string())
+}
+
+/// 查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
+/// 「排队中」提示的数据源：调度器全局单并发（Semaphore::new(1)），
+/// 本会话 pending 说明有其他 run 占用执行位，前端据此提示「其他会话执行中」。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_queue_status(
+    state: tauri::State<'_, AppState>,
+    session_key: String,
+) -> Result<agent::AgentQueueStatus, String> {
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::agent_queue_status(&conn, &session_key).map_err(|e| e.to_string())
+}
+
+/// 读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
+/// 会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
+#[tauri::command]
+#[specta::specta]
+pub fn list_agent_messages(session_key: String) -> Result<Vec<AgentChatMessage>, String> {
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let path = session_path_for_key(&session_key);
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    agent_session::parse_session_file(&path)
+}
+
+/// 取消一次正在运行（或排队中）的 Agent 提交。
+/// 「停止」= 向 RPC 常驻进程发 `abort`（不杀进程）：会话上下文保留在进程内存
+/// 与 JSONL 文件，继续对话直接再提交即可，无需恢复流程。
+/// 终态由调度器统一写入（cancelled），本命令不直接写库，避免竞态覆盖。
+#[tauri::command]
+#[specta::specta]
+pub async fn cancel_agent_run(state: tauri::State<'_, AppState>, run_id: i64) -> Result<(), String> {
+    cancel_run_inner(&state, run_id).await
+}
+
+/// 取消一次 run 的核心逻辑（供 cancel_agent_run 与 delete_agent_session 复用）。
+async fn cancel_run_inner(state: &AppState, run_id: i64) -> Result<(), String> {
+    // 仅当 run 仍处于 pending / running 时才取消：
+    // 对已结束的 run 调用 abort 会误伤当前正在跑的另一 run，
+    // 且 run_id 会滞留取消集合无人消费（无界增长）。
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let run = agent::get_run(&conn, run_id)?.ok_or_else(|| "err.agent.run_not_found".to_string())?;
+    if run.status != "pending" && run.status != "running" {
+        return Ok(());
+    }
+    let was_running = run.status == "running";
+    // 必须先插取消标记再 abort：pi 的 abort 命令 = session.abort() → waitForIdle()，
+    // 响应一定晚于 agent_end；dispatch 收到 agent_end(aborted) 即返回并同步消费标记。
+    // 若先 abort 后插标记，dispatch 会在标记插入前完成 → run 误记 failed + aborted。
+    state.agent_cancelled.lock().unwrap().insert(run_id);
+    if was_running {
+        // 仅 running（已拿到 semaphore、占用进程的当前 run）才需要 abort 打断生成；
+        // pending（排队中）尚未占用进程，abort 是进程级的、会误伤当前正在跑的 run。
+        // 插标记与 abort 之间 dispatch 可能已完成（run 结束、下一 run 开始），
+        // 二次校验收窄该窗口：run 已落终态则跳过 abort 并移除滞留标记。
+        let still_running = state
+            .db
+            .get()
+            .ok()
+            .and_then(|conn| agent::get_run(&conn, run_id).ok().flatten())
+            .map(|r| r.status == "running")
+            .unwrap_or(false);
+        if still_running {
+            state.agent_rpc.abort_force().await;
+        }
+    }
+    // 二次校验（收窄 TOCTOU）：run 恰在插入标记前完成（dispatch 已落库终态并消费）
+    // → 移除滞留标记，与 dispatch 出口的 clear_cancel_marker 呼应，防集合无界增长。
+    if let Ok(conn) = state.db.get() {
+        if let Ok(Some(r)) = agent::get_run(&conn, run_id) {
+            if r.status != "pending" && r.status != "running" {
+                state.agent_cancelled.lock().unwrap().remove(&run_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 删除一个工作区会话：移除会话文件与全部运行记录。
+///
+/// 若该会话存在活跃 run（pending / running），先取消（停止）再删除：
+/// 正在运行的 pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后
+/// 静默丢弃——用户直觉是「删除=停止」，因此删除即停止，避免静默丢产出。
+/// 前端在确认对话框中提示「正在运行，删除将同时停止」。
+#[tauri::command]
+#[specta::specta]
+pub async fn delete_agent_session(
+    state: tauri::State<'_, AppState>,
+    session_key: String,
+) -> Result<(), String> {
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    // 先取消该会话的活跃 run（若有）：删除 = 停止，防止 pi 继续烧 token
+    // 产出写入已删除记录后静默丢弃。
+    let active_run = agent::list_run_summaries(&conn, &session_key, 50)?
+        .into_iter()
+        .find(|r| r.status == "pending" || r.status == "running");
+    if let Some(run) = active_run {
+        cancel_run_inner(&state, run.id).await?;
+    }
+    let path = session_path_for_key(&session_key);
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| format!("err.agent.delete_session|{}", e))?;
+    }
+    agent::delete_runs_for_session(&conn, &session_key).map_err(|e| e.to_string())
+}
+
+/// 返回在终端恢复该次会话的命令字符串（供复制）。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_session_command(
+    state: tauri::State<'_, AppState>,
+    run_id: i64,
+) -> Result<String, String> {
+    let path = resolve_session_path(&state, run_id)?;
+    let binary = {
+        let conn = state.db.get().map_err(|e| e.to_string())?;
+        let config = agent::load_agent_config(&conn)?;
+        crate::agent_rpc::ensure_supported_type(&config)?;
+        crate::agent_rpc::resolve_agent_binary(&config)?
+    };
+    Ok(format!("\"{}\" --session \"{}\"", binary, path))
+}
+
+/// 在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。
+#[tauri::command]
+#[specta::specta]
+pub fn open_agent_session(
+    state: tauri::State<'_, AppState>,
+    run_id: i64,
+) -> Result<(), String> {
+    let path = resolve_session_path(&state, run_id)?;
+    if !std::path::Path::new(&path).exists() {
+        return Err("err.agent.session_missing".to_string());
+    }
+    let binary = {
+        let conn = state.db.get().map_err(|e| e.to_string())?;
+        let config = agent::load_agent_config(&conn)?;
+        crate::agent_rpc::ensure_supported_type(&config)?;
+        crate::agent_rpc::resolve_agent_binary(&config)?
+    };
+    spawn_terminal(&binary, &path)
+}
+
+/// 校验 run 存在且已落会话，返回会话文件路径。
+fn resolve_session_path(state: &tauri::State<'_, AppState>, run_id: i64) -> Result<String, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let run = agent::get_run(&conn, run_id)?.ok_or_else(|| "err.agent.run_not_found".to_string())?;
+    run.session_path
+        .filter(|p| !p.is_empty())
+        .ok_or_else(|| "err.agent.no_session".to_string())
+}
+
+/// 在新终端窗口中启动 `pi --session <path>`。
+/// Windows 用 cmd start 开新控制台窗口；Unix 探测常见终端模拟器。
+fn spawn_terminal(binary: &str, session_path: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "start", "", binary, "--session", session_path])
+            .spawn()
+            .map_err(|e| format!("err.agent.spawn|{}", e))?;
+        let _ = status;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::process::CommandExt;
+        // 探测常见终端模拟器（按优先级）
+        let terminals = [
+            ("x-terminal-emulator", vec!["-e"]),
+            ("gnome-terminal", vec!["--"]),
+            ("konsole", vec!["-e"]),
+            ("xfce4-terminal", vec!["-e"]),
+        ];
+        for (name, args) in terminals {
+            if std::process::Command::new("which").arg(name).output().map(|o| o.status.success()).unwrap_or(false) {
+                let mut cmd = std::process::Command::new(name);
+                cmd.args(&args);
+                cmd.arg(binary).arg("--session").arg(session_path);
+                cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
+                return Ok(());
+            }
+        }
+        return Err("err.agent.no_terminal".to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_path_uses_sanitized_key() {
+        let p = session_path_for_key("abc-123");
+        assert!(p.ends_with("ws-abc-123.jsonl"));
+    }
+
+    #[test]
+    fn valid_session_key_accepts_uuid_like_keys() {
+        assert!(is_valid_session_key("abc-123"));
+        assert!(is_valid_session_key("f47ac10b-58cc-4372-a567-0e02b2c3d479"));
+        assert!(is_valid_session_key("ws_1"));
+    }
+
+    #[test]
+    fn valid_session_key_rejects_path_traversal() {
+        // 路径穿越 / 非法字符一律拒绝
+        assert!(!is_valid_session_key("..\\..\\evil"));
+        assert!(!is_valid_session_key("../../evil"));
+        assert!(!is_valid_session_key("a/b"));
+        assert!(!is_valid_session_key("a\\b"));
+        assert!(!is_valid_session_key("a b"));
+        assert!(!is_valid_session_key(""));
+        assert!(!is_valid_session_key("   "));
+        // 超长拒绝
+        assert!(!is_valid_session_key(&"x".repeat(129)));
+        // 128 上限内通过
+        assert!(is_valid_session_key(&"x".repeat(128)));
+    }
+
+    #[test]
+    fn safe_session_path_rejects_escape_from_agent_dir() {
+        // 正常路径（agent-sessions 目录内）通过
+        let ok = agent_sessions_dir().join("ws-abc.jsonl");
+        assert!(is_safe_session_path(&ok.to_string_lossy()));
+        // 穿越出目录拒绝
+        assert!(!is_safe_session_path("C:/Windows/evil.jsonl"));
+        assert!(!is_safe_session_path("../evil.jsonl"));
+    }
+}

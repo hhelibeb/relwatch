@@ -86,6 +86,12 @@ pub struct AppState {
     pub db: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     pub next_poll_at: std::sync::Arc<AtomicI64>,
     pub deepseek_semaphore: std::sync::Arc<Semaphore>,
+    /// 无头 Agent 子进程并发上限（Agent 进程较重，限制同时运行数量）。
+    pub agent_semaphore: std::sync::Arc<Semaphore>,
+    /// pi RPC 常驻进程管理器（工作区对话驱动核心）。
+    pub agent_rpc: std::sync::Arc<crate::agent_rpc::RpcManager>,
+    /// 用户请求取消的 run 集合（dispatch 结束写入 cancelled 状态）。
+    pub agent_cancelled: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,
 }
 
 #[derive(Serialize, Type)]
