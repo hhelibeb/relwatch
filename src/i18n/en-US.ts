@@ -415,6 +415,8 @@ export default {
   'agent.binary_path_placeholder': 'Empty = auto-detect (PATH lookup)',
   'agent.model': 'Model',
   'agent.model_placeholder': 'Empty = agent default model',
+  'agent.working_dir': 'Working directory',
+  'agent.working_dir_placeholder': 'Empty = inherit relwatch process directory',
   'agent.prompt_suffix': 'Prompt suffix',
   'agent.prompt_suffix_placeholder': 'Appended to every submission prompt',
   'agent.expand_workspace': 'Open Agent Workspace',
@@ -426,6 +428,7 @@ export default {
   'agent.submit': 'Send',
   'agent.running': 'Running…',
   'agent.stop': 'Stop',
+  'agent.enter_while_running': 'A task is in progress; stop it before submitting',
   'agent.stopping': 'Stopping…',
   'agent.stop_hint': 'Interrupt the current run (already consumed tokens cannot be refunded)',
   'agent.cancelling': 'Stopping…',
@@ -510,6 +513,8 @@ export default {
   'err.agent.rpc_serialize': 'Failed to serialize agent command: {0}',
   'err.agent.rpc_timeout': 'Agent process unresponsive, please retry',
   'err.agent.rpc_write': 'Failed to write command to agent process',
+  'err.agent.end_lost': 'Agent event stream abnormal (terminal event lost), treated as failure',
+  'err.agent.working_dir_not_found': 'Working directory does not exist, please check the path',
   'err.agent.ws_width_range': 'Workspace panel width is out of range',
 
 }

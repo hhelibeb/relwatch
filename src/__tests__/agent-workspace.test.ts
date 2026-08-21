@@ -20,7 +20,7 @@ vi.mock('../api/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/agent')>()
   return {
     ...actual,
-    getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
+    getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, working_dir: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
     listAgentRuns: vi.fn().mockResolvedValue([]),
     listAgentMessages: vi.fn().mockResolvedValue([]),
     getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [] }),
@@ -144,6 +144,7 @@ describe('AgentWorkspace 冒烟', () => {
       agent_type: 'pi',
       binary: null,
       model: null,
+      working_dir: null,
       prompt_suffix: null,
       timeout_seconds: 300,
       skills: [SKILL],

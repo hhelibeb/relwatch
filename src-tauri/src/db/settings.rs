@@ -37,6 +37,7 @@ pub const KEY_AGENT_ENABLED: &str = "agent_enabled";
 pub const KEY_AGENT_TYPE: &str = "agent_type";
 pub const KEY_AGENT_BINARY: &str = "agent_binary";
 pub const KEY_AGENT_MODEL: &str = "agent_model";
+pub const KEY_AGENT_WORKING_DIR: &str = "agent_working_dir";
 pub const KEY_AGENT_PROMPT_SUFFIX: &str = "agent_prompt_suffix";
 pub const KEY_AGENT_TIMEOUT_SECONDS: &str = "agent_timeout_seconds";
 pub const KEY_AGENT_SKILLS: &str = "agent_skills";

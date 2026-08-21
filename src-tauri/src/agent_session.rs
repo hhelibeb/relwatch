@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn parses_linear_conversation() {
-        let content = vec![
+        let content = [
             r#"{"type":"session","version":3,"id":"u1","timestamp":"2025-01-01T00:00:00.000Z","cwd":"/work"}"#.to_string(),
             entry("a", None, user_msg("总结这个版本")),
             entry(
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn branch_takes_leaf_path() {
         // a → b1（主分支）与 a → b2（分支），文件末尾是 b2 → c
-        let content = vec![
+        let content = [
             entry("a", None, user_msg("问题一")),
             entry("b1", Some("a"), assistant_msg(serde_json::json!([{ "type": "text", "text": "回答一" }]))),
             entry("b2", Some("a"), assistant_msg(serde_json::json!([{ "type": "text", "text": "回答二" }]))),

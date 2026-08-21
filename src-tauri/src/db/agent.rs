@@ -16,7 +16,8 @@ use specta::Type;
 use super::settings::{
     get_setting_bool, get_setting_i64, get_setting_str, set_setting,
     KEY_AGENT_BINARY, KEY_AGENT_ENABLED, KEY_AGENT_MODEL, KEY_AGENT_PROMPT_SUFFIX,
-    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_TYPE, KEY_AGENT_WS_WIDTH,
+    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_TYPE, KEY_AGENT_WORKING_DIR,
+    KEY_AGENT_WS_WIDTH,
 };
 
 /// 全局 Agent 配置（设置页「Agent」分区读写）。
@@ -30,6 +31,9 @@ pub struct AgentConfig {
     pub binary: Option<String>,
     /// 模型（None = 该 Agent 默认模型）。
     pub model: Option<String>,
+    /// Agent 进程工作目录（None = 继承 relwatch 进程 cwd；配置后 pi 的 bash 工具
+    /// 默认在该目录运行，避免打包后落在安装目录/项目根）。
+    pub working_dir: Option<String>,
     /// 追加在每次提交 prompt 末尾的固定后缀（如"请输出中文"）。
     pub prompt_suffix: Option<String>,
     /// 子进程超时秒数（超时 kill）。
@@ -45,6 +49,7 @@ impl Default for AgentConfig {
             agent_type: "pi".to_string(),
             binary: None,
             model: None,
+            working_dir: None,
             prompt_suffix: None,
             timeout_seconds: 300,
             skills: Vec::new(),
@@ -87,6 +92,7 @@ pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
         },
         binary: non_empty(get_setting_str(conn, KEY_AGENT_BINARY, "")?),
         model: non_empty(get_setting_str(conn, KEY_AGENT_MODEL, "")?),
+        working_dir: non_empty(get_setting_str(conn, KEY_AGENT_WORKING_DIR, "")?),
         prompt_suffix: non_empty(get_setting_str(conn, KEY_AGENT_PROMPT_SUFFIX, "")?),
         timeout_seconds: get_setting_i64(conn, KEY_AGENT_TIMEOUT_SECONDS, 300)?.max(1),
         skills,
@@ -113,6 +119,7 @@ pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), Str
     set_setting(conn, KEY_AGENT_TYPE, &cfg.agent_type)?;
     set_setting(conn, KEY_AGENT_BINARY, cfg.binary.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_MODEL, cfg.model.as_deref().unwrap_or(""))?;
+    set_setting(conn, KEY_AGENT_WORKING_DIR, cfg.working_dir.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_PROMPT_SUFFIX, cfg.prompt_suffix.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_TIMEOUT_SECONDS, &cfg.timeout_seconds.max(1).to_string())?;
     set_setting(conn, KEY_AGENT_SKILLS, &skills_json)?;
@@ -438,6 +445,7 @@ mod tests {
                 agent_type: "pi".into(),
                 binary: Some("C:/pi.cmd".into()),
                 model: Some("m1".into()),
+                working_dir: None,
                 prompt_suffix: Some("请输出中文".into()),
                 timeout_seconds: 120,
                 skills: vec!["/s1".into(), "/s1".into(), "  /s2  ".into(), "".into()],

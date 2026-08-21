@@ -415,6 +415,8 @@ export default {
   'agent.binary_path_placeholder': '留空 = 自动探测（PATH 中查找）',
   'agent.model': '模型',
   'agent.model_placeholder': '留空 = Agent 默认模型',
+  'agent.working_dir': '工作目录',
+  'agent.working_dir_placeholder': '留空 = 继承 relwatch 进程目录',
   'agent.prompt_suffix': '附加提示词',
   'agent.prompt_suffix_placeholder': '追加在每次提交提示词末尾',
   'agent.expand_workspace': '打开 Agent 工作区',
@@ -426,6 +428,7 @@ export default {
   'agent.submit': '发送',
   'agent.running': '执行中…',
   'agent.stop': '停止',
+  'agent.enter_while_running': '有任务进行中，请先停止再提交',
   'agent.stopping': '停止中…',
   'agent.stop_hint': '中断当前运行（已产生的 token 消耗无法回退）',
   'agent.cancelling': '正在停止…',
@@ -510,6 +513,8 @@ export default {
   'err.agent.rpc_serialize': 'Agent 命令序列化失败: {0}',
   'err.agent.rpc_timeout': 'Agent 进程无响应，请重试',
   'err.agent.rpc_write': '无法向 Agent 进程写入命令',
+  'err.agent.end_lost': 'Agent 事件流异常（终态事件丢失），已按失败处理',
+  'err.agent.working_dir_not_found': '工作目录不存在，请检查路径',
   'err.agent.ws_width_range': '工作区面板宽度超出允许范围',
 
 }

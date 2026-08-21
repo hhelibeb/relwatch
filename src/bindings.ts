@@ -110,6 +110,7 @@ export const commands = {
 	/**
 	 *  查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
 	 *  惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
+	 *  Agent 未启用时直接返回空（不拉起常驻进程，避免无谓资源占用）。
 	 */
 	getAgentAvailableModels: () => __TAURI_INVOKE<AgentModelsInfo>("get_agent_available_models"),
 	/**
@@ -200,6 +201,11 @@ export type AgentConfig = {
 	binary: string | null,
 	/**  模型（None = 该 Agent 默认模型）。 */
 	model: string | null,
+	/**
+	 *  Agent 进程工作目录（None = 继承 relwatch 进程 cwd；配置后 pi 的 bash 工具
+	 *  默认在该目录运行，避免打包后落在安装目录/项目根）。
+	 */
+	working_dir: string | null,
 	/**  追加在每次提交 prompt 末尾的固定后缀（如"请输出中文"）。 */
 	prompt_suffix: string | null,
 	/**  子进程超时秒数（超时 kill）。 */

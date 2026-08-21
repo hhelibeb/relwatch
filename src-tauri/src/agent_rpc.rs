@@ -47,6 +47,10 @@ pub struct RpcManager {
     db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     inner: Mutex<Option<Arc<RpcProcess>>>,
     events: broadcast::Sender<Value>,
+    /// 最近一次 spawn 时读取的 scoped-models 模式快照（None = 尚未 spawn 过）。
+    /// pi settings.json 的 enabledModels 变化不会自动生效（spawn 时经 --models
+    /// 传入一次），检测到与当前不一致时重启进程使新配置生效。
+    spawned_models: Mutex<Option<Vec<String>>>,
 }
 
 impl RpcManager {
@@ -56,6 +60,7 @@ impl RpcManager {
             db_pool,
             inner: Mutex::new(None),
             events: tx,
+            spawned_models: Mutex::new(None),
         }
     }
 
@@ -72,6 +77,20 @@ impl RpcManager {
             .as_ref()
             .map(|p| !p.dead.load(Ordering::SeqCst))
             .unwrap_or(false)
+    }
+
+    /// 是否有正在执行的 run（占用 RPC 进程）。进程级操作（kill 重启 / set_model 回写）
+    /// 的守卫：避免打断正在生成的 run。查询失败时保守返回 true（不执行进程级操作）。
+    pub async fn has_running_run(&self) -> bool {
+        let Ok(conn) = self.db_pool.get() else {
+            return true;
+        };
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE status = 'running')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(true)
     }
 
     /// 确保进程存活：惰性启动或崩溃后重启，并恢复上次绑定的会话。
@@ -116,8 +135,31 @@ impl RpcManager {
         Ok(())
     }
 
+    /// scoped-models 同步：pi settings.json 的 enabledModels 变化时（spawn 后仅启动时
+    /// 经 --models 传入一次）重启常驻进程，使新模型集合生效。首次 spawn 前不动作
+    /// （ensure_started 会按当前配置启动）。
+    /// 有正在执行的 run 时**不重启**（kill 会以 rpc_exited 中断生成）；快照保持旧值，
+    /// 下次检测仍会尝试，直到进程空闲。
+    async fn sync_scoped_models(&self) {
+        let current = read_scoped_model_patterns();
+        let changed = match self.spawned_models.lock().await.as_ref() {
+            None => false, // 尚未 spawn：ensure_started 按当前配置启动即可
+            Some(old) => old != &current,
+        };
+        if changed {
+            if self.has_running_run().await {
+                log::info!("agent scoped-models changed but a run is in progress; deferring restart");
+                return;
+            }
+            log::info!("agent scoped-models changed, restarting RPC process");
+            self.kill_now().await;
+            // 快照保留旧值直到 spawn 成功更新（spawn 失败时下次检测仍会重启重试）
+        }
+    }
+
     /// 枚举 pi 当前可用的模型（scope model：已配置鉴权）。
     pub async fn get_available_models(&self) -> Result<Vec<RpcAvailableModel>, String> {
+        self.sync_scoped_models().await;
         self.ensure_started().await?;
         let guard = self.inner.lock().await;
         let proc = guard.as_ref().ok_or_else(|| "err.agent.rpc_not_started".to_string())?;
@@ -210,18 +252,31 @@ impl RpcManager {
         ensure_supported_type(&config)?;
         let binary = resolve_agent_binary(&config)?;
 
-        let mut cmd = tokio::process::Command::new("cmd");
-        cmd.arg("/C").arg(&binary);
-        // Windows 下 GUI 父进程 spawn 控制台程序默认会分配新控制台窗口（弹出黑框），
-        // 必须显式 CREATE_NO_WINDOW；stdin/stdout 重定向不影响控制台分配。
+        // 平台条件化启动：Windows 经 cmd /C 包裹（npm 全局安装的 pi.cmd 是批处理，
+        // CreateProcess 无法直接执行 .cmd，必须交给 cmd 解释）；Unix 直接 spawn
+        // 二进制（which 探测返回的是可执行文件），不能套 cmd（Unix 无 cmd，ENOENT
+        // 会导致所有提交 err.agent.spawn，Agent 工作区完全不可用）。
         #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        // Unix：pi 作为新进程组首领（setsid 语义），使 kill_process_tree 的负 pid
-        // 能整树击杀（含 pi spawn 的 bash 等子进程），且不误伤 relwatch 自身进程组。
-        #[cfg(unix)]
-        {
-            // tokio::process::Command 自带 process_group（不依赖 std CommandExt trait）
-            cmd.process_group(0);
+        let mut cmd = {
+            let mut c = tokio::process::Command::new("cmd");
+            c.arg("/C").arg(&binary);
+            // Windows 下 GUI 父进程 spawn 控制台程序默认会分配新控制台窗口（弹出黑框），
+            // 必须显式 CREATE_NO_WINDOW；stdin/stdout 重定向不影响控制台分配。
+            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            c
+        };
+        #[cfg(not(windows))]
+        let mut cmd = {
+            let mut c = tokio::process::Command::new(&binary);
+            // Unix：pi 作为新进程组首领（setsid 语义），使 kill_process_tree 的负 pid
+            // 能整树击杀（含 pi spawn 的 bash 等子进程），且不误伤 relwatch 自身进程组。
+            c.process_group(0);
+            c
+        };
+        // 工作目录：全局配置指定时作为 pi 进程 cwd（bash 工具继承，避免默认落在
+        // 安装目录/项目根；空串视为未配置）。
+        if let Some(wd) = config.working_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            cmd.current_dir(wd);
         }
         cmd.args(["--mode", "rpc", "--no-context-files", "--no-approve", "--no-extensions"]);
         for skill in &config.skills {
@@ -237,6 +292,8 @@ impl RpcManager {
         if !scoped_patterns.is_empty() {
             cmd.args(["--models", &scoped_patterns.join(",")]);
         }
+        // 记录本次 spawn 的 scoped-models 快照（sync_scoped_models 检测变化用）
+        *self.spawned_models.lock().await = Some(scoped_patterns);
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());

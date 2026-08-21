@@ -55,8 +55,6 @@ pub struct AgentContext<'a> {
     pub first_turn: bool,
     /// 进程超时秒数。
     pub timeout_seconds: u64,
-    /// 工作目录（None = 继承 relwatch 进程 cwd）。
-    pub working_dir: Option<&'a str>,
     /// RPC 事件流实时转发回调（前端流式渲染；None = 不转发）。
     pub on_stream: Option<&'a (dyn Fn(&serde_json::Value) + Send + Sync)>,
 }
@@ -178,6 +176,9 @@ impl AgentExecutor for RpcExecutor {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout);
         let mut stdout = String::new();
         let mut last_messages: Vec<Value> = Vec::new();
+        // agent_end 事件是否已到达（与 last_messages 分开跟踪：agent_end 即使不带
+        // messages 字段也视为到达，兜底只针对「事件被广播丢帧挤掉」的场景）
+        let mut saw_agent_end = false;
         let mut settled = false;
 
         while !settled {
@@ -190,7 +191,12 @@ impl AgentExecutor for RpcExecutor {
             let received = tokio::time::timeout(remaining, rx.recv()).await;
             let value = match received {
                 Ok(Ok(v)) => v,
-                Ok(Err(RecvError::Lagged(_))) => continue, // 消费慢丢帧：跳过
+                // 消费慢丢帧：跳过旧帧（终态事件 agent_end/agent_settled 在流末尾，
+                // 只要不持续阻塞到超时仍能按序收到；记录告警便于诊断丢帧场景）
+                Ok(Err(RecvError::Lagged(n))) => {
+                    log::warn!("agent rpc event stream lagged, skipped {} events", n);
+                    continue;
+                }
                 Ok(Err(RecvError::Closed)) => return Err("err.agent.rpc_exited".to_string()),
                 Err(_) => {
                     self.rpc.abort_force().await;
@@ -211,6 +217,7 @@ impl AgentExecutor for RpcExecutor {
                     }
                 }
                 Some("agent_end") => {
+                    saw_agent_end = true;
                     if let Some(msgs) = value.get("messages").and_then(|m| m.as_array()) {
                         last_messages = msgs.clone();
                     }
@@ -222,7 +229,15 @@ impl AgentExecutor for RpcExecutor {
                 // 读循环 EOF（进程崩溃 / 被 kill）时广播的合成事件：立即失败返回，
                 // 不再干等 deadline（此前会挂到超时才收敛，前端期间看不到任何进展）
                 Some("rpc_exited") => return Err("err.agent.rpc_exited".to_string()),
-                Some("agent_settled") => settled = true,
+                Some("agent_settled") => {
+                    // 兜底：正常协议 agent_end 必先于 settled 到达。若 agent_end 事件被
+                    // 广播丢帧挤掉（Lagged），last_messages 为空，errorMessage 检测失效——
+                    // 模型错误会被误记 success，按 failed 收敛（宁 failed 不误 success）。
+                    if !saw_agent_end {
+                        return Err("err.agent.end_lost".to_string());
+                    }
+                    settled = true;
+                }
                 _ => {}
             }
         }
@@ -553,10 +568,15 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
             }
         };
         let texts = render_run_entities(&conn, &run);
-        // 会话首轮判定：该会话历史 run 数（含当前 run）<= 1 → 首轮（完整模板）；
-        // 已有历史提交 → 后续轮（精简消息，避免重复注入模板噪音）。
-        let is_first_turn = agent::list_runs(&conn, &run.session_key, 2)
-            .map(|v| v.len() <= 1)
+        // 会话首轮判定：以「会话文件是否已有内容」为准（而非 run 计数）。
+        // 首次提交若失败/被取消（JSONL 无内容），重试时 run 数已 >= 2，按计数
+        // 会被误判为非首轮 → 走精简模板，订阅说明与不可信声明不注入，
+        // 与注释「首轮带完整任务模板」语义不符。文件不存在或为空 → 首轮。
+        let is_first_turn = run
+            .session_path
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .map(|p| std::fs::metadata(p).map(|m| m.len() == 0).unwrap_or(true))
             .unwrap_or(true);
         (config, Some(run), texts, is_first_turn)
     };
@@ -655,7 +675,6 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
             prompt_suffix: config.prompt_suffix.as_deref(),
             first_turn: is_first_turn,
             timeout_seconds: config.timeout_seconds as u64,
-            working_dir: None,
             on_stream: stream_target.as_ref().map(|f| f as &(dyn Fn(&serde_json::Value) + Send + Sync)),
         })
         .await;
@@ -789,6 +808,7 @@ mod tests {
             agent_type: "pi".to_string(),
             binary: None,
             model: None,
+            working_dir: None,
             prompt_suffix: None,
             timeout_seconds: 300,
             skills: vec!["/tmp/skill".to_string()],

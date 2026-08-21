@@ -42,6 +42,7 @@ const agentEnabled = ref(false)
 const agentType = ref('pi')
 const agentBinary = ref('')
 const agentModel = ref('')
+const agentWorkingDir = ref('')
 const agentPromptSuffix = ref('')
 const agentTimeout = ref(300)
 const agentSkills = ref<string[]>([])
@@ -54,6 +55,7 @@ async function loadAgentConfig() {
     agentType.value = cfg.agent_type
     agentBinary.value = cfg.binary ?? ''
     agentModel.value = cfg.model ?? ''
+    agentWorkingDir.value = cfg.working_dir ?? ''
     agentPromptSuffix.value = cfg.prompt_suffix ?? ''
     agentTimeout.value = cfg.timeout_seconds
     agentSkills.value = [...cfg.skills]
@@ -78,6 +80,7 @@ function agentSnapshot(): string {
     type: agentType.value.trim() || 'pi',
     binary: agentBinary.value.trim() || null,
     model: agentModel.value.trim() || null,
+    wd: agentWorkingDir.value.trim() || null,
     suffix: agentPromptSuffix.value.trim() || null,
     timeout: normalizedAgentTimeout(),
     skills: agentSkills.value,
@@ -261,6 +264,7 @@ async function handleSave() {
         agent_type: agentType.value.trim() || 'pi',
         binary: agentBinary.value.trim() || null,
         model: agentModel.value.trim() || null,
+        working_dir: agentWorkingDir.value.trim() || null,
         prompt_suffix: agentPromptSuffix.value.trim() || null,
         timeout_seconds: normalizedAgentTimeout(),
         skills: agentSkills.value,
@@ -669,6 +673,15 @@ async function handleImportBackup() {
               type="text"
               v-model="agentModel"
               :placeholder="t('agent.model_placeholder')"
+              class="setting-input"
+            />
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.working_dir') }}</span>
+            <input
+              type="text"
+              v-model="agentWorkingDir"
+              :placeholder="t('agent.working_dir_placeholder')"
               class="setting-input"
             />
           </label>

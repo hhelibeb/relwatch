@@ -69,6 +69,13 @@ pub async fn save_agent_config(
     state: tauri::State<'_, AppState>,
     config: AgentConfig,
 ) -> Result<(), String> {
+    // 工作目录必须存在：spawn 时作为 pi 进程 cwd，填错路径 spawn 失败且错误
+    // 信息不友好（含 OS error），保存时即拒绝（空串 = 未配置，跳过校验）。
+    if let Some(wd) = config.working_dir.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if !std::path::Path::new(wd).is_dir() {
+            return Err("err.agent.working_dir_not_found".to_string());
+        }
+    }
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let old = agent::load_agent_config(&conn)?;
     agent::save_agent_config(&conn, &config)?;
@@ -90,6 +97,7 @@ fn agent_process_level_changed(a: &AgentConfig, b: &AgentConfig) -> bool {
     a.agent_type != b.agent_type
         || a.binary != b.binary
         || a.model != b.model
+        || a.working_dir != b.working_dir
         || a.skills != b.skills
 }
 
@@ -232,6 +240,7 @@ pub struct AgentModelsInfo {
 
 /// 查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
 /// 惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
+/// Agent 未启用时直接返回空（不拉起常驻进程，避免无谓资源占用）。
 #[tauri::command]
 #[specta::specta]
 pub async fn get_agent_available_models(
@@ -243,11 +252,36 @@ pub async fn get_agent_available_models(
         agent::load_agent_config(&conn)?
     };
     crate::agent_rpc::ensure_supported_type(&config)?;
+    // 未启用：不惰性拉起常驻 pi 进程（打开工作区只耗一次 RPC 枚举）；
+    // 下拉只剩「默认」项，启用后重新打开工作区即恢复。
+    if !config.enabled {
+        return Ok(AgentModelsInfo { models: Vec::new(), current: None });
+    }
     let models = state.agent_rpc.get_available_models().await?;
     // 模型下拉只展示 pi 的 scoped-models（settings.json enabledModels 解析的模型集合）
     let scoped = crate::agent_rpc::read_scoped_model_patterns();
     let models = crate::agent_rpc::filter_scoped_models(models, &scoped);
-    let current = state.agent_rpc.get_current_model().await?;
+    let mut current = state.agent_rpc.get_current_model().await?;
+    // 「默认」落点修复：进程当前模型会被上一个会话的显式选择污染，而用户直觉
+    // 「默认 = 全局配置 model」。全局配置了 model（可解析出 provider/id）且与进程
+    // 当前不一致时，恢复为全局 model（纯 id 无法精确 set_model，保持现状）。
+    if let Some(cfg_m) = config.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let matches = current
+            .as_ref()
+            .map(|c| cfg_m == c.id || cfg_m == format!("{}/{}", c.provider, c.id))
+            .unwrap_or(false);
+        if !matches {
+            if let Some((provider, model_id)) = cfg_m.split_once('/') {
+                // 守卫：有正在执行的 run 时跳过回写——set_model 是进程级状态操作，
+                // 正在生成的 run 可能在 prompt 前刚 set_model(显式选择)，中途切模型
+                // 会污染本次生成。run 结束后下次打开工作区再恢复默认。
+                if !state.agent_rpc.has_running_run().await {
+                    state.agent_rpc.set_model(provider, model_id).await?;
+                    current = state.agent_rpc.get_current_model().await?;
+                }
+            }
+        }
+    }
     Ok(AgentModelsInfo { models, current })
 }
 
@@ -367,12 +401,15 @@ pub async fn delete_agent_session(
         return Err("err.agent.invalid_session".to_string());
     }
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    // 先取消该会话的活跃 run（若有）：删除 = 停止，防止 pi 继续烧 token
-    // 产出写入已删除记录后静默丢弃。
-    let active_run = agent::list_run_summaries(&conn, &session_key, 50)?
+    // 先取消该会话的全部活跃 run（若有）：删除 = 停止，防止 pi 继续烧 token
+    // 产出写入已删除记录后静默丢弃。同一会话可排队多个 run（运行中仍可提交），
+    // 仅取第一条会遗留 pending run：调度执行时重建已删的会话文件、向已删记录
+    // 写终态（静默 no-op）、发事件——「删除=停止」承诺被打破，会话“复活”。
+    let active_runs: Vec<_> = agent::list_run_summaries(&conn, &session_key, 50)?
         .into_iter()
-        .find(|r| r.status == "pending" || r.status == "running");
-    if let Some(run) = active_run {
+        .filter(|r| r.status == "pending" || r.status == "running")
+        .collect();
+    for run in active_runs {
         cancel_run_inner(&state, run.id).await?;
     }
     let path = session_path_for_key(&session_key);
@@ -390,13 +427,22 @@ pub fn get_agent_session_command(
     run_id: i64,
 ) -> Result<String, String> {
     let path = resolve_session_path(&state, run_id)?;
-    let binary = {
+    let (binary, working_dir) = {
         let conn = state.db.get().map_err(|e| e.to_string())?;
         let config = agent::load_agent_config(&conn)?;
         crate::agent_rpc::ensure_supported_type(&config)?;
-        crate::agent_rpc::resolve_agent_binary(&config)?
+        let binary = crate::agent_rpc::resolve_agent_binary(&config)?;
+        (binary, config.working_dir)
     };
-    Ok(format!("\"{}\" --session \"{}\"", binary, path))
+    // 带工作目录前缀：恢复的会话 cwd 与工作区内一致（pi 会话 cwd 固化在 JSONL 里，
+    // 终端启动时先 cd 过去，后续 bash 工具行为才一致）。
+    let wd = working_dir.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let base = format!("\"{}\" --session \"{}\"", binary, path);
+    Ok(match wd {
+        Some(w) if cfg!(windows) => format!("cd /d \"{}\" && {}", w, base),
+        Some(w) => format!("cd \"{}\" && {}", w, base),
+        None => base,
+    })
 }
 
 /// 在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。
@@ -410,13 +456,14 @@ pub fn open_agent_session(
     if !std::path::Path::new(&path).exists() {
         return Err("err.agent.session_missing".to_string());
     }
-    let binary = {
+    let (binary, working_dir) = {
         let conn = state.db.get().map_err(|e| e.to_string())?;
         let config = agent::load_agent_config(&conn)?;
         crate::agent_rpc::ensure_supported_type(&config)?;
-        crate::agent_rpc::resolve_agent_binary(&config)?
+        let binary = crate::agent_rpc::resolve_agent_binary(&config)?;
+        (binary, config.working_dir)
     };
-    spawn_terminal(&binary, &path)
+    spawn_terminal(&binary, &path, working_dir.as_deref())
 }
 
 /// 校验 run 存在且已落会话，返回会话文件路径。
@@ -429,15 +476,19 @@ fn resolve_session_path(state: &tauri::State<'_, AppState>, run_id: i64) -> Resu
 }
 
 /// 在新终端窗口中启动 `pi --session <path>`。
-/// Windows 用 cmd start 开新控制台窗口；Unix 探测常见终端模拟器。
-fn spawn_terminal(binary: &str, session_path: &str) -> Result<(), String> {
+/// Windows 用 cmd start 开新控制台窗口（/D 指定起始目录）；Unix 探测常见终端模拟器。
+/// working_dir：工作区配置的工作目录（None = 不指定，终端用默认 cwd）。
+fn spawn_terminal(binary: &str, session_path: &str, working_dir: Option<&str>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        let status = std::process::Command::new("cmd")
-            .args(["/C", "start", "", binary, "--session", session_path])
-            .spawn()
-            .map_err(|e| format!("err.agent.spawn|{}", e))?;
-        let _ = status;
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.arg("/C").arg("start").arg("");
+        // start 语法：START ["title"] [/D path] ...  —— /D 指定新窗口起始目录
+        if let Some(wd) = working_dir {
+            cmd.arg("/D").arg(wd);
+        }
+        cmd.arg(binary).arg("--session").arg(session_path);
+        cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
         Ok(())
     }
     #[cfg(not(windows))]
@@ -454,6 +505,10 @@ fn spawn_terminal(binary: &str, session_path: &str) -> Result<(), String> {
                 let mut cmd = std::process::Command::new(name);
                 cmd.args(&args);
                 cmd.arg(binary).arg("--session").arg(session_path);
+                // 终端模拟器继承本进程 cwd，其启动的 pi/bash 子进程随之继承
+                if let Some(wd) = working_dir {
+                    cmd.current_dir(wd);
+                }
                 cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
                 return Ok(());
             }

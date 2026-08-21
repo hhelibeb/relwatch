@@ -843,6 +843,12 @@ function handleKeydown(e: KeyboardEvent) {
   }
   if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
     e.preventDefault()
+    // 运行中/排队中/提交中：按钮已变为「停止」或禁用，Enter 若继续提交会与按钮
+    // 语义矛盾（显式「停止」与隐式「排队新 run」并存）。与按钮一致：禁止提交并提示。
+    if (canStop.value || submitting.value) {
+      showToast(t('agent.enter_while_running'))
+      return
+    }
     void handleSubmit()
   }
 }
