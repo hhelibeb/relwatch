@@ -442,8 +442,7 @@ fn spawn_terminal(binary: &str, session_path: &str) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        use std::os::unix::process::CommandExt;
-        // 探测常见终端模拟器（按优先级）
+        // 探测常见终端模拟器（按优先级）；仅调用 Command 标准方法，无需 std CommandExt trait
         let terminals = [
             ("x-terminal-emulator", vec!["-e"]),
             ("gnome-terminal", vec!["--"]),

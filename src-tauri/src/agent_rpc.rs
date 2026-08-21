@@ -220,7 +220,7 @@ impl RpcManager {
         // 能整树击杀（含 pi spawn 的 bash 等子进程），且不误伤 relwatch 自身进程组。
         #[cfg(unix)]
         {
-            use std::os::unix::process::CommandExt;
+            // tokio::process::Command 自带 process_group（不依赖 std CommandExt trait）
             cmd.process_group(0);
         }
         cmd.args(["--mode", "rpc", "--no-context-files", "--no-approve", "--no-extensions"]);
@@ -532,9 +532,12 @@ mod tests {
 
     #[test]
     fn normalize_path_handles_separators_and_case() {
-        assert_eq!(normalize_path(r"C:\Data\Sessions\ws-1.jsonl"), "c:/data/sessions/ws-1.jsonl");
         assert_eq!(normalize_path("/data/ws/"), "/data/ws");
-        assert_eq!(normalize_path(r"E:\a\b"), "e:/a/b");
+        // 大小写归一化仅在 Windows 生效（路径比较在 Windows 大小写不敏感，Unix 区分大小写）
+        if cfg!(windows) {
+            assert_eq!(normalize_path(r"C:\Data\Sessions\ws-1.jsonl"), "c:/data/sessions/ws-1.jsonl");
+            assert_eq!(normalize_path(r"E:\a\b"), "e:/a/b");
+        }
     }
 
     fn model(provider: &str, id: &str, name: Option<&str>) -> RpcAvailableModel {
