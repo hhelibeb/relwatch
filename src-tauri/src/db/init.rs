@@ -87,6 +87,7 @@ const AGENT_RUNS_COLUMNS: &str = "(
             skill_path TEXT,
             entities TEXT NOT NULL DEFAULT '[]',
             instruction TEXT NOT NULL DEFAULT '',
+            model TEXT,
             session_path TEXT,
             status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout', 'cancelled')),
             exit_code INTEGER,
@@ -347,6 +348,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         )?;
     }
 
+    // ── Migration 15: 工作区提交可选模型（agent_runs.model）──
+    // 提交时显式选择的 pi 模型（`{"provider":..,"model_id":..}` JSON），
+    // None = 跟随 pi 当前/默认模型。老库无此列时补列（新库已含于 AGENT_RUNS_COLUMNS）。
+    let has_run_model: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('agent_runs') WHERE name='model'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_run_model {
+        conn.execute_batch("ALTER TABLE agent_runs ADD COLUMN model TEXT;")?;
+    }
+
     Ok(())
 }
 
@@ -432,6 +444,8 @@ mod tests {
         assert!(has_column(&conn, "agent_runs", "session_key"));
         assert!(has_column(&conn, "agent_runs", "entities"));
         assert!(has_column(&conn, "agent_runs", "instruction"));
+        // Migration 15: agent_runs.model（提交可选模型）
+        assert!(has_column(&conn, "agent_runs", "model"));
         assert!(!has_column(&conn, "agent_runs", "binding_id"));
 
         // usage_stats 表（Migration 12：诊断统计）

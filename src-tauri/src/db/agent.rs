@@ -60,6 +60,17 @@ pub struct AgentEntityRef {
     pub id: i64,
 }
 
+/// 一次提交显式选择的 pi 模型引用（provider + modelId，`set_model` 精确匹配用）。
+/// `agent_runs.model` 列以 JSON 存储；None = 跟随 pi 当前/默认模型（不发送 set_model）。
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
+pub struct AgentModelRef {
+    /// pi 模型提供方（如 "anthropic" / "opencode-go"）。
+    pub provider: String,
+    /// 模型 id（如 "deepseek-v4-flash"；注意 id 可能自带 provider 前缀如 "cline-pass/..."，
+    /// 因此必须拆 provider/modelId 两字段，不能用 `provider/id` 拼接做键）。
+    pub model_id: String,
+}
+
 /// 读取全局 Agent 配置（缺省回退默认值）。
 pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
     let skills_raw = get_setting_str(conn, KEY_AGENT_SKILLS, "[]")?;
@@ -135,6 +146,8 @@ pub struct AgentRun {
     pub entities: String,
     /// 用户输入文本（`[[]]` 引用已解析剥离，实体归入 entities 列）。
     pub instruction: String,
+    /// 本次提交显式选择的模型（JSON `{"provider":..,"model_id":..}`；None = 跟随 pi 默认）。
+    pub model: Option<String>,
     /// 本次提交落盘的 pi 会话文件（`pi --session <path>` 恢复/继续）。
     pub session_path: Option<String>,
     /// pending | running | success | failed | timeout。
@@ -156,14 +169,15 @@ pub fn create_run(
     skill_path: Option<&str>,
     entities: &[AgentEntityRef],
     instruction: &str,
+    model: Option<&str>,
     session_path: Option<&str>,
 ) -> Result<i64, String> {
     let now = chrono::Utc::now().to_rfc3339();
     let entities_json = serde_json::to_string(entities).map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO agent_runs (session_key, skill_path, entities, instruction, session_path, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
-        params![session_key, skill_path, entities_json, instruction, session_path, now],
+        "INSERT INTO agent_runs (session_key, skill_path, entities, instruction, model, session_path, status, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+        params![session_key, skill_path, entities_json, instruction, model, session_path, now],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
@@ -215,7 +229,7 @@ pub fn finish_run(
 pub fn get_run(conn: &Connection, run_id: i64) -> Result<Option<AgentRun>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_key, skill_path, entities, instruction, session_path, status, exit_code,
+            "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
                     stdout, stderr, error, started_at, finished_at, created_at
              FROM agent_runs WHERE id = ?1",
         )
@@ -237,6 +251,7 @@ pub struct AgentRunSummary {
     pub skill_path: Option<String>,
     pub entities: String,
     pub instruction: String,
+    pub model: Option<String>,
     pub session_path: Option<String>,
     pub status: String,
     pub exit_code: Option<i64>,
@@ -254,7 +269,7 @@ pub fn list_run_summaries(
 ) -> Result<Vec<AgentRunSummary>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_key, skill_path, entities, instruction, session_path, status, exit_code,
+            "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
                     error, started_at, finished_at, created_at
              FROM agent_runs WHERE session_key = ?1
              ORDER BY id DESC LIMIT ?2",
@@ -268,13 +283,14 @@ pub fn list_run_summaries(
                 skill_path: row.get(2)?,
                 entities: row.get(3)?,
                 instruction: row.get(4)?,
-                session_path: row.get(5)?,
-                status: row.get(6)?,
-                exit_code: row.get(7)?,
-                error: row.get(8)?,
-                started_at: row.get(9)?,
-                finished_at: row.get(10)?,
-                created_at: row.get(11)?,
+                model: row.get(5)?,
+                session_path: row.get(6)?,
+                status: row.get(7)?,
+                exit_code: row.get(8)?,
+                error: row.get(9)?,
+                started_at: row.get(10)?,
+                finished_at: row.get(11)?,
+                created_at: row.get(12)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -285,7 +301,7 @@ pub fn list_run_summaries(
 pub fn list_runs(conn: &Connection, session_key: &str, limit: i64) -> Result<Vec<AgentRun>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, session_key, skill_path, entities, instruction, session_path, status, exit_code,
+            "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
                     stdout, stderr, error, started_at, finished_at, created_at
              FROM agent_runs WHERE session_key = ?1
              ORDER BY id DESC LIMIT ?2",
@@ -385,15 +401,16 @@ fn run_from_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
         skill_path: row.get(2)?,
         entities: row.get(3)?,
         instruction: row.get(4)?,
-        session_path: row.get(5)?,
-        status: row.get(6)?,
-        exit_code: row.get(7)?,
-        stdout: row.get(8)?,
-        stderr: row.get(9)?,
-        error: row.get(10)?,
-        started_at: row.get(11)?,
-        finished_at: row.get(12)?,
-        created_at: row.get(13)?,
+        model: row.get(5)?,
+        session_path: row.get(6)?,
+        status: row.get(7)?,
+        exit_code: row.get(8)?,
+        stdout: row.get(9)?,
+        stderr: row.get(10)?,
+        error: row.get(11)?,
+        started_at: row.get(12)?,
+        finished_at: row.get(13)?,
+        created_at: row.get(14)?,
     })
 }
 
@@ -443,7 +460,7 @@ mod tests {
             AgentEntityRef { kind: "source".into(), id: 1 },
             AgentEntityRef { kind: "release".into(), id: 42 },
         ];
-        let run_id = create_run(&conn, "ws-abc", Some("/tmp/my-skill"), &entities, "帮我总结", None)
+        let run_id = create_run(&conn, "ws-abc", Some("/tmp/my-skill"), &entities, "帮我总结", None, None)
             .unwrap();
 
         let run = get_run(&conn, run_id).unwrap().unwrap();
@@ -466,7 +483,7 @@ mod tests {
         assert!(done.finished_at.is_some());
 
         // 同一会话第二次提交 → 倒序列表 + 会话路径可继续
-        let run2 = create_run(&conn, "ws-abc", None, &[], "继续", Some("C:/data/agent-sessions/ws-abc.jsonl"))
+        let run2 = create_run(&conn, "ws-abc", None, &[], "继续", Some("C:/data/agent-sessions/ws-abc.jsonl"), None)
             .unwrap();
         let runs = list_runs(&conn, "ws-abc", 10).unwrap();
         assert_eq!(runs.len(), 2);
@@ -494,9 +511,9 @@ mod tests {
         assert!(st.running_sessions.is_empty());
 
         // 会话 A 先建 run（running），会话 B 建 pending → B 队列位置 2、other_running
-        let ra = create_run(&conn, "ws-a", None, &[], "任务A", None).unwrap();
+        let ra = create_run(&conn, "ws-a", None, &[], "任务A", None, None).unwrap();
         mark_run_started(&conn, ra).unwrap();
-        let rb = create_run(&conn, "ws-b", None, &[], "任务B", None).unwrap();
+        let rb = create_run(&conn, "ws-b", None, &[], "任务B", None, None).unwrap();
         let st = agent_queue_status(&conn, "ws-b").unwrap();
         assert_eq!(st.position, Some(2));
         assert!(st.other_running);
@@ -508,7 +525,7 @@ mod tests {
         assert!(st.running_sessions.is_empty());
 
         // 第三个会话 pending：位置 3
-        let rc = create_run(&conn, "ws-c", None, &[], "任务C", None).unwrap();
+        let _rc = create_run(&conn, "ws-c", None, &[], "任务C", None, None).unwrap();
         let st = agent_queue_status(&conn, "ws-c").unwrap();
         assert_eq!(st.position, Some(3));
 
@@ -534,7 +551,7 @@ mod tests {
     #[test]
     fn run_serializes_for_specta() {
         let conn = init_memory_db().unwrap();
-        let run_id = create_run(&conn, "ws-x", Some("/s"), &[], "指令", None).unwrap();
+        let run_id = create_run(&conn, "ws-x", Some("/s"), &[], "指令", None, None).unwrap();
         let run = get_run(&conn, run_id).unwrap().unwrap();
         let v = serde_json::to_value(&run).unwrap();
         assert_eq!(v["status"], "pending");

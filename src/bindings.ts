@@ -108,6 +108,11 @@ export const commands = {
 	/**  保存 Agent 工作区面板宽度（前端拖窗口右边框调节后写入）。 */
 	saveAgentWsWidth: (width: number) => __TAURI_INVOKE<null>("save_agent_ws_width", { width }),
 	/**
+	 *  查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
+	 *  惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
+	 */
+	getAgentAvailableModels: () => __TAURI_INVOKE<AgentModelsInfo>("get_agent_available_models"),
+	/**
 	 *  工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
 	 * 
 	 *  - Agent 未启用、skill 未配置、实体无效时拒绝；
@@ -220,6 +225,30 @@ export type AgentJobInput = {
 	skill_path: string | null,
 	/**  用户输入文本（引用已解析剥离）。 */
 	instruction: string,
+	/**  本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。 */
+	model: AgentModelRef | null,
+};
+
+/**
+ *  一次提交显式选择的 pi 模型引用（provider + modelId，`set_model` 精确匹配用）。
+ *  `agent_runs.model` 列以 JSON 存储；None = 跟随 pi 当前/默认模型（不发送 set_model）。
+ */
+export type AgentModelRef = {
+	/**  pi 模型提供方（如 "anthropic" / "opencode-go"）。 */
+	provider: string,
+	/**
+	 *  模型 id（如 "deepseek-v4-flash"；注意 id 可能自带 provider 前缀如 "cline-pass/..."，
+	 *  因此必须拆 provider/modelId 两字段，不能用 `provider/id` 拼接做键）。
+	 */
+	model_id: string,
+};
+
+/**  工作区可选模型信息：pi 当前可用模型列表 + 当前激活模型（「默认」选项实际落点）。 */
+export type AgentModelsInfo = {
+	/**  scope model：pi 已配置鉴权、可直接使用的模型列表。 */
+	models: RpcAvailableModel[],
+	/**  pi 进程当前激活模型（None = 无模型）。「默认」选项将使用该模型。 */
+	current: RpcAvailableModel | null,
 };
 
 /**  全局 Agent 队列状态（「排队中」提示的数据源）。 */
@@ -263,6 +292,7 @@ export type AgentRunSummary = {
 	skill_path: string | null,
 	entities: string,
 	instruction: string,
+	model: string | null,
 	session_path: string | null,
 	status: string,
 	exit_code: number | null,
@@ -357,6 +387,18 @@ export type ReleaseInfo = {
 
 /**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id。 */
 export type ReleaseStateChanged = number;
+
+/**
+ *  pi 可选模型（scope model：provider 已配置鉴权、可直接使用）。
+ *  来自 RPC `get_available_models` / `get_state` 返回的 Model JSON，仅提取前端需要的字段。
+ *  注意 id 可能自带 provider 前缀（如 `cline-pass/deepseek-v4-flash`），
+ *  因此 `set_model` 必须用 provider + modelId 双字段精确匹配。
+ */
+export type RpcAvailableModel = {
+	provider: string,
+	id: string,
+	name?: string | null,
+};
 
 export type Source = {
 	id: number,

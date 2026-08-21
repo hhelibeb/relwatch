@@ -7,7 +7,7 @@
 
 use crate::agent as agent_runner;
 use crate::agent_session::{self, AgentChatMessage};
-use crate::db::agent::{self, AgentConfig, AgentEntityRef};
+use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentModelRef};
 use crate::db::logs;
 use crate::types::AppState;
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,8 @@ pub struct AgentJobInput {
     pub skill_path: Option<String>,
     /// 用户输入文本（引用已解析剥离）。
     pub instruction: String,
+    /// 本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。
+    pub model: Option<AgentModelRef>,
 }
 
 /// 工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
@@ -196,12 +198,19 @@ pub async fn run_agent_job(
         }
     };
 
+    let model_json: Option<String> = input
+        .model
+        .as_ref()
+        .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
+        .transpose()?;
+
     let run_id = agent::create_run(
         &conn,
         &session_key,
         skill_path.as_deref(),
         &entities,
         &instruction,
+        model_json.as_deref(),
         session_path.as_deref(),
     )?;
 
@@ -210,6 +219,36 @@ pub async fn run_agent_job(
         agent_runner::dispatch_run(&ctx, run_id).await;
     });
     Ok(run_id)
+}
+
+/// 工作区可选模型信息：pi 当前可用模型列表 + 当前激活模型（「默认」选项实际落点）。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentModelsInfo {
+    /// scope model：pi 已配置鉴权、可直接使用的模型列表。
+    pub models: Vec<crate::agent_rpc::RpcAvailableModel>,
+    /// pi 进程当前激活模型（None = 无模型）。「默认」选项将使用该模型。
+    pub current: Option<crate::agent_rpc::RpcAvailableModel>,
+}
+
+/// 查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
+/// 惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
+#[tauri::command]
+#[specta::specta]
+pub async fn get_agent_available_models(
+    state: tauri::State<'_, AppState>,
+) -> Result<AgentModelsInfo, String> {
+    // 先确认 Agent 类型受支持（模型枚举/切换目前仅 pi 支持）
+    let config = {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        agent::load_agent_config(&conn)?
+    };
+    crate::agent_rpc::ensure_supported_type(&config)?;
+    let models = state.agent_rpc.get_available_models().await?;
+    // 模型下拉只展示 pi 的 scoped-models（settings.json enabledModels 解析的模型集合）
+    let scoped = crate::agent_rpc::read_scoped_model_patterns();
+    let models = crate::agent_rpc::filter_scoped_models(models, &scoped);
+    let current = state.agent_rpc.get_current_model().await?;
+    Ok(AgentModelsInfo { models, current })
 }
 
 /// 查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。

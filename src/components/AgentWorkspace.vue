@@ -7,6 +7,7 @@ import { events, type AgentRunFinished } from '../bindings'
 import { ShowToastKey, type AgentEntityRefSeed, type AgentWorkspaceSeed } from '../injection-keys'
 import {
   getAgentConfig,
+  getAgentAvailableModels,
   runAgentJob,
   listAgentRuns,
   listAgentMessages,
@@ -16,8 +17,10 @@ import {
   getAgentSessionCommand,
   getAgentQueueStatus,
   type AgentChatMessage,
+  type AgentModelRef,
   type AgentQueueStatus,
   type AgentRunSummary,
+  type RpcAvailableModel,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
 import { getReleases, type ReleaseInfo } from '../api/releases'
@@ -36,6 +39,8 @@ interface SessionMeta {
   key: string
   title: string
   updatedAt: number
+  /** 该会话显式选择的模型（null/缺省 = 跟随 pi 当前/默认模型）。 */
+  model?: AgentModelRef | null
 }
 const SESSIONS_STORAGE_KEY = 'relwatch.agent.sessions.v1'
 // 会话侧栏折叠状态（默认折叠，聊天区全宽；localStorage 持久化）
@@ -86,6 +91,7 @@ function switchSession(key: string) {
   cancelling.value = false
   liveMessages.value = []
   historySnapshot.value = []
+  selectedModel.value = sessions.value.find((s) => s.key === key)?.model ?? null
   void loadChat()
   entities.value = []
   skillPath.value = null
@@ -98,6 +104,7 @@ function startNewSession() {
   entities.value = []
   skillPath.value = null
   instruction.value = ''
+  selectedModel.value = null
   messages.value = []
   runs.value = []
   liveMessages.value = []
@@ -139,6 +146,7 @@ async function handleDeleteSession(key: string) {
       entities.value = []
       skillPath.value = null
       instruction.value = ''
+      selectedModel.value = sessions.value.find((s) => s.key === activeKey.value)?.model ?? null
       await loadChat()
     }
     showToast(t('agent.session_deleted'))
@@ -200,6 +208,12 @@ const entities = ref<AgentEntityRefSeed[]>([])
 const skillPath = ref<string | null>(null)
 const instruction = ref('')
 const submitting = ref(false)
+
+// ── 模型选择：scope model（pi 已配置鉴权可用）+ 当前激活模型（「默认」落点）──
+// selectedModel 按会话记住（存 SessionMeta.model）；null =「默认 - 跟随 pi 当前」。
+const availableModels = ref<RpcAvailableModel[]>([])
+const currentModel = ref<RpcAvailableModel | null>(null)
+const selectedModel = ref<AgentModelRef | null>(null)
 
 // ── 引用 chip 全文悬浮提示（仅文本被截断时显示，跟随鼠标）──
 const chipTooltip = ref<{ x: number; y: number; text: string } | null>(null)
@@ -338,6 +352,8 @@ const showEntityMenu = ref(false)
 const entityQuery = ref('')
 const skillMenuIndex = ref(0)
 const entityMenuIndex = ref(0)
+const showModelMenu = ref(false)
+const modelMenuIndex = ref(0)
 
 let unlistenRunFinished: UnlistenFn | undefined
 let unlistenRpcStream: UnlistenFn | undefined
@@ -435,6 +451,19 @@ async function loadCatalog() {
   } catch {
     // 目录加载失败不阻塞工作区使用（名称映射降级为 #id）
   }
+  // 模型列表独立拉取：失败仅影响模型下拉（只剩「默认」），不影响技能/实体目录
+  await loadModels()
+}
+
+async function loadModels() {
+  try {
+    const info = await getAgentAvailableModels()
+    availableModels.value = info.models
+    currentModel.value = info.current
+  } catch {
+    availableModels.value = []
+    currentModel.value = null
+  }
 }
 
 // ── 轮询：提交后增量拉取消息，直到运行结束事件 ──
@@ -521,18 +550,19 @@ async function handleSubmit() {
       entities: merged,
       skillPath: skillPath.value,
       instruction: cleaned.trim(),
+      model: selectedModel.value,
     })
     submittedRunId.value = runId
     track('agent.submit')
     instruction.value = ''
-    // 会话登记（标题取首次指令前 40 字）
+    // 会话登记（标题取首次指令前 40 字）+ 固化本次模型选择
     const now = Date.now()
     const idx = sessions.value.findIndex((s) => s.key === activeKey.value)
     const title = cleaned.trim() ? [...cleaned.trim()].slice(0, 40).join('') : sessionTitle.value
     if (idx >= 0) {
-      sessions.value[idx] = { ...sessions.value[idx], title, updatedAt: now }
+      sessions.value[idx] = { ...sessions.value[idx], title, updatedAt: now, model: selectedModel.value }
     } else {
-      sessions.value.unshift({ key: activeKey.value, title, updatedAt: now })
+      sessions.value.unshift({ key: activeKey.value, title, model: selectedModel.value, updatedAt: now })
     }
     persistSessions()
     await loadChat()
@@ -639,6 +669,7 @@ function handleInput() {
   const before = el.value.slice(0, el.selectionStart)
   const skillMatch = before.match(SKILL_TRIGGER)
   const entityMatch = before.match(ENTITY_TRIGGER)
+  showModelMenu.value = false
   if (skillMatch && !entityMatch) {
     skillQuery.value = skillMatch[1]
     skillMenuIndex.value = 0
@@ -731,6 +762,70 @@ function clearSkill() {
   skillPath.value = null
 }
 
+// ── 模型下拉 ──
+/** 模型可读名（name 优先，回退 id）。 */
+function modelLabel(m: RpcAvailableModel | AgentModelRef): string {
+  const name = 'name' in m ? (m as RpcAvailableModel).name : undefined
+  const id = 'model_id' in m ? m.model_id : (m as RpcAvailableModel).id
+  return name && name.length > 0 ? name : id
+}
+/** 唯一键（provider + modelId，modelId 可能自带 provider 前缀，故不拼接 id）。 */
+function modelKey(m: RpcAvailableModel | AgentModelRef): string {
+  const id = 'model_id' in m ? m.model_id : (m as RpcAvailableModel).id
+  return `${m.provider}\u0000${id}`
+}
+function isModelSelected(m: RpcAvailableModel): boolean {
+  return selectedModel.value?.provider === m.provider && selectedModel.value.model_id === m.id
+}
+/** 下拉按钮展示：显式选择 → 选中模型名；否则「默认」+ pi 当前模型名。 */
+const activeModelLabel = computed<string>(() => {
+  if (selectedModel.value) return modelLabel(selectedModel.value)
+  return currentModel.value ? modelLabel(currentModel.value) : t('agent.model_default')
+})
+/** 「默认」副标题：当前 pi 实际将用的模型（provider · id）。 */
+const modelDefaultSub = computed<string>(() =>
+  currentModel.value ? `${currentModel.value.provider} · ${currentModel.value.id}` : '',
+)
+
+function toggleModelMenu() {
+  if (showModelMenu.value) {
+    showModelMenu.value = false
+    return
+  }
+  showSkillMenu.value = false
+  showEntityMenu.value = false
+  showModelMenu.value = true
+  modelMenuIndex.value = selectedModel.value ? availableModels.value.findIndex(isModelSelected) + 1 : 0
+}
+
+/** 点菜单及其触发控件之外任意区域 → 收起当前打开的菜单（下拉菜单通用行为）。 */
+function onDocumentPointerDown(e: MouseEvent | PointerEvent) {
+  // 通过捕获期触发，确保在菜单项 @click 之前执行；只判断是否点到了「菜单或触发控件」内部，
+  // 是则交由原逻辑（切换/选择）处理，否则一律收起，实现点击空白区域收起。
+  const t = e.target as EventTarget | null
+  if (!(t instanceof Element)) return
+  if (t.closest('.agent-ws-menu')) return
+  if (t.closest('.agent-ws-model-btn')) return // 模型菜单的触发按钮，交给 toggleModelMenu
+  if (t.closest('.agent-ws-textarea')) return // 技能/实体菜单跟随输入，点击输入框不干扰
+  if (showModelMenu.value) showModelMenu.value = false
+  if (showSkillMenu.value) showSkillMenu.value = false
+  if (showEntityMenu.value) showEntityMenu.value = false
+}
+
+/** 选模型：写入当前会话 meta（按会话记住）。null = 默认（跟随 pi 当前）。 */
+function pickModel(m: RpcAvailableModel | null) {
+  selectedModel.value = m ? { provider: m.provider, model_id: m.id } : null
+  showModelMenu.value = false
+  const now = Date.now()
+  const idx = sessions.value.findIndex((s) => s.key === activeKey.value)
+  if (idx >= 0) {
+    sessions.value[idx] = { ...sessions.value[idx], updatedAt: now, model: selectedModel.value }
+  } else {
+    sessions.value.unshift({ key: activeKey.value, title: sessionTitle.value, model: selectedModel.value, updatedAt: now })
+  }
+  persistSessions()
+}
+
 function pickEntity(kind: 'source' | 'release', id: number) {
   replaceTrigger(`[[${kind}:${id}]] `)
   showEntityMenu.value = false
@@ -742,7 +837,7 @@ function pickEntity(kind: 'source' | 'release', id: number) {
 function handleKeydown(e: KeyboardEvent) {
   // 输入法组合期（中文候选词确认回车）不触发提交/菜单导航
   if (e.isComposing) return
-  if (showSkillMenu.value || showEntityMenu.value) {
+  if (showSkillMenu.value || showEntityMenu.value || showModelMenu.value) {
     handleMenuKeydown(e)
     return
   }
@@ -754,6 +849,30 @@ function handleKeydown(e: KeyboardEvent) {
 
 // ── 菜单键盘导航 ──
 function handleMenuKeydown(e: KeyboardEvent) {
+  if (showModelMenu.value) {
+    const total = 1 + availableModels.value.length
+    if (total > 1) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        modelMenuIndex.value = (modelMenuIndex.value + 1) % total
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        modelMenuIndex.value = (modelMenuIndex.value - 1 + total) % total
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        if (modelMenuIndex.value === 0) {
+          pickModel(null)
+        } else {
+          const m = availableModels.value[modelMenuIndex.value - 1]
+          if (m) pickModel(m)
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault()
+        showModelMenu.value = false
+      }
+    }
+    return
+  }
   if (showSkillMenu.value) {
     const total = filteredSkills.value.length
     if (total === 0) return
@@ -898,6 +1017,8 @@ onMounted(async () => {
   })
   await nextTick()
   textareaRef.value?.focus()
+  // 捕获期监听：点击菜单/触发控件之外的区域即收起打开的下拉菜单
+  document.addEventListener('pointerdown', onDocumentPointerDown, true)
 })
 
 // 面板打开期间 seed 更新（重复点「发送到 Agent」）：追加新实体
@@ -910,6 +1031,7 @@ onUnmounted(() => {
   stopPolling()
   unlistenRunFinished?.()
   unlistenRpcStream?.()
+  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
 })
 
 // 新消息到达时自动滚动（用户接近底部时）
@@ -1097,6 +1219,14 @@ watch(
               @input="handleInput"
               @keydown="handleKeydown"
             ></textarea>
+          </div>
+          <!-- 底部操作行：模型选择（左）+ 发送/停止（右），共占一行 -->
+          <div class="agent-ws-input-actions">
+            <button class="agent-ws-model-btn" :class="{ open: showModelMenu }" :title="t('agent.model_pick')" @click="toggleModelMenu">
+              <svg class="agent-ws-model-icon" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>
+              <span class="agent-ws-model-label">{{ activeModelLabel }}</span>
+              <svg class="agent-ws-model-caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+            </button>
             <button
               class="btn-primary agent-ws-submit"
               :class="{ 'agent-ws-stop': canStop }"
@@ -1106,8 +1236,33 @@ watch(
             >
               {{ canStop ? (cancelling ? t('agent.stopping') : t('agent.stop')) : submitting ? t('agent.running') : t('agent.submit') }}
             </button>
+
+            <!-- 模型选择菜单：定位在操作行上方（bottom:100%），紧贴按钮弹出 -->
+            <div v-if="showModelMenu" class="agent-ws-menu agent-ws-menu-model">
+              <div class="agent-ws-menu-title">{{ t('agent.model_pick') }}</div>
+              <button
+                class="agent-ws-menu-item"
+                :class="{ selected: !selectedModel }"
+                @mouseenter="modelMenuIndex = 0"
+                @click="pickModel(null)"
+              >
+                <span class="agent-ws-menu-main">{{ t('agent.model_default') }}</span>
+                <span v-if="modelDefaultSub" class="agent-ws-menu-sub">{{ modelDefaultSub }}</span>
+              </button>
+              <button
+                v-for="(m, i) in availableModels"
+                :key="modelKey(m)"
+                class="agent-ws-menu-item"
+                :class="{ selected: isModelSelected(m) }"
+                @mouseenter="modelMenuIndex = i + 1"
+                @click="pickModel(m)"
+              >
+                <span class="agent-ws-menu-main">{{ modelLabel(m) }}</span>
+                <span class="agent-ws-menu-sub">{{ m.provider }} · {{ m.id }}</span>
+              </button>
+              <div v-if="availableModels.length === 0" class="agent-ws-menu-empty">{{ t('agent.model_none') }}</div>
+            </div>
           </div>
-          <p class="agent-ws-input-hint">{{ t('agent.input_hint') }}</p>
 
           <!-- @ Skill 菜单 -->
           <div v-if="showSkillMenu" class="agent-ws-menu">
@@ -1914,10 +2069,66 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   background: #c0392b;
   border-color: #c0392b;
 }
-.agent-ws-input-hint {
-  margin: 6px 0 0;
+
+/* 底部操作行：模型选择（左）+ 发送/停止（右），共占一行 */
+.agent-ws-input-actions {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+.agent-ws-model-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 9px;
   font-size: 11px;
-  opacity: 0.55;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.agent-ws-model-btn:hover,
+.agent-ws-model-btn.open {
+  border-color: var(--accent, #2e6fd0);
+  background: rgba(46, 111, 208, 0.08);
+}
+.agent-ws-model-icon {
+  width: 12px;
+  height: 12px;
+  color: var(--accent, #2e6fd0);
+  flex-shrink: 0;
+}
+.agent-ws-model-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-ws-model-caret {
+  width: 11px;
+  height: 11px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.agent-ws-model-btn.open .agent-ws-model-caret {
+  transform: rotate(180deg);
+}
+/* 模型选择菜单：作为 .agent-ws-input-actions 的子元素定位（position:relative 的 parent），
+   bottom:100% 使面板紧贴在操作行（模型按钮）上方弹出，而非输入区顶部；
+   高优先级选择器覆盖 .agent-ws-menu 基类的 footer 定位，不依赖顺序 */
+.agent-ws-menu.agent-ws-menu-model {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: auto;
+  top: auto;
+  width: min(340px, 100%);
 }
 
 /* 引用菜单 */

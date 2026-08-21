@@ -1,8 +1,25 @@
 import { invokeI18nFn } from './client'
 import { commands } from '../bindings'
-import type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentQueueStatus, AgentRunSummary } from '../bindings'
+import type {
+  AgentChatMessage,
+  AgentConfig,
+  AgentEntityRef,
+  AgentModelRef,
+  AgentModelsInfo,
+  AgentQueueStatus,
+  AgentRunSummary,
+} from '../bindings'
 
-export type { AgentChatMessage, AgentConfig, AgentEntityRef, AgentQueueStatus, AgentRunSummary } from '../bindings'
+export type {
+  AgentChatMessage,
+  AgentConfig,
+  AgentEntityRef,
+  AgentModelRef,
+  AgentModelsInfo,
+  AgentQueueStatus,
+  AgentRunSummary,
+  RpcAvailableModel,
+} from '../bindings'
 
 /** 读取全局 Agent 配置。 */
 export async function getAgentConfig(): Promise<AgentConfig> {
@@ -20,6 +37,8 @@ export interface AgentJobInput {
   entities: AgentEntityRef[]
   skillPath: string | null
   instruction: string
+  /** 本次提交显式选择的模型（null = 跟随 pi 当前/默认模型）。 */
+  model: AgentModelRef | null
 }
 
 /** 工作区提交：返回 run_id，终态经 AgentRunFinished 事件推送。 */
@@ -30,8 +49,14 @@ export async function runAgentJob(input: AgentJobInput): Promise<number> {
       entities: input.entities,
       skill_path: input.skillPath,
       instruction: input.instruction,
+      model: input.model,
     }),
   )
+}
+
+/** 查询 pi 当前可用模型（scope model）与当前激活模型（工作区模型下拉数据源）。 */
+export async function getAgentAvailableModels(): Promise<AgentModelsInfo> {
+  return invokeI18nFn(commands.getAgentAvailableModels)
 }
 
 /** 查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段）。 */

@@ -49,6 +49,8 @@ pub struct AgentContext<'a> {
     pub instruction: &'a str,
     /// 追加在 prompt 末尾的固定后缀（全局配置）。
     pub prompt_suffix: Option<&'a str>,
+    /// 本次提交显式选择的模型（None = 跟随 pi 当前/默认模型，不 send set_model）。
+    pub model: Option<&'a crate::db::agent::AgentModelRef>,
     /// 本次提交是否为会话首轮（首轮带完整任务模板；后续轮精简为仅用户指令）。
     pub first_turn: bool,
     /// 进程超时秒数。
@@ -149,6 +151,10 @@ impl AgentExecutor for RpcExecutor {
         }
         // 订阅事件流（必须在 prompt 之前，避免漏事件）
         let mut rx = self.rpc.subscribe();
+        // 显式选择模型：prompt 前切换（run 单并发串行，先 set_model 再 prompt 不会串台）
+        if let Some(m) = ctx.model {
+            self.rpc.set_model(&m.provider, &m.model_id).await?;
+        }
 
         // 组装消息：选了 skill 则带 /skill:<短名> 命令前缀（pi 展开后替换为 skill 内容）
         let base = build_prompt(
@@ -580,6 +586,12 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         .filter(|p| !p.is_empty())
         .map(|p| p.to_string());
 
+    // 本次提交显式选择的模型（JSON 解析失败按无显式选择处理：跟随后台默认）。
+    let model_override: Option<crate::db::agent::AgentModelRef> = run
+        .model
+        .as_deref()
+        .and_then(|s| serde_json::from_str(s).ok());
+
     // 按全局配置构造执行器
     let executor = match &ctx.executor_override {
         Some(e) => e.clone(),
@@ -635,6 +647,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
     let outcome = executor
         .execute(&AgentContext {
             skill_path: skill_path.as_deref(),
+            model: model_override.as_ref(),
             // 会话文件路径（None = --no-session 临时模式，不落盘）
             session_path: run.session_path.as_deref().filter(|p| !p.is_empty()),
             entity_texts: &entity_texts,
@@ -983,7 +996,7 @@ mod tests {
         let run_id = {
             let conn = pool.get().unwrap();
             let entities = vec![AgentEntityRef { kind: "source".into(), id: 1 }];
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &entities, "总结", Some("C:/s/ws-1.jsonl")).unwrap()
+            create_run(&conn, "ws-1", Some("/tmp/skill"), &entities, "总结", Some("C:/s/ws-1.jsonl"), None).unwrap()
         };
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ctx = dispatch_ctx_with(
@@ -1012,7 +1025,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/fail"), &[], "x", None).unwrap()
+            create_run(&conn, "ws-1", Some("/fail"), &[], "x", None, None).unwrap()
         };
         let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
         dispatch_run(&ctx, run_id).await;
@@ -1033,7 +1046,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None).unwrap()
+            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None, None).unwrap()
         };
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ctx = dispatch_ctx_with(
@@ -1059,7 +1072,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", None, &[], "你好", None).unwrap()
+            create_run(&conn, "ws-1", None, &[], "你好", None, None).unwrap()
         };
         let seen_skills = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
         let ctx = dispatch_ctx_with(
@@ -1084,7 +1097,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None).unwrap()
+            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None, None).unwrap()
         };
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ctx = dispatch_ctx_with(
@@ -1110,7 +1123,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/fail"), &[], "x", None).unwrap()
+            create_run(&conn, "ws-1", Some("/fail"), &[], "x", None, None).unwrap()
         };
         let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
         // 运行中取消：即使 executor 返回失败，终态也应为 cancelled
@@ -1131,7 +1144,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None).unwrap()
+            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None, None).unwrap()
         };
         let seen_skills = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
         let ctx = dispatch_ctx_with(
@@ -1287,6 +1300,7 @@ mod tests {
                 skill_path: None,
                 entities: serde_json::to_string(&refs).unwrap(),
                 instruction: "x".into(),
+                model: None,
                 session_path: None,
                 status: "pending".into(),
                 exit_code: None,
