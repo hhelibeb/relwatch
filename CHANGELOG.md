@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-22
+
+### Added
+- 新增 Agent 工作区（可选功能，默认关闭，不开启时应用行为与旧版一致）— 右侧聊天面板直接与本地 pi Agent 多轮对话；可将监控源、版本记录拖入对话作为上下文，输入 @ 快速调用 Skill；不止于分析解读，还可执行实际处理任务；支持会话级模型选择、会话管理与本地会话记录；pi 路径、工作目录、Prompt 追加、超时时长均可在设置中调整（当前仅支持 pi）。
+- AI 设置支持任意 OpenAI 兼容 API — API 地址兼容根地址 / 带 /v1 / 完整端点三类填法自动归一化，强制非流式以适配中转服务，设置页实时预览最终请求端点，移除官方域名二次确认。
+
+### Changed
+- README 更新：新增 Agent 工作区介绍，AI 能力改为 OpenAI 兼容 API 表述，移除暂不支持平台的描述。
+
+### Fixed
+- AI 翻译失败时回传真实结果，版本详情不再永久停留在「翻译中」。
+- Hugging Face 模型保存纳入单源超时控制，防止轮询锁被长期占用。
+- 特定场景下同一版本重复通知的问题：Release 入库改为事务化写入并加固通知标记。
+
+### Security
+- SSRF 防护增强：下载重定向改为手动逐跳校验，DNS 解析失败按 fail-closed 处理，不再放行可能导向私网地址的请求。
+
 ## [1.11.1] - 2026-08-13
 
 ### Added
@@ -314,7 +331,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.11.1...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/hhelibeb/relwatch/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/hhelibeb/relwatch/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/hhelibeb/relwatch/compare/v1.10.0...v1.11.0
 [1.10.0]: https://github.com/hhelibeb/relwatch/compare/v1.9.0...v1.10.0

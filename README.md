@@ -1,6 +1,6 @@
 # RelWatch
 
-GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hugging Face / YouTube / 哔哩哔哩多源监控，内置 DeepSeek AI 摘要与全文翻译。
+GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hugging Face / YouTube / 哔哩哔哩多源监控，内置 AI 摘要与全文翻译（OpenAI 兼容 API），并集成可选的本地 Agent 工作区。
 
 ## 功能
 
@@ -23,21 +23,35 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hug
 | 版本详情弹窗 | Markdown 渲染、图片复制、外链守卫、拖拽调整大小、上/下一版本导航 |
 | 虚拟滚动 | 长列表流畅滚动，Markdown 渲染带缓存 |
 
-### AI 能力（DeepSeek）
+### AI 能力
 
 | 功能 | 说明 |
 |------|------|
 | 自动摘要 | 轮询发现新版本时自动生成更新摘要，按重要性分级 |
 | 全文翻译 | 摘要 / 译文 / 原文三视图切换，可选自动翻译 Release Notes |
-| 灵活配置 | 模型、Prompt、非官方 API 地址均可配置；支持 HTTP 代理，AI 请求可独立设置代理 |
+| 灵活配置 | 兼容 OpenAI 接口格式，任意 OpenAI 兼容 API（含中转）均可接入；模型、Prompt、API 地址可配置；支持 HTTP 代理，AI 请求可独立设置代理 |
+
+### Agent 工作区（可选）
+
+默认关闭；不启用时应用行为与旧版本完全一致，所有功能均可在设置中按需开启。
+
+| 功能 | 说明 |
+|------|------|
+| 内置聊天面板 | 右侧 Agent 工作区直接与本地 pi Agent 对话，RPC 常驻进程，多轮对话低延迟（当前仅支持 [pi](https://github.com/earendil-works/pi)） |
+| 上下文拖入 | 将监控源、版本记录直接拖入对话作为上下文，让 Agent 基于具体 Release 工作 |
+| 分析 + 处理 | 不止于分析解读：Agent 可执行实际操作，如整理摘要、生成报告、修改文件、运行命令等任务处理 |
+| Skill 调用 | 输入 `@` 快速选择 Skill，扩展 Agent 能力 |
+| 模型选择 | 支持为会话指定模型，默认模型可全局配置 |
+| 会话管理 | 同一监控上下文自动续接会话，支持删除会话与历史清理，会话记录本地保存（JSONL） |
+| 灵活配置 | Agent 启用开关、pi 路径、工作目录、Prompt 追加、超时时长均可在设置中调整 |
 
 ### 应用体验
 
 | 功能 | 说明 |
 |------|------|
-| 桌面通知 | Windows / macOS / Linux 系统通知 |
+| 桌面通知 | Windows / Linux 系统通知 |
 | 系统托盘 | 关闭窗口时最小化到托盘，后台运行 |
-| 开机自启 | Windows（注册表）/ macOS（launchd）/ Linux（.desktop） |
+| 开机自启 | Windows（注册表）/ Linux（.desktop） |
 | 批量管理 | 监控源搜索、排序、批量暂停 / 恢复 / 静默 / 删除 |
 | 多语言 | 中文 / English |
 | 主题切换 | 浅色 / 深色一键切换 |
