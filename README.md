@@ -26,10 +26,10 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hug
 ### AI 能力
 
 | 功能 | 说明 |
-|------|------|
+|-------|------|
 | 自动摘要 | 轮询发现新版本时自动生成更新摘要，按重要性分级 |
 | 全文翻译 | 摘要 / 译文 / 原文三视图切换，可选自动翻译 Release Notes |
-| 灵活配置 | 兼容 OpenAI 接口格式，任意 OpenAI 兼容 API（含中转）均可接入；模型、Prompt、API 地址可配置；支持 HTTP 代理，AI 请求可独立设置代理 |
+| 灵活配置 | 兼容 OpenAI 接口格式，任意 OpenAI 兼容 API均可接入；模型、Prompt、API 地址可配置；支持 HTTP 代理 |
 
 ### Agent 工作区（可选）
 
@@ -37,7 +37,7 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hug
 
 | 功能 | 说明 |
 |------|------|
-| 内置聊天面板 | 右侧 Agent 工作区直接与本地 pi Agent 对话，RPC 常驻进程，多轮对话低延迟（当前仅支持 [pi](https://github.com/earendil-works/pi)） |
+| 内置聊天面板 | 右侧 Agent 工作区直接与本地 pi Agent 对话（当前仅支持 [pi](https://github.com/earendil-works/pi)） |
 | 上下文拖入 | 将监控源、版本记录直接拖入对话作为上下文，让 Agent 基于具体 Release 工作 |
 | 分析 + 处理 | 不止于分析解读：Agent 可执行实际操作，如整理摘要、生成报告、修改文件、运行命令等任务处理 |
 | Skill 调用 | 输入 `@` 快速选择 Skill，扩展 Agent 能力 |
