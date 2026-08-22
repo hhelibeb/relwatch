@@ -18,6 +18,13 @@ export const commands = {
 	 *  对单条 release 触发 AI 全文翻译。
 	 *  用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 	 *  仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
+	 * 
+	 *  返回**真实结果**（修复「翻译失败静默吞掉 → 前端翻译中永久卡死」）：
+	 *  - 前置校验 AI 未启用 / key 缺失 → Err。此前这两项在 run_ai_job 内静默 return、
+	 *    本命令无条件 Ok(())，前端成功路径不复位 translating、唯一复位点 watch
+	 *    译文落库永不触发 → 卡片/弹窗永久禁用无法重试（AI 未启用/key 失效/断网等）
+	 *  - 执行后回查：generate_translations_for_new 返回时所有任务与落库动作均已
+	 *    await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
 	 */
 	translateRelease: (releaseId: number) => __TAURI_INVOKE<null>("translate_release", { releaseId }),
 	clearLogs: () => __TAURI_INVOKE<null>("clear_logs"),
@@ -68,6 +75,10 @@ export const commands = {
 	 *  下载任意 http(s) URL 的原始字节并返回给前端。
 	 *  前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 	 *  返回 `Vec<u8>`，IPC 序列化为 number[]。
+	 * 
+	 *  SSRF 防护（H-2）：禁用 reqwest 自动重定向，改为手动跟随（最多 10 跳），
+	 *  **每一跳都重新执行 `ensure_public_url` 校验**——自动跟随不会对跳转目标
+	 *  重新校验，恶意服务器可用 302 把请求导向内网（如 169.254.169.254 云元数据）。
 	 */
 	fetchUrlBytes: (url: string) => __TAURI_INVOKE<number[]>("fetch_url_bytes", { url }),
 	/**

@@ -94,6 +94,13 @@ use serde_json::json;
 /// 对单条 release 触发 AI 全文翻译。
 /// 用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 /// 仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
+///
+/// 返回**真实结果**（修复「翻译失败静默吞掉 → 前端翻译中永久卡死」）：
+/// - 前置校验 AI 未启用 / key 缺失 → Err。此前这两项在 run_ai_job 内静默 return、
+///   本命令无条件 Ok(())，前端成功路径不复位 translating、唯一复位点 watch
+///   译文落库永不触发 → 卡片/弹窗永久禁用无法重试（AI 未启用/key 失效/断网等）
+/// - 执行后回查：generate_translations_for_new 返回时所有任务与落库动作均已
+///   await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
 #[tauri::command]
 
 #[specta::specta]pub async fn translate_release(
@@ -126,13 +133,37 @@ use serde_json::json;
     };
     let body = body.ok_or_else(|| "err.empty_body".to_string())?;
 
-    // 委托给 deepseek 的批量翻译函数（它内部会校验 AI 开关、key、并发）
+    // 前置校验 AI 开关与 key：失败立即返回 Err（前端 catch 复位 translating 并提示），
+    // 而不是让 run_ai_job 静默 return 后本命令无条件 Ok(()) 造成永久卡死。
+    {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        let cfg = crate::deepseek::read_config(&conn);
+        if !cfg.enabled {
+            return Err("err.ai_disabled".to_string());
+        }
+        if cfg.api_key.is_none() {
+            return Err("err.ai_key_missing".to_string());
+        }
+    }
+
+    // 委托给 deepseek 的批量翻译函数（内部校验并发、执行翻译/语言检测短路）。
     let saved = vec![(release_id, Some(body))];
     crate::deepseek::generate_translations_for_new(&state.db, &state.deepseek_semaphore, &saved, true).await;
 
-    // 翻译完成后通知前端刷新
-    let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
-    Ok(())
+    // 回查结果：await 后仍未落库 = 翻译未成功（断网/API 错误/build_client 失败等），
+    // 返回 Err 让前端复位并提示，而非静默 Ok 造成「翻译中」永久卡死。
+    {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        let r = db::releases::get_release(&conn, release_id)
+            .map_err(|e| format!("err.query_failed|{}", e))?;
+        if r.as_ref().map(|r| r.body_translated.is_some()).unwrap_or(false) {
+            // 翻译完成，通知前端刷新
+            let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
+            Ok(())
+        } else {
+            Err("err.translate_failed".to_string())
+        }
+    }
 }
 
 #[cfg(test)]

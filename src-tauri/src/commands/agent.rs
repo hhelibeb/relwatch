@@ -86,8 +86,11 @@ pub async fn save_agent_config(
         &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
     );
     if agent_process_level_changed(&old, &config) {
-        log::info!("agent config process-level fields changed, restarting RPC process");
-        state.agent_rpc.kill_now().await;
+        // H-6 修复：不直接 kill_now——正在生成的 run 会被 rpc_exited 中断、记 failed
+        // 且 token 作废。request_restart 带 running 守卫：空闲立即重启生效，
+        // 有 running run 时延迟到当前 run 结束（dispatch_run 收尾 restart_if_pending）。
+        log::info!("agent config process-level fields changed, requesting RPC process restart");
+        state.agent_rpc.request_restart().await;
     }
     Ok(())
 }

@@ -29,6 +29,12 @@ pub struct ReleaseInfo {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// 插入一条 release；已存在（UNIQUE(source_id, tag_name) 去重命中）返回 0。
+///
+/// releases 与 notification_state 两条写入在**同一事务**内完成（H-1 修复）：
+/// 此前无事务时第二条 INSERT 失败会让 release 缺失 state 行，而查询层
+/// `COALESCE(ns.status, 'pending')` 仍会选中它、`set_last_notified_at` 纯 UPDATE
+/// 又落空，导致该 release 每轮轮询都被重复通知。
 pub fn insert_release(
     conn: &Connection,
     source_id: i64,
@@ -40,21 +46,25 @@ pub fn insert_release(
     body: Option<&str>,
 ) -> Result<i64, String> {
     let now = chrono::Utc::now().to_rfc3339();
-    conn.execute(
+    // conn 为 &Connection：用 unchecked_transaction（rusqlite 对 &self 的 safe 变体），
+    // 本函数内顺序执行、无并发借用，等价于独占事务。
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute(
         "INSERT OR IGNORE INTO releases (source_id, tag_name, release_name, html_url, published_at, prerelease, body, detected_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![source_id, tag_name, release_name, html_url, published_at, prerelease as i64, body, now],
     )
     .map_err(|e| e.to_string())?;
 
-    if conn.changes() == 0 {
+    if tx.changes() == 0 {
+        // 去重命中：不提交（无事可写），返回 0
         return Ok(0);
     }
 
-    let release_id = conn.last_insert_rowid();
+    let release_id = tx.last_insert_rowid();
 
     if release_id > 0 {
-        conn.execute(
+        tx.execute(
             "INSERT OR IGNORE INTO notification_state (release_id, status, created_at, updated_at)
              VALUES (?1, 'pending', ?2, ?2)",
             params![release_id, now],
@@ -62,6 +72,7 @@ pub fn insert_release(
         .map_err(|e| e.to_string())?;
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(release_id)
 }
 
@@ -282,11 +293,18 @@ pub fn set_notification_state(
     Ok(())
 }
 
+/// 标记 release 已通知（H-1 修复）：改为 **upsert**，不再依赖 state 行已存在。
+///
+/// 此前是纯 UPDATE：当 notification_state 行缺失（历史脏数据 / 插入失败遗留）时
+/// 影响 0 行却返回 Ok，`get_pending_releases` 里 `last_notified_at IS NULL` 条件
+/// 永远命中，release 每轮都被重复通知。upsert 保证任何情况下都能落标记。
 pub fn set_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
-        "UPDATE notification_state SET last_notified_at = ?1, updated_at = ?1 WHERE release_id = ?2",
-        rusqlite::params![now, release_id],
+        "INSERT INTO notification_state (release_id, status, created_at, updated_at, last_notified_at)
+         VALUES (?1, 'pending', ?2, ?2, ?2)
+         ON CONFLICT(release_id) DO UPDATE SET last_notified_at = ?2, updated_at = ?2",
+        rusqlite::params![release_id, now],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -631,6 +649,45 @@ mod tests {
         assert!(pending_ids.contains(&rid4), "snoozed with expired snooze_until should appear");
         assert!(!pending_ids.contains(&rid5), "snoozed with future snooze_until should not appear");
         assert!(!pending_ids.contains(&rid6), "ignored should not appear");
+    }
+
+    #[test]
+    fn test_set_last_notified_at_upserts_when_state_missing() {
+        // H-1 修复验证：state 行缺失（历史脏数据/插入失败遗留）时，
+        // set_last_notified_at 必须 upsert 落标记，否则 release 每轮都被重复通知
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        assert!(rid > 0);
+
+        // 模拟 state 行缺失（如旧版本 insert 第二语句失败遗留）
+        conn.execute("DELETE FROM notification_state WHERE release_id = ?1", rusqlite::params![rid]).unwrap();
+        assert_eq!(get_pending_releases(&conn).unwrap().len(), 1, "COALESCE 应把缺失行视为 pending");
+
+        // 标记已通知：upsert 应补建 state 行并写入 last_notified_at
+        set_last_notified_at(&conn, rid).unwrap();
+        assert_eq!(
+            get_pending_releases(&conn).unwrap().len(),
+            0,
+            "upsert 后不应再被选为待通知（重复通知循环应被切断）"
+        );
+    }
+
+    #[test]
+    fn test_insert_release_transaction_creates_state_row() {
+        // H-1 修复验证：insert_release 两语句在同一事务内，成功时必带 state 行
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        assert!(rid > 0);
+        let state_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notification_state WHERE release_id = ?1",
+                rusqlite::params![rid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state_count, 1, "事务内应保证 release 与 state 行同时存在");
     }
 
     #[test]

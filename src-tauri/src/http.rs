@@ -12,6 +12,10 @@ pub struct HttpClientConfig<'a> {
     /// GitHub 的 token 改由 `http::fetch_page_with_retry` / `paginated_fetch` 的
     /// `token` 参数按请求设置（仅对 github 请求生效）。
     pub set_default_auth: bool,
+    /// 是否跟随 HTTP 重定向（默认 true）。SSRF 防护场景（如下载任意 URL）必须传
+    /// false：reqwest 自动跟随重定向时**不会**对跳转目标重新校验，攻击者可用
+    /// 302 把请求导向内网。调用方需手动跟随并每跳校验（见 commands/download.rs）。
+    pub follow_redirects: bool,
 }
 
 impl<'a> Default for HttpClientConfig<'a> {
@@ -23,6 +27,7 @@ impl<'a> Default for HttpClientConfig<'a> {
             timeout_secs: 30,
             content_type_json: false,
             set_default_auth: false,
+            follow_redirects: true,
         }
     }
 }
@@ -53,6 +58,10 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
         .user_agent("RelWatch/0.4")
         .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .connect_timeout(std::time::Duration::from_secs(10));
+    if !config.follow_redirects {
+        // SSRF 防护：禁用自动重定向，调用方手动跟随并每跳重新校验目标地址
+        builder = builder.redirect(reqwest::redirect::Policy::none());
+    }
     if headers.is_empty() {
         // 无 headers 时不调用 default_headers（仅 user_agent）
     } else {
@@ -380,7 +389,10 @@ pub async fn ensure_public_url(url: &str) -> Result<(), String> {
             Ok(())
         };
     }
-    // 域名：解析全部地址，任一私网即拒绝（fail-closed）；解析失败放行（fail-open）。
+    // 域名：解析全部地址，任一私网即拒绝（fail-closed）。
+    // 解析失败（无网络/NXDOMAIN/域名带 zone-id 等）同样拒绝（fail-closed）：
+    // 此前 fail-open 放行会绕过 IPv6 zone-id 等无法解析的私网形式，且解析失败时
+    // 请求本身也无法成功，放行没有实际收益，反而留下 SSRF 绕过面。
     // tokio 的 lookup_host 对纯字符串只接受 IP:port 字面量，域名需传 (host, port)
     // 元组（owned String + u16，无借用）；port 不影响解析结果。
     let port = parsed.port_or_known_default().unwrap_or(443);
@@ -394,13 +406,17 @@ pub async fn ensure_public_url(url: &str) -> Result<(), String> {
             }
             Ok(())
         }
-        // fail-open：解析失败放行
-        Err(_) => Ok(()),
+        Err(e) => Err(format!("err.dns_resolve_failed|{}", e)),
     }
 }
 
 /// 下载 URL 的原始字节（剪贴板图片等场景），限制最大 `max_bytes` 防止异常响应撑爆内存。
 /// scheme 校验由调用方负责；错误统一为 `err.*` i18n 格式。
+///
+/// 注意：`fetch_url_bytes`（commands/download.rs）因 SSRF 逐跳校验已内联实现下载，
+/// 本函数保留为通用下载原语（wiremock 测试覆盖响应处理逻辑，未来可复用）。
+/// 重定向跟随为 reqwest 默认行为，仅适用于调用方已自行校验目标的场景。
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn download_bytes(
     client: &reqwest::Client,
     url: &str,
@@ -727,14 +743,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_ensure_public_url_allows_public() {
+        // IP 字面量不依赖 DNS，稳定放行；域名路径见下方 fail-closed 测试
         let allowed = [
-            "https://example.com/a.png", // 域名：解析到公网 IP；无网环境解析失败按 fail-open 放行
             "https://8.8.8.8/x",
             "https://104.16.1.1/x",
         ];
         for url in allowed {
             assert!(ensure_public_url(url).await.is_ok(), "{} 应放行", url);
         }
+    }
+
+    #[tokio::test]
+    async fn test_ensure_public_url_fails_closed_on_dns_failure() {
+        // RFC 2606 保留域名 .invalid 解析必失败：fail-closed 应返回错误而不是放行
+        let err = ensure_public_url("https://ssrf-test.invalid/x").await.unwrap_err();
+        assert!(
+            err.contains("err.dns_resolve_failed"),
+            "DNS 解析失败应 fail-closed 拒绝: {}",
+            err
+        );
     }
 
     #[tokio::test]

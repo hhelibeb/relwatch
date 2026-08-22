@@ -51,6 +51,9 @@ pub struct RpcManager {
     /// pi settings.json 的 enabledModels 变化不会自动生效（spawn 时经 --models
     /// 传入一次），检测到与当前不一致时重启进程使新配置生效。
     spawned_models: Mutex<Option<Vec<String>>>,
+    /// 延迟重启标记（H-6）：进程级配置变更时若有 running run，先置位不打断生成，
+    /// 当前 run 结束（dispatch_run 收尾 restart_if_pending）后再 kill 重启生效。
+    pending_restart: AtomicBool,
 }
 
 impl RpcManager {
@@ -61,6 +64,7 @@ impl RpcManager {
             inner: Mutex::new(None),
             events: tx,
             spawned_models: Mutex::new(None),
+            pending_restart: AtomicBool::new(false),
         }
     }
 
@@ -91,6 +95,30 @@ impl RpcManager {
             |row| row.get::<_, bool>(0),
         )
         .unwrap_or(true)
+    }
+
+    /// 请求重启常驻进程（进程级配置变更后调用，H-6）：有正在执行的 run 时
+    /// **不打断**生成（kill 会以 rpc_exited 中断当前 run、记 failed 烧掉 token），
+    /// 置延迟标记，由 dispatch_run 收尾的 restart_if_pending 在 run 结束后重启；
+    /// 空闲时立即重启。与 sync_scoped_models 的 running 守卫语义一致。
+    pub async fn request_restart(&self) {
+        if self.has_running_run().await {
+            log::info!(
+                "agent config process-level fields changed but a run is in progress; deferring restart"
+            );
+            self.pending_restart.store(true, Ordering::SeqCst);
+        } else {
+            self.kill_now().await;
+        }
+    }
+
+    /// 消费延迟重启标记（dispatch_run 收尾调用）：当前 run 已结束，执行之前被
+    /// 推迟的 kill，使新配置在下次 ensure_started（下一次提交）生效。
+    pub async fn restart_if_pending(&self) {
+        if self.pending_restart.swap(false, Ordering::SeqCst) {
+            log::info!("agent deferred restart now executing after run finished");
+            self.kill_now().await;
+        }
     }
 
     /// 确保进程存活：惰性启动或崩溃后重启，并恢复上次绑定的会话。

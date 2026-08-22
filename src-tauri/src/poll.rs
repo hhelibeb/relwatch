@@ -408,11 +408,29 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
 
     match fetch_result {
         Ok(releases) => {
-            // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异
-            let saved = ctx
-                .adapter
-                .save(ctx.db_pool, source, &releases, max_count.unwrap_or(usize::MAX), ctx.client)
-                .await;
+            // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异。
+            // H-4 修复：save 阶段同样纳入 SOURCE_FETCH_TIMEOUT_SECS 整体超时——
+            // HF 源 save 会并发拉取新模型的 README（Semaphore(8)），大组织首扫
+            // 可达数千请求，此前无超时保护会无限占用 POLL_LOCK：手动检查一直
+            // 报 in_progress、定时轮询静默跳过。超时按本轮保存不完整处理（已
+            // insert 的 release 仍在库中，body 留空，下轮正常轮询继续增量）。
+            let saved = match tokio::time::timeout(
+                std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
+                ctx.adapter.save(ctx.db_pool, source, &releases, max_count.unwrap_or(usize::MAX), ctx.client),
+            )
+            .await
+            {
+                Ok(saved) => saved,
+                Err(_) => {
+                    log::error!(
+                        "err.save_timeout|{} (owner={}, repo={})",
+                        SOURCE_FETCH_TIMEOUT_SECS,
+                        log_owner,
+                        log_repo
+                    );
+                    vec![]
+                }
+            };
             // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
             let db_pool_blk = ctx.db_pool.clone();
             let source_id = source.id;

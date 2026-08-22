@@ -121,13 +121,27 @@ pub struct RpcExecutor {
     rpc: Arc<crate::agent_rpc::RpcManager>,
     /// 追加在 prompt 末尾的用户指令（如"请输出中文"）。
     prompt_suffix: Option<String>,
+    /// 全局默认模型（provider, model_id）：本次未显式选择模型（「默认」）时
+    /// 恢复到此模型（H-5）。None = 全局未配置可解析的模型，保持进程现状。
+    default_model: Option<(String, String)>,
 }
 
 impl RpcExecutor {
     pub fn new(config: &AgentConfig, rpc: Arc<crate::agent_rpc::RpcManager>) -> Self {
+        // 与 get_agent_available_models 的「默认」落点一致：仅可解析出 provider/id
+        // 的全局 model 才精确恢复；纯 id（无 provider 前缀）无法精确 set_model，
+        // 保持进程现状（与 UI 侧现状对齐）。
+        let default_model = config
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .and_then(|m| m.split_once('/'))
+            .map(|(p, id)| (p.to_string(), id.to_string()));
         RpcExecutor {
             rpc,
             prompt_suffix: config.prompt_suffix.clone(),
+            default_model,
         }
     }
 }
@@ -149,9 +163,17 @@ impl AgentExecutor for RpcExecutor {
         }
         // 订阅事件流（必须在 prompt 之前，避免漏事件）
         let mut rx = self.rpc.subscribe();
-        // 显式选择模型：prompt 前切换（run 单并发串行，先 set_model 再 prompt 不会串台）
-        if let Some(m) = ctx.model {
-            self.rpc.set_model(&m.provider, &m.model_id).await?;
+        // 模型切换（run 单并发串行，先 set_model 再 prompt 不会串台）：
+        // - 显式选择：切换为所选模型
+        // - 「默认」：恢复全局配置模型（H-5）。此前仅在显式选择时 set_model，
+        //   选「默认」后 pi 进程会保留上一个 run 的显式模型，UI 显示与实际不符。
+        match ctx.model {
+            Some(m) => self.rpc.set_model(&m.provider, &m.model_id).await?,
+            None => {
+                if let Some((provider, model_id)) = &self.default_model {
+                    self.rpc.set_model(provider, model_id).await?;
+                }
+            }
         }
 
         // 组装消息：选了 skill 则带 /skill:<短名> 命令前缀（pi 展开后替换为 skill 内容）
@@ -701,6 +723,10 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         let _ = agent::finish_run(&conn, run_id, status, exit_code, stdout.as_deref(), stderr.as_deref(), error.as_deref());
     }
     log::info!("agent run {} finished: {} (exit={:?})", run_id, status, exit_code);
+
+    // H-6 修复：run 已落终态（无 running run 占用进程），消费设置页保存时
+    // 因 running 守卫被推迟的进程重启，使新配置在下次提交生效。
+    ctx.rpc.restart_if_pending().await;
 
     emit_run_finished(ctx, &run, status, error).await;
 }

@@ -137,6 +137,7 @@ pub fn build_client(api_key: &str, proxy_url: &str, proxy_mode: &str) -> Result<
         timeout_secs: 60,
         content_type_json: true,
         set_default_auth: true,
+        ..Default::default()
     })
 }
 

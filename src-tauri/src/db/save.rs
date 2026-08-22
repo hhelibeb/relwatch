@@ -21,7 +21,8 @@ pub struct SaveEntry {
 }
 
 /// 通用保存循环：按 published 降序逐条 insert，新条目计入 saved 并触发
-/// `on_inserted`；去重命中（或插入失败）触发 `on_duplicate`。
+/// `on_inserted`；去重命中触发 `on_duplicate`。插入错误记录日志（H-1），
+/// 不再被当作去重命中吞掉。
 ///
 /// 语义与历史实现逐字节对齐（youtube/bilibili/github 三份 save 的原行为）：
 /// - 普通模式（max_count=1）遇到已入库记录立即返回空
@@ -58,9 +59,19 @@ pub fn save_entries_generic(
                 }
                 continue;
             }
-            // 已入库（去重命中）或插入失败：交给适配器处理（如刷新元数据）
-            _ => {
+            // 已入库（去重命中，UNIQUE(source_id, tag_name)）：交给适配器刷新元数据
+            Ok(0) => {
                 on_duplicate(conn, source_id, entry);
+            }
+            // 理论不可达（insert_release 返回值非负）；防御性按去重命中处理保持原语义
+            Ok(_) => {
+                on_duplicate(conn, source_id, entry);
+            }
+            // 真正的 DB 错误：不再吞成「去重命中」（H-1）。记录日志，普通模式
+            // 与去重命中同样中断本轮（保持原流程控制），但不再触发 on_duplicate
+            // 把故障误当已存在去刷写元数据，便于从日志定位根因。
+            Err(e) => {
+                log::error!("insert_release failed (source_id={}, tag={}): {}", source_id, entry.tag, e);
             }
         }
         // 已入库且普通模式（max_count=1）时，说明不是新内容，停止
