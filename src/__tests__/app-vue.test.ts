@@ -565,6 +565,22 @@ describe('App.vue — 版本统计 computed', () => {
     expect(counts['github|vuejs|core']).toBeUndefined()
   })
 
+  it('muted 源的新版本仍计入未读（静音仅抑制通知/托盘红点，不影响应用内未读）', async () => {
+    // 静音源 + 其 pending release：应用内未读计数应保持（静音不改变 release 的未读语义）
+    vi.mocked(listSources).mockResolvedValue([
+      { id: 42, source_type: 'github', owner: 'Tauri-Apps', repo: 'Tauri', muted: true } as never,
+    ])
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 1, source_type: 'github', owner: 'Tauri-Apps', repo: 'Tauri', notification_status: 'pending', snooze_until: null } as never,
+    ])
+
+    const wrapper = await mountRealApp()
+    await flushPromises()
+
+    const counts = wrapper.findComponent(SourceTabStub).props('unreadReleaseCounts') as Record<string, number>
+    expect(counts['github|tauri-apps|tauri']).toBe(1)
+  })
+
   it('totalReleaseCounts 按 repo 统计总数', async () => {
     vi.mocked(getReleases).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'a', repo: 'b', notification_status: 'pending' } as never,

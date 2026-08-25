@@ -156,21 +156,63 @@ pub struct SourceTypeInfo {
     Ok(())
 }
 
-#[tauri::command]
+/// 可测试的"状态变化事件"发射器抽象（复用 types::Emitter 的依赖注入模式）：
+/// update_source 命令薄壳注入 Tauri 实现，测试注入 CountingEmitter 断言
+/// "静音/取消静音 → 补发 ReleaseStateChanged 实时刷新托盘红点"。
+pub trait BadgeEventEmitter: Send + Sync {
+    fn emit_release_state_changed(&self, id: i64);
+}
 
-#[specta::specta]pub fn update_source(
-    state: tauri::State<AppState>,
+/// Tauri AppHandle 实现：向主进程补发 release-state-changed，托盘角标据此即时重算。
+struct TauriBadgeEventEmitter<'a>(&'a tauri::AppHandle);
+
+impl BadgeEventEmitter for TauriBadgeEventEmitter<'_> {
+    fn emit_release_state_changed(&self, id: i64) {
+        let _ = crate::events::ReleaseStateChanged(id).emit(self.0);
+    }
+}
+
+#[cfg(test)]
+struct CountingBadgeEmitter {
+    emitted: std::sync::Mutex<Vec<i64>>,
+}
+
+#[cfg(test)]
+impl CountingBadgeEmitter {
+    const fn new() -> Self {
+        CountingBadgeEmitter {
+            emitted: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+    fn emitted_count(&self) -> usize {
+        self.emitted.lock().unwrap().len()
+    }
+}
+
+#[cfg(test)]
+impl BadgeEventEmitter for CountingBadgeEmitter {
+    fn emit_release_state_changed(&self, id: i64) {
+        self.emitted.lock().unwrap().push(id);
+    }
+}
+
+/// update_source 的核心逻辑（不依赖 AppHandle / State，仅需 DB 连接 + 事件发射器）。
+/// 把"静音状态变化 → 触发托盘红点重算"的判据（muted_changed）与事件派发抽离出来，
+/// 便于单测覆盖"静音/取消静音时是否补发 ReleaseStateChanged"。
+fn update_source_core<E: BadgeEventEmitter>(
+    conn: &mut rusqlite::Connection,
     id: i64,
     enabled: bool,
     poll_interval_minutes: i64,
     muted: Option<bool>,
     config: Option<String>,
+    emitter: &E,
 ) -> Result<(), String> {
-    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    let source = db::sources::get_source(&conn, id)?;
+    let source = db::sources::get_source(conn, id)?;
     let old_enabled = source.as_ref().map(|s| s.enabled);
     let old_muted = source.as_ref().map(|s| s.muted);
     let old_config = source.as_ref().and_then(|s| s.config.clone());
+    let mut muted_changed = false;
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
@@ -205,6 +247,7 @@ pub struct SourceTypeInfo {
             if let Some(m) = muted {
                 if old_muted != Some(m) {
                     logged = true;
+                    muted_changed = true;
                     if m {
                         db::logs::write_log_key(&tx, "INFO", "source.log_muted",
                             &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
@@ -236,7 +279,36 @@ pub struct SourceTypeInfo {
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
+    // 静音切换会改变「该源新版本是否参与托盘红点」的判定，补发一次 state-changed 事件
+    // 让托盘角标即时刷新（红点立刻消失/恢复）。payload 沿用 remove_source 传入 source id 的既有约定。
+    if muted_changed {
+        emitter.emit_release_state_changed(id);
+    }
     Ok(())
+}
+
+// 命令薄壳：取出 DB 连接后交给 update_source_core，注入 Tauri 事件发射器。
+#[tauri::command]
+
+#[specta::specta]pub fn update_source(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    id: i64,
+    enabled: bool,
+    poll_interval_minutes: i64,
+    muted: Option<bool>,
+    config: Option<String>,
+) -> Result<(), String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    update_source_core(
+        &mut conn,
+        id,
+        enabled,
+        poll_interval_minutes,
+        muted,
+        config,
+        &TauriBadgeEventEmitter(&app),
+    )
 }
 
 #[tauri::command]
@@ -356,6 +428,26 @@ mod tests {
         db::sources::set_source_muted(&conn, id, false).unwrap();
         let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
         assert!(!updated.muted);
+    }
+
+    #[test]
+    fn test_update_source_core_mute_toggle_emits_badge_event() {
+        let mut conn = init_memory_db().unwrap();
+        let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
+        let emitter = CountingBadgeEmitter::new();
+
+        // 静音 → 补发 ReleaseStateChanged（托盘红点应重算）
+        update_source_core(&mut conn, id, true, 30, Some(true), None, &emitter).unwrap();
+        assert_eq!(emitter.emitted_count(), 1, "静音应补发一次事件");
+
+        // 取消静音 → 补发事件
+        update_source_core(&mut conn, id, true, 30, Some(false), None, &emitter).unwrap();
+        assert_eq!(emitter.emitted_count(), 2, "取消静音应补发一次事件");
+
+        // 其余变更（enabled 切换、muted 传 None / 同值）不应触发
+        update_source_core(&mut conn, id, false, 60, None, None, &emitter).unwrap();
+        update_source_core(&mut conn, id, true, 30, Some(false), None, &emitter).unwrap();
+        assert_eq!(emitter.emitted_count(), 2, "非 muted 变化不应补发事件");
     }
 
     #[test]
