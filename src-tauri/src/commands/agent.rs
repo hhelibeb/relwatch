@@ -164,7 +164,7 @@ pub async fn run_agent_job(
     }
     // 实体去重 + 存在性校验（引用解析后 id 必须有效）
     let mut entities: Vec<AgentEntityRef> = Vec::new();
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let config = agent::load_agent_config(&conn)?;
     if !config.enabled {
         return Err("err.agent.disabled".to_string());
@@ -215,8 +215,21 @@ pub async fn run_agent_job(
         .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
         .transpose()?;
 
+    // 同会话守卫 + 建 run 放进 BEGIN IMMEDIATE 事务（评审 3.2 追加，P2）：
+    // count 检查与 INSERT 之间若不加锁，两个并发提交可同时读到 0 再各自插入
+    // （TOCTOU）——前端 submitting 锁挡住了 UI 途径，但 DevTools / 未来多客户端
+    // 直接调命令仍可触发。BEGIN IMMEDIATE 立即拿写锁，并发请求串行化：
+    // 先到者 check+insert+commit，后到者等锁后 count=1 被拒。
+    // 前端在会话有活跃 run 时按钮即「停止」、Enter 被拒（canStop），
+    // 该守卫把同一语义落到后端，正常 UI 流程下永不触发。
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    if agent::active_run_count_for_session(&tx, &session_key)? > 0 {
+        return Err("err.agent.session_busy".to_string());
+    }
     let run_id = agent::create_run(
-        &conn,
+        &tx,
         &session_key,
         skill_path.as_deref(),
         &entities,
@@ -224,6 +237,7 @@ pub async fn run_agent_job(
         model_json.as_deref(),
         session_path.as_deref(),
     )?;
+    tx.commit().map_err(|e| e.to_string())?;
 
     let ctx = agent_runner::dispatch_ctx_from_app(&app);
     tauri::async_runtime::spawn(async move {
@@ -320,11 +334,58 @@ pub fn get_agent_queue_status(
     agent::agent_queue_status(&conn, &session_key).map_err(|e| e.to_string())
 }
 
-/// 读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
-/// 会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
+/// 查询全局队列（全部活跃 run，按执行顺序升序）。
+///
+/// 会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：调度器全局单并发，
+/// 活跃 run 即执行队列，前端据此给每个会话画运行状态（执行中 / 排队第 N 位），
+/// 并定位「哪个会话的 run 正在执行」以便横幅一键跳转。
 #[tauri::command]
 #[specta::specta]
-pub fn list_agent_messages(session_key: String) -> Result<Vec<AgentChatMessage>, String> {
+pub fn get_agent_queue(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<agent::AgentQueueItem>, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    agent::agent_queue(&conn).map_err(|e| e.to_string())
+}
+
+/// 查询会话文件的上下文水位（消息条数 / 文本字符数 / 文件字节数）。
+///
+/// 「上下文水位可见性」的数据源：relwatch 侧不做会话长度治理（依赖 pi 自身管理），
+/// 但应向用户暴露水位——接近上限时提示开新会话。token 为前端估算（字符数 ÷ 2）。
+#[tauri::command]
+#[specta::specta]
+pub fn get_agent_session_usage(
+    session_key: String,
+) -> Result<agent_session::AgentSessionUsage, String> {
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let path = session_path_for_key(&session_key);
+    if !path.exists() {
+        return Ok(agent_session::AgentSessionUsage {
+            message_count: 0,
+            total_chars: 0,
+            file_bytes: 0,
+        });
+    }
+    agent_session::session_usage(&path).ok_or_else(|| "err.agent.read_session".to_string())
+}
+
+/// 读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
+/// 会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
+///
+/// 对位 run_id：把 user 消息按创建顺序直连到本会话的 run 记录，前端据此把失败
+/// 备注 / 重试入口精确挂到对应气泡（替代 60 秒时间窗猜测）。
+/// 注意「一次提交 = 一个 run + 一条 user 消息」并非恒成立——存在 run 不产生消息
+/// 的路径（排队中被取消 / 派发前失败 / RPC 启动或 prompt 失败），纯顺序对位会把
+/// 后续消息整体错位一位。因此对位带 started_at 邻近校验（60s 窗），把未产生
+/// 消息的 run 跳过（排队取消的 run 无 started_at，天然被跳过）。
+#[tauri::command]
+#[specta::specta]
+pub fn list_agent_messages(
+    state: tauri::State<'_, AppState>,
+    session_key: String,
+) -> Result<Vec<AgentChatMessage>, String> {
     if !is_valid_session_key(&session_key) {
         return Err("err.agent.invalid_session".to_string());
     }
@@ -332,7 +393,41 @@ pub fn list_agent_messages(session_key: String) -> Result<Vec<AgentChatMessage>,
     if !path.exists() {
         return Ok(Vec::new());
     }
-    agent_session::parse_session_file(&path)
+    let mut messages = agent_session::parse_session_file(&path)?;
+    // 本会话 run 记录按创建顺序升序（db 层倒序，内存反转）
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let mut runs_desc = agent::list_run_summaries(&conn, &session_key, 1000)?;
+    runs_desc.reverse();
+    align_run_ids(&mut messages, &runs_desc);
+    Ok(messages)
+}
+
+/// user 消息 ↔ run 的对位（started_at 邻近校验，60 秒窗）。
+///
+/// 逐条 user 消息按创建顺序找匹配 run：run 无 `started_at`（排队中被取消，未真正
+/// 执行）或 `started_at` 与消息时间相差 >60s（派发前失败 / prompt 失败等未落盘
+/// 消息的路径）→ 视为「该 run 未产生这条消息」，跳过；匹配到的写入 `msg.run_id`。
+/// 无唯一标识可做绝对直连，此校验是启发式上限——不匹配置 None 落回前端
+/// 时间窗兜底（前端 runForMessage 同带 60s 校验，双层拒绝错挂）。
+fn align_run_ids(messages: &mut [AgentChatMessage], runs: &[agent::AgentRunSummary]) {
+    let mut run_idx = 0usize;
+    for m in messages.iter_mut() {
+        if m.role != "user" {
+            continue;
+        }
+        let msg_ms = rfc3339_to_millis(&m.timestamp).unwrap_or(0);
+        while run_idx < runs.len() {
+            let r = &runs[run_idx];
+            let start_ms = r.started_at.as_deref().and_then(rfc3339_to_millis);
+            let adjacent = start_ms.is_some_and(|s| (msg_ms - s).unsigned_abs() < 60_000);
+            run_idx += 1;
+            if adjacent {
+                m.run_id = Some(r.id);
+                break;
+            }
+            // 不邻近：该 run 未产生这条消息（继续找下一条 run）
+        }
+    }
 }
 
 /// 磁盘发现的一个工作区会话（会话索引丢失后的恢复数据源）。
@@ -624,6 +719,98 @@ fn spawn_terminal(binary: &str, session_path: &str, working_dir: Option<&str>) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 构造一条 run 摘要（测试对位用；started_at None = 排队取消/未启动）。
+    fn run_summary(id: i64, started_at: Option<&str>) -> agent::AgentRunSummary {
+        agent::AgentRunSummary {
+            id,
+            session_key: "ws-test".into(),
+            skill_path: None,
+            entities: "[]".into(),
+            instruction: "指令".into(),
+            model: None,
+            session_path: None,
+            status: "success".into(),
+            exit_code: Some(0),
+            error: None,
+            started_at: started_at.map(|s| s.to_string()),
+            finished_at: None,
+            created_at: "2025-01-01T00:00:00.000Z".into(),
+        }
+    }
+
+    fn user_message(timestamp: &str) -> AgentChatMessage {
+        AgentChatMessage {
+            role: "user".into(),
+            blocks: Vec::new(),
+            timestamp: timestamp.to_string(),
+            model: None,
+            run_id: None,
+        }
+    }
+
+    #[test]
+    fn align_run_ids_pairs_adjacent_runs_in_order() {
+        let mut msgs = vec![
+            user_message("2025-01-01T00:00:10.000Z"),
+            user_message("2025-01-01T00:05:10.000Z"),
+        ];
+        let runs = vec![
+            run_summary(1, Some("2025-01-01T00:00:05.000Z")),
+            run_summary(2, Some("2025-01-01T00:05:05.000Z")),
+        ];
+        align_run_ids(&mut msgs, &runs);
+        assert_eq!(msgs[0].run_id, Some(1));
+        assert_eq!(msgs[1].run_id, Some(2));
+    }
+
+    #[test]
+    fn align_run_ids_skips_cancelled_pending_run() {
+        // run2 排队中被取消（无 started_at，pi 从未写消息）：
+        // run3 的消息不得错位挂到 run2（对位后仍指向 run3）
+        let mut msgs = vec![
+            user_message("2025-01-01T00:00:10.000Z"),
+            user_message("2025-01-01T00:05:10.000Z"),
+        ];
+        let runs = vec![
+            run_summary(1, Some("2025-01-01T00:00:05.000Z")),
+            run_summary(2, None),
+            run_summary(3, Some("2025-01-01T00:05:05.000Z")),
+        ];
+        align_run_ids(&mut msgs, &runs);
+        assert_eq!(msgs[0].run_id, Some(1));
+        assert_eq!(msgs[1].run_id, Some(3));
+    }
+
+    #[test]
+    fn align_run_ids_skips_run_without_matching_message() {
+        // run2 派发前失败（有 started_at 但距下一条消息 >60s）：跳过
+        let mut msgs = vec![
+            user_message("2025-01-01T00:00:10.000Z"),
+            user_message("2025-01-01T00:20:10.000Z"),
+        ];
+        let runs = vec![
+            run_summary(1, Some("2025-01-01T00:00:05.000Z")),
+            run_summary(2, Some("2025-01-01T00:02:00.000Z")),
+            run_summary(3, Some("2025-01-01T00:20:05.000Z")),
+        ];
+        align_run_ids(&mut msgs, &runs);
+        assert_eq!(msgs[0].run_id, Some(1));
+        assert_eq!(msgs[1].run_id, Some(3));
+    }
+
+    #[test]
+    fn align_run_ids_leftover_messages_stay_none() {
+        // run 记录被清理（消息多于 run）：多余消息保持 run_id=None
+        let mut msgs = vec![
+            user_message("2025-01-01T00:00:10.000Z"),
+            user_message("2025-01-01T00:05:10.000Z"),
+        ];
+        let runs = vec![run_summary(1, Some("2025-01-01T00:00:05.000Z"))];
+        align_run_ids(&mut msgs, &runs);
+        assert_eq!(msgs[0].run_id, Some(1));
+        assert_eq!(msgs[1].run_id, None);
+    }
 
     #[test]
     fn session_path_uses_sanitized_key() {

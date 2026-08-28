@@ -6,9 +6,11 @@ import type {
   AgentEntityRef,
   AgentModelRef,
   AgentModelsInfo,
+  AgentQueueItem,
   AgentQueueStatus,
   AgentRunSummary,
   AgentSessionInfo,
+  AgentSessionUsage,
 } from '../bindings'
 
 export type {
@@ -17,9 +19,11 @@ export type {
   AgentEntityRef,
   AgentModelRef,
   AgentModelsInfo,
+  AgentQueueItem,
   AgentQueueStatus,
   AgentRunSummary,
   AgentSessionInfo,
+  AgentSessionUsage,
   RpcAvailableModel,
 } from '../bindings'
 
@@ -69,6 +73,16 @@ export async function listAgentRuns(sessionKey: string, limit: number | null = 2
 /** 查询全局 Agent 队列状态（「排队中」提示：队列位置 + 其他会话占用）。 */
 export async function getAgentQueueStatus(sessionKey: string): Promise<AgentQueueStatus> {
   return invokeI18nFn(() => commands.getAgentQueueStatus(sessionKey))
+}
+
+/** 查询全局队列（全部活跃 run，按执行顺序升序）：会话侧栏状态点 / 横幅「谁占用」数据源。 */
+export async function getAgentQueue(): Promise<AgentQueueItem[]> {
+  return invokeI18nFn(commands.getAgentQueue)
+}
+
+/** 查询会话文件的上下文水位（消息条数 / 文本字符数 / 文件字节数）。 */
+export async function getAgentSessionUsage(sessionKey: string): Promise<AgentSessionUsage> {
+  return invokeI18nFn(() => commands.getAgentSessionUsage(sessionKey))
 }
 
 /** 扫描磁盘上的会话文件，列出全部工作区会话（按最后活跃时间倒序）。

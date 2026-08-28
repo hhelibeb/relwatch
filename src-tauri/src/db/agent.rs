@@ -374,6 +374,60 @@ pub fn agent_queue_status(conn: &Connection, session_key: &str) -> Result<AgentQ
     })
 }
 
+/// 全局队列中的一条活跃 run（排队可视化：侧栏状态点 + 横幅「谁在占用」）。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentQueueItem {
+    pub run_id: i64,
+    /// 所属工作区会话（前端映射为会话标题）。
+    pub session_key: String,
+    /// pending | running。
+    pub status: String,
+    /// 全局队列位置（1 = 正在执行；>1 = 排在其后的等待位）。
+    pub position: i64,
+}
+
+/// 查询全局队列（全部活跃 run，按执行顺序升序）。
+///
+/// 调度器为全局单并发（Semaphore::new(1)），活跃 run 即 `status IN ('pending','running')`，
+/// 按 id 升序（创建顺序）即执行顺序。前端用它给侧栏每个会话画运行状态点、
+/// 给「排队中」横幅定位占用者（哪个会话的 run 正在执行）。
+pub fn agent_queue(conn: &Connection) -> Result<Vec<AgentQueueItem>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, session_key, status FROM agent_runs
+             WHERE status IN ('pending','running') ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (i, row) in rows.enumerate() {
+        let (run_id, session_key, status) = row.map_err(|e| e.to_string())?;
+        out.push(AgentQueueItem {
+            run_id,
+            session_key,
+            status,
+            position: i as i64 + 1,
+        });
+    }
+    Ok(out)
+}
+
+/// 某会话当前活跃 run 数量（pending / running）。
+/// run_agent_job 的同会话守卫用：前端在会话有活跃 run 时按钮即「停止」、Enter 被拒，
+/// 该守卫把同一语义落到后端，封堵前端双保险之外的任何提交途径。
+pub fn active_run_count_for_session(conn: &Connection, session_key: &str) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM agent_runs WHERE session_key = ?1 AND status IN ('pending','running')",
+        params![session_key],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// 一个会话在 DB 侧的运行摘要（磁盘发现时用于关联 last status / 最后提交时间）。
 #[derive(Debug, Clone, Default)]
 pub struct SessionRunDigest {
@@ -608,6 +662,55 @@ mod tests {
         // 无 pending 的会话：position None
         let st = agent_queue_status(&conn, "ws-none").unwrap();
         assert_eq!(st.position, None);
+    }
+
+    #[test]
+    fn queue_lists_active_runs_in_execution_order() {
+        let conn = init_memory_db().unwrap();
+        assert!(agent_queue(&conn).unwrap().is_empty());
+
+        // A 先建 run（running 占用执行位），B、C 排队（pending）
+        let ra = create_run(&conn, "ws-a", None, &[], "A", None, None).unwrap();
+        mark_run_started(&conn, ra).unwrap();
+        let rb = create_run(&conn, "ws-b", None, &[], "B", None, None).unwrap();
+        let rc = create_run(&conn, "ws-c", None, &[], "C", None, None).unwrap();
+
+        let q = agent_queue(&conn).unwrap();
+        assert_eq!(q.len(), 3);
+        assert_eq!(q[0].run_id, ra);
+        assert_eq!(q[0].status, "running");
+        assert_eq!(q[0].position, 1);
+        assert_eq!(q[1].run_id, rb);
+        assert_eq!(q[1].status, "pending");
+        assert_eq!(q[1].position, 2);
+        assert_eq!(q[2].run_id, rc);
+        assert_eq!(q[2].position, 3);
+
+        // A 结束、B 开始执行 → 队列只剩 B/C，B 位置 1
+        finish_run(&conn, ra, "success", Some(0), Some(""), None, None).unwrap();
+        mark_run_started(&conn, rb).unwrap();
+        let q = agent_queue(&conn).unwrap();
+        assert_eq!(q.len(), 2);
+        assert_eq!(q[0].run_id, rb);
+        assert_eq!(q[0].position, 1);
+        assert_eq!(q[1].run_id, rc);
+        assert_eq!(q[1].position, 2);
+    }
+
+    #[test]
+    fn active_run_count_guards_per_session() {
+        let conn = init_memory_db().unwrap();
+        assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 0);
+        let ra = create_run(&conn, "ws-a", None, &[], "A", None, None).unwrap();
+        assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 1);
+        // 其他会话不受影响
+        assert_eq!(active_run_count_for_session(&conn, "ws-b").unwrap(), 0);
+        // 排队中的同会话第二个 run 也计数
+        let _ra2 = create_run(&conn, "ws-a", None, &[], "A2", None, None).unwrap();
+        assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 2);
+        // 结束（终态）后不再计数
+        finish_run(&conn, ra, "success", Some(0), Some(""), None, None).unwrap();
+        assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 1);
     }
 
     #[test]

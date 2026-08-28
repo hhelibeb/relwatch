@@ -46,6 +46,10 @@ pub struct AgentChatMessage {
     pub timestamp: String,
     /// 生成该消息的模型（仅 assistant）。
     pub model: Option<String>,
+    /// 与本次提交 run 的直连 id（仅 user 消息；由 list_agent_messages 按序对位填充，
+    /// 前端据此把失败备注 / 重试入口精确挂到对应气泡，替代 60 秒时间窗猜测）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<i64>,
 }
 
 /// 解析会话文件。文件不存在 / 为空 → 空列表。
@@ -148,6 +152,7 @@ fn convert_message(msg: &serde_json::Value, timestamp: &str) -> AgentChatMessage
         blocks,
         timestamp: timestamp.to_string(),
         model,
+        run_id: None,
     }
 }
 
@@ -402,6 +407,73 @@ fn collect_text(content: &serde_json::Value) -> String {
     out
 }
 
+// ---- 会话水位统计（上下文水位可见性）----
+
+/// 会话文件的水位摘要（前端展示「消息 N 条 · 约 X tokens」）。
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub struct AgentSessionUsage {
+    /// 消息总条数（含 user / assistant / tool / bash / custom）。
+    pub message_count: i64,
+    /// 会话内全部文本字符数（text / thinking / toolResult / bash 输出）。
+    pub total_chars: i64,
+    /// 会话文件字节数（磁盘占用）。
+    pub file_bytes: i64,
+}
+
+/// 统计会话文件的水位：读文件一次，行级累计消息数与文本字符数。
+///
+/// 粗略估算：token ≈ 字符数 / 2（中英混合），前端据此展示「约 X tokens」。
+/// 坏行容忍（与 parse_session_jsonl 一致）；文件不存在 / 读取失败 → None。
+pub fn session_usage(path: &Path) -> Option<AgentSessionUsage> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let file_bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
+    let mut message_count: i64 = 0;
+    let mut total_chars: i64 = 0;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("message") {
+            continue;
+        }
+        message_count += 1;
+        if let Some(msg) = value.get("message") {
+            accumulate_text(&msg["content"], &mut total_chars);
+            if let Some(out) = msg.get("output").and_then(|o| o.as_str()) {
+                total_chars += out.chars().count() as i64;
+            }
+        }
+    }
+    Some(AgentSessionUsage {
+        message_count,
+        total_chars,
+        file_bytes,
+    })
+}
+
+/// 累计 text / thinking 块的字符数（字符串或块数组两种形态都处理）。
+fn accumulate_text(value: &serde_json::Value, count: &mut i64) {
+    match value {
+        serde_json::Value::String(s) => *count += s.chars().count() as i64,
+        serde_json::Value::Array(items) => {
+            for b in items {
+                if let Some(t) = b.get("text").and_then(|x| x.as_str()) {
+                    *count += t.chars().count() as i64;
+                }
+                if let Some(t) = b.get("thinking").and_then(|x| x.as_str()) {
+                    *count += t.chars().count() as i64;
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,5 +660,46 @@ mod tests {
         assert_eq!(session_title_from_file(&path).as_deref(), Some("来自文件的标题"));
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn session_usage_counts_messages_and_chars() {
+        let content = [
+            entry("a", None, user_msg("第一轮问题")),
+            entry("b", Some("a"), assistant_msg(serde_json::json!([
+                { "type": "thinking", "thinking": "思考中" },
+                { "type": "text", "text": "这是回答" }
+            ]))),
+            entry(
+                "c",
+                Some("b"),
+                serde_json::json!({
+                    "role": "bashExecution", "command": "ls", "output": "file1\nfile2\n",
+                    "exitCode": 0, "cancelled": false, "truncated": false
+                }),
+            ),
+        ]
+        .join("\n");
+        let dir = std::env::temp_dir().join(format!("relwatch-usage-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("ws-usage.jsonl");
+        std::fs::write(&path, &content).unwrap();
+
+        let usage = session_usage(&path).expect("usage");
+        assert_eq!(usage.message_count, 3);
+        // 第一轮问题(5) + 思考中(3) + 这是回答(4) + file1\nfile2\n(12)
+        assert_eq!(usage.total_chars, 5 + 3 + 4 + 12);
+        assert!(usage.file_bytes > 0);
+        // 文件不存在 → None
+        assert!(session_usage(&dir.join("ws-none.jsonl")).is_none());
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn message_run_id_defaults_to_none() {
+        let content = entry("a", None, user_msg("你好"));
+        let messages = parse_session_jsonl(&content).unwrap();
+        assert_eq!(messages[0].run_id, None);
     }
 }

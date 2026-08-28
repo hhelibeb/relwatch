@@ -84,6 +84,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::run_agent_job,
         commands::list_agent_runs,
         commands::get_agent_queue_status,
+        commands::get_agent_queue,
+        commands::get_agent_session_usage,
         commands::list_agent_messages,
         commands::list_agent_sessions,
         commands::cancel_agent_run,

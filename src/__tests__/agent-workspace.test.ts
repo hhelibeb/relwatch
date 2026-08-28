@@ -25,6 +25,8 @@ vi.mock('../api/agent', async (importOriginal) => {
     listAgentMessages: vi.fn().mockResolvedValue([]),
     listAgentSessions: vi.fn().mockResolvedValue([]),
     getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [] }),
+    getAgentQueue: vi.fn().mockResolvedValue([]),
+    getAgentSessionUsage: vi.fn().mockResolvedValue({ message_count: 0, total_chars: 0, file_bytes: 0 }),
     runAgentJob: vi.fn().mockResolvedValue(1),
     deleteAgentSession: vi.fn().mockResolvedValue(undefined),
     openAgentSession: vi.fn().mockResolvedValue(undefined),
@@ -344,8 +346,8 @@ describe('AgentWorkspace 冒烟', () => {
       global: { provide: { [ShowToastKey as symbol]: showToast } },
     })
     await flushPromises()
-    // 初始：处于旧会话、无引用 chip
-    expect(wrapper.find('.agent-ws-session-item-new').exists()).toBe(false)
+    // 初始：处于旧会话、无引用 chip、无草稿会话
+    expect(wrapper.find('.agent-ws-session-item.draft').exists()).toBe(false)
     expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(0)
 
     const header = wrapper.find('.agent-ws-header')
@@ -362,8 +364,8 @@ describe('AgentWorkspace 冒烟', () => {
       },
     })
     await flushPromises()
-    // 已切换为新会话 + 引用 chip 放入 + toast 仅一次（未冒泡重复附加）
-    expect(wrapper.find('.agent-ws-session-item-new').exists()).toBe(true)
+    // 已切换为新建的草稿会话（新建即登记，评审 1.2）+ 引用 chip 放入 + toast 仅一次
+    expect(wrapper.find('.agent-ws-session-item.draft').exists()).toBe(true)
     expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
     expect(showToast).toHaveBeenCalledTimes(1)
     // 拖放结束提示层消失
@@ -398,7 +400,7 @@ describe('AgentWorkspace 冒烟', () => {
     })
     await flushPromises()
     // 仍处于旧会话（未新建）+ 引用加入当前会话 + toast 一次
-    expect(wrapper.find('.agent-ws-session-item-new').exists()).toBe(false)
+    expect(wrapper.find('.agent-ws-session-item.draft').exists()).toBe(false)
     expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
     expect(showToast).toHaveBeenCalledTimes(1)
     wrapper.unmount()
@@ -481,7 +483,7 @@ describe('AgentWorkspace 冒烟', () => {
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })
 
-  it('排队中横幅：其他会话执行中时显示占用提示与队列位置', async () => {
+  it('排队中横幅：被其他会话占用时显示可点击的「前往停止」并支持跳转', async () => {
     localStorage.setItem(
       'relwatch.agent.sessions.v1',
       JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
@@ -514,7 +516,14 @@ describe('AgentWorkspace 冒烟', () => {
     const banner = wrapper.find('.agent-ws-banner')
     expect(banner.exists()).toBe(true)
     expect(banner.text()).toContain(t('agent.status_pending'))
-    expect(banner.text()).toContain(t('agent.queue_other_running_pos', '2'))
+    // 评审 1.3：横幅显示占用者（一键「前往停止」），替代笼统的「其他会话正在执行」
+    const occupied = t('agent.queue_occupied_by', t('agent.session_untitled'))
+    expect(banner.text()).toContain(occupied)
+    const queue = wrapper.find('.agent-ws-banner-queue')
+    expect(queue.classes()).toContain('clickable')
+    // 点击 → 切换到占用会话（在那里点「停止」让路）
+    await queue.trigger('click')
+    expect(wrapper.vm).toBeDefined()
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })

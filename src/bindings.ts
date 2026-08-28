@@ -141,10 +141,32 @@ export const commands = {
 	 */
 	getAgentQueueStatus: (sessionKey: string) => __TAURI_INVOKE<AgentQueueStatus>("get_agent_queue_status", { sessionKey }),
 	/**
+	 *  查询全局队列（全部活跃 run，按执行顺序升序）。
+	 * 
+	 *  会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：调度器全局单并发，
+	 *  活跃 run 即执行队列，前端据此给每个会话画运行状态（执行中 / 排队第 N 位），
+	 *  并定位「哪个会话的 run 正在执行」以便横幅一键跳转。
+	 */
+	getAgentQueue: () => __TAURI_INVOKE<AgentQueueItem[]>("get_agent_queue"),
+	/**
+	 *  查询会话文件的上下文水位（消息条数 / 文本字符数 / 文件字节数）。
+	 * 
+	 *  「上下文水位可见性」的数据源：relwatch 侧不做会话长度治理（依赖 pi 自身管理），
+	 *  但应向用户暴露水位——接近上限时提示开新会话。token 为前端估算（字符数 ÷ 2）。
+	 */
+	getAgentSessionUsage: (sessionKey: string) => __TAURI_INVOKE<AgentSessionUsage>("get_agent_session_usage", { sessionKey }),
+	/**
 	 *  读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
 	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
+	 * 
+	 *  对位 run_id：把 user 消息按创建顺序直连到本会话的 run 记录，前端据此把失败
+	 *  备注 / 重试入口精确挂到对应气泡（替代 60 秒时间窗猜测）。
+	 *  注意「一次提交 = 一个 run + 一条 user 消息」并非恒成立——存在 run 不产生消息
+	 *  的路径（排队中被取消 / 派发前失败 / RPC 启动或 prompt 失败），纯顺序对位会把
+	 *  后续消息整体错位一位。因此对位带 started_at 邻近校验（60s 窗），把未产生
+	 *  消息的 run 跳过（排队取消的 run 无 started_at，天然被跳过）。
 	 */
-	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage[]>("list_agent_messages", { sessionKey }),
+	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage_Serialize[]>("list_agent_messages", { sessionKey }),
 	/**
 	 *  扫描会话目录，列出磁盘上全部工作区会话（按最后活跃时间倒序）。
 	 * 
@@ -199,7 +221,10 @@ export type AgentChatBlock =
 { kind: "bash"; command: string; output: string; exit_code: number | null; truncated: boolean };
 
 /**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
-export type AgentChatMessage = {
+export type AgentChatMessage = AgentChatMessage_Serialize | AgentChatMessage_Deserialize;
+
+/**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
+export type AgentChatMessage_Deserialize = {
 	/**  user | assistant | tool | bash | custom */
 	role: string,
 	blocks: AgentChatBlock[],
@@ -207,6 +232,27 @@ export type AgentChatMessage = {
 	timestamp: string,
 	/**  生成该消息的模型（仅 assistant）。 */
 	model: string | null,
+	/**
+	 *  与本次提交 run 的直连 id（仅 user 消息；由 list_agent_messages 按序对位填充，
+	 *  前端据此把失败备注 / 重试入口精确挂到对应气泡，替代 60 秒时间窗猜测）。
+	 */
+	run_id?: number | null,
+};
+
+/**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
+export type AgentChatMessage_Serialize = {
+	/**  user | assistant | tool | bash | custom */
+	role: string,
+	blocks: AgentChatBlock[],
+	/**  ISO 时间戳（entry 级别，非 message 内嵌）。 */
+	timestamp: string,
+	/**  生成该消息的模型（仅 assistant）。 */
+	model: string | null,
+	/**
+	 *  与本次提交 run 的直连 id（仅 user 消息；由 list_agent_messages 按序对位填充，
+	 *  前端据此把失败备注 / 重试入口精确挂到对应气泡，替代 60 秒时间窗猜测）。
+	 */
+	run_id?: number | null,
 };
 
 /**  全局 Agent 配置（设置页「Agent」分区读写）。 */
@@ -273,6 +319,17 @@ export type AgentModelsInfo = {
 	models: RpcAvailableModel[],
 	/**  pi 进程当前激活模型（None = 无模型）。「默认」选项将使用该模型。 */
 	current: RpcAvailableModel | null,
+};
+
+/**  全局队列中的一条活跃 run（排队可视化：侧栏状态点 + 横幅「谁在占用」）。 */
+export type AgentQueueItem = {
+	run_id: number,
+	/**  所属工作区会话（前端映射为会话标题）。 */
+	session_key: string,
+	/**  pending | running。 */
+	status: string,
+	/**  全局队列位置（1 = 正在执行；>1 = 排在其后的等待位）。 */
+	position: number,
 };
 
 /**  全局 Agent 队列状态（「排队中」提示的数据源）。 */
@@ -347,6 +404,16 @@ export type AgentSessionInfo = {
 	last_status: string,
 	/**  该会话的累计提交次数。 */
 	run_count: number,
+};
+
+/**  会话文件的水位摘要（前端展示「消息 N 条 · 约 X tokens」）。 */
+export type AgentSessionUsage = {
+	/**  消息总条数（含 user / assistant / tool / bash / custom）。 */
+	message_count: number,
+	/**  会话内全部文本字符数（text / thinking / toolResult / bash 输出）。 */
+	total_chars: number,
+	/**  会话文件字节数（磁盘占用）。 */
+	file_bytes: number,
 };
 
 /**

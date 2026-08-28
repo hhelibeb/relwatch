@@ -9,6 +9,7 @@ import {
   getAgentConfig,
   getAgentAvailableModels,
   runAgentJob,
+  saveAgentConfig,
   listAgentRuns,
   listAgentMessages,
   listAgentSessions,
@@ -17,11 +18,15 @@ import {
   openAgentSession,
   getAgentSessionCommand,
   getAgentQueueStatus,
+  getAgentQueue,
+  getAgentSessionUsage,
   type AgentChatMessage,
   type AgentModelRef,
+  type AgentQueueItem,
   type AgentQueueStatus,
   type AgentRunSummary,
   type AgentSessionInfo,
+  type AgentSessionUsage,
   type RpcAvailableModel,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
@@ -45,6 +50,8 @@ interface SessionMeta {
   model?: AgentModelRef | null
   /** 由磁盘文件发现补入（localStorage 索引里没有）：侧栏标记为「已恢复」。 */
   recovered?: boolean
+  /** 未提交的草稿会话（新建即登记；提交成功后清除）。 */
+  draft?: boolean
 }
 const SESSIONS_STORAGE_KEY = 'relwatch.agent.sessions.v1'
 // 会话侧栏折叠状态（默认折叠，聊天区全宽；localStorage 持久化）
@@ -102,13 +109,19 @@ async function discoverSessions(): Promise<number> {
 }
 
 const sessions = ref<SessionMeta[]>(loadSessions())
-// 激活会话：最近一个优先；无历史则新建
-const activeKey = ref(sessions.value[0]?.key ?? newSessionKey())
+// 「新建即登记」：无历史会话时立即登记一个草稿会话（标题「新会话」）——
+// 任何时刻 activeKey 都对应索引中的一项，未提交的会话不因重启/关面板丢失。
+// （此前「点新会话→拖实体→写半句话→关闭」的 key 永久丢失，见评审 1.2）
+if (sessions.value.length === 0) {
+  sessions.value = [{ key: newSessionKey(), title: t('agent.session_new'), updatedAt: Date.now(), draft: true }]
+}
+persistSessions()
+// 激活会话：最近一个优先
+const activeKey = ref(sessions.value[0].key)
 const sessionTitle = computed(() => {
   const meta = sessions.value.find((s) => s.key === activeKey.value)
   return meta ? meta.title : t('agent.session_new')
 })
-const isNewSession = computed(() => !sessions.value.some((s) => s.key === activeKey.value))
 
 function newSessionKey(): string {
   return crypto.randomUUID()
@@ -142,8 +155,14 @@ function switchSession(key: string) {
 }
 
 function startNewSession() {
-  if (isNewSession.value && messages.value.length === 0 && runs.value.length === 0) return
-  activeKey.value = newSessionKey()
+  // 当前已是未提交草稿且无内容 → 不重复新建
+  const cur = sessions.value.find((s) => s.key === activeKey.value)
+  if (cur?.draft && messages.value.length === 0 && runs.value.length === 0) return
+  const key = newSessionKey()
+  // 新建即登记：立即写入索引并持久化，未提交的会话也可见、可恢复（评审 1.2）
+  sessions.value.unshift({ key, title: t('agent.session_new'), updatedAt: Date.now(), draft: true })
+  persistSessions()
+  activeKey.value = key
   entities.value = []
   skillPath.value = null
   instruction.value = ''
@@ -185,7 +204,12 @@ async function handleDeleteSession(key: string) {
     if (idx >= 0) sessions.value.splice(idx, 1)
     persistSessions()
     if (key === activeKey.value) {
-      activeKey.value = sessions.value[0]?.key ?? newSessionKey()
+      // 全部会话删除后：立即登记一个新草稿会话（activeKey 恒对应索引中的一项）
+      if (sessions.value.length === 0) {
+        sessions.value = [{ key: newSessionKey(), title: t('agent.session_new'), updatedAt: Date.now(), draft: true }]
+        persistSessions()
+      }
+      activeKey.value = sessions.value[0].key
       entities.value = []
       skillPath.value = null
       instruction.value = ''
@@ -252,6 +276,85 @@ const skillPath = ref<string | null>(null)
 const instruction = ref('')
 const submitting = ref(false)
 
+// ── 会话上下文水位（评审 P1：上下文水位可见性）──
+const usage = ref<AgentSessionUsage | null>(null)
+// 警告阈值（字符）：约 10 万 tokens 的中高水位（中文 token ≈ 字符数/2）。
+// 模型上下文大小不一（128k~200k tokens），取保守中位，接近即提示开新会话。
+const USAGE_WARN_CHARS = 200_000
+
+async function loadUsage() {
+  try {
+    usage.value = await getAgentSessionUsage(activeKey.value)
+  } catch {
+    usage.value = null
+  }
+}
+
+const usageText = computed<string | null>(() => {
+  const u = usage.value
+  if (!u || u.message_count === 0) return null
+  const tokens = Math.max(1, Math.round(u.total_chars / 2))
+  return t('agent.context_usage', String(u.message_count), String(tokens))
+})
+const usageWarn = computed<boolean>(() => (usage.value?.total_chars ?? 0) > USAGE_WARN_CHARS)
+
+// ── 运行历史面板（评审 P1：耗时 / 模型 / 状态 / 引用实体）──
+const historyOpen = ref(false)
+
+function runDurationText(run: AgentRunSummary): string {
+  if (!run.started_at || !run.finished_at) return '—'
+  const start = new Date(run.started_at).getTime()
+  const end = new Date(run.finished_at).getTime()
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return '—'
+  const secs = Math.max(0, Math.round((end - start) / 1000))
+  // 耗时文案走 i18n（英文界面不再漏中文）
+  if (secs < 60) return t('agent.duration_secs', String(secs))
+  const mins = Math.floor(secs / 60)
+  if (mins < 60) return secs % 60 > 0 ? t('agent.duration_min_secs', String(mins), String(secs % 60)) : t('agent.duration_min', String(mins))
+  return t('agent.duration_hour_min', String(Math.floor(mins / 60)), String(mins % 60))
+}
+
+function runModelLabel(run: AgentRunSummary): string {
+  const m = runModel(run)
+  return m ? m.model_id : t('agent.run_model_default')
+}
+
+function runEntityCount(run: AgentRunSummary): number {
+  return runEntities(run).length
+}
+
+// ── 超时引导（评审 P1：行动建议 + 就地调时长）──
+const timeoutSecs = ref(300)
+const adjustingTimeout = ref(false)
+const timeoutInput = ref('')
+
+function isTimeoutRun(run: AgentRunSummary | undefined): boolean {
+  return run?.status === 'timeout'
+}
+
+/** 终态判定（success / failed / timeout / cancelled）：历史面板仅对终态 run 展示「重试」。 */
+function isTerminalRun(run: AgentRunSummary): boolean {
+  return run.status !== 'pending' && run.status !== 'running'
+}
+
+async function saveTimeout() {
+  const v = Number(timeoutInput.value)
+  if (!Number.isInteger(v) || v < 10 || v > 3600) {
+    showToast(t('agent.timeout_range'))
+    return
+  }
+  try {
+    const cfg = await getAgentConfig()
+    cfg.timeout_seconds = v
+    await saveAgentConfig(cfg)
+    timeoutSecs.value = v
+    adjustingTimeout.value = false
+    showToast(t('agent.timeout_saved', String(v)))
+  } catch (e) {
+    showToast(String(e))
+  }
+}
+
 // ── 模型选择：scope model（pi 已配置鉴权可用）+ 当前激活模型（「默认」落点）──
 // selectedModel 按会话记住（存 SessionMeta.model）；null =「默认 - 跟随 pi 当前」。
 const availableModels = ref<RpcAvailableModel[]>([])
@@ -289,11 +392,14 @@ function hideChipTooltip() {
 const runs = ref<AgentRunSummary[]>([])
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
-// 当前会话活跃 run：runs（倒序）中 status 为 pending/running 的最新一条。
-// 从 runs 推导而非独立字段：切换/新建会话后 loadChat 即恢复停止能力，
-// 不依赖流式事件回填（无输出的 run 也能停），后端排队中的 run 同样可停。
+// 当前会话活跃 run：优先取 running（真正占用进程执行的那条），无 running 才取
+// pending（最新排队的那条）。runs 是倒序（ORDER BY id DESC），直接 find pending/running
+// 会取到「最新排队」而非「正在执行」——若同会话异常出现多活跃 run，点「停止」会
+// 停掉排队的、执行中的继续跑（评审 3.2）。从 runs 推导而非独立字段：切换/新建会话
+// 后 loadChat 即恢复停止能力，不依赖流式事件回填（无输出的 run 也能停），
+// 后端排队中的 run 同样可停。
 const activeRun = computed<AgentRunSummary | undefined>(() =>
-  runs.value.find((r) => r.status === 'pending' || r.status === 'running'),
+  runs.value.find((r) => r.status === 'running') ?? runs.value.find((r) => r.status === 'pending'),
 )
 // 提交回执兜底：run 刚创建、runs 尚未刷新时保持可停止（等价旧逻辑「run 未在列表视为运行中」）
 const submittedRunId = ref<number | null>(null)
@@ -455,6 +561,43 @@ async function loadQueueInfo() {
   }
 }
 
+// ── 全局队列（侧栏运行状态点 / 横幅「被谁占用」）：全部活跃 run 按执行顺序 ──
+const queueActive = ref<AgentQueueItem[]>([])
+
+async function loadQueue() {
+  try {
+    queueActive.value = await getAgentQueue()
+  } catch {
+    queueActive.value = []
+  }
+}
+
+/** 某会话的运行状态点：running（执行中）优先，否则取队列最前的 pending。 */
+function sessionRunState(key: string): { status: string; position: number } | null {
+  const items = queueActive.value.filter((i) => i.session_key === key)
+  if (items.length === 0) return null
+  const running = items.find((i) => i.status === 'running')
+  if (running) return { status: 'running', position: running.position }
+  return { status: 'pending', position: items[0].position }
+}
+
+/** 侧栏渲染源：sessions 预附运行状态（每项只算一次，避免模板内重复调用 sessionRunState）。 */
+const sessionsWithState = computed(() =>
+  sessions.value.map((s) => ({ ...s, state: sessionRunState(s.key) })),
+)
+
+function sessionTitleOf(key: string): string {
+  return sessions.value.find((s) => s.key === key)?.title || t('agent.session_untitled')
+}
+
+/** 占用执行位的其他会话 key（本会话 pending 且其他会话 running）：横幅可点击跳转。 */
+const queueOccupiedBy = computed<string | null>(() => {
+  const q = queueInfo.value
+  if (!q?.other_running || latestRun.value?.status !== 'pending') return null
+  const key = q.running_sessions[0]
+  return key && key !== activeKey.value ? key : null
+})
+
 /** 横幅「排队中」补充提示：其他会话执行中 / 队列位置。 */
 const queueHint = computed<string | null>(() => {
   const q = queueInfo.value
@@ -469,8 +612,10 @@ const queueHint = computed<string | null>(() => {
 
 async function loadChat() {
   messagesLoading.value = true
+  // 切会话时先清旧水位：loadUsage 异步返回前，避免闪现上一会话的水位条 / 橙色告警
+  usage.value = null
   try {
-    await Promise.all([loadRuns(), loadMessages(), loadQueueInfo()])
+    await Promise.all([loadRuns(), loadMessages(), loadQueueInfo(), loadQueue(), loadUsage()])
     // runs 已刷新：提交兜底使命结束，活跃 run 由 activeRun 推导接管
     submittedRunId.value = null
     // 切回正在运行的会话：把已加载的历史冻结进快照，
@@ -489,6 +634,7 @@ async function loadCatalog() {
   try {
     const [cfg, srcs, rels] = await Promise.all([getAgentConfig(), listSources(), getReleases()])
     skills.value = cfg.skills
+    timeoutSecs.value = cfg.timeout_seconds
     sources.value = srcs
     releases.value = rels
   } catch {
@@ -518,7 +664,8 @@ function startPolling() {
       stopPolling()
       return
     }
-    await loadMessages()
+    // 轮询期顺带刷新全局队列：排队 run 开始/结束时侧栏状态点及时更新（轻量 SQL）
+    await Promise.all([loadMessages(), loadQueue()])
     scrollToBottomIfNear()
   }, 1500)
 }
@@ -598,14 +745,15 @@ async function handleSubmit() {
     submittedRunId.value = runId
     track('agent.submit')
     instruction.value = ''
-    // 会话登记（标题取首次指令前 40 字）+ 固化本次模型选择
+    // 会话登记（标题取首次指令前 40 字）+ 固化本次模型选择 + 清除草稿标记
+    // （新建即登记后 key 恒在索引中；draft 清除 = 已提交，不再是「新会话」）
     const now = Date.now()
     const idx = sessions.value.findIndex((s) => s.key === activeKey.value)
     const title = cleaned.trim() ? [...cleaned.trim()].slice(0, 40).join('') : sessionTitle.value
     if (idx >= 0) {
-      sessions.value[idx] = { ...sessions.value[idx], title, updatedAt: now, model: selectedModel.value }
+      sessions.value[idx] = { ...sessions.value[idx], title, updatedAt: now, model: selectedModel.value, draft: false }
     } else {
-      sessions.value.unshift({ key: activeKey.value, title, model: selectedModel.value, updatedAt: now })
+      sessions.value.unshift({ key: activeKey.value, title, model: selectedModel.value, updatedAt: now, draft: false })
     }
     persistSessions()
     await loadChat()
@@ -636,7 +784,9 @@ async function handleCancel() {
 }
 
 // ── 消息渲染辅助 ──
-// runs（倒序）按顺序对位 user 消息（时间窗校验，防对位错乱）
+// 时间窗对位（fallback）：runs（倒序）按顺序对位 user 消息。runForMessage 优先用
+// 后端直连的 msg.run_id（list_agent_messages 按创建顺序填好，见其命令注释），
+// 此处仅兜底旧数据 / 后端异常未填充的场景。
 const userRunMap = computed<Map<number, AgentRunSummary>>(() => {
   const map = new Map<number, AgentRunSummary>()
   const runsAsc = [...runs.value].reverse()
@@ -657,8 +807,24 @@ const userRunMap = computed<Map<number, AgentRunSummary>>(() => {
   return map
 })
 
+/** 某条 user 消息对应的 run：优先 run_id 直连（后端 list_agent_messages 已按创建
+ * 顺序对位并带 started_at 邻近校验——run 未产生消息的路径如排队中取消/派发前失败
+ * 已被跳过，评审 1.5 + 复核）。直连命中后仍校验 started_at 与消息时间邻近
+ * （防御旧版本绑定/后端异常），不通过落回 60 秒时间窗兜底——双层拒绝错挂。 */
 function runForMessage(idx: number): AgentRunSummary | undefined {
+  const msg = messages.value[idx]
+  if (msg?.run_id) {
+    const byId = runs.value.find((r) => r.id === msg.run_id)
+    if (byId && byId.started_at && timeAdjacent(byId.started_at, msg.timestamp)) return byId
+  }
   return userRunMap.value.get(idx)
+}
+
+/** 两个 RFC3339 时间是否在 60 秒窗内（run_id 直连与时间窗兜底的共同校验）。 */
+function timeAdjacent(a: string, b: string): boolean {
+  const ta = new Date(a).getTime()
+  const tb = new Date(b).getTime()
+  return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) < 60_000
 }
 
 /** 最近一次 run（状态横幅用）。 */
@@ -1207,21 +1373,65 @@ watch(
         <!-- 最近 run 状态横幅 -->
         <div v-if="latestRun" class="agent-ws-banner" :class="`status-${latestRun.status}`">
           <span class="agent-ws-banner-status">{{ runStatusLabel(latestRun.status) }}</span>
-          <span v-if="latestRun.status === 'pending' && queueHint" class="agent-ws-banner-queue" :title="queueHint">{{ queueHint }}</span>
+          <!-- 排队提示：被其他会话占用时可点击 → 一键跳到占用会话（在那里点「停止」让路） -->
+          <span
+            v-if="latestRun.status === 'pending' && queueHint"
+            class="agent-ws-banner-queue"
+            :class="{ clickable: !!queueOccupiedBy }"
+            :title="queueHint"
+            @click="queueOccupiedBy && switchSession(queueOccupiedBy)"
+          >{{ queueOccupiedBy ? t('agent.queue_occupied_by', sessionTitleOf(queueOccupiedBy)) : queueHint }}</span>
           <span v-if="runErrorText(latestRun)" class="agent-ws-banner-error" :title="runErrorText(latestRun) ?? ''">{{ runErrorText(latestRun) }}</span>
           <span class="agent-ws-banner-text">{{ latestRun.instruction || sessionTitle }}</span>
           <span v-if="latestRun.status === 'running' || latestRun.status === 'pending'" class="agent-ws-banner-spinner" aria-hidden="true"></span>
-          <span v-if="latestRun.session_path" class="agent-ws-banner-actions">
-            <template v-if="actionsExpanded">
-              <button class="btn-sm" :title="t('agent.open_session')" @click="handleOpenSession(latestRun)">{{ t('agent.open_session') }}</button>
-              <button class="btn-sm" :title="t('agent.copy_command_hint')" @click="handleCopySessionCommand(latestRun)">{{ t('agent.copy_command') }}</button>
+          <span class="agent-ws-banner-actions">
+            <button class="btn-sm" :class="{ active: historyOpen }" :title="t('agent.run_history_title')" @click="historyOpen = !historyOpen">
+              {{ t('agent.run_history_title') }}
+            </button>
+            <template v-if="latestRun.session_path">
+              <template v-if="actionsExpanded">
+                <button class="btn-sm" :title="t('agent.open_session')" @click="handleOpenSession(latestRun)">{{ t('agent.open_session') }}</button>
+                <button class="btn-sm" :title="t('agent.copy_command_hint')" @click="handleCopySessionCommand(latestRun)">{{ t('agent.copy_command') }}</button>
+              </template>
+              <button
+                class="btn-sm agent-ws-banner-toggle"
+                :title="actionsExpanded ? t('agent.collapse_actions') : t('agent.expand_actions')"
+                @click="actionsExpanded = !actionsExpanded"
+              >{{ actionsExpanded ? '>>' : '<<' }}</button>
             </template>
-            <button
-              class="btn-sm agent-ws-banner-toggle"
-              :title="actionsExpanded ? t('agent.collapse_actions') : t('agent.expand_actions')"
-              @click="actionsExpanded = !actionsExpanded"
-            >{{ actionsExpanded ? '>>' : '<<' }}</button>
           </span>
+        </div>
+
+        <!-- 会话上下文水位（消息数 / 估算 token；接近上限提示开新会话） -->
+        <div v-if="usageText" class="agent-ws-usage" :class="{ warn: usageWarn }">
+          <span class="agent-ws-usage-text" :title="usageWarn ? usageText : undefined">{{ usageWarn ? t('agent.context_near_limit') : usageText }}</span>
+          <button v-if="usageWarn" class="btn-sm agent-ws-usage-new" :title="usageText ?? ''" @click="startNewSession">{{ t('agent.session_new') }}</button>
+        </div>
+
+        <!-- 运行历史面板（浮层）：耗时 / 模型 / 状态 / 引用实体 -->
+        <div v-if="historyOpen" class="agent-ws-history">
+          <div class="agent-ws-history-head">
+            <span class="agent-ws-history-title">{{ t('agent.run_history_title') }}</span>
+            <button class="agent-ws-history-close" :title="t('release.detail_close')" @click="historyOpen = false">
+              <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+            </button>
+          </div>
+          <ul class="agent-ws-history-list">
+            <li v-for="r in runs" :key="r.id" class="agent-ws-history-item">
+              <span class="agent-ws-history-status" :class="`st-${r.status}`">{{ runStatusLabel(r.status) }}</span>
+              <span class="agent-ws-history-main">
+                <span class="agent-ws-history-instr" :title="r.instruction">{{ r.instruction || sessionTitle }}</span>
+                <span class="agent-ws-history-meta">
+                  {{ runModelLabel(r) }} · {{ runDurationText(r) }}
+                  <template v-if="runEntityCount(r) > 0"> · {{ t('agent.run_entities_n', String(runEntityCount(r))) }}</template>
+                </span>
+              </span>
+              <span class="agent-ws-history-actions">
+                <button v-if="isTerminalRun(r)" class="btn-sm" :title="t('agent.retry')" @click="handleRetry(r)">{{ t('agent.retry') }}</button>
+              </span>
+            </li>
+            <li v-if="runs.length === 0" class="agent-ws-history-empty">{{ t('agent.run_history_empty') }}</li>
+          </ul>
         </div>
 
         <!-- 消息区 -->
@@ -1274,6 +1484,28 @@ watch(
                       {{ t('agent.retry_edit') }}
                     </button>
                   </span>
+                  <!-- 超时引导（评审 3.6）：行动建议 + 就地调时长（timeout 每次调度重读，无需重启进程） -->
+                  <template v-if="isTimeoutRun(runForMessage(idx))">
+                    <span class="agent-ws-run-advice">{{ t('agent.timeout_advice') }}</span>
+                    <span v-if="!adjustingTimeout" class="agent-ws-run-advice-actions">
+                      <button class="btn-sm" :title="t('agent.timeout_adjust')" @click="adjustingTimeout = true; timeoutInput = String(timeoutSecs)">
+                        {{ t('agent.timeout_adjust') }}
+                      </button>
+                    </span>
+                    <span v-else class="agent-ws-run-advice-adjust">
+                      <input
+                        v-model="timeoutInput"
+                        type="number"
+                        min="10"
+                        max="3600"
+                        class="agent-ws-timeout-input"
+                        :placeholder="t('agent.timeout_placeholder')"
+                        @keydown.enter.prevent="saveTimeout"
+                      />
+                      <button class="btn-sm" @click="saveTimeout">{{ t('agent.timeout_save') }}</button>
+                      <button class="btn-sm" @click="adjustingTimeout = false">{{ t('agent.timeout_cancel') }}</button>
+                    </span>
+                  </template>
                 </div>
               </div>
 
@@ -1464,15 +1696,22 @@ watch(
         <div class="agent-ws-sidebar-title">{{ t('agent.session_list') }}</div>
         <ul class="agent-ws-session-list">
           <li
-            v-for="s in sessions"
+            v-for="s in sessionsWithState"
             :key="s.key"
             class="agent-ws-session-item"
-            :class="{ active: s.key === activeKey }"
+            :class="{ active: s.key === activeKey, draft: s.draft }"
             :title="s.title"
             @click="switchSession(s.key)"
           >
             <span class="agent-ws-session-name">
               {{ s.title }}
+              <!-- 运行状态点：执行中（蓝）/ 排队第 N 位（橙）——全局队列驱动（评审 1.3） -->
+              <span
+                v-if="s.state"
+                class="agent-ws-session-dot"
+                :class="`st-${s.state.status}`"
+                :title="s.state.status === 'running' ? t('agent.session_running_hint') : t('agent.session_queued_hint', String(s.state.position))"
+              >{{ s.state.status === 'running' ? t('agent.status_running') : t('agent.queue_position', String(s.state.position)) }}</span>
               <span v-if="s.recovered" class="agent-ws-session-badge" :title="t('agent.session_recovered_hint')">
                 {{ t('agent.session_recovered') }}
               </span>
@@ -1482,10 +1721,7 @@ watch(
               <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
             </button>
           </li>
-          <li v-if="isNewSession" class="agent-ws-session-item active agent-ws-session-item-new">
-            <span class="agent-ws-session-name">{{ t('agent.session_new') }}</span>
-          </li>
-          <li v-if="sessions.length === 0 && !isNewSession" class="agent-ws-session-empty">{{ t('agent.session_empty') }}</li>
+          <li v-if="sessions.length === 0" class="agent-ws-session-empty">{{ t('agent.session_empty') }}</li>
         </ul>
         <button v-if="sessions.length > 1" class="agent-ws-session-clear" :title="t('agent.session_clear')" @click="handleClearSessions">
           <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
@@ -1765,6 +2001,30 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   text-overflow: ellipsis;
   padding-right: 16px;
 }
+/* 未提交草稿会话（新建即登记，评审 1.2）：弱化样式以示「还没对话」 */
+.agent-ws-session-item.draft .agent-ws-session-name {
+  opacity: 0.65;
+  font-style: italic;
+}
+/* 运行状态点：执行中（蓝）/ 排队第 N 位（橙），全局队列驱动（评审 1.3） */
+.agent-ws-session-dot {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 14px;
+  border-radius: 3px;
+  vertical-align: 1px;
+  white-space: nowrap;
+}
+.agent-ws-session-dot.st-running {
+  color: #2e6fd0;
+  background: rgba(46, 111, 208, 0.14);
+}
+.agent-ws-session-dot.st-pending {
+  color: #b0882e;
+  background: rgba(214, 158, 46, 0.16);
+}
 /* 「已恢复」标记：磁盘发现补入的会话（localStorage 索引曾丢失） */
 .agent-ws-session-badge {
   display: inline-block;
@@ -1840,8 +2100,9 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   height: 10px;
 }
 
-/* 聊天区 */
+/* 聊天区（position: relative 供运行历史浮层 .agent-ws-history 定位） */
 .agent-ws-chat {
+  position: relative;
   flex: 1;
   min-width: 0;
   display: flex;
@@ -1910,6 +2171,172 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 }
 .agent-ws-banner-toggle:hover {
   opacity: 1;
+}
+/* 排队提示可点击（被其他会话占用时）：虚线强调 + hover 变 accent */
+.agent-ws-banner-queue.clickable {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
+.agent-ws-banner-queue.clickable:hover {
+  color: #2e6fd0;
+}
+.agent-ws-banner-actions .btn-sm.active {
+  background: rgba(46, 111, 208, 0.12);
+  border-color: rgba(46, 111, 208, 0.35);
+  color: #2e6fd0;
+}
+
+/* 上下文水位条：消息数 / 估算 token；接近上限时置顶提示开新会话 */
+.agent-ws-usage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 14px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+.agent-ws-usage.warn {
+  color: #b0882e;
+  background: rgba(214, 158, 46, 0.08);
+}
+.agent-ws-usage-text {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-ws-usage-new {
+  flex-shrink: 0;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+/* 运行历史面板：覆盖整个聊天区的浮层（顶部含标题与关闭；依托 .agent-ws-chat 的 relative 定位） */
+.agent-ws-history {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 12;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+.agent-ws-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.agent-ws-history-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-ws-history-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 5px;
+}
+.agent-ws-history-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.agent-ws-history-close svg {
+  width: 12px;
+  height: 12px;
+}
+.agent-ws-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.agent-ws-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-subtle);
+}
+.agent-ws-history-status {
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  min-width: 34px;
+}
+.agent-ws-history-status.st-running,
+.agent-ws-history-status.st-pending {
+  color: #2e6fd0;
+}
+.agent-ws-history-status.st-success {
+  color: #2e9e5b;
+}
+.agent-ws-history-status.st-failed {
+  color: #d64545;
+}
+.agent-ws-history-status.st-timeout {
+  color: #d08a2e;
+}
+.agent-ws-history-status.st-cancelled {
+  color: #8a8a8a;
+}
+.agent-ws-history-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-ws-history-instr {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-ws-history-meta {
+  font-size: 10px;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono-font, monospace);
+}
+.agent-ws-history-actions {
+  flex-shrink: 0;
+}
+.agent-ws-history-actions .btn-sm {
+  padding: 1px 7px;
+  font-size: 11px;
+}
+.agent-ws-history-empty {
+  padding: 20px;
+  text-align: center;
+  font-size: 12px;
+  opacity: 0.5;
 }
 .agent-ws-banner-spinner {
   width: 12px;
@@ -2037,6 +2464,42 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 .agent-ws-run-failed-actions .btn-sm {
   padding: 1px 7px;
   font-size: 11px;
+}
+/* 超时引导（评审 3.6）：行动建议独占一行 + 就地调时长 */
+.agent-ws-run-advice {
+  flex-basis: 100%;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.agent-ws-run-advice-actions {
+  flex-shrink: 0;
+}
+.agent-ws-run-advice-actions .btn-sm {
+  padding: 1px 7px;
+  font-size: 11px;
+}
+.agent-ws-run-advice-adjust {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  align-items: center;
+}
+.agent-ws-run-advice-adjust .btn-sm {
+  padding: 1px 7px;
+  font-size: 11px;
+}
+.agent-ws-timeout-input {
+  width: 72px;
+  padding: 2px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+}
+.agent-ws-timeout-input:focus {
+  outline: none;
+  border-color: var(--accent, #2e6fd0);
 }
 
 /* 折叠块（思考 / 工具详情） */
