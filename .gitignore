@@ -35,7 +35,7 @@ coverage/
 # Thoughts (AI notes / plans)
 thoughts/
 .rpiv/
-docs/reviews/
+docs/
 
 # Security audit output
 piolium/
