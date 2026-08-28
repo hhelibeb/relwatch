@@ -585,9 +585,7 @@ html {
   color: var(--primary);
 }
 
-/* ── 工具条行（ReleaseSearchBar / LogTab 共享） ──────
- * Agent 工具栏按钮：icon-only（机器人 + 展开/收回箭头），
- * 与左侧筛选下拉组（filter-trigger）同 padding/border/字号，视觉等高。 */
+/* ── Agent 开合按钮（header 右上，icon-only：机器人 + 展开/收回箭头） ────── */
 .release-agent-btn {
   display: inline-flex;
   align-items: center;

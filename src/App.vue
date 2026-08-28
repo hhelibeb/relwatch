@@ -621,6 +621,8 @@ onUnmounted(() => {
             <svg class="release-agent-btn-icon"><use href="/icons.svg#agent-icon"/></svg>
             <svg class="release-agent-btn-arrow"><use :href="agentPanelOpen ? '/icons.svg#chevron-left-icon' : '/icons.svg#chevron-right-icon'"/></svg>
           </button>
+          <!-- 分组分隔线：Agent 面板开关与「立即检查」主操作隔开，降低误触 -->
+          <span v-if="agentConfig?.enabled" class="header-actions-divider"></span>
           <button class="btn-primary" :disabled="polling || sourceChecking" @click="handlePoll">
             {{ polling || sourceChecking ? t('app.checking') : t('app.check_now') }}
           </button>
@@ -689,11 +691,19 @@ onUnmounted(() => {
   height: 100%;
 }
 
-/* 标题栏右侧操作组：Agent 开合按钮 + 立即检查 */
+/* 标题栏右侧操作组：Agent 开合按钮 + 分隔线 + 立即检查（gap 14px 拉开两组，防误触） */
 .header-top-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 14px;
+}
+
+/* 两组操作间的竖直分隔线 */
+.header-actions-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  flex-shrink: 0;
 }
 
 /* 分隔线：主界面与 Agent 工作区之间，可拖拽调节两边宽度 */
