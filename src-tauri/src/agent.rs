@@ -66,11 +66,47 @@ pub struct AgentOutcome {
     pub stderr: String,
 }
 
+/// 一次 Agent 执行的失败：错误码 + **失败前已生成的输出**。
+///
+/// 超时 / 中止 / 模型错误时，模型往往已经产出大段内容（跑了 4 分 50 秒才超时的那部分）。
+/// 此前错误只带错误码，这部分产物随 `Err` 一起丢弃，run 记录的 stdout 恒为 None，
+/// 「运行记录」视角查不到任何产出——用户只能靠聊天流（JSONL）回看。故错误携带
+/// `partial_stdout`，由调度器一并写入 DB。
+#[derive(Debug, Clone)]
+pub struct AgentError {
+    /// 错误码（i18n 键|参数），形如 `err.agent.timeout|300`。
+    pub code: String,
+    /// 失败前已累积的模型输出（无产出时为空串）。
+    pub partial_stdout: String,
+}
+
+impl AgentError {
+    pub fn new(code: impl Into<String>, partial_stdout: String) -> Self {
+        AgentError {
+            code: code.into(),
+            partial_stdout,
+        }
+    }
+}
+
+/// 无产出的失败（启动阶段 / 尚未开始生成）；`?` 传播的 String 错误走此路径。
+impl From<String> for AgentError {
+    fn from(code: String) -> Self {
+        AgentError::new(code, String::new())
+    }
+}
+
+impl From<&str> for AgentError {
+    fn from(code: &str) -> Self {
+        AgentError::new(code, String::new())
+    }
+}
+
 /// Agent 实现抽象：新 Agent 类型实现此 trait 并在 `executor_for` 登记。
 #[async_trait]
 pub trait AgentExecutor: Send + Sync {
     fn agent_type(&self) -> &'static str;
-    async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, String>;
+    async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, AgentError>;
 }
 
 /// 根据全局配置构造执行器。P0 仅支持 pi（RPC 常驻进程驱动）。
@@ -152,7 +188,7 @@ impl AgentExecutor for RpcExecutor {
         "pi"
     }
 
-    async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, String> {
+    async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, AgentError> {
         use serde_json::Value;
         use tokio::sync::broadcast::error::RecvError;
 
@@ -208,7 +244,10 @@ impl AgentExecutor for RpcExecutor {
             if remaining.is_zero() {
                 // abort 无响应（进程卡死）时强杀进程树，下次 ensure_started 自动重启
                 self.rpc.abort_force().await;
-                return Err(format!("err.agent.timeout|{}", timeout));
+                return Err(AgentError::new(
+                    format!("err.agent.timeout|{}", timeout),
+                    stdout,
+                ));
             }
             let received = tokio::time::timeout(remaining, rx.recv()).await;
             let value = match received {
@@ -219,10 +258,15 @@ impl AgentExecutor for RpcExecutor {
                     log::warn!("agent rpc event stream lagged, skipped {} events", n);
                     continue;
                 }
-                Ok(Err(RecvError::Closed)) => return Err("err.agent.rpc_exited".to_string()),
+                Ok(Err(RecvError::Closed)) => {
+                    return Err(AgentError::new("err.agent.rpc_exited", stdout))
+                }
                 Err(_) => {
                     self.rpc.abort_force().await;
-                    return Err(format!("err.agent.timeout|{}", timeout));
+                    return Err(AgentError::new(
+                        format!("err.agent.timeout|{}", timeout),
+                        stdout,
+                    ));
                 }
             };
             // 实时转发前端（打字机 / 工具状态）
@@ -245,18 +289,18 @@ impl AgentExecutor for RpcExecutor {
                     }
                     // 被中止（abort）：立即返回，不等 settled
                     if is_aborted(&last_messages) {
-                        return Err("err.agent.aborted".to_string());
+                        return Err(AgentError::new("err.agent.aborted", stdout));
                     }
                 }
                 // 读循环 EOF（进程崩溃 / 被 kill）时广播的合成事件：立即失败返回，
                 // 不再干等 deadline（此前会挂到超时才收敛，前端期间看不到任何进展）
-                Some("rpc_exited") => return Err("err.agent.rpc_exited".to_string()),
+                Some("rpc_exited") => return Err(AgentError::new("err.agent.rpc_exited", stdout)),
                 Some("agent_settled") => {
                     // 兜底：正常协议 agent_end 必先于 settled 到达。若 agent_end 事件被
                     // 广播丢帧挤掉（Lagged），last_messages 为空，errorMessage 检测失效——
                     // 模型错误会被误记 success，按 failed 收敛（宁 failed 不误 success）。
                     if !saw_agent_end {
-                        return Err("err.agent.end_lost".to_string());
+                        return Err(AgentError::new("err.agent.end_lost", stdout));
                     }
                     settled = true;
                 }
@@ -269,7 +313,8 @@ impl AgentExecutor for RpcExecutor {
             m.get("role").and_then(|r| r.as_str()) == Some("assistant")
                 && m.get("errorMessage").is_some()
         }) {
-            return Err("err.agent.model_error".to_string());
+            // 模型错误也可能发生在部分生成之后（生成中途鉴权失效），产物同样保留
+            return Err(AgentError::new("err.agent.model_error", stdout));
         }
         Ok(AgentOutcome {
             exit_code: Some(0),
@@ -707,8 +752,11 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
             (st, o.exit_code, Some(o.stdout), Some(o.stderr), None)
         }
         Err(e) => {
-            let st = if e.starts_with("err.agent.timeout") { STATUS_TIMEOUT } else { STATUS_FAILED };
-            (st, None, None, None, Some(e))
+            let st = if e.code.starts_with("err.agent.timeout") { STATUS_TIMEOUT } else { STATUS_FAILED };
+            // 超时 / 失败 / 取消前已生成的产物照写 DB：聊天流（JSONL）里看得到的内容，
+            // 运行记录里也该查得到（此前非 success 终态 stdout 恒为 None，产物被丢弃）。
+            let out = if e.partial_stdout.is_empty() { None } else { Some(e.partial_stdout) };
+            (st, None, out, None, Some(e.code))
         }
     };
     // 用户取消优先于进程退出码（取消时 kill 后 exit code 非 0）
@@ -994,11 +1042,15 @@ mod tests {
         fn agent_type(&self) -> &'static str {
             "fake"
         }
-        async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, String> {
+        async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, AgentError> {
             self.0.lock().unwrap().extend(ctx.entity_texts.iter().cloned());
             self.1.lock().unwrap().push(ctx.skill_path.map(|s| s.to_string()));
             if ctx.skill_path == Some("/fail") {
-                return Err("boom".to_string());
+                return Err("boom".into());
+            }
+            // /partial-fail：失败但已产出内容（模拟生成中途超时 / 模型错误）
+            if ctx.skill_path == Some("/partial-fail") {
+                return Err(AgentError::new("err.agent.timeout|300", "部分产物".to_string()));
             }
             Ok(AgentOutcome {
                 exit_code: Some(0),
@@ -1081,6 +1133,30 @@ mod tests {
         assert_eq!(run.status, "failed");
         assert_eq!(run.error.as_deref(), Some("boom"));
         assert!(run.finished_at.is_some());
+        // 无产出的失败：stdout 保持 None（不写空串，与「有产物」区分）
+        assert_eq!(run.stdout, None);
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_keeps_partial_output_on_failure() {
+        let pool = init_memory_pool().unwrap();
+        {
+            let conn = pool.get().unwrap();
+            save_agent_config(&conn, &sample_config()).unwrap();
+        }
+        let run_id = {
+            let conn = pool.get().unwrap();
+            create_run(&conn, "ws-1", Some("/partial-fail"), &[], "x", None, None).unwrap()
+        };
+        let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
+        dispatch_run(&ctx, run_id).await;
+
+        let conn = pool.get().unwrap();
+        let run = get_run(&conn, run_id).unwrap().unwrap();
+        assert_eq!(run.status, "timeout");
+        assert_eq!(run.error.as_deref(), Some("err.agent.timeout|300"));
+        // 超时前已生成的内容写入 DB：运行记录视角也能找回产物
+        assert_eq!(run.stdout.as_deref(), Some("部分产物"));
     }
 
     #[tokio::test]

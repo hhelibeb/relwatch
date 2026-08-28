@@ -335,6 +335,107 @@ pub fn list_agent_messages(session_key: String) -> Result<Vec<AgentChatMessage>,
     agent_session::parse_session_file(&path)
 }
 
+/// 磁盘发现的一个工作区会话（会话索引丢失后的恢复数据源）。
+///
+/// 会话**文件**在 Roaming 数据目录（`agent-sessions/ws-<key>.jsonl`，与 database.db 同级），
+/// 会话**索引**却在 WebView2 缓存目录树（localStorage）——任何磁盘清理工具扫到
+/// `EBWebView` 就一锅端，文件毫发无损但 UI 里再也看不到它们。GUI 无 CLI 那样的
+/// `ls | grep` 自救手段，故必须由后端提供发现能力：**文件即索引**。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentSessionInfo {
+    /// 会话 key（与前端 session_key 同源，UUID）。
+    pub session_key: String,
+    /// 从会话文件首条 user 消息重建的标题（无 user 消息时为空串，前端用占位标题兜底）。
+    pub title: String,
+    /// 会话文件绝对路径。
+    pub session_path: String,
+    /// 最后活跃时间（RFC3339 UTC；文件 mtime 与最近一次提交时间的较晚者）。
+    pub updated_at: String,
+    /// 最近一次提交的状态（无 run 记录时为空串）。
+    pub last_status: String,
+    /// 该会话的累计提交次数。
+    pub run_count: i64,
+}
+
+/// 扫描会话目录，列出磁盘上全部工作区会话（按最后活跃时间倒序）。
+///
+/// 前端用它与 localStorage 索引合并：索引里有的保持原样（用户改过的标题/模型优先），
+/// 索引里没有的自动补入并标记为「恢复的会话」。会话目录不存在（从未提交过）→ 空列表。
+#[tauri::command]
+#[specta::specta]
+pub fn list_agent_sessions(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<AgentSessionInfo>, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let digests = agent::latest_run_digests(&conn)?;
+    let dir = agent_sessions_dir();
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        // 目录不存在 = 从未提交过，非错误（与 list_agent_messages 的空数组语义一致）
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(session_key) = session_key_from_path(&path) else {
+            continue;
+        };
+        if !is_valid_session_key(&session_key) {
+            continue;
+        }
+        let file_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let digest = digests.get(&session_key);
+        let run_ms = digest
+            .and_then(|d| d.last_created_at.as_deref())
+            .and_then(rfc3339_to_millis)
+            .unwrap_or(0);
+        out.push(AgentSessionInfo {
+            title: crate::agent_session::session_title_from_file(&path).unwrap_or_default(),
+            session_key,
+            session_path: path.to_string_lossy().to_string(),
+            // 文件 mtime 与最近提交时间取较晚者：pi 落盘时机与 run 创建不完全同步，
+            // 两者都可能更晚（提交后仍在流式写文件 / 记录补写）
+            updated_at: millis_to_rfc3339(file_ms.max(run_ms)),
+            last_status: digest
+                .and_then(|d| d.last_status.clone())
+                .unwrap_or_default(),
+            run_count: digest.map(|d| d.run_count).unwrap_or(0),
+        });
+    }
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(out)
+}
+
+/// 从会话文件名反解 session_key（`ws-<key>.jsonl` → `<key>`）；非会话文件返回 None。
+fn session_key_from_path(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let stem = name.strip_suffix(".jsonl")?;
+    let key = stem.strip_prefix("ws-")?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
+fn millis_to_rfc3339(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+fn rfc3339_to_millis(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
 /// 取消一次正在运行（或排队中）的 Agent 提交。
 /// 「停止」= 向 RPC 常驻进程发 `abort`（不杀进程）：会话上下文保留在进程内存
 /// 与 JSONL 文件，继续对话直接再提交即可，无需恢复流程。
@@ -528,6 +629,19 @@ mod tests {
     fn session_path_uses_sanitized_key() {
         let p = session_path_for_key("abc-123");
         assert!(p.ends_with("ws-abc-123.jsonl"));
+    }
+
+    #[test]
+    fn session_key_parsed_back_from_file_name() {
+        let p = session_path_for_key("f47ac10b-58cc-4372-a567-0e02b2c3d479");
+        assert_eq!(
+            session_key_from_path(&p).as_deref(),
+            Some("f47ac10b-58cc-4372-a567-0e02b2c3d479")
+        );
+        // 非会话文件（无 ws- 前缀 / 非 .jsonl / 空 key）一律忽略
+        assert_eq!(session_key_from_path(std::path::Path::new("agent-sessions/evil.jsonl")), None);
+        assert_eq!(session_key_from_path(std::path::Path::new("agent-sessions/ws-a.txt")), None);
+        assert_eq!(session_key_from_path(std::path::Path::new("agent-sessions/ws-.jsonl")), None);
     }
 
     #[test]

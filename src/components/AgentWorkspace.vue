@@ -11,6 +11,7 @@ import {
   runAgentJob,
   listAgentRuns,
   listAgentMessages,
+  listAgentSessions,
   deleteAgentSession,
   cancelAgentRun,
   openAgentSession,
@@ -20,6 +21,7 @@ import {
   type AgentModelRef,
   type AgentQueueStatus,
   type AgentRunSummary,
+  type AgentSessionInfo,
   type RpcAvailableModel,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
@@ -41,6 +43,8 @@ interface SessionMeta {
   updatedAt: number
   /** 该会话显式选择的模型（null/缺省 = 跟随 pi 当前/默认模型）。 */
   model?: AgentModelRef | null
+  /** 由磁盘文件发现补入（localStorage 索引里没有）：侧栏标记为「已恢复」。 */
+  recovered?: boolean
 }
 const SESSIONS_STORAGE_KEY = 'relwatch.agent.sessions.v1'
 // 会话侧栏折叠状态（默认折叠，聊天区全宽；localStorage 持久化）
@@ -68,6 +72,35 @@ function persistSessions() {
   localStorage.setItem(SESSIONS_STORAGE_KEY, JSON.stringify(sessions.value.slice(0, SESSIONS_META_LIMIT)))
 }
 
+/** 磁盘发现：会话索引只存在于 localStorage（WebView2 缓存目录树，清缓存即失联），
+ * 而会话文件在 Roaming 数据目录里完好无损 —— 文件即索引，标题从首条 user 消息重建。
+ *
+ * 合并策略：localStorage 为准（用户改过的标题/模型优先），磁盘上有而索引中没有的
+ * 会话自动补入并标记为「恢复的会话」。用户点开后标记清除（已确认，不再是异常态）。 */
+async function discoverSessions(): Promise<number> {
+  let found: AgentSessionInfo[]
+  try {
+    found = await listAgentSessions()
+  } catch {
+    return 0 // 发现失败不阻塞（localStorage 索引仍可用）
+  }
+  const known = new Set(sessions.value.map((s) => s.key))
+  const recovered: SessionMeta[] = []
+  for (const s of found) {
+    if (known.has(s.session_key)) continue
+    recovered.push({
+      key: s.session_key,
+      title: s.title.trim() || t('agent.session_untitled'),
+      updatedAt: new Date(s.updated_at).getTime() || Date.now(),
+      recovered: true,
+    })
+  }
+  if (recovered.length === 0) return 0
+  sessions.value = [...sessions.value, ...recovered].sort((a, b) => b.updatedAt - a.updatedAt)
+  persistSessions()
+  return recovered.length
+}
+
 const sessions = ref<SessionMeta[]>(loadSessions())
 // 激活会话：最近一个优先；无历史则新建
 const activeKey = ref(sessions.value[0]?.key ?? newSessionKey())
@@ -81,6 +114,14 @@ function newSessionKey(): string {
   return crypto.randomUUID()
 }
 
+/** 清除会话的「已恢复」标记（用户打开过即视为已确认），变更时写回索引。 */
+function clearRecoveredFlag(key: string) {
+  const idx = sessions.value.findIndex((s) => s.key === key && s.recovered)
+  if (idx < 0) return
+  sessions.value[idx] = { ...sessions.value[idx], recovered: false }
+  persistSessions()
+}
+
 function switchSession(key: string) {
   if (key === activeKey.value) return
   // 不中止原会话的 run：后端并发上限 1、其余排队执行（pending 取消只插标记不碰进程），
@@ -91,6 +132,8 @@ function switchSession(key: string) {
   cancelling.value = false
   liveMessages.value = []
   historySnapshot.value = []
+  // 恢复的会话被打开过即转为普通会话（已确认，不再是异常态）；同时写回索引
+  clearRecoveredFlag(key)
   selectedModel.value = sessions.value.find((s) => s.key === key)?.model ?? null
   void loadChat()
   entities.value = []
@@ -958,6 +1001,72 @@ function runFailedNote(run: AgentRunSummary | undefined): string | null {
   return runErrorText(run)
 }
 
+/** 该 run 是否值得重试（非成功终态即终点不明：失败 / 超时 / 被取消）。 */
+function canRetry(run: AgentRunSummary | undefined): boolean {
+  if (!run) return false
+  return run.status === 'failed' || run.status === 'timeout' || run.status === 'cancelled'
+}
+
+/** run 记录固化的模型选择（JSON 字符串；解析失败按「默认」处理）。 */
+function runModel(run: AgentRunSummary): AgentModelRef | null {
+  if (!run.model) return null
+  try {
+    return JSON.parse(run.model) as AgentModelRef
+  } catch {
+    return null
+  }
+}
+
+/** 过滤掉已删除的引用实体：重试历史 run 时，被引用的监控源/版本可能已被清理，
+ * 而后端对任一实体缺失即整体拒绝（err.agent.entity_missing）——不剔除会让整次
+ * 重试直接失败，剔除后指令本身仍然成立。 */
+function existingEntities(ents: AgentEntityRefSeed[]): AgentEntityRefSeed[] {
+  return ents.filter((e) =>
+    e.kind === 'source'
+      ? sources.value.some((s) => s.id === e.id)
+      : releases.value.some((r) => r.id === e.id),
+  )
+}
+
+/** 把一次 run 的输入（指令 / 引用实体 / skill / 模型）还原到输入区。
+ * run.instruction 已剥离 `[[引用]]`（实体归入 run.entities），直接回填即为等价重发。 */
+function applyRunToComposer(run: AgentRunSummary) {
+  instruction.value = run.instruction
+  const ents = runEntities(run)
+  const alive = existingEntities(ents)
+  if (alive.length !== ents.length) {
+    showToast(t('agent.retry_entities_dropped', String(ents.length - alive.length)))
+  }
+  entities.value = alive
+  skillPath.value = run.skill_path || null
+  selectedModel.value = runModel(run)
+}
+
+/** 重试：用同一条 run 的输入原样重新提交。 */
+async function handleRetry(run: AgentRunSummary) {
+  if (canStop.value || submitting.value) {
+    showToast(t('agent.retry_blocked'))
+    return
+  }
+  applyRunToComposer(run)
+  await handleSubmit()
+}
+
+/** 编辑后重试：还原到输入区但不提交，用户改完自己发。 */
+function handleRetryEdit(run: AgentRunSummary) {
+  if (canStop.value || submitting.value) {
+    showToast(t('agent.retry_blocked'))
+    return
+  }
+  applyRunToComposer(run)
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  })
+}
+
 // ── 预置实体（右键「发送到 Agent」入口携带）：打开时写入 chips ──
 function applySeed() {
   if (!props.seed?.entities?.length) return
@@ -1015,6 +1124,10 @@ function handleDropNewSession(e: DragEvent) {
 onMounted(async () => {
   applySeed()
   await Promise.all([loadCatalog(), loadChat()])
+  // 磁盘发现放在首次加载之后：会话文件是索引的兜底来源，索引缺失时补入，
+  // 补入的会话不打断当前激活会话（仅侧栏可见）
+  const recovered = await discoverSessions()
+  if (recovered > 0) showToast(t('agent.sessions_recovered', String(recovered)))
   unlistenRunFinished = await events.agentRunFinished.listen((e) => {
     void onRunFinished(e.payload)
   })
@@ -1142,10 +1255,25 @@ watch(
                   <summary>{{ t('agent.prompt_full') }}</summary>
                   <pre class="agent-ws-fold-body">{{ splitUserBlocks(msg.blocks).folded }}</pre>
                 </details>
-                <!-- 失败 run 内联备注：这轮为什么挂了，对话流里可追溯（横幅只显示最近一次） -->
-                <div v-if="runFailedNote(runForMessage(idx))" class="agent-ws-run-failed" :title="runFailedNote(runForMessage(idx)) ?? ''">
+                <!-- 非成功终态内联备注 + 重试入口：这轮为什么挂了、怎么再来一次，
+                     都在对话流里可追溯（横幅只显示最近一次 run） -->
+                <div
+                  v-if="canRetry(runForMessage(idx))"
+                  class="agent-ws-run-failed"
+                  :class="{ 'run-cancelled': runForMessage(idx)!.status === 'cancelled' }"
+                >
                   <span class="agent-ws-run-failed-status">{{ runStatusLabel(runForMessage(idx)!.status) }}</span>
-                  <span class="agent-ws-run-failed-text">{{ runFailedNote(runForMessage(idx)) }}</span>
+                  <span class="agent-ws-run-failed-text" :title="runFailedNote(runForMessage(idx)) ?? ''">
+                    {{ runFailedNote(runForMessage(idx)) || runStatusLabel(runForMessage(idx)!.status) }}
+                  </span>
+                  <span class="agent-ws-run-failed-actions">
+                    <button class="btn-sm" :title="t('agent.retry')" @click="handleRetry(runForMessage(idx)!)">
+                      {{ t('agent.retry') }}
+                    </button>
+                    <button class="btn-sm" :title="t('agent.retry_edit')" @click="handleRetryEdit(runForMessage(idx)!)">
+                      {{ t('agent.retry_edit') }}
+                    </button>
+                  </span>
                 </div>
               </div>
 
@@ -1343,7 +1471,12 @@ watch(
             :title="s.title"
             @click="switchSession(s.key)"
           >
-            <span class="agent-ws-session-name">{{ s.title }}</span>
+            <span class="agent-ws-session-name">
+              {{ s.title }}
+              <span v-if="s.recovered" class="agent-ws-session-badge" :title="t('agent.session_recovered_hint')">
+                {{ t('agent.session_recovered') }}
+              </span>
+            </span>
             <span class="agent-ws-session-time">{{ formatDate(new Date(s.updatedAt).toISOString()) }}</span>
             <button class="agent-ws-session-del" :title="t('agent.delete_session')" @click.stop="handleDeleteSession(s.key)">
               <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
@@ -1632,6 +1765,19 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   text-overflow: ellipsis;
   padding-right: 16px;
 }
+/* 「已恢复」标记：磁盘发现补入的会话（localStorage 索引曾丢失） */
+.agent-ws-session-badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 4px;
+  font-size: 9px;
+  line-height: 14px;
+  vertical-align: 1px;
+  color: #8a6d1f;
+  background: rgba(214, 158, 46, 0.16);
+  border-radius: 3px;
+  white-space: nowrap;
+}
 .agent-ws-session-time {
   font-size: 10px;
   opacity: 0.5;
@@ -1848,10 +1994,11 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* 失败 run 内联备注（挂在对应 user 气泡下） */
+/* 非成功终态内联备注 + 重试入口（挂在对应 user 气泡下） */
 .agent-ws-run-failed {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 7px;
   padding: 5px 8px;
@@ -1862,14 +2009,34 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   line-height: 1.45;
   max-width: 100%;
 }
+/* 被取消不是错误（用户主动停 / 应用重启清理），用中性色，不伪装成报错 */
+.agent-ws-run-failed.run-cancelled {
+  border-color: var(--border);
+  background: var(--bg-subtle);
+}
 .agent-ws-run-failed-status {
   font-weight: 600;
   color: #d64545;
   flex-shrink: 0;
 }
+.agent-ws-run-failed.run-cancelled .agent-ws-run-failed-status {
+  color: var(--text-muted);
+}
 .agent-ws-run-failed-text {
   color: var(--text-muted);
   word-break: break-word;
+  flex: 1;
+  min-width: 60px;
+}
+/* 重试操作：与提示同行，空间不足时换行 */
+.agent-ws-run-failed-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.agent-ws-run-failed-actions .btn-sm {
+  padding: 1px 7px;
+  font-size: 11px;
 }
 
 /* 折叠块（思考 / 工具详情） */

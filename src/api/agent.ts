@@ -8,6 +8,7 @@ import type {
   AgentModelsInfo,
   AgentQueueStatus,
   AgentRunSummary,
+  AgentSessionInfo,
 } from '../bindings'
 
 export type {
@@ -18,6 +19,7 @@ export type {
   AgentModelsInfo,
   AgentQueueStatus,
   AgentRunSummary,
+  AgentSessionInfo,
   RpcAvailableModel,
 } from '../bindings'
 
@@ -67,6 +69,16 @@ export async function listAgentRuns(sessionKey: string, limit: number | null = 2
 /** 查询全局 Agent 队列状态（「排队中」提示：队列位置 + 其他会话占用）。 */
 export async function getAgentQueueStatus(sessionKey: string): Promise<AgentQueueStatus> {
   return invokeI18nFn(() => commands.getAgentQueueStatus(sessionKey))
+}
+
+/** 扫描磁盘上的会话文件，列出全部工作区会话（按最后活跃时间倒序）。
+ *
+ * 会话索引只存在于 localStorage（WebView2 缓存目录树，清缓存即失联），而会话文件
+ * 在 Roaming 数据目录里完好无损。本接口即「磁盘发现」：前端把它与 localStorage
+ * 索引合并，索引里没有的会话自动补入，落盘会话永不丢。
+ */
+export async function listAgentSessions(): Promise<AgentSessionInfo[]> {
+  return invokeI18nFn(commands.listAgentSessions)
 }
 
 /** 读取会话的完整聊天消息流（pi 落盘 JSONL，时间正序）。 */

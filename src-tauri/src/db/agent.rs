@@ -374,6 +374,60 @@ pub fn agent_queue_status(conn: &Connection, session_key: &str) -> Result<AgentQ
     })
 }
 
+/// 一个会话在 DB 侧的运行摘要（磁盘发现时用于关联 last status / 最后提交时间）。
+#[derive(Debug, Clone, Default)]
+pub struct SessionRunDigest {
+    /// 最近一次提交的状态（pending / running / success / failed / timeout / cancelled）。
+    pub last_status: Option<String>,
+    /// 最近一次提交的创建时间（RFC3339）。
+    pub last_created_at: Option<String>,
+    /// 该会话的累计提交次数。
+    pub run_count: i64,
+}
+
+/// 批量查询全部会话的运行摘要（一次扫描，避免逐会话查询）。
+///
+/// 会话文件是「磁盘发现」的主数据源，但状态只存在于 DB（pending / running 决定
+/// 侧栏是否显示运行指示）。返回 session_key → 最近一次 run 的映射。
+pub fn latest_run_digests(
+    conn: &Connection,
+) -> Result<std::collections::HashMap<String, SessionRunDigest>, String> {
+    // 每会话取 MAX(id)（最新提交），同时带出提交次数；COUNT 与 MAX 一次 GROUP BY 完成
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.session_key, r.status, r.created_at, c.cnt
+             FROM agent_runs r
+             JOIN (
+                 SELECT session_key, MAX(id) AS mid, COUNT(*) AS cnt
+                 FROM agent_runs GROUP BY session_key
+             ) c ON r.id = c.mid",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = std::collections::HashMap::new();
+    for row in rows {
+        let (key, status, created_at, cnt) = row.map_err(|e| e.to_string())?;
+        out.insert(
+            key,
+            SessionRunDigest {
+                last_status: Some(status),
+                last_created_at: Some(created_at),
+                run_count: cnt,
+            },
+        );
+    }
+    Ok(out)
+}
+
 /// 删除某会话的全部运行记录（会话文件删除由命令层负责）。
 pub fn delete_runs_for_session(conn: &Connection, session_key: &str) -> Result<(), String> {
     conn.execute(
@@ -554,6 +608,34 @@ mod tests {
         // 无 pending 的会话：position None
         let st = agent_queue_status(&conn, "ws-none").unwrap();
         assert_eq!(st.position, None);
+    }
+
+    #[test]
+    fn latest_run_digests_picks_newest_per_session() {
+        let conn = init_memory_db().unwrap();
+        assert!(latest_run_digests(&conn).unwrap().is_empty());
+
+        let a1 = create_run(&conn, "ws-a", None, &[], "A1", None, None).unwrap();
+        create_run(&conn, "ws-b", None, &[], "B1", None, None).unwrap();
+        let a2 = create_run(&conn, "ws-a", None, &[], "A2", None, None).unwrap();
+        mark_run_started(&conn, a2).unwrap();
+
+        let digests = latest_run_digests(&conn).unwrap();
+        assert_eq!(digests.len(), 2);
+        let a = digests.get("ws-a").expect("ws-a");
+        // 最新一条（a2）而非首条（a1）
+        assert_eq!(a.last_status.as_deref(), Some("running"));
+        assert_eq!(a.run_count, 2);
+        let b = digests.get("ws-b").expect("ws-b");
+        assert_eq!(b.last_status.as_deref(), Some("pending"));
+        assert_eq!(b.run_count, 1);
+        assert!(b.last_created_at.is_some());
+
+        // 状态变化反映到摘要
+        finish_run(&conn, a2, "success", Some(0), Some("out"), None, None).unwrap();
+        finish_run(&conn, a1, "failed", None, None, None, Some("err.agent.boom")).unwrap();
+        let digests = latest_run_digests(&conn).unwrap();
+        assert_eq!(digests["ws-a"].last_status.as_deref(), Some("success"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { t, setLocale } from '../i18n'
-import type { AgentChatMessage } from '../api/agent'
+import type { AgentChatMessage, AgentRunSummary } from '../api/agent'
 
 // ========== Tauri 边界 Mocks ==========
 const { mockUnlisten, mockListen, rpcHandlers } = vi.hoisted(() => {
@@ -23,6 +23,7 @@ vi.mock('../api/agent', async (importOriginal) => {
     getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, working_dir: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
     listAgentRuns: vi.fn().mockResolvedValue([]),
     listAgentMessages: vi.fn().mockResolvedValue([]),
+    listAgentSessions: vi.fn().mockResolvedValue([]),
     getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [] }),
     runAgentJob: vi.fn().mockResolvedValue(1),
     deleteAgentSession: vi.fn().mockResolvedValue(undefined),
@@ -46,7 +47,14 @@ vi.mock('../utils', async (importOriginal) => {
 })
 
 import AgentWorkspace from '../components/AgentWorkspace.vue'
-import { listAgentMessages, listAgentRuns, runAgentJob, getAgentConfig, getAgentQueueStatus } from '../api/agent'
+import {
+  listAgentMessages,
+  listAgentRuns,
+  listAgentSessions,
+  runAgentJob,
+  getAgentConfig,
+  getAgentQueueStatus,
+} from '../api/agent'
 import { listSources } from '../api/sources'
 import { getReleases } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
@@ -81,7 +89,9 @@ function sampleMessages(): AgentChatMessage[] {
 
 beforeEach(() => {
   setLocale('zh-CN')
+  localStorage.clear() // 会话索引走 localStorage，用例间必须隔离
   vi.mocked(listAgentMessages).mockResolvedValue(sampleMessages())
+  vi.mocked(listAgentSessions).mockResolvedValue([])
 })
 
 describe('AgentWorkspace 冒烟', () => {
@@ -569,5 +579,250 @@ describe('AgentWorkspace 冒烟', () => {
     expect(notes[0].text()).not.toContain('再试一次')
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  /** 构造一个 run 摘要（默认：本会话第一轮超时失败）。 */
+  function makeRun(over: Record<string, unknown> = {}): AgentRunSummary {
+    return {
+      id: 20,
+      session_key: 'test-session',
+      skill_path: null,
+      entities: '[]',
+      instruction: '帮我总结这个版本',
+      model: null,
+      session_path: null,
+      status: 'timeout',
+      exit_code: null,
+      error: 'err.agent.timeout|300',
+      started_at: null,
+      finished_at: null,
+      created_at: '2025-01-01T00:00:00.000Z',
+      ...over,
+    } as unknown as AgentRunSummary
+  }
+
+  it('磁盘发现：索引里没有的会话自动补入并标记「已恢复」', async () => {
+    vi.mocked(listAgentSessions).mockResolvedValue([
+      {
+        session_key: 'lost-session',
+        title: '上周分析 B 站那个 up 主',
+        session_path: 'C:/data/agent-sessions/ws-lost-session.jsonl',
+        updated_at: '2026-08-20T11:43:02.000Z',
+        last_status: 'success',
+        run_count: 3,
+      },
+    ])
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    // 侧栏出现该会话，并带「已恢复」标记（索引曾丢失，由文件重建）
+    const items = wrapper.findAll('.agent-ws-session-item')
+    expect(items.some((i) => i.text().includes('上周分析 B 站那个 up 主'))).toBe(true)
+    expect(wrapper.find('.agent-ws-session-badge').exists()).toBe(true)
+    expect(showToast).toHaveBeenCalledWith(t('agent.sessions_recovered', '1'))
+    // 补入的会话已写回索引：下次启动不再重复提示
+    const persisted = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as {
+      key: string
+      recovered?: boolean
+    }[]
+    expect(persisted.some((s) => s.key === 'lost-session' && s.recovered)).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('磁盘发现：标题缺失时用占位文案，不渲染空白项', async () => {
+    vi.mocked(listAgentSessions).mockResolvedValue([
+      {
+        session_key: 'untitled-session',
+        title: '',
+        session_path: 'C:/data/agent-sessions/ws-untitled-session.jsonl',
+        updated_at: '2026-08-20T11:43:02.000Z',
+        last_status: '',
+        run_count: 0,
+      },
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    expect(wrapper.text()).toContain(t('agent.session_untitled'))
+    wrapper.unmount()
+  })
+
+  it('磁盘发现：已在索引中的会话不被覆盖（保留用户侧标题）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'kept-session', title: '我改过的标题', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentSessions).mockResolvedValue([
+      {
+        session_key: 'kept-session',
+        title: '从文件重建的标题',
+        session_path: 'C:/data/agent-sessions/ws-kept-session.jsonl',
+        updated_at: '2026-08-20T11:43:02.000Z',
+        last_status: 'success',
+        run_count: 1,
+      },
+    ])
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('我改过的标题')
+    expect(wrapper.find('.agent-ws-session-badge').exists()).toBe(false)
+    expect(showToast).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('失败 run 提供「重试」：点击即用原输入（指令/引用/模型）重新提交', async () => {
+    vi.mocked(runAgentJob).mockClear()
+    vi.mocked(getReleases).mockResolvedValue([
+      {
+        id: 7,
+        source_id: 1,
+        source_type: 'youtube',
+        owner: 'o',
+        repo: 'r',
+        tag_name: 'v1',
+        release_name: 'v1',
+        html_url: 'https://example.com',
+        published_at: '2026-08-15T04:16:52Z',
+        prerelease: false,
+        body: null,
+        detected_at: '2026-08-15T04:17:00Z',
+        notification_status: 'pending',
+        snooze_until: null,
+        ai_summary: null,
+        ai_importance: null,
+        body_translated: null,
+        extra_metadata: null,
+        source_description: null,
+      },
+    ])
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({
+        entities: '[{"kind":"release","id":7}]',
+        model: '{"provider":"anthropic","model_id":"claude-test"}',
+      }),
+    ])
+
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey]: vi.fn() } } })
+    await flushPromises()
+    const note = wrapper.find('.agent-ws-run-failed')
+    expect(note.exists()).toBe(true)
+    const buttons = note.findAll('.agent-ws-run-failed-actions button')
+    expect(buttons.length).toBe(2)
+
+    await buttons[0].trigger('click')
+    await flushPromises()
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: 'test-session',
+        instruction: '帮我总结这个版本',
+        entities: [{ kind: 'release', id: 7 }],
+        model: { provider: 'anthropic', model_id: 'claude-test' },
+      }),
+    )
+    wrapper.unmount()
+  })
+
+  it('失败 run 提供「编辑后重试」：还原到输入区但不提交', async () => {
+    vi.mocked(runAgentJob).mockClear()
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun()])
+
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey]: vi.fn() } } })
+    await flushPromises()
+    const buttons = wrapper.findAll('.agent-ws-run-failed-actions button')
+    await buttons[1].trigger('click')
+    await flushPromises()
+    // 只回填，不提交——用户改完自己发
+    expect(vi.mocked(runAgentJob)).not.toHaveBeenCalled()
+    expect((wrapper.find('.agent-ws-textarea').element as HTMLTextAreaElement).value).toBe(
+      '帮我总结这个版本',
+    )
+    wrapper.unmount()
+  })
+
+  it('重试时剔除已被删除的引用实体，不因实体缺失整体失败', async () => {
+    vi.mocked(runAgentJob).mockClear()
+    // 目录为空：run 引用的 release #7 已不存在
+    vi.mocked(getReleases).mockResolvedValue([])
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ entities: '[{"kind":"release","id":7}]' }),
+    ])
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-run-failed-actions button')[0].trigger('click')
+    await flushPromises()
+    expect(showToast).toHaveBeenCalledWith(t('agent.retry_entities_dropped', '1'))
+    // 指令仍提交，实体为空（后端对任一实体缺失会整体拒绝）
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledWith(
+      expect.objectContaining({ instruction: '帮我总结这个版本', entities: [] }),
+    )
+    wrapper.unmount()
+  })
+
+  it('被取消的 run 也可重试，且用中性样式（不是报错）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ status: 'cancelled', error: null })])
+
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey]: vi.fn() } } })
+    await flushPromises()
+    const note = wrapper.find('.agent-ws-run-failed')
+    expect(note.exists()).toBe(true)
+    expect(note.classes()).toContain('run-cancelled')
+    expect(note.text()).toContain(t('agent.status_cancelled'))
+    expect(note.findAll('.agent-ws-run-failed-actions button').length).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('有任务进行中时重试被拒绝，不产生第二个 run', async () => {
+    vi.mocked(runAgentJob).mockClear()
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    // 两条 user 消息：第一条已失败，第二条仍在跑（canStop 为真）
+    vi.mocked(listAgentMessages).mockResolvedValue([
+      sampleMessages()[0],
+      { role: 'user', timestamp: '2025-01-01T00:05:00.000Z', model: null, blocks: [{ kind: 'text', text: '继续' }] },
+    ])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ id: 22, status: 'running', instruction: '继续', error: null, created_at: '2025-01-01T00:05:00.000Z' }),
+      makeRun({ id: 20, created_at: '2025-01-01T00:00:00.000Z' }),
+    ])
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-run-failed-actions button')[0].trigger('click')
+    await flushPromises()
+    expect(showToast).toHaveBeenCalledWith(t('agent.retry_blocked'))
+    expect(vi.mocked(runAgentJob)).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 })

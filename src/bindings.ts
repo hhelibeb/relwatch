@@ -146,6 +146,13 @@ export const commands = {
 	 */
 	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage[]>("list_agent_messages", { sessionKey }),
 	/**
+	 *  扫描会话目录，列出磁盘上全部工作区会话（按最后活跃时间倒序）。
+	 * 
+	 *  前端用它与 localStorage 索引合并：索引里有的保持原样（用户改过的标题/模型优先），
+	 *  索引里没有的自动补入并标记为「恢复的会话」。会话目录不存在（从未提交过）→ 空列表。
+	 */
+	listAgentSessions: () => __TAURI_INVOKE<AgentSessionInfo[]>("list_agent_sessions"),
+	/**
 	 *  取消一次正在运行（或排队中）的 Agent 提交。
 	 *  「停止」= 向 RPC 常驻进程发 `abort`（不杀进程）：会话上下文保留在进程内存
 	 *  与 JSONL 文件，继续对话直接再提交即可，无需恢复流程。
@@ -317,6 +324,29 @@ export type AgentRunSummary = {
 	started_at: string | null,
 	finished_at: string | null,
 	created_at: string,
+};
+
+/**
+ *  磁盘发现的一个工作区会话（会话索引丢失后的恢复数据源）。
+ * 
+ *  会话**文件**在 Roaming 数据目录（`agent-sessions/ws-<key>.jsonl`，与 database.db 同级），
+ *  会话**索引**却在 WebView2 缓存目录树（localStorage）——任何磁盘清理工具扫到
+ *  `EBWebView` 就一锅端，文件毫发无损但 UI 里再也看不到它们。GUI 无 CLI 那样的
+ *  `ls | grep` 自救手段，故必须由后端提供发现能力：**文件即索引**。
+ */
+export type AgentSessionInfo = {
+	/**  会话 key（与前端 session_key 同源，UUID）。 */
+	session_key: string,
+	/**  从会话文件首条 user 消息重建的标题（无 user 消息时为空串，前端用占位标题兜底）。 */
+	title: string,
+	/**  会话文件绝对路径。 */
+	session_path: string,
+	/**  最后活跃时间（RFC3339 UTC；文件 mtime 与最近一次提交时间的较晚者）。 */
+	updated_at: string,
+	/**  最近一次提交的状态（无 run 记录时为空串）。 */
+	last_status: string,
+	/**  该会话的累计提交次数。 */
+	run_count: number,
 };
 
 /**
