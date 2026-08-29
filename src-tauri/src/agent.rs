@@ -35,6 +35,16 @@ pub const STATUS_SUCCESS: &str = "success";
 pub const STATUS_FAILED: &str = "failed";
 pub const STATUS_TIMEOUT: &str = "timeout";
 pub const STATUS_CANCELLED: &str = "cancelled";
+/// 结果未知：任务**可能已经执行完成**，但终态没能确定下来。
+///
+/// 两种来源：
+/// - 终态事件 `agent_end` 在广播中被挤掉（`err.agent.end_lost`）——此前按 failed 收敛，
+///   把「不知道」谎报成「失败了」；
+/// - 应用重启时该 run 已启动但没落终态（见 `cleanup_stale_agent_runs`）。
+///
+/// 与 failed 的关键差别是可行动性：failed 意味着没跑成（重跑无害），
+/// unknown 意味着可能跑成了（重跑会重复烧词元、重复副作用，需用户先确认）。
+pub const STATUS_UNKNOWN: &str = "unknown";
 
 /// 一次 Agent 执行的输入上下文。
 pub struct AgentContext<'a> {
@@ -45,6 +55,8 @@ pub struct AgentContext<'a> {
     pub session_path: Option<&'a str>,
     /// 已渲染的实体上下文段（source / release → 文本，实体渲染器输出）。
     pub entity_texts: &'a [String],
+    /// 本次提交附带的本地文件绝对路径（用户在文件对话框里自选，非外部数据）。
+    pub files: &'a [String],
     /// 用户输入文本（引用已剥离，实体在 entity_texts 中）。
     pub instruction: &'a str,
     /// 追加在 prompt 末尾的固定后缀（全局配置）。
@@ -224,7 +236,7 @@ impl AgentExecutor for RpcExecutor {
             Some(skill) => format!("/skill:{} {}", skill_short_name(skill), base),
             None => base,
         };
-        self.rpc.prompt(&message).await?;
+        self.rpc.prompt(&append_local_files(&message, ctx.files)).await?;
 
         let timeout = if ctx.timeout_seconds > 0 {
             ctx.timeout_seconds
@@ -475,6 +487,32 @@ pub fn build_prompt(
     out
 }
 
+/// 把用户附加的本地文件绝对路径追加到 prompt 末尾（评审「本地文件/图片附件」）。
+///
+/// 与 `build_prompt` 分开实现是有意的：`build_prompt` 是防注入的安全关键函数
+/// （外部数据区 + 不可信声明），任何改动都要求重新通读校验。本地文件是**用户自己
+/// 在文件对话框里选的**，属于权威指令侧而非外部数据侧，独立成函数可单独审计，
+/// 且不会让安全关键函数的语义随功能迭代漂移。
+///
+/// 只传路径、不读内容：文件内容交给 pi 自己的工具按需读取（read / bash），
+/// 避免把可能很大的文件正文塞进上下文。
+pub fn append_local_files(prompt: &str, files: &[String]) -> String {
+    if files.is_empty() {
+        return prompt.to_string();
+    }
+    let mut out = String::from(prompt);
+    out.push_str("\n\n<本地文件>\n");
+    out.push_str("以下是用户附加的本地文件（绝对路径）。需要其内容时请用你的文件读取工具按路径读取，\n");
+    out.push_str("不要臆测文件内容；未用到的文件无需读取。\n");
+    for f in files {
+        out.push_str("- ");
+        out.push_str(f);
+        out.push('\n');
+    }
+    out.push_str("</本地文件>");
+    out
+}
+
 /// 强杀进程树。
 /// Windows：taskkill /F /T（真杀树）。
 /// Unix：杀进程组（-9 -pid）。pi 由本模块 spawn 且带 process_group(0)（新会话首领），
@@ -679,6 +717,13 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         .as_deref()
         .and_then(|s| serde_json::from_str(s).ok());
 
+    // 本次提交附带的本地文件（JSON 解析失败按无附件处理：不阻塞提交）。
+    let files: Vec<String> = run
+        .files
+        .as_deref()
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+        .unwrap_or_default();
+
     // 按全局配置构造执行器
     let executor = match &ctx.executor_override {
         Some(e) => e.clone(),
@@ -738,6 +783,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
             // 会话文件路径（None = --no-session 临时模式，不落盘）
             session_path: run.session_path.as_deref().filter(|p| !p.is_empty()),
             entity_texts: &entity_texts,
+            files: &files,
             instruction: &run.instruction,
             prompt_suffix: config.prompt_suffix.as_deref(),
             first_turn: is_first_turn,
@@ -752,7 +798,15 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
             (st, o.exit_code, Some(o.stdout), Some(o.stderr), None)
         }
         Err(e) => {
-            let st = if e.code.starts_with("err.agent.timeout") { STATUS_TIMEOUT } else { STATUS_FAILED };
+            // 终态事件丢失（end_lost）不是失败，是**不知道**——产物可能已经生成，
+            // 按 failed 展示会让用户以为没跑而重复提交（评审 3.1）。
+            let st = if e.code.starts_with("err.agent.timeout") {
+                STATUS_TIMEOUT
+            } else if e.code.starts_with("err.agent.end_lost") {
+                STATUS_UNKNOWN
+            } else {
+                STATUS_FAILED
+            };
             // 超时 / 失败 / 取消前已生成的产物照写 DB：聊天流（JSONL）里看得到的内容，
             // 运行记录里也该查得到（此前非 success 终态 stdout 恒为 None，产物被丢弃）。
             let out = if e.partial_stdout.is_empty() { None } else { Some(e.partial_stdout) };
@@ -872,7 +926,7 @@ pub fn dispatch_ctx_from_app(app: &tauri::AppHandle) -> AgentDispatchCtx {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::agent::{create_run, get_run, save_agent_config};
+    use crate::db::agent::{create_run, get_run, save_agent_config, NewRun};
     use crate::db::init::init_memory_pool;
     use serde_json::json;
 
@@ -1035,8 +1089,12 @@ mod tests {
         assert!(executor_for("pi", &sample_config(), Arc::new(crate::agent_rpc::RpcManager::new(init_memory_pool().unwrap()))).is_ok());
     }
 
-    /// Fake 执行器：按 skill_path 决定成败，记录收到的上下文。
-    struct FakeExecutor(Arc<std::sync::Mutex<Vec<String>>>, Arc<std::sync::Mutex<Vec<Option<String>>>>);
+    /// Fake 执行器：按 skill_path 决定成败，记录收到的上下文（实体文本 / skill / 文件）。
+    struct FakeExecutor(
+        Arc<std::sync::Mutex<Vec<String>>>,
+        Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    );
     #[async_trait]
     impl AgentExecutor for FakeExecutor {
         fn agent_type(&self) -> &'static str {
@@ -1045,12 +1103,17 @@ mod tests {
         async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, AgentError> {
             self.0.lock().unwrap().extend(ctx.entity_texts.iter().cloned());
             self.1.lock().unwrap().push(ctx.skill_path.map(|s| s.to_string()));
+            self.2.lock().unwrap().push(ctx.files.to_vec());
             if ctx.skill_path == Some("/fail") {
                 return Err("boom".into());
             }
             // /partial-fail：失败但已产出内容（模拟生成中途超时 / 模型错误）
             if ctx.skill_path == Some("/partial-fail") {
                 return Err(AgentError::new("err.agent.timeout|300", "部分产物".to_string()));
+            }
+            // /end-lost：终态事件丢失（产物已生成但终态未知）
+            if ctx.skill_path == Some("/end-lost") {
+                return Err(AgentError::new("err.agent.end_lost", "已生成内容".to_string()));
             }
             Ok(AgentOutcome {
                 exit_code: Some(0),
@@ -1064,7 +1127,17 @@ mod tests {
         Arc::new(FakeExecutor(
             Arc::new(std::sync::Mutex::new(Vec::new())),
             Arc::new(std::sync::Mutex::new(Vec::new())),
+            Arc::new(std::sync::Mutex::new(Vec::new())),
         ))
+    }
+
+    /// 带观察槽的执行器（entity 文本 / skill / 文件三个观察口按需传入）。
+    fn observing_executor(
+        entities: Arc<std::sync::Mutex<Vec<String>>>,
+        skills: Arc<std::sync::Mutex<Vec<Option<String>>>>,
+        files: Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    ) -> Arc<dyn AgentExecutor> {
+        Arc::new(FakeExecutor(entities, skills, files))
     }
 
     /// 测试调度上下文（取消集合 / 进程注册表独立于用例）。
@@ -1094,12 +1167,12 @@ mod tests {
         let run_id = {
             let conn = pool.get().unwrap();
             let entities = vec![AgentEntityRef { kind: "source".into(), id: 1 }];
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &entities, "总结", Some("C:/s/ws-1.jsonl"), None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/tmp/skill"), entities: &entities, instruction: "总结", model: Some("C:/s/ws-1.jsonl"), session_path: None, files: None }).unwrap()
         };
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ctx = dispatch_ctx_with(
             pool.clone(),
-            Arc::new(FakeExecutor(seen.clone(), Arc::new(std::sync::Mutex::new(Vec::new())))),
+            observing_executor(seen.clone(), Arc::new(std::sync::Mutex::new(Vec::new())), Arc::new(std::sync::Mutex::new(Vec::new()))),
         );
         dispatch_run(&ctx, run_id).await;
 
@@ -1123,7 +1196,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/fail"), &[], "x", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/fail"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
         };
         let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
         dispatch_run(&ctx, run_id).await;
@@ -1146,7 +1219,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/partial-fail"), &[], "x", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/partial-fail"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
         };
         let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
         dispatch_run(&ctx, run_id).await;
@@ -1160,6 +1233,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dispatch_run_marks_end_lost_as_unknown_not_failed() {
+        // 终态事件丢失：任务可能已经跑完，产物也在。谎报 failed 会让用户以为没跑而
+        // 重复提交（重复烧词元 / 重复副作用），故单列 unknown 终态（评审 3.1）。
+        let pool = init_memory_pool().unwrap();
+        {
+            let conn = pool.get().unwrap();
+            save_agent_config(&conn, &sample_config()).unwrap();
+        }
+        let run_id = {
+            let conn = pool.get().unwrap();
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/end-lost"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
+        };
+        let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
+        dispatch_run(&ctx, run_id).await;
+
+        let conn = pool.get().unwrap();
+        let run = get_run(&conn, run_id).unwrap().unwrap();
+        assert_eq!(run.status, "unknown");
+        assert_eq!(run.error.as_deref(), Some("err.agent.end_lost"));
+        // 产物照写：unknown 不代表没产出
+        assert_eq!(run.stdout.as_deref(), Some("已生成内容"));
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_passes_local_files_to_executor() {
+        // 本地文件附件：run.files（JSON）解析后原样交给执行器，进 prompt 的权威指令区
+        let pool = init_memory_pool().unwrap();
+        {
+            let conn = pool.get().unwrap();
+            save_agent_config(&conn, &sample_config()).unwrap();
+        }
+        let run_id = {
+            let conn = pool.get().unwrap();
+            let files = serde_json::to_string(&vec!["C:/logs/app.log", "C:/img/shot.png"]).unwrap();
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: None, entities: &[], instruction: "看看日志", model: None, session_path: None, files: Some(&files) }).unwrap()
+        };
+        let seen_files = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+        let ctx = dispatch_ctx_with(
+            pool.clone(),
+            observing_executor(
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+                seen_files.clone(),
+            ),
+        );
+        dispatch_run(&ctx, run_id).await;
+
+        assert_eq!(
+            seen_files.lock().unwrap().as_slice(),
+            &[vec!["C:/logs/app.log".to_string(), "C:/img/shot.png".to_string()]]
+        );
+        let conn = pool.get().unwrap();
+        assert_eq!(get_run(&conn, run_id).unwrap().unwrap().status, "success");
+    }
+
+    #[tokio::test]
+    async fn dispatch_run_tolerates_corrupt_files_json() {
+        // files 列是防御性解析：脏数据不应阻塞提交（按无附件处理）
+        let pool = init_memory_pool().unwrap();
+        {
+            let conn = pool.get().unwrap();
+            save_agent_config(&conn, &sample_config()).unwrap();
+        }
+        let run_id = {
+            let conn = pool.get().unwrap();
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: None, entities: &[], instruction: "x", model: None, session_path: None, files: Some("{not json") }).unwrap()
+        };
+        let seen_files = Arc::new(std::sync::Mutex::new(Vec::<Vec<String>>::new()));
+        let ctx = dispatch_ctx_with(
+            pool.clone(),
+            observing_executor(
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+                Arc::new(std::sync::Mutex::new(Vec::new())),
+                seen_files.clone(),
+            ),
+        );
+        dispatch_run(&ctx, run_id).await;
+
+        assert_eq!(seen_files.lock().unwrap().as_slice(), &[Vec::<String>::new()]);
+        let conn = pool.get().unwrap();
+        assert_eq!(get_run(&conn, run_id).unwrap().unwrap().status, "success");
+    }
+
+    #[tokio::test]
     async fn dispatch_run_aborts_when_agent_disabled() {
         let pool = init_memory_pool().unwrap();
         {
@@ -1168,12 +1325,12 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/tmp/skill"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
         };
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ctx = dispatch_ctx_with(
             pool.clone(),
-            Arc::new(FakeExecutor(seen.clone(), Arc::new(std::sync::Mutex::new(Vec::new())))),
+            observing_executor(seen.clone(), Arc::new(std::sync::Mutex::new(Vec::new())), Arc::new(std::sync::Mutex::new(Vec::new()))),
         );
         dispatch_run(&ctx, run_id).await;
 
@@ -1194,12 +1351,12 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", None, &[], "你好", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: None, entities: &[], instruction: "你好", model: None, session_path: None, files: None }).unwrap()
         };
         let seen_skills = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
         let ctx = dispatch_ctx_with(
             pool.clone(),
-            Arc::new(FakeExecutor(Arc::new(std::sync::Mutex::new(Vec::new())), seen_skills.clone())),
+            observing_executor(Arc::new(std::sync::Mutex::new(Vec::new())), seen_skills.clone(), Arc::new(std::sync::Mutex::new(Vec::new()))),
         );
         dispatch_run(&ctx, run_id).await;
 
@@ -1219,12 +1376,12 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/tmp/skill"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
         };
         let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let ctx = dispatch_ctx_with(
             pool.clone(),
-            Arc::new(FakeExecutor(seen.clone(), Arc::new(std::sync::Mutex::new(Vec::new())))),
+            observing_executor(seen.clone(), Arc::new(std::sync::Mutex::new(Vec::new())), Arc::new(std::sync::Mutex::new(Vec::new()))),
         );
         // 排队期间取消（模拟 cancel_agent_run 先于调度执行）
         ctx.cancelled.lock().unwrap().insert(run_id);
@@ -1245,7 +1402,7 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/fail"), &[], "x", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/fail"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
         };
         let ctx = dispatch_ctx_with(pool.clone(), fake_executor());
         // 运行中取消：即使 executor 返回失败，终态也应为 cancelled
@@ -1266,12 +1423,12 @@ mod tests {
         }
         let run_id = {
             let conn = pool.get().unwrap();
-            create_run(&conn, "ws-1", Some("/tmp/skill"), &[], "x", None, None).unwrap()
+            create_run(&conn, &NewRun { session_key: "ws-1", skill_path: Some("/tmp/skill"), entities: &[], instruction: "x", model: None, session_path: None, files: None }).unwrap()
         };
         let seen_skills = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
         let ctx = dispatch_ctx_with(
             pool.clone(),
-            Arc::new(FakeExecutor(Arc::new(std::sync::Mutex::new(Vec::new())), seen_skills.clone())),
+            observing_executor(Arc::new(std::sync::Mutex::new(Vec::new())), seen_skills.clone(), Arc::new(std::sync::Mutex::new(Vec::new()))),
         );
         dispatch_run(&ctx, run_id).await;
 
@@ -1279,6 +1436,38 @@ mod tests {
         let run = get_run(&conn, run_id).unwrap().unwrap();
         assert_eq!(run.status, "success");
         assert_eq!(seen_skills.lock().unwrap().as_slice(), &[Some("/tmp/skill".to_string())]);
+    }
+
+    #[test]
+    fn append_local_files_is_noop_when_empty() {
+        let prompt = build_prompt(&[], "总结一下", None, false, true);
+        assert_eq!(append_local_files(&prompt, &[]), prompt);
+    }
+
+    #[test]
+    fn append_local_files_lists_paths_after_prompt() {
+        let prompt = "正文";
+        let out = append_local_files(prompt, &["C:/logs/app.log".into(), "C:/img/shot.png".into()]);
+        // 原文在前，文件段追加在后（用户自选文件属权威指令侧，不进外部数据区）
+        assert!(out.starts_with("正文"));
+        let open = out.find("<本地文件>").expect("应有本地文件段");
+        assert!(out[open..].contains("C:/logs/app.log"));
+        assert!(out[open..].contains("C:/img/shot.png"));
+        assert!(out.trim_end().ends_with("</本地文件>"));
+        // 只传路径、不读内容：引导模型按需用工具读取
+        assert!(out.contains("不要臆测文件内容"));
+        // 不污染安全关键的外部数据区声明
+        assert!(!out.contains("<外部数据区-"));
+    }
+
+    #[test]
+    fn append_local_files_does_not_touch_untrusted_section() {
+        // 带实体的首轮模板：文件段必须落在外部数据区之外（用户文件不是不可信外部数据）
+        let prompt = build_prompt(&["外部数据".to_string()], "总结", None, false, true);
+        let out = append_local_files(&prompt, &["C:/a.txt".into()]);
+        let close = out.rfind("</外部数据区-").expect("应有数据区结束标记");
+        let files_at = out.find("<本地文件>").expect("应有本地文件段");
+        assert!(files_at > close, "本地文件段应在外部数据区之后");
     }
 
     #[test]
@@ -1432,6 +1621,7 @@ mod tests {
                 started_at: None,
                 finished_at: None,
                 created_at: "".into(),
+                files: None,
             }
         };
         let conn = pool.get().unwrap();

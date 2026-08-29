@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, DOMWrapper } from '@vue/test-utils'
+import { nextTick } from 'vue'
 import { t, setLocale } from '../i18n'
 import type { AgentChatMessage, AgentRunSummary } from '../api/agent'
 
@@ -14,6 +15,15 @@ const { mockUnlisten, mockListen, rpcHandlers } = vi.hoisted(() => {
   return { mockUnlisten, mockListen, rpcHandlers }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen: mockListen }))
+// 文件/确认对话框：默认「未选择」/「确认」（各用例按需覆盖）
+const { openDialog, confirmDialog } = vi.hoisted(() => ({
+  openDialog: vi.fn(),
+  confirmDialog: vi.fn().mockResolvedValue(true),
+}))
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  confirm: confirmDialog,
+  open: openDialog,
+}))
 
 // Agent API：默认空目录 / 空会话 / 空消息
 vi.mock('../api/agent', async (importOriginal) => {
@@ -26,7 +36,20 @@ vi.mock('../api/agent', async (importOriginal) => {
     listAgentSessions: vi.fn().mockResolvedValue([]),
     getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [] }),
     getAgentQueue: vi.fn().mockResolvedValue([]),
-    getAgentSessionUsage: vi.fn().mockResolvedValue({ message_count: 0, total_chars: 0, file_bytes: 0 }),
+    getAgentSessionUsage: vi
+      .fn()
+      .mockResolvedValue({ message_count: 0, total_chars: 0, file_bytes: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, total_tokens: 0, cost_micros: 0, has_usage: false }),
+    // pi 进程健康指示：默认「未运行」（多数用例不关心，个别用例内覆盖）
+    getAgentRpcStatus: vi.fn().mockResolvedValue({ running: false, pid: null, restart_pending: false }),
+    restartAgentRpc: vi.fn().mockResolvedValue(true),
+    exportAgentSession: vi.fn().mockResolvedValue('C:/tmp/export.md'),
+    getAgentAvailableModels: vi.fn().mockResolvedValue({
+      models: [
+        { provider: 'deepseek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+        { provider: 'anthropic', id: 'claude-sonnet-4', name: 'Claude Sonnet 4' },
+      ],
+      current: { provider: 'deepseek', id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+    }),
     runAgentJob: vi.fn().mockResolvedValue(1),
     deleteAgentSession: vi.fn().mockResolvedValue(undefined),
     openAgentSession: vi.fn().mockResolvedValue(undefined),
@@ -56,11 +79,43 @@ import {
   runAgentJob,
   getAgentConfig,
   getAgentQueueStatus,
+  getAgentRpcStatus,
+  restartAgentRpc,
+  exportAgentSession,
+  getAgentSessionUsage,
+  deleteAgentSession,
 } from '../api/agent'
 import { listSources } from '../api/sources'
 import { getReleases } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
 import { ShowToastKey } from '../injection-keys'
+import { InvokeI18nError } from '../api/client'
+
+/** Teleport 到 body 的浮层（rpc 状态菜单）不在 wrapper 子树内，须以 document.body 为根查找。 */
+function findTeleported(selector: string): DOMWrapper<Element> {
+  return new DOMWrapper(document.body).find(selector)
+}
+
+/** 构造一个 run 摘要（默认：本会话第一轮超时失败）。模块级，两个 describe 共用。 */
+function makeRun(over: Record<string, unknown> = {}): AgentRunSummary {
+  return {
+    id: 20,
+    session_key: 'test-session',
+    skill_path: null,
+    entities: '[]',
+    instruction: '帮我总结这个版本',
+    model: null,
+    session_path: null,
+    status: 'timeout',
+    exit_code: null,
+    error: 'err.agent.timeout|300',
+    started_at: null,
+    finished_at: null,
+    created_at: '2025-01-01T00:00:00.000Z',
+    files: null,
+    ...over,
+  } as unknown as AgentRunSummary
+}
 
 function sampleMessages(): AgentChatMessage[] {
   return [
@@ -207,21 +262,17 @@ describe('AgentWorkspace 冒烟', () => {
       },
     ])
     vi.mocked(listAgentRuns).mockResolvedValue([
-      {
+      makeRun({
         id: 1,
         session_key: 'k',
         skill_path: SKILL,
-        entities: '[]',
         instruction: '执行',
-        model: null,
-        session_path: null,
         status: 'success',
         exit_code: 0,
         error: null,
         started_at: '2025-01-01T00:00:00.000Z',
         finished_at: '2025-01-01T00:00:05.000Z',
-        created_at: '2025-01-01T00:00:00.000Z',
-      },
+      }),
     ])
     const wrapper = mount(AgentWorkspace, {
       global: { provide: { [ShowToastKey]: vi.fn() } },
@@ -490,21 +541,12 @@ describe('AgentWorkspace 冒烟', () => {
     )
     // 当前会话 latest run 为 pending；全局队列显示其他会话 running、位置 2
     vi.mocked(listAgentRuns).mockResolvedValue([
-      {
+      makeRun({
         id: 11,
-        session_key: 'test-session',
-        skill_path: null,
-        entities: '[]',
-        instruction: '帮我总结这个版本',
-        model: null,
-        session_path: null,
         status: 'pending',
         exit_code: null,
         error: null,
-        started_at: null,
-        finished_at: null,
-        created_at: '2025-01-01T00:00:00.000Z',
-      },
+      }),
     ])
     vi.mocked(getAgentQueueStatus).mockResolvedValue({
       position: 2,
@@ -547,36 +589,15 @@ describe('AgentWorkspace 冒烟', () => {
     ]
     vi.mocked(listAgentMessages).mockResolvedValue(failed)
     vi.mocked(listAgentRuns).mockResolvedValue([
-      {
+      makeRun({
         id: 21,
-        session_key: 'test-session',
-        skill_path: null,
-        entities: '[]',
         instruction: '再试一次',
-        model: null,
-        session_path: null,
         status: 'success',
         exit_code: 0,
         error: null,
-        started_at: null,
-        finished_at: null,
         created_at: '2025-01-01T00:01:00.000Z',
-      },
-      {
-        id: 20,
-        session_key: 'test-session',
-        skill_path: null,
-        entities: '[]',
-        instruction: '帮我总结这个版本',
-        model: null,
-        session_path: null,
-        status: 'failed',
-        exit_code: null,
-        error: 'err.agent.timeout|300',
-        started_at: null,
-        finished_at: null,
-        created_at: '2025-01-01T00:00:00.000Z',
-      },
+      }),
+      makeRun({ id: 20, status: 'failed' }),
     ])
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
@@ -589,26 +610,6 @@ describe('AgentWorkspace 冒烟', () => {
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })
-
-  /** 构造一个 run 摘要（默认：本会话第一轮超时失败）。 */
-  function makeRun(over: Record<string, unknown> = {}): AgentRunSummary {
-    return {
-      id: 20,
-      session_key: 'test-session',
-      skill_path: null,
-      entities: '[]',
-      instruction: '帮我总结这个版本',
-      model: null,
-      session_path: null,
-      status: 'timeout',
-      exit_code: null,
-      error: 'err.agent.timeout|300',
-      started_at: null,
-      finished_at: null,
-      created_at: '2025-01-01T00:00:00.000Z',
-      ...over,
-    } as unknown as AgentRunSummary
-  }
 
   it('磁盘发现：索引里没有的会话自动补入并标记「已恢复」', async () => {
     vi.mocked(listAgentSessions).mockResolvedValue([
@@ -832,6 +833,516 @@ describe('AgentWorkspace 冒烟', () => {
     await flushPromises()
     expect(showToast).toHaveBeenCalledWith(t('agent.retry_blocked'))
     expect(vi.mocked(runAgentJob)).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+})
+
+// ========== P2：打磨与功能完整性 ==========
+describe('AgentWorkspace P2 打磨', () => {
+  beforeEach(() => {
+    // 模块级 mock 跨用例累积调用记录：清空后再断言「本次提交」
+    vi.mocked(runAgentJob).mockClear()
+    vi.mocked(exportAgentSession).mockClear()
+    vi.mocked(restartAgentRpc).mockClear()
+    vi.mocked(deleteAgentSession).mockClear()
+    vi.mocked(confirmDialog).mockClear()
+    vi.mocked(confirmDialog).mockResolvedValue(true)
+    vi.mocked(openDialog).mockReset()
+    // 关键：listAgentRuns 的 mockResolvedValue 会跨用例残留。上一个用例若留下
+    // running/pending run，canStop 为真 → Enter 被「请先停止」拦下，提交永不发生。
+    vi.mocked(listAgentRuns).mockResolvedValue([])
+    vi.mocked(getAgentQueueStatus).mockResolvedValue({ position: null, other_running: false, running_sessions: [] })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, restart_pending: false })
+    vi.mocked(getAgentSessionUsage).mockResolvedValue({
+      message_count: 0,
+      total_chars: 0,
+      file_bytes: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      total_tokens: 0,
+      cost_micros: 0,
+      has_usage: false,
+    })
+  })
+
+  /** 会话索引预置多项（供搜索/重命名/导出用例使用）。 */
+  function seedSessions() {
+    const base = Date.now()
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([
+        { key: 's1', title: '分析 B 站 up 主的更新规律', updatedAt: base },
+        { key: 's2', title: '总结 vue 3.5 的破坏性变更', updatedAt: base - 1000 },
+        { key: 's3', title: '排查构建日志里的报错', updatedAt: base - 2000 },
+      ]),
+    )
+  }
+
+  it('会话搜索：按标题过滤侧栏，无匹配时给空态文案', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    expect(wrapper.findAll('.agent-ws-session-item').length).toBe(3)
+
+    const input = wrapper.find('.agent-ws-session-search-input')
+    await input.setValue('vue')
+    expect(wrapper.findAll('.agent-ws-session-item').length).toBe(1)
+    expect(wrapper.text()).toContain('总结 vue 3.5 的破坏性变更')
+
+    // 无匹配：显示空态而非空白列表
+    await input.setValue('不存在的会话')
+    expect(wrapper.findAll('.agent-ws-session-item').length).toBe(0)
+    expect(wrapper.text()).toContain(t('agent.session_no_match'))
+
+    // 清空即恢复全量
+    await input.setValue('')
+    expect(wrapper.findAll('.agent-ws-session-item').length).toBe(3)
+    wrapper.unmount()
+  })
+
+  it('会话重命名：改标题并写入 localStorage 索引', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    const items = wrapper.findAll('.agent-ws-session-item')
+    await items[1].find('.agent-ws-session-more').trigger('click')
+    const menuItems = wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')
+    await menuItems[0].trigger('click') // 重命名
+    const editor = wrapper.find('.agent-ws-rename-input')
+    expect(editor.exists()).toBe(true)
+    expect((editor.element as HTMLInputElement).value).toBe('总结 vue 3.5 的破坏性变更')
+
+    await editor.setValue('vue 3.5 迁移清单')
+    await editor.trigger('keydown.enter')
+    await flushPromises()
+
+    const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as Array<{ key: string; title: string }>
+    expect(stored.find((s) => s.key === 's2')?.title).toBe('vue 3.5 迁移清单')
+    expect(wrapper.text()).toContain('vue 3.5 迁移清单')
+    wrapper.unmount()
+  })
+
+  it('重命名 Esc 取消：标题不变', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-session-item')[0].find('.agent-ws-session-more').trigger('click')
+    await wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')[0].trigger('click')
+    const editor = wrapper.find('.agent-ws-rename-input')
+    await editor.setValue('改坏了')
+    await editor.trigger('keydown.esc')
+    await flushPromises()
+
+    const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as Array<{ key: string; title: string }>
+    expect(stored.find((s) => s.key === 's1')?.title).toBe('分析 B 站 up 主的更新规律')
+    expect(wrapper.find('.agent-ws-rename-input').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('会话导出：md / json 两个入口各调一次后端导出', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    await wrapper.findAll('.agent-ws-session-item')[2].find('.agent-ws-session-more').trigger('click')
+    const items = wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')
+    expect(items[1].text()).toBe(t('agent.session_export_md'))
+    expect(items[2].text()).toBe(t('agent.session_export_json'))
+    await items[1].trigger('click')
+    await flushPromises()
+    expect(vi.mocked(exportAgentSession)).toHaveBeenCalledWith('s3', '排查构建日志里的报错', 'md')
+
+    await wrapper.findAll('.agent-ws-session-item')[2].find('.agent-ws-session-more').trigger('click')
+    await wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')[2].trigger('click')
+    await flushPromises()
+    expect(vi.mocked(exportAgentSession)).toHaveBeenLastCalledWith('s3', '排查构建日志里的报错', 'json')
+    wrapper.unmount()
+  })
+
+  it('会话 ⋯ 菜单的删除项：确认后调后端删除并移出侧栏', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    // 删除入口由侧栏常驻的 X 按钮移入 ⋯ 菜单：少一次误触，同时腾出位置放重命名/导出
+    await wrapper.findAll('.agent-ws-session-item')[1].find('.agent-ws-session-more').trigger('click')
+    const items = wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')
+    expect(items[3].text()).toBe(t('agent.delete_session'))
+    expect(vi.mocked(confirmDialog)).not.toHaveBeenCalled()
+    await items[3].trigger('click')
+    await flushPromises()
+    expect(vi.mocked(confirmDialog)).toHaveBeenCalled()
+    expect(vi.mocked(deleteAgentSession)).toHaveBeenCalledWith('s2')
+    expect(wrapper.text()).not.toContain('总结 vue 3.5 的破坏性变更')
+    wrapper.unmount()
+  })
+
+  it('导出取消（err.agent.export_cancelled）不弹报错 toast', async () => {
+    seedSessions()
+    // 真实链路：invokeI18nFn 抛 InvokeI18nError（message 已翻译，key 保留）
+    vi.mocked(exportAgentSession).mockRejectedValueOnce(
+      new InvokeI18nError('err.agent.export_cancelled', [], t('err.agent.export_cancelled')),
+    )
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-session-item')[0].find('.agent-ws-session-more').trigger('click')
+    await wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')[1].trigger('click')
+    await flushPromises()
+    expect(showToast).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('词元与成本：pi 上报用量时展示真实输入/输出与成本', async () => {
+    vi.mocked(getAgentSessionUsage).mockResolvedValue({
+      message_count: 6,
+      total_chars: 4000,
+      file_bytes: 12345,
+      input_tokens: 1200,
+      output_tokens: 340,
+      cache_read_tokens: 2560,
+      total_tokens: 4100,
+      cost_micros: 41244, // 0.041244 美元
+      has_usage: true,
+    })
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const bar = wrapper.find('.agent-ws-usage')
+    expect(bar.exists()).toBe(true)
+    expect(bar.text()).toContain(t('agent.context_usage_actual', '6', '1200', '340'))
+    expect(bar.text()).toContain('0.0412')
+    // 真实用量不显示估算标记
+    expect(wrapper.find('.agent-ws-usage-est').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('成本为零：pi 未配置模型价格时只展示词元，不显示 $0 成本', async () => {
+    vi.mocked(getAgentSessionUsage).mockResolvedValue({
+      message_count: 4,
+      total_chars: 3000,
+      file_bytes: 8000,
+      input_tokens: 900,
+      output_tokens: 120,
+      cache_read_tokens: 0,
+      total_tokens: 1020,
+      cost_micros: 0, // models.json 自定义模型无价格 → pi 上报 cost 全 0
+      has_usage: true,
+    })
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const bar = wrapper.find('.agent-ws-usage')
+    expect(bar.text()).toContain(t('agent.context_usage_actual', '4', '900', '120'))
+    expect(bar.text()).not.toContain('$')
+    wrapper.unmount()
+  })
+
+  it('词元估算：pi 未上报用量时回落字符数估算并标 ≈', async () => {
+    vi.mocked(getAgentSessionUsage).mockResolvedValue({
+      message_count: 3,
+      total_chars: 4000,
+      file_bytes: 9000,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      total_tokens: 0,
+      cost_micros: 0,
+      has_usage: false,
+    })
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    expect(wrapper.find('.agent-ws-usage').text()).toContain(t('agent.context_usage', '3', '2000'))
+    expect(wrapper.find('.agent-ws-usage-est').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('pi 进程指示灯：点灯弹菜单展示状态与 pid，菜单内重启', async () => {
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 4321, restart_pending: false })
+    vi.mocked(restartAgentRpc).mockResolvedValue(true)
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    await flushPromises()
+
+    const dot = wrapper.find('.agent-ws-rpc-dot')
+    expect(dot.classes()).toContain('running')
+    // 点灯开菜单（不再是点灯即重启）
+    await dot.trigger('click')
+    await flushPromises()
+    const menu = findTeleported('.agent-ws-menu-rpc')
+    expect(menu.exists()).toBe(true)
+    expect(menu.text()).toContain(t('agent.rpc_running'))
+    expect(menu.text()).toContain('4321')
+    expect(vi.mocked(restartAgentRpc)).not.toHaveBeenCalled()
+
+    // 菜单内点「重启」才触发
+    await menu.find('.agent-ws-menu-item').trigger('click')
+    await flushPromises()
+    expect(vi.mocked(restartAgentRpc)).toHaveBeenCalled()
+    expect(showToast).toHaveBeenCalledWith(t('agent.rpc_restart_done'))
+    // 重启后菜单收起，让 toast 成为唯一反馈
+    expect(findTeleported('.agent-ws-menu-rpc').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('未运行时菜单只显状态详情，无重启项（无物可重启，杜绝假重启）', async () => {
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, restart_pending: false })
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    await flushPromises()
+
+    await wrapper.find('.agent-ws-rpc-dot').trigger('click')
+    await flushPromises()
+    const menu = findTeleported('.agent-ws-menu-rpc')
+    expect(menu.exists()).toBe(true)
+    expect(menu.text()).toContain(t('agent.rpc_stopped'))
+    expect(menu.text()).toContain(t('agent.rpc_not_started_hint'))
+    // 未运行：不提供重启入口（点击此前会 no-op 后谎报「已重启」）
+    expect(menu.find('.agent-ws-menu-item').exists()).toBe(false)
+    expect(vi.mocked(restartAgentRpc)).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('点空白处收起 pi 状态菜单', async () => {
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, restart_pending: false })
+    // attachTo：outside-click 监听挂在 document（捕获阶段），游离容器的事件传播不经过它
+    const wrapper = mount(AgentWorkspace, { attachTo: document.body, global: { provide: {} } })
+    await flushPromises()
+    await wrapper.find('.agent-ws-rpc-dot').trigger('click')
+    expect(findTeleported('.agent-ws-menu-rpc').exists()).toBe(true)
+    // 点菜单外的区域（如标题区）应收起
+    wrapper.find('.agent-ws-title').element.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+    await nextTick()
+    expect(findTeleported('.agent-ws-menu-rpc').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('有任务在跑时重启被拒：提示「请先停止」而非谎报成功', async () => {
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 1, restart_pending: false })
+    vi.mocked(restartAgentRpc).mockResolvedValue(false)
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    await flushPromises()
+    await wrapper.find('.agent-ws-rpc-dot').trigger('click')
+    await flushPromises()
+    await findTeleported('.agent-ws-menu-rpc .agent-ws-menu-item').trigger('click')
+    await flushPromises()
+    expect(showToast).toHaveBeenCalledWith(t('agent.rpc_restart_blocked'))
+    wrapper.unmount()
+  })
+
+  it('配置推迟生效提示：restart_pending 为真时显示横幅', async () => {
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, restart_pending: true })
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    expect(wrapper.find('.agent-ws-pending-restart').exists()).toBe(true)
+    expect(wrapper.text()).toContain(t('agent.config_pending_restart'))
+    wrapper.unmount()
+  })
+
+  it('单次模型覆盖：只作用于下一次提交，不写入会话索引', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    // 打开模型菜单 → 勾「仅本次」→ 选一个模型
+    await wrapper.find('.agent-ws-model-btn').trigger('click')
+    await wrapper.find('.agent-ws-menu-once').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.agent-ws-menu-once').classes()).toContain('selected')
+
+    const modelItems = wrapper.findAll('.agent-ws-menu-model .agent-ws-menu-item')
+    await modelItems[2].trigger('click') // 第一个真实模型（index 0/1 是开关与「默认」）
+    await flushPromises()
+
+    // 按钮显示已切到该模型
+    expect(wrapper.find('.agent-ws-model-label').text()).toBe('DeepSeek V4 Flash')
+
+    await wrapper.find('textarea').setValue('这条用便宜模型')
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    // 提交时带上本次选择
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalled()
+    expect(vi.mocked(runAgentJob).mock.calls[0][0].model).toEqual({
+      provider: 'deepseek',
+      model_id: 'deepseek-v4-flash',
+    })
+    // 关键：不落会话索引（会话长期模型仍是「默认」）
+    const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as Array<{ key: string; model?: unknown }>
+    expect(stored.find((s) => s.key === 'test-session')?.model ?? null).toBeNull()
+
+    // 再提交一次：一次性覆盖已被消费，model 回落为 null（跟随 pi 默认）
+    await wrapper.find('textarea').setValue('第二条消息')
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(vi.mocked(runAgentJob).mock.calls[1][0].model).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('会话级模型选择仍然持久化（与单次覆盖互不干扰）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.find('.agent-ws-model-btn').trigger('click')
+    // 不开「仅本次」：默认即会话级
+    const modelItems = wrapper.findAll('.agent-ws-menu-model .agent-ws-menu-item')
+    await modelItems[2].trigger('click')
+    await flushPromises()
+    const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as Array<{ key: string; model?: { model_id: string } }>
+    expect(stored.find((s) => s.key === 'test-session')?.model?.model_id).toBe('deepseek-v4-flash')
+    wrapper.unmount()
+  })
+
+  it('本地文件附件：chip 只显示文件名，提交时带上路径', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(openDialog).mockResolvedValue(['C:/logs/app.log', 'C:/img/shot.png'])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    await wrapper.find('.agent-ws-attach-btn').trigger('click')
+    await flushPromises()
+    const chips = wrapper.findAll('.agent-ws-chip-file')
+    expect(chips.length).toBe(2)
+    // chip 显示文件名，完整路径在 title 里
+    expect(chips[0].text()).toContain('app.log')
+    expect(chips[0].attributes('title')).toBe('C:/logs/app.log')
+
+    await wrapper.find('textarea').setValue('看看这个日志')
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(vi.mocked(runAgentJob).mock.calls[0][0].files).toEqual(['C:/logs/app.log', 'C:/img/shot.png'])
+    // 提交后附件清空（不跟着下一轮）
+    expect(wrapper.findAll('.agent-ws-chip-file').length).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('仅附件提交：不写指令也能提交，与后端空校验口径一致', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(openDialog).mockResolvedValue(['C:/logs/app.log'])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    await wrapper.find('.agent-ws-attach-btn').trigger('click')
+    await flushPromises()
+    // 不写指令直接回车：「看看这个日志」的意图已由附件承载，不应被空校验拦下
+    await wrapper.find('textarea').trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledTimes(1)
+    const input = vi.mocked(runAgentJob).mock.calls[0][0]
+    expect(input.instruction).toBe('')
+    expect(input.files).toEqual(['C:/logs/app.log'])
+    wrapper.unmount()
+  })
+
+  it('附件 toast 显示翻译文案而非裸键（agent.file_attached 两语言都有定义）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(openDialog).mockResolvedValue(['C:/a.log'])
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    await flushPromises()
+
+    await wrapper.find('.agent-ws-attach-btn').trigger('click')
+    await flushPromises()
+    // t() 对缺失键返回键本身：若 i18n 漏了 agent.file_attached，这里会收到裸键
+    expect(showToast).toHaveBeenCalledWith(t('agent.file_attached', '1'))
+    expect(showToast).not.toHaveBeenCalledWith('agent.file_attached')
+    wrapper.unmount()
+  })
+
+  it('附件可移除，取消文件对话框不改变已有附件', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(openDialog).mockResolvedValue(['C:/a.log', 'C:/b.log'])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.find('.agent-ws-attach-btn').trigger('click')
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-chip-file .agent-ws-chip-remove')[0].trigger('click')
+    expect(wrapper.findAll('.agent-ws-chip-file').length).toBe(1)
+
+    vi.mocked(openDialog).mockResolvedValue(null) // 用户取消
+    await wrapper.find('.agent-ws-attach-btn').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.agent-ws-chip-file').length).toBe(1)
+    wrapper.unmount()
+  })
+
+  it('重试失败 run 时一并还原本地文件附件', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ id: 30, status: 'failed', error: 'err.agent.model_error', files: JSON.stringify(['C:/logs/app.log']) }),
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    // 用「编辑后重试」还原到输入区（不直接提交，便于断言附件）
+    await wrapper.findAll('.agent-ws-run-failed-actions button')[1].trigger('click')
+    await flushPromises()
+    const chips = wrapper.findAll('.agent-ws-chip-file')
+    expect(chips.length).toBe(1)
+    expect(chips[0].attributes('title')).toBe('C:/logs/app.log')
+    wrapper.unmount()
+  })
+
+  it('结果未知（unknown）终态：可重试且带「可能已执行完成」提示，与失败区分', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ id: 40, status: 'unknown', error: 'err.agent.end_lost' }),
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const note = wrapper.find('.agent-ws-run-failed')
+    expect(note.exists()).toBe(true)
+    // 独立分类：既不是 failed 也不是 cancelled 的红色/灰色，而是未知专用样式
+    expect(note.classes()).toContain('run-unknown')
+    expect(note.classes()).not.toContain('run-cancelled')
+    expect(note.text()).toContain(t('agent.status_unknown'))
+    expect(note.text()).toContain(t('agent.unknown_advice'))
+    // 文案不再谎称「已按失败处理」
+    expect(note.text()).not.toContain('已按失败处理')
+    // 仍可重试（终点不明即值得一试，但要用户先确认）
+    expect(wrapper.findAll('.agent-ws-run-failed-actions button').length).toBe(2)
+    wrapper.unmount()
+  })
+
+  it('启动清理文案：已启动的 run 说「状态未知」，未启动的说「未开始执行」', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ id: 41, status: 'unknown', error: 'err.agent.startup_cleanup_running' }),
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const text = wrapper.find('.agent-ws-run-failed').text()
+    expect(text).toContain('状态未知')
+    expect(text).not.toContain('未完成的提交已取消')
     wrapper.unmount()
   })
 })

@@ -409,7 +409,7 @@ fn collect_text(content: &serde_json::Value) -> String {
 
 // ---- 会话水位统计（上下文水位可见性）----
 
-/// 会话文件的水位摘要（前端展示「消息 N 条 · 约 X tokens」）。
+/// 会话文件的水位摘要 + pi 上报的实际词元/成本。
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 pub struct AgentSessionUsage {
     /// 消息总条数（含 user / assistant / tool / bash / custom）。
@@ -418,17 +418,60 @@ pub struct AgentSessionUsage {
     pub total_chars: i64,
     /// 会话文件字节数（磁盘占用）。
     pub file_bytes: i64,
+    /// 累计输入词元（assistant 消息 `usage.input` 之和）。
+    pub input_tokens: i64,
+    /// 累计输出词元（`usage.output`）。
+    pub output_tokens: i64,
+    /// 累计缓存读取词元（`usage.cacheRead`；命中缓存通常远便宜于重新输入）。
+    pub cache_read_tokens: i64,
+    /// 累计计费词元（`usage.totalTokens`）。
+    pub total_tokens: i64,
+    /// 累计成本，单位**百万分之一美元**（`usage.cost.total` × 1e6 取整）。
+    /// Agent 会烧钱，用户零感知就无法评估性价比。
+    ///
+    /// 用整数而非 f64：LLM 单次成本常在 1e-5 美元量级，上千条消息累加后 f64 的
+    /// 表示误差会在展示的小数位上显现；且 specta 把 f64 映射成 `number | null`
+    /// （NaN/Inf 序列化为 null），前端得处处兜底。整数微元两者都规避。
+    pub cost_micros: i64,
+    /// 是否至少有一条 assistant 消息带 `usage` 字段。
+    ///
+    /// false 时上述词元/成本全为 0——**是「pi 没上报」而非「没消耗」**，前端应回落
+    /// 到字符数估算，不能把 0 当真实成本展示（那会让「免费」的错觉更危险）。
+    pub has_usage: bool,
 }
 
-/// 统计会话文件的水位：读文件一次，行级累计消息数与文本字符数。
+impl AgentSessionUsage {
+    /// 空会话（文件尚未创建）：全零且 `has_usage = false`。
+    /// 前端据此不显示水位条——「没有数据」与「数据为零」是两回事。
+    pub fn empty() -> Self {
+        AgentSessionUsage {
+            message_count: 0,
+            total_chars: 0,
+            file_bytes: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: 0,
+            total_tokens: 0,
+            cost_micros: 0,
+            has_usage: false,
+        }
+    }
+}
+
+/// 统计会话文件的水位与实际消耗：读文件一次，行级累计。
 ///
-/// 粗略估算：token ≈ 字符数 / 2（中英混合），前端据此展示「约 X tokens」。
+/// 两路数据各有用途，不互相替代：
+/// - `total_chars`：字符数，用于**上下文水位**（还剩多少上下文）；
+/// - `usage.*`：pi 上报的真实词元与成本，用于**花了多少**（计费口径，
+///   含缓存命中，无法由字符数推出）。
+///
 /// 坏行容忍（与 parse_session_jsonl 一致）；文件不存在 / 读取失败 → None。
 pub fn session_usage(path: &Path) -> Option<AgentSessionUsage> {
     let content = std::fs::read_to_string(path).ok()?;
     let file_bytes = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
     let mut message_count: i64 = 0;
     let mut total_chars: i64 = 0;
+    let usage = aggregate_usage(&content);
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -453,7 +496,185 @@ pub fn session_usage(path: &Path) -> Option<AgentSessionUsage> {
         message_count,
         total_chars,
         file_bytes,
+        input_tokens: usage.input,
+        output_tokens: usage.output,
+        cache_read_tokens: usage.cache_read,
+        total_tokens: usage.total,
+        cost_micros: usage.cost_micros,
+        has_usage: usage.count > 0,
     })
+}
+
+/// 会话累计的词元与成本。
+#[derive(Debug, Default, PartialEq)]
+struct UsageTotals {
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    total: i64,
+    cost_micros: i64,
+    /// 带 usage 字段的 assistant 消息条数（0 = pi 未上报）。
+    count: i64,
+}
+
+/// 汇总会话中全部 assistant 消息的 `usage` 字段。
+///
+/// 只统计 assistant（pi 只在模型返回时上报 usage；user/tool 消息没有该字段）。
+/// 逐字段做容错取值：缺失或类型异常按 0 处理，不让一条畸形 usage 让整段统计失效。
+fn aggregate_usage(content: &str) -> UsageTotals {
+    let mut out = UsageTotals::default();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let value: serde_json::Value = match serde_json::from_str(trimmed) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value.get("type").and_then(|t| t.as_str()) != Some("message") {
+            continue;
+        }
+        let Some(msg) = value.get("message") else {
+            continue;
+        };
+        if msg.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+            continue;
+        }
+        let Some(usage) = msg.get("usage") else {
+            continue;
+        };
+        out.count += 1;
+        out.input += json_i64(usage.get("input"));
+        out.output += json_i64(usage.get("output"));
+        out.cache_read += json_i64(usage.get("cacheRead"));
+        out.total += json_i64(usage.get("totalTokens"));
+        // cost 是嵌套对象（{ input, output, cacheRead, cacheWrite, total }）。
+        // 转微元取整：f64 → i64 的 as 转换对 NaN/Inf 是饱和的（不 UB），
+        // 异常值最多让这一条记成 0 或极值，不会污染其余消息的求和。
+        if let Some(total) = usage.pointer("/cost/total").and_then(|v| v.as_f64()) {
+            out.cost_micros += (total * 1e6).round() as i64;
+        }
+    }
+    out
+}
+
+/// 取 JSON 中的整数（缺失 / 非数字 / 越界一律按 0，不因单条脏数据中断统计）。
+fn json_i64(value: Option<&serde_json::Value>) -> i64 {
+    value.and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
+// ---- 会话导出（Markdown / JSON）----
+
+/// 导出用的一条消息（结构与渲染解耦：导出只关心 role / 文本 / 时间 / 模型）。
+/// 供 JSON 导出直接序列化，Markdown 导出走 `render_markdown`。
+#[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
+pub struct AgentExportMessage {
+    pub role: String,
+    pub timestamp: String,
+    pub model: Option<String>,
+    pub text: String,
+}
+
+/// 把解析后的消息流摊平成导出结构（每类 block 各归一行，工具结果折叠为文本）。
+pub fn export_messages(messages: &[AgentChatMessage]) -> Vec<AgentExportMessage> {
+    messages
+        .iter()
+        .map(|m| AgentExportMessage {
+            role: m.role.clone(),
+            timestamp: m.timestamp.clone(),
+            model: m.model.clone(),
+            text: blocks_to_text(&m.blocks),
+        })
+        .collect()
+}
+
+/// 内容块 → 导出文本（思考/工具调用/工具结果/bash 都保留，便于复盘完整过程）。
+fn blocks_to_text(blocks: &[AgentChatBlock]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for b in blocks {
+        match b {
+            AgentChatBlock::Text { text } => parts.push(text.clone()),
+            AgentChatBlock::Thinking { text } => {
+                parts.push(format!("[思考] {}", text));
+            }
+            AgentChatBlock::ToolCall { name, args, .. } => {
+                parts.push(format!("[调用工具] {} {}", name, args));
+            }
+            AgentChatBlock::ToolResult {
+                tool_name,
+                text,
+                is_error,
+                ..
+            } => {
+                let tag = if *is_error { "工具出错" } else { "工具结果" };
+                parts.push(format!("[{}] {}\n{}", tag, tool_name, text));
+            }
+            AgentChatBlock::Bash {
+                command,
+                output,
+                exit_code,
+                ..
+            } => {
+                parts.push(format!(
+                    "[bash] $ {}\nexit {:?}\n{}",
+                    command,
+                    exit_code.unwrap_or(-1),
+                    output
+                ));
+            }
+        }
+    }
+    parts.join("\n\n")
+}
+
+/// 渲染会话为 Markdown。
+///
+/// 结构：标题 + 元信息（导出时间 / 消息数 / 实际消耗）+ 逐条消息（角色 · 时间 · 模型）。
+/// 工具调用与 bash 输出一并保留——导出的价值就在于能复盘 Agent 到底做了什么，
+/// 只留对话正文会让「它为什么给出这个结论」无从追溯。
+pub fn render_markdown(title: &str, messages: &[AgentExportMessage], usage: Option<&AgentSessionUsage>) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("# {}\n\n", if title.trim().is_empty() { "Agent 会话" } else { title }));
+    out.push_str(&format!("- 导出时间：{}\n", chrono::Local::now().format("%Y-%m-%d %H:%M:%S")));
+    out.push_str(&format!("- 消息数：{}\n", messages.len()));
+    if let Some(u) = usage {
+        if u.has_usage {
+            out.push_str(&format!(
+                "- 词元消耗：输入 {} · 输出 {} · 缓存读取 {} · 合计 {}\n",
+                u.input_tokens, u.output_tokens, u.cache_read_tokens, u.total_tokens
+            ));
+            // pi 未配置模型价格时 cost 全 0，写「成本：0.000000 USD」会误导为免费，跳过成本行
+            if u.cost_micros > 0 {
+                out.push_str(&format!("- 成本：{:.6} USD\n", u.cost_micros as f64 / 1e6));
+            }
+        }
+    }
+    out.push_str("\n---\n\n");
+    for m in messages {
+        out.push_str(&format!("### {} · {}\n\n", role_label(&m.role), m.timestamp));
+        if let Some(model) = &m.model {
+            out.push_str(&format!("> 模型：{}\n\n", model));
+        }
+        let text = m.text.trim();
+        if text.is_empty() {
+            out.push_str("_(无文本内容)_\n\n");
+        } else {
+            out.push_str(text);
+            out.push_str("\n\n");
+        }
+    }
+    out
+}
+
+/// 导出 Markdown 里的角色名（中文为主，导出物面向人读）。
+fn role_label(role: &str) -> &'static str {
+    match role {
+        "user" => "用户",
+        "assistant" => "助手",
+        "toolResult" | "bash" | "bashExecution" => "工具",
+        _ => "其他",
+    }
 }
 
 /// 累计 text / thinking 块的字符数（字符串或块数组两种形态都处理）。
@@ -701,5 +922,211 @@ mod tests {
         let content = entry("a", None, user_msg("你好"));
         let messages = parse_session_jsonl(&content).unwrap();
         assert_eq!(messages[0].run_id, None);
+    }
+
+    /// 构造一条带 usage 的 assistant 消息（pi 在模型返回时上报）。
+    fn assistant_with_usage(usage: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "role": "assistant",
+            "content": [{ "type": "text", "text": "回复" }],
+            "model": "claude-test",
+            "usage": usage
+        })
+    }
+
+    fn usage_obj(input: i64, output: i64, total: i64, cost: f64) -> serde_json::Value {
+        serde_json::json!({
+            "input": input,
+            "output": output,
+            "cacheRead": 2560,
+            "cacheWrite": 0,
+            "totalTokens": total,
+            "cost": { "input": 0.0, "output": cost, "cacheRead": 0.0, "cacheWrite": 0.0, "total": cost }
+        })
+    }
+
+    #[test]
+    fn session_usage_aggregates_tokens_and_cost() {
+        let content = [
+            entry("a", None, user_msg("问题")),
+            entry("b", Some("a"), assistant_with_usage(usage_obj(48, 245, 2853, 4.1244e-05))),
+            entry("c", Some("b"), assistant_with_usage(usage_obj(52, 100, 2712, 2.0e-05))),
+        ]
+        .join("\n");
+        let dir = std::env::temp_dir().join(format!("relwatch-usage2-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("ws-usage2.jsonl");
+        std::fs::write(&path, &content).unwrap();
+
+        let u = session_usage(&path).expect("usage");
+        assert!(u.has_usage, "有 usage 字段时应标记为已上报");
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 345);
+        assert_eq!(u.cache_read_tokens, 5120); // 两条消息各 2560
+        assert_eq!(u.total_tokens, 5565);
+        // 4.1244e-05 + 2.0e-05 美元 = 61.244 微元（round 后 61）
+        assert_eq!(u.cost_micros, 61);
+        // 字符数统计不受影响（水位口径独立）
+        assert_eq!(u.message_count, 3);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn session_usage_without_usage_field_reports_has_usage_false() {
+        // pi 未上报 usage（老版本 / 非计费后端）：词元与成本全 0，但 has_usage=false，
+        // 前端据此回落到字符数估算——不能把「没上报」显示成「没花钱」。
+        let content = [
+            entry("a", None, user_msg("问题")),
+            entry("b", Some("a"), assistant_msg(serde_json::json!([{ "type": "text", "text": "回复" }]))),
+        ]
+        .join("\n");
+        let dir = std::env::temp_dir().join(format!("relwatch-usage3-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("ws-usage3.jsonl");
+        std::fs::write(&path, &content).unwrap();
+
+        let u = session_usage(&path).expect("usage");
+        assert!(!u.has_usage);
+        assert_eq!(u.total_tokens, 0);
+        assert_eq!(u.cost_micros, 0);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn aggregate_usage_tolerates_malformed_fields() {
+        // 单条畸形 usage 不应让整段统计失效：缺失字段按 0，非数字按 0
+        let content = [
+            entry("a", None, assistant_with_usage(usage_obj(10, 20, 30, 1.5))),
+            entry(
+                "b",
+                Some("a"),
+                assistant_with_usage(serde_json::json!({ "input": "oops", "cost": "nope" })),
+            ),
+            entry("c", Some("b"), assistant_with_usage(serde_json::json!({}))),
+        ]
+        .join("\n");
+        let u = aggregate_usage(&content);
+        assert_eq!(u.count, 3, "三条 assistant 都计入（后两条缺字段）");
+        // 仅第一条字段完整；后两条的缺失/非数字字段按 0 处理，不中断统计
+        assert_eq!(u.input, 10);
+        assert_eq!(u.output, 20);
+        assert_eq!(u.cache_read, 2560);
+        assert_eq!(u.total, 30);
+        assert_eq!(u.cost_micros, 1_500_000);
+    }
+
+    #[test]
+    fn export_messages_flattens_all_block_kinds() {
+        let content = [
+            entry("a", None, user_msg("问题")),
+            entry(
+                "b",
+                Some("a"),
+                assistant_msg(serde_json::json!([
+                    { "type": "thinking", "thinking": "想一想" },
+                    { "type": "text", "text": "答案" }
+                ])),
+            ),
+            entry(
+                "c",
+                Some("b"),
+                serde_json::json!({
+                    "role": "toolResult", "toolCallId": "t1", "toolName": "bash",
+                    "content": [{ "type": "text", "text": "src\n" }], "isError": false
+                }),
+            ),
+        ]
+        .join("\n");
+        let messages = parse_session_jsonl(&content).unwrap();
+        let exported = export_messages(&messages);
+        assert_eq!(exported.len(), 3);
+        assert_eq!(exported[0].role, "user");
+        assert_eq!(exported[0].text, "问题");
+        // 思考与正文都保留（复盘需要完整过程）
+        assert!(exported[1].text.contains("[思考] 想一想"));
+        assert!(exported[1].text.contains("答案"));
+        assert_eq!(exported[1].model.as_deref(), Some("claude-test"));
+        assert!(exported[2].text.contains("[工具结果] bash"));
+    }
+
+    #[test]
+    fn render_markdown_includes_title_meta_and_messages() {
+        let messages = vec![
+            AgentExportMessage {
+                role: "user".into(),
+                timestamp: "2025-01-01T00:00:00.000Z".into(),
+                model: None,
+                text: "问题".into(),
+            },
+            AgentExportMessage {
+                role: "assistant".into(),
+                timestamp: "2025-01-01T00:00:01.000Z".into(),
+                model: Some("claude-test".into()),
+                text: "答案".into(),
+            },
+        ];
+        let usage = AgentSessionUsage {
+            message_count: 2,
+            total_chars: 4,
+            file_bytes: 100,
+            input_tokens: 48,
+            output_tokens: 245,
+            cache_read_tokens: 2560,
+            total_tokens: 2853,
+            cost_micros: 41,
+            has_usage: true,
+        };
+        let md = render_markdown("我的会话", &messages, Some(&usage));
+        assert!(md.starts_with("# 我的会话"));
+        assert!(md.contains("- 消息数：2"));
+        assert!(md.contains("输入 48"));
+        assert!(md.contains("4.1244e-5") || md.contains("0.000041"), "应含成本: {}", md);
+        assert!(md.contains("### 用户 · "));
+        assert!(md.contains("### 助手 · "));
+        assert!(md.contains("> 模型：claude-test"));
+        assert!(md.contains("答案"));
+    }
+
+    #[test]
+    fn render_markdown_handles_empty_title_and_no_usage() {
+        let messages = vec![AgentExportMessage {
+            role: "user".into(),
+            timestamp: "2025-01-01T00:00:00.000Z".into(),
+            model: None,
+            text: "".into(),
+        }];
+        let md = render_markdown("  ", &messages, None);
+        assert!(md.starts_with("# Agent 会话"), "空标题应有占位");
+        assert!(md.contains("_(无文本内容)_"), "空消息不应留空白块");
+        assert!(!md.contains("词元消耗"), "无 usage 数据时不输出消耗行");
+    }
+
+    #[test]
+    fn render_markdown_skips_cost_line_when_cost_is_zero() {
+        // pi 未配置模型价格时 cost 全 0：不应输出「成本：0.000000 USD」误导为免费
+        let messages = vec![AgentExportMessage {
+            role: "assistant".into(),
+            timestamp: "2025-01-01T00:00:01.000Z".into(),
+            model: Some("custom-model".into()),
+            text: "答案".into(),
+        }];
+        let usage = AgentSessionUsage {
+            message_count: 1,
+            total_chars: 2,
+            file_bytes: 50,
+            input_tokens: 48,
+            output_tokens: 245,
+            cache_read_tokens: 0,
+            total_tokens: 293,
+            cost_micros: 0,
+            has_usage: true,
+        };
+        let md = render_markdown("无价格会话", &messages, Some(&usage));
+        assert!(md.contains("词元消耗"), "词元行照常输出: {}", md);
+        assert!(!md.contains("成本："), "cost=0 时不应输出成本行: {}", md);
     }
 }

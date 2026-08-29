@@ -92,6 +92,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::delete_agent_session,
         commands::get_agent_session_command,
         commands::open_agent_session,
+        commands::get_agent_rpc_status,
+        commands::restart_agent_rpc,
+        commands::export_agent_session,
     ])
 }
 

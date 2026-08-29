@@ -78,9 +78,12 @@ pub fn init_pool(
     Ok(pool)
 }
 
-/// agent_runs 建表列定义（apply_schema 与 Migration 14 共用，避免两份字面 SQL 脱节）。
-/// status 带 CHECK 约束（防御非法状态值）；注意旧库（未走 Migration 14 重建的）
-/// agent_runs 表没有该 CHECK，仅新建库与重建库生效。
+/// agent_runs 建表列定义（apply_schema 与重建型 Migration 共用，避免两份字面 SQL 脱节）。
+/// status 带 CHECK 约束（防御非法状态值）；注意旧库（未走重建的）agent_runs 表没有该
+/// CHECK，仅新建库与重建库生效——Migration 16 负责把存量库补齐。
+///
+/// `unknown` 是「结果未知」终态：终态事件丢失（`err.agent.end_lost`）或应用重启时
+/// 未落终态的 run。语义上区别于 failed：任务**可能已经执行完成**，只是结果没能记录。
 const AGENT_RUNS_COLUMNS: &str = "(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             session_key TEXT NOT NULL,
@@ -89,15 +92,36 @@ const AGENT_RUNS_COLUMNS: &str = "(
             instruction TEXT NOT NULL DEFAULT '',
             model TEXT,
             session_path TEXT,
-            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout', 'cancelled')),
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout', 'cancelled', 'unknown')),
             exit_code INTEGER,
             stdout TEXT,
             stderr TEXT,
             error TEXT,
             started_at TEXT,
             finished_at TEXT,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            files TEXT
         )";
+
+/// agent_runs 的全部列名（按建表顺序），重建型 Migration 据此做列交集拷贝。
+const AGENT_RUNS_COLUMN_NAMES: &[&str] = &[
+    "id",
+    "session_key",
+    "skill_path",
+    "entities",
+    "instruction",
+    "model",
+    "session_path",
+    "status",
+    "exit_code",
+    "stdout",
+    "stderr",
+    "error",
+    "started_at",
+    "finished_at",
+    "created_at",
+    "files",
+];
 
 /// agent_runs 会话键索引（列表/会话路径查询均按 session_key）。
 const AGENT_RUNS_SESSION_INDEX: &str =
@@ -359,18 +383,102 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE agent_runs ADD COLUMN model TEXT;")?;
     }
 
+    // ── Migration 16: agent_runs 新增 `files` 列 + `unknown` 状态 ──
+    // `files`：本次提交附带的本地文件绝对路径（JSON 数组，评审「本地文件/图片附件」）。
+    // `unknown`：结果未知终态（终态事件丢失 / 应用重启时未落终态），与 failed 区分——
+    // 它**可能已经执行完成**，误标 failed 会让用户以为没跑而重复提交。
+    // 两者都无法用 ALTER TABLE 表达（CHECK 约束固化在表 DDL 里），故整表重建；
+    // 重建走「新建 → 列交集拷贝 → 换名」，存量数据不丢。
+    if agent_runs_needs_rebuild(conn)? {
+        rebuild_agent_runs(conn)?;
+    }
+
     Ok(())
 }
 
-/// 启动清理：把上次进程遗留的 pending / running run 批量置 cancelled。
+/// agent_runs 是否需要重建（缺 `files` 列，或 status CHECK 未含 `unknown`）。
+///
+/// CHECK 约束不进 `pragma_table_info`，只能从 `sqlite_master.sql` 的建表 DDL 里
+/// 做字面检测；DDL 读不到（表不存在）时按无需重建处理（apply_schema 后续会建新表）。
+fn agent_runs_needs_rebuild(conn: &Connection) -> Result<bool> {
+    let ddl: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    let Some(ddl) = ddl else {
+        return Ok(false);
+    };
+    Ok(!ddl.contains("'unknown'") || !table_has_column(conn, "agent_runs", "files"))
+}
+
+/// 表是否含指定列（`pragma_table_info` 探测；迁移期表结构不定，故不缓存）。
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
+    conn.prepare(&format!(
+        "SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}'"
+    ))
+    .and_then(|mut s| s.exists([]))
+    .unwrap_or(false)
+}
+
+/// 重建 agent_runs（保留数据）：新表 → 列交集拷贝 → 删旧表 → 改名 → 重建索引。
+///
+/// 拷贝只取「新旧表都存在的列」：新增列（如 files）留 NULL，删除的列自然丢弃，
+/// 因此对任意历史版本的表结构都安全。
+fn rebuild_agent_runs(conn: &Connection) -> Result<()> {
+    let shared: Vec<&str> = AGENT_RUNS_COLUMN_NAMES
+        .iter()
+        .copied()
+        .filter(|c| table_has_column(conn, "agent_runs", c))
+        .collect();
+    if !shared.contains(&"id") {
+        return Ok(()); // 结构异常（无 id 列）：放弃重建，交由上层报错
+    }
+    let cols = shared.join(", ");
+    // unchecked_transaction：迁移期无法拿到 &mut Connection（migrate 与 init_pool 都只
+    // 持有 &Connection），而此处是启动期单线程路径，独占性由调用点保证。
+    // 用它把「建表 + 拷贝 + 换名 + 建索引」包成一个原子操作：中途失败不会留下
+    // 半重建的 agent_runs（旧表已删、新表未就位的中间态）。
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(&format!("CREATE TABLE agent_runs_new {}", AGENT_RUNS_COLUMNS))?;
+    tx.execute_batch(&format!(
+        "INSERT INTO agent_runs_new ({cols}) SELECT {cols} FROM agent_runs;"
+    ))?;
+    tx.execute_batch("DROP TABLE agent_runs;")?;
+    tx.execute_batch("ALTER TABLE agent_runs_new RENAME TO agent_runs;")?;
+    tx.execute_batch(AGENT_RUNS_SESSION_INDEX)?;
+    tx.commit()
+}
+
+/// 启动清理：把上次进程遗留的 pending / running run 批量置终态。
 /// 调度器随进程消亡，这些 run 不会有终态写入，不清理则永远挂着。
 /// 在应用启动（init_pool）时调用一次。
+///
+/// **两类遗留 run 的真实语义不同，分开归类（评审 3.4）**：
+/// - **pending（无 started_at）**：从未被调度执行过 —— 确定没跑，置 `cancelled`。
+/// - **running（有 started_at）**：已在 pi 里跑起来了，进程被强杀时**可能已经跑完**，
+///   只是终态没来得及落库 —— 置 `unknown`（结果未知），而非「已取消」。
+///
+/// 此前一律置 cancelled 且文案为「未完成的提交已取消」，用户读到「已取消」会以为
+/// 任务没执行、从而重跑（重复烧词元、重复副作用）；`unknown` + 对应文案把不确定性
+/// 如实交还给用户，由他确认后再决定是否重跑。
 pub fn cleanup_stale_agent_runs(conn: &Connection) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
+    // pending（未启动）→ cancelled
     conn.execute(
-        "UPDATE agent_runs SET status = 'cancelled', error = 'err.agent.startup_cleanup', finished_at = ?1
-         WHERE status IN ('pending', 'running')",
-        [now],
+        "UPDATE agent_runs
+         SET status = 'cancelled', error = 'err.agent.startup_cleanup_pending', finished_at = ?1
+         WHERE status IN ('pending', 'running') AND (started_at IS NULL OR started_at = '')",
+        [&now],
+    )?;
+    // running（已启动，结果未知）→ unknown
+    conn.execute(
+        "UPDATE agent_runs
+         SET status = 'unknown', error = 'err.agent.startup_cleanup_running', finished_at = ?1
+         WHERE status IN ('pending', 'running') AND started_at IS NOT NULL AND started_at != ''",
+        [&now],
     )?;
     Ok(())
 }
@@ -378,6 +486,7 @@ pub fn cleanup_stale_agent_runs(conn: &Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::agent::NewRun;
 
     /// 验证 migrate() 可重复调用（幂等性）
     #[test]
@@ -447,6 +556,16 @@ mod tests {
         // Migration 15: agent_runs.model（提交可选模型）
         assert!(has_column(&conn, "agent_runs", "model"));
         assert!(!has_column(&conn, "agent_runs", "binding_id"));
+        // Migration 16: agent_runs.files（本地文件附件）+ status 支持 'unknown'
+        assert!(has_column(&conn, "agent_runs", "files"));
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("agent_runs DDL");
+        assert!(ddl.contains("'unknown'"), "status CHECK 应含 'unknown'");
 
         // usage_stats 表（Migration 12：诊断统计）
         let has_table: bool = conn
@@ -532,5 +651,130 @@ mod tests {
         assert!(has_column(&conn, "agent_runs", "session_key"));
         assert!(has_column(&conn, "agent_runs", "entities"));
         assert!(!has_column(&conn, "agent_runs", "binding_id"));
+    }
+
+    /// 验证 Migration 16：旧版 agent_runs（无 files 列、status 无 'unknown'）
+    /// 被重建为新结构，且**存量数据保留**。
+    #[test]
+    fn test_migration_16_rebuilds_agent_runs_keeping_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_schema(&conn).unwrap();
+        // 旧结构：无 files 列、CHECK 不含 'unknown'（模拟 1.12.0 及更早）
+        conn.execute_batch(
+            "DROP TABLE agent_runs;
+             CREATE TABLE agent_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_key TEXT NOT NULL,
+                skill_path TEXT,
+                entities TEXT NOT NULL DEFAULT '[]',
+                instruction TEXT NOT NULL DEFAULT '',
+                model TEXT,
+                session_path TEXT,
+                status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'success', 'failed', 'timeout', 'cancelled')),
+                exit_code INTEGER,
+                stdout TEXT,
+                stderr TEXT,
+                error TEXT,
+                started_at TEXT,
+                finished_at TEXT,
+                created_at TEXT NOT NULL
+            );
+            INSERT INTO agent_runs (session_key, instruction, status, created_at)
+            VALUES ('ws-old', '历史提交', 'success', '2025-01-01T00:00:00Z');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        // 新结构：files 列 + status 含 'unknown'
+        assert!(has_column(&conn, "agent_runs", "files"));
+        let ddl: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(ddl.contains("'unknown'"));
+        // 存量数据保留
+        let (instruction, files): (String, Option<String>) = conn
+            .query_row(
+                "SELECT instruction, files FROM agent_runs WHERE session_key='ws-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(instruction, "历史提交");
+        assert!(files.is_none(), "新增列在旧行上应为 NULL");
+        // 新状态可写入（CHECK 已放开）
+        conn.execute(
+            "UPDATE agent_runs SET status='unknown' WHERE session_key='ws-old'",
+            [],
+        )
+        .expect("unknown 状态应可写入");
+    }
+
+    /// Migration 16 幂等：已含 files 与 unknown 的库不触发重建（数据不受影响）。
+    #[test]
+    fn test_migration_16_idempotent() {
+        let conn = init_memory_db().unwrap();
+        conn.execute(
+            "INSERT INTO agent_runs (session_key, instruction, status, created_at)
+             VALUES ('ws-1', '指令', 'success', '2025-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM agent_runs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "重复迁移不应丢数据也不应重复插入");
+    }
+
+    /// 启动清理按语义分流：未启动 → cancelled，已启动 → unknown。
+    #[test]
+    fn test_cleanup_stale_agent_runs_splits_by_started_at() {
+        let conn = init_memory_db().unwrap();
+        let pending = crate::db::agent::create_run(&conn, &NewRun { session_key: "ws-p", skill_path: None, entities: &[], instruction: "排队中", model: None, session_path: None, files: None })
+        .unwrap();
+        let started = crate::db::agent::create_run(&conn, &NewRun { session_key: "ws-r", skill_path: None, entities: &[], instruction: "执行中", model: None, session_path: None, files: None })
+        .unwrap();
+        crate::db::agent::mark_run_started(&conn, started).unwrap();
+
+        cleanup_stale_agent_runs(&conn).unwrap();
+
+        let (p_status, p_err): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error FROM agent_runs WHERE id=?1",
+                [pending],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // 从未启动：确定没跑 → cancelled
+        assert_eq!(p_status, "cancelled");
+        assert_eq!(p_err.as_deref(), Some("err.agent.startup_cleanup_pending"));
+
+        let (s_status, s_err): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error FROM agent_runs WHERE id=?1",
+                [started],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        // 已启动：可能已跑完 → unknown（而非「已取消」，避免用户误以为没执行而重跑）
+        assert_eq!(s_status, "unknown");
+        assert_eq!(s_err.as_deref(), Some("err.agent.startup_cleanup_running"));
+
+        // 两者都带终态时间，不再悬挂
+        let hanging: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending','running')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hanging, 0);
     }
 }

@@ -7,7 +7,7 @@
 
 use crate::agent as agent_runner;
 use crate::agent_session::{self, AgentChatMessage};
-use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentModelRef};
+use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentModelRef, NewRun};
 use crate::db::logs;
 use crate::types::AppState;
 use serde::{Deserialize, Serialize};
@@ -140,6 +140,54 @@ pub struct AgentJobInput {
     pub instruction: String,
     /// 本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。
     pub model: Option<AgentModelRef>,
+    /// 本次提交附带的本地文件绝对路径（文件对话框自选；空/None = 无附件）。
+    #[serde(default)]
+    pub files: Option<Vec<String>>,
+}
+
+// ---- 本地文件附件校验（评审「本地文件/图片附件」）----
+
+/// 单次提交最多附加的本地文件数。
+/// 每个文件都要进 prompt、并可能被 pi 逐个读取，放开数量会撑爆上下文；
+/// 10 个足以覆盖「几个日志 + 几张截图」的真实场景。
+const MAX_ATTACHED_FILES: usize = 10;
+/// 单文件上限（字节，20 MB）。
+/// 只传路径不读内容，故这个上限不是内存约束，而是**意图校验**：
+/// 超大文件（视频 / 磁盘镜像）几乎不可能是「让 Agent 看一眼」的目标，
+/// 多半是误选——提前挡下比让 pi 读一半再失败更省事。
+const MAX_ATTACHED_FILE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// 校验并归一化本地文件附件：去空、去重、校验存在性与大小、限制数量。
+///
+/// 与实体引用（`entities`）的区别：实体是应用内数据（source/release，按 id 查库），
+/// 文件是用户本地磁盘路径。**只校验路径本身**，不读取内容——内容由 pi 自己的工具
+/// 按需读取（见 `agent::append_local_files` 的 prompt 说明）。
+fn validate_attached_files(files: Option<&Vec<String>>) -> Result<Vec<String>, String> {
+    let Some(list) = files else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<String> = Vec::new();
+    for raw in list {
+        let p = raw.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if out.iter().any(|x| x == p) {
+            continue;
+        }
+        let meta = std::fs::metadata(p).map_err(|_| "err.agent.file_missing".to_string())?;
+        if !meta.is_file() {
+            return Err("err.agent.file_not_file".to_string());
+        }
+        if meta.len() > MAX_ATTACHED_FILE_BYTES {
+            return Err("err.agent.file_too_large".to_string());
+        }
+        out.push(p.to_string());
+        if out.len() > MAX_ATTACHED_FILES {
+            return Err(format!("err.agent.file_too_many|{}", MAX_ATTACHED_FILES));
+        }
+    }
+    Ok(out)
 }
 
 /// 工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
@@ -159,9 +207,6 @@ pub async fn run_agent_job(
         return Err("err.agent.invalid_session".to_string());
     }
     let instruction = input.instruction.trim().to_string();
-    if instruction.is_empty() && input.entities.is_empty() {
-        return Err("err.agent.empty_job".to_string());
-    }
     // 实体去重 + 存在性校验（引用解析后 id 必须有效）
     let mut entities: Vec<AgentEntityRef> = Vec::new();
     let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
@@ -196,6 +241,17 @@ pub async fn run_agent_job(
         _ => None,
     };
 
+    // 本地文件附件：存在性 / 类型 / 大小 / 数量校验（提交前即拒绝，不占队列位）
+    let files = validate_attached_files(input.files.as_ref())?;
+
+    // 空提交判定以清洗后的输入为准（指令 / 实体 / 附件三者皆空才拒绝）：
+    // 只附加文件、不写指令也算有效提交——「看看这个日志」的意图已由附件承载，
+    // 前端空校验同口径放行（见 AgentWorkspace.handleSubmit），后端必须一致，
+    // 否则附件-only 提交会在这里被 err.agent.empty_job 打回。
+    if instruction.is_empty() && entities.is_empty() && files.is_empty() {
+        return Err("err.agent.empty_job".to_string());
+    }
+
     // 会话文件：历史提交已有则复用（pi --session 继续），否则新建。
     // 历史路径须通过目录前缀校验，防脏数据路径穿越。
     let session_path = match agent::get_session_path(&conn, &session_key)? {
@@ -215,6 +271,15 @@ pub async fn run_agent_job(
         .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
         .transpose()?;
 
+    // 提交前模型预检（评审 3.7）：显式选择的模型若不在 pi 当前可用列表里
+    // （provider 未配置鉴权 / 在 pi 侧被 /scoped-models 禁用 / 进程重启后配置变了），
+    // 直接拒绝——否则要等排队、启动、set_model、发 prompt 之后才以
+    // err.agent.model_error 失败，用户白等一轮且拿到的还是泛化报错。
+    // 「默认」（model = None）不预检：那是跟随进程现状，pi 侧自会兜底。
+    if let Some(m) = &input.model {
+        verify_model_available(&state, m).await?;
+    }
+
     // 同会话守卫 + 建 run 放进 BEGIN IMMEDIATE 事务（评审 3.2 追加，P2）：
     // count 检查与 INSERT 之间若不加锁，两个并发提交可同时读到 0 再各自插入
     // （TOCTOU）——前端 submitting 锁挡住了 UI 途径，但 DevTools / 未来多客户端
@@ -228,15 +293,12 @@ pub async fn run_agent_job(
     if agent::active_run_count_for_session(&tx, &session_key)? > 0 {
         return Err("err.agent.session_busy".to_string());
     }
-    let run_id = agent::create_run(
-        &tx,
-        &session_key,
-        skill_path.as_deref(),
-        &entities,
-        &instruction,
-        model_json.as_deref(),
-        session_path.as_deref(),
-    )?;
+    let files_json: Option<String> = if files.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&files).map_err(|e| e.to_string())?)
+    };
+    let run_id = agent::create_run(&tx, &NewRun { session_key: &session_key, skill_path: skill_path.as_deref(), entities: &entities, instruction: &instruction, model: model_json.as_deref(), session_path: session_path.as_deref(), files: files_json.as_deref() })?;
     tx.commit().map_err(|e| e.to_string())?;
 
     let ctx = agent_runner::dispatch_ctx_from_app(&app);
@@ -244,6 +306,31 @@ pub async fn run_agent_job(
         agent_runner::dispatch_run(&ctx, run_id).await;
     });
     Ok(run_id)
+}
+
+/// 校验显式选择的模型在 pi 侧确实可用（提交前预检，评审 3.7）。
+///
+/// 匹配口径与 `set_model` 一致（provider + modelId 双字段精确匹配）：
+/// pi 的 model id 可能自带 provider 前缀（如 `cline-pass/deepseek-v4-flash`），
+/// 不能用 `provider/id` 拼接做比较。
+async fn verify_model_available(state: &AppState, m: &AgentModelRef) -> Result<(), String> {
+    let models = state.agent_rpc.get_available_models().await?;
+    let ok = models
+        .iter()
+        .any(|x| x.provider == m.provider && x.id == m.model_id);
+    if ok {
+        return Ok(());
+    }
+    // 列表为空时无法判定「不可用」（可能是 RPC 枚举异常而非鉴权失效），
+    // 放行让真实调用去暴露问题，避免把枚举故障谎报成鉴权故障。
+    if models.is_empty() {
+        log::warn!("agent model precheck skipped: pi returned an empty model list");
+        return Ok(());
+    }
+    Err(format!(
+        "err.agent.model_unavailable|{}/{}",
+        m.provider, m.model_id
+    ))
 }
 
 /// 工作区可选模型信息：pi 当前可用模型列表 + 当前激活模型（「默认」选项实际落点）。
@@ -362,11 +449,7 @@ pub fn get_agent_session_usage(
     }
     let path = session_path_for_key(&session_key);
     if !path.exists() {
-        return Ok(agent_session::AgentSessionUsage {
-            message_count: 0,
-            total_chars: 0,
-            file_bytes: 0,
-        });
+        return Ok(agent_session::AgentSessionUsage::empty());
     }
     agent_session::session_usage(&path).ok_or_else(|| "err.agent.read_session".to_string())
 }
@@ -604,18 +687,110 @@ pub async fn delete_agent_session(
     // 产出写入已删除记录后静默丢弃。同一会话可排队多个 run（运行中仍可提交），
     // 仅取第一条会遗留 pending run：调度执行时重建已删的会话文件、向已删记录
     // 写终态（静默 no-op）、发事件——「删除=停止」承诺被打破，会话“复活”。
-    let active_runs: Vec<_> = agent::list_run_summaries(&conn, &session_key, 50)?
-        .into_iter()
-        .filter(|r| r.status == "pending" || r.status == "running")
-        .collect();
-    for run in active_runs {
-        cancel_run_inner(&state, run.id).await?;
+    //
+    // 按状态直接查询（评审 3.9）：此前是「取最近 50 条摘要再筛状态」，理论上存在
+    // 活跃 run 落到第 51 条之后被漏掉的窗口；这类窗口的概率再低，也不该由一个
+    // 「漏一个就破坏承诺」的操作来承担，故换成无 LIMIT 的状态查询。
+    for run_id in agent::active_runs_for_session(&conn, &session_key)? {
+        cancel_run_inner(&state, run_id).await?;
     }
     let path = session_path_for_key(&session_key);
     if path.exists() {
         std::fs::remove_file(&path).map_err(|e| format!("err.agent.delete_session|{}", e))?;
     }
     agent::delete_runs_for_session(&conn, &session_key).map_err(|e| e.to_string())
+}
+
+/// pi 常驻进程的健康状态（工作区头部指示灯数据源）。
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentRpcStatus {
+    /// 进程是否存活（`pi --mode rpc` 常驻进程）。
+    pub running: bool,
+    /// 进程 pid（未运行时 None）。
+    pub pid: Option<u32>,
+    /// 进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效（评审 3.8）。
+    pub restart_pending: bool,
+}
+
+/// 查询 pi 常驻进程状态（健康指示 + 配置推迟提示）。
+///
+/// 惰性设计：不主动拉起进程——进程未启动属正常（首次提交时才 spawn），
+/// 指示灯显示「未运行」即可，不该为了让灯变绿而白白起一个 node 进程。
+#[tauri::command]
+#[specta::specta]
+pub async fn get_agent_rpc_status(state: tauri::State<'_, AppState>) -> Result<AgentRpcStatus, String> {
+    Ok(AgentRpcStatus {
+        running: state.agent_rpc.is_running().await,
+        pid: state.agent_rpc.pid().await,
+        restart_pending: state.agent_rpc.restart_pending(),
+    })
+}
+
+/// 手动重启 pi 常驻进程（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
+///
+/// 有正在执行的 run 时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
+/// 已产生的词元全部作废）；返回 false 表示被拒绝，前端据此提示「当前有任务在跑」。
+/// 返回 true 表示已重启（下次提交时 ensure_started 惰性重新拉起）。
+#[tauri::command]
+#[specta::specta]
+pub async fn restart_agent_rpc(state: tauri::State<'_, AppState>) -> Result<bool, String> {
+    Ok(state.agent_rpc.restart_now().await)
+}
+
+/// 导出会话为 Markdown 或 JSON 文件（经保存对话框选择落盘位置）。
+///
+/// 两种格式的定位不同：
+/// - `md`：给人读（复盘 / 贴进文档），保留工具调用与 bash 输出；
+/// - `json`：给程序读（结构化消息数组，便于二次处理）。
+///
+/// 返回实际写入的路径；用户取消对话框时返回 `err.agent.export_cancelled`。
+#[tauri::command]
+#[specta::specta]
+pub async fn export_agent_session(
+    app: tauri::AppHandle,
+    session_key: String,
+    title: String,
+    format: String,
+) -> Result<String, String> {
+    use tauri_plugin_dialog::DialogExt;
+    if !is_valid_session_key(&session_key) {
+        return Err("err.agent.invalid_session".to_string());
+    }
+    let is_md = match format.as_str() {
+        "md" => true,
+        "json" => false,
+        other => return Err(format!("err.agent.export_bad_format|{}", other)),
+    };
+    let path = session_path_for_key(&session_key);
+    if !path.exists() {
+        return Err("err.agent.session_missing".to_string());
+    }
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let default_name = format!("relwatch-session-{}.{}", &session_key[..8.min(session_key.len())], if is_md { "md" } else { "json" });
+    app.dialog()
+        .file()
+        .add_filter(if is_md { "Markdown" } else { "JSON" }, &[if is_md { "md" } else { "json" }])
+        .set_file_name(default_name)
+        .save_file(move |p| {
+            let _ = tx.send(p);
+        });
+    let target = rx.await.ok().flatten().ok_or("err.agent.export_cancelled")?;
+    let target = target
+        .as_path()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| "err.agent.export_path".to_string())?;
+
+    let messages = agent_session::parse_session_file(&path)?;
+    let usage = agent_session::session_usage(&path);
+    let content = if is_md {
+        agent_session::render_markdown(&title, &agent_session::export_messages(&messages), usage.as_ref())
+    } else {
+        serde_json::to_string_pretty(&agent_session::export_messages(&messages))
+            .map_err(|e| format!("err.agent.export_serialize|{}", e))?
+    };
+    std::fs::write(&target, content).map_err(|e| format!("err.agent.export_write|{}", e))?;
+    Ok(target)
 }
 
 /// 返回在终端恢复该次会话的命令字符串（供复制）。
@@ -736,6 +911,7 @@ mod tests {
             started_at: started_at.map(|s| s.to_string()),
             finished_at: None,
             created_at: "2025-01-01T00:00:00.000Z".into(),
+            files: None,
         }
     }
 
@@ -747,6 +923,75 @@ mod tests {
             model: None,
             run_id: None,
         }
+    }
+
+    #[test]
+    fn validate_attached_files_accepts_existing_files() {
+        let dir = std::env::temp_dir().join(format!("relwatch-attach-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let a = dir.join("a.log");
+        let b = dir.join("b.png");
+        std::fs::write(&a, "x").unwrap();
+        std::fs::write(&b, "y").unwrap();
+        let paths = vec![
+            a.to_string_lossy().to_string(),
+            b.to_string_lossy().to_string(),
+        ];
+
+        let out = validate_attached_files(Some(&paths)).expect("应通过");
+        assert_eq!(out.len(), 2);
+        // None / 空列表 → 空结果（无附件是常态，不是错误）
+        assert!(validate_attached_files(None).unwrap().is_empty());
+        assert!(validate_attached_files(Some(&vec![])).unwrap().is_empty());
+        // 空白项与重复项被剔除
+        let dup = vec!["  ".to_string(), out[0].clone(), out[0].clone()];
+        assert_eq!(validate_attached_files(Some(&dup)).unwrap(), vec![out[0].clone()]);
+
+        let _ = std::fs::remove_file(&a);
+        let _ = std::fs::remove_file(&b);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn validate_attached_files_rejects_bad_paths() {
+        let dir = std::env::temp_dir().join(format!("relwatch-attach2-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        // 不存在
+        assert_eq!(
+            validate_attached_files(Some(&vec![dir.join("nope.log").to_string_lossy().to_string()])),
+            Err("err.agent.file_missing".to_string())
+        );
+        // 目录不是文件
+        assert_eq!(
+            validate_attached_files(Some(&vec![dir.to_string_lossy().to_string()])),
+            Err("err.agent.file_not_file".to_string())
+        );
+        // 重复项先去重，上限必须在不重复样本上验证（重复 11 次同一路径只算 1 个）
+        let f = dir.join("one.txt");
+        std::fs::write(&f, "x").unwrap();
+        let dup: Vec<String> = (0..MAX_ATTACHED_FILES + 1)
+            .map(|_| f.to_string_lossy().to_string())
+            .collect();
+        assert_eq!(validate_attached_files(Some(&dup)).unwrap().len(), 1);
+
+        let many_dedup: Vec<String> = (0..MAX_ATTACHED_FILES + 1)
+            .map(|i| {
+                let p = dir.join(format!("f{}.txt", i));
+                std::fs::write(&p, "x").unwrap();
+                p.to_string_lossy().to_string()
+            })
+            .collect();
+        match validate_attached_files(Some(&many_dedup)) {
+            Err(e) => assert!(
+                e.starts_with("err.agent.file_too_many|"),
+                "应为数量超限，实际: {}",
+                e
+            ),
+            Ok(v) => panic!("应被数量上限拒绝，实际通过 {} 个", v.len()),
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

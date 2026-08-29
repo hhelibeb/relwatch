@@ -194,6 +194,31 @@ export const commands = {
 	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),
 	/**  在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。 */
 	openAgentSession: (runId: number) => __TAURI_INVOKE<null>("open_agent_session", { runId }),
+	/**
+	 *  查询 pi 常驻进程状态（健康指示 + 配置推迟提示）。
+	 * 
+	 *  惰性设计：不主动拉起进程——进程未启动属正常（首次提交时才 spawn），
+	 *  指示灯显示「未运行」即可，不该为了让灯变绿而白白起一个 node 进程。
+	 */
+	getAgentRpcStatus: () => __TAURI_INVOKE<AgentRpcStatus>("get_agent_rpc_status"),
+	/**
+	 *  手动重启 pi 常驻进程（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
+	 * 
+	 *  有正在执行的 run 时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
+	 *  已产生的词元全部作废）；返回 false 表示被拒绝，前端据此提示「当前有任务在跑」。
+	 *  返回 true 表示已重启（下次提交时 ensure_started 惰性重新拉起）。
+	 */
+	restartAgentRpc: () => __TAURI_INVOKE<boolean>("restart_agent_rpc"),
+	/**
+	 *  导出会话为 Markdown 或 JSON 文件（经保存对话框选择落盘位置）。
+	 * 
+	 *  两种格式的定位不同：
+	 *  - `md`：给人读（复盘 / 贴进文档），保留工具调用与 bash 输出；
+	 *  - `json`：给程序读（结构化消息数组，便于二次处理）。
+	 * 
+	 *  返回实际写入的路径；用户取消对话框时返回 `err.agent.export_cancelled`。
+	 */
+	exportAgentSession: (sessionKey: string, title: string, format: string) => __TAURI_INVOKE<string>("export_agent_session", { sessionKey, title, format }),
 };
 
 /** Events */
@@ -297,6 +322,8 @@ export type AgentJobInput = {
 	instruction: string,
 	/**  本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。 */
 	model: AgentModelRef | null,
+	/**  本次提交附带的本地文件绝对路径（文件对话框自选；空/None = 无附件）。 */
+	files?: string[] | null,
 };
 
 /**
@@ -342,6 +369,16 @@ export type AgentQueueStatus = {
 	running_sessions: string[],
 };
 
+/**  pi 常驻进程的健康状态（工作区头部指示灯数据源）。 */
+export type AgentRpcStatus = {
+	/**  进程是否存活（`pi --mode rpc` 常驻进程）。 */
+	running: boolean,
+	/**  进程 pid（未运行时 None）。 */
+	pid: number | null,
+	/**  进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效（评审 3.8）。 */
+	restart_pending: boolean,
+};
+
 /**
  *  pi RPC 事件流实时转发（打字机文本 / 工具状态 / 流式 bash 输出）。
  *  `event` 为 pi RPC 协议的原始事件 JSON 序列化字符串（前端 JSON.parse 还原）。
@@ -381,6 +418,8 @@ export type AgentRunSummary = {
 	started_at: string | null,
 	finished_at: string | null,
 	created_at: string,
+	/**  本次提交附带的本地文件绝对路径（JSON 字符串数组；无附件时 None）。 */
+	files: string | null,
 };
 
 /**
@@ -406,7 +445,7 @@ export type AgentSessionInfo = {
 	run_count: number,
 };
 
-/**  会话文件的水位摘要（前端展示「消息 N 条 · 约 X tokens」）。 */
+/**  会话文件的水位摘要 + pi 上报的实际词元/成本。 */
 export type AgentSessionUsage = {
 	/**  消息总条数（含 user / assistant / tool / bash / custom）。 */
 	message_count: number,
@@ -414,6 +453,30 @@ export type AgentSessionUsage = {
 	total_chars: number,
 	/**  会话文件字节数（磁盘占用）。 */
 	file_bytes: number,
+	/**  累计输入词元（assistant 消息 `usage.input` 之和）。 */
+	input_tokens: number,
+	/**  累计输出词元（`usage.output`）。 */
+	output_tokens: number,
+	/**  累计缓存读取词元（`usage.cacheRead`；命中缓存通常远便宜于重新输入）。 */
+	cache_read_tokens: number,
+	/**  累计计费词元（`usage.totalTokens`）。 */
+	total_tokens: number,
+	/**
+	 *  累计成本，单位**百万分之一美元**（`usage.cost.total` × 1e6 取整）。
+	 *  Agent 会烧钱，用户零感知就无法评估性价比。
+	 * 
+	 *  用整数而非 f64：LLM 单次成本常在 1e-5 美元量级，上千条消息累加后 f64 的
+	 *  表示误差会在展示的小数位上显现；且 specta 把 f64 映射成 `number | null`
+	 *  （NaN/Inf 序列化为 null），前端得处处兜底。整数微元两者都规避。
+	 */
+	cost_micros: number,
+	/**
+	 *  是否至少有一条 assistant 消息带 `usage` 字段。
+	 * 
+	 *  false 时上述词元/成本全为 0——**是「pi 没上报」而非「没消耗」**，前端应回落
+	 *  到字符数估算，不能把 0 当真实成本展示（那会让「免费」的错觉更危险）。
+	 */
+	has_usage: boolean,
 };
 
 /**

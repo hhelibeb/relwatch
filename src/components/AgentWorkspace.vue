@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
-import { confirm } from '@tauri-apps/plugin-dialog'
+import { confirm, open } from '@tauri-apps/plugin-dialog'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { events, type AgentRunFinished } from '../bindings'
 import { ShowToastKey, type AgentEntityRefSeed, type AgentWorkspaceSeed } from '../injection-keys'
@@ -20,10 +21,14 @@ import {
   getAgentQueueStatus,
   getAgentQueue,
   getAgentSessionUsage,
+  getAgentRpcStatus,
+  restartAgentRpc,
+  exportAgentSession,
   type AgentChatMessage,
   type AgentModelRef,
   type AgentQueueItem,
   type AgentQueueStatus,
+  type AgentRpcStatus,
   type AgentRunSummary,
   type AgentSessionInfo,
   type AgentSessionUsage,
@@ -32,6 +37,7 @@ import {
 import { listSources, type Source } from '../api/sources'
 import { getReleases, type ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
+import { InvokeI18nError } from '../api/client'
 import { formatDate, skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
 
@@ -152,6 +158,78 @@ function switchSession(key: string) {
   entities.value = []
   skillPath.value = null
   instruction.value = ''
+  // 输入区草稿态随会话切换一并清空：附件/一次性模型属于「这一轮的输入」，
+  // 不该跟着用户漂移到另一个会话
+  files.value = []
+  oneShotModel.value = null
+  modelOnce.value = false
+  renamingKey.value = null
+  openMenuKey.value = null
+}
+
+// ── 会话搜索（标题模糊匹配）──
+// 会话上限 200 条，标题又自动取首条指令前 40 字（往往高度相似），
+// 没有搜索就只能靠「清理旧会话」一刀切（评审「会话重命名 / 搜索」）。
+const sessionQuery = ref('')
+
+// ── 会话重命名 / 导出（侧栏 ⋯ 菜单）──
+/** 正在重命名的会话 key（null = 无）；同时只允许编辑一项。 */
+const renamingKey = ref<string | null>(null)
+const renameInput = ref('')
+
+function startRename(key: string) {
+  renamingKey.value = key
+  renameInput.value = sessions.value.find((s) => s.key === key)?.title ?? ''
+  openMenuKey.value = null
+  nextTick(() => renameEl.value?.focus())
+}
+
+function commitRename() {
+  const key = renamingKey.value
+  if (!key) return
+  const title = renameInput.value.trim()
+  const idx = sessions.value.findIndex((s) => s.key === key)
+  if (idx >= 0 && title) {
+    sessions.value[idx] = { ...sessions.value[idx], title }
+    persistSessions()
+  }
+  renamingKey.value = null
+}
+
+function cancelRename() {
+  renamingKey.value = null
+}
+
+/** 会话项 ⋯ 菜单展开的 key（null = 全部收起）。 */
+const openMenuKey = ref<string | null>(null)
+
+// 重命名输入框在 v-for 内部，字符串 ref 会被收集成数组；用函数 ref 精确绑定
+// 当前正在编辑的那一个（同一时刻最多一个），focus 才有确定目标。
+const renameEl = ref<HTMLInputElement | null>(null)
+function setRenameEl(el: Element | ComponentPublicInstance | null, key: string) {
+  if (key === renamingKey.value) renameEl.value = (el as HTMLInputElement | null) ?? null
+}
+
+function toggleSessionMenu(key: string) {
+  openMenuKey.value = openMenuKey.value === key ? null : key
+  // 重命名与菜单互斥：同时开着会互相遮挡（菜单浮层盖住输入框）
+  if (openMenuKey.value) renamingKey.value = null
+}
+
+/** 导出会话：后端弹保存对话框并写成 md / json，返回实际路径。 */
+async function handleExportSession(key: string, format: 'md' | 'json') {
+  openMenuKey.value = null
+  const title = sessions.value.find((s) => s.key === key)?.title ?? t('agent.session_untitled')
+  try {
+    const path = await exportAgentSession(key, title, format)
+    showToast(t('agent.export_done', path))
+  } catch (e) {
+    // 用户取消保存对话框也走 Err 分支（err.agent.export_cancelled）——不算失败，不弹报错。
+    // 必须按错误 **key** 判断：错误经 invokeI18nFn 翻译后 message 已是本地化文案，
+    // 用 String(e) 比对 key 会永远不相等（取消导出会被误报成失败）。
+    const errKey = errorKey(e)
+    if (errKey !== 'err.agent.export_cancelled') showToast(String(e))
+  }
 }
 
 function startNewSession() {
@@ -167,6 +245,11 @@ function startNewSession() {
   skillPath.value = null
   instruction.value = ''
   selectedModel.value = null
+  files.value = []
+  oneShotModel.value = null
+  modelOnce.value = false
+  renamingKey.value = null
+  openMenuKey.value = null
   messages.value = []
   runs.value = []
   liveMessages.value = []
@@ -293,10 +376,33 @@ async function loadUsage() {
 const usageText = computed<string | null>(() => {
   const u = usage.value
   if (!u || u.message_count === 0) return null
-  const tokens = Math.max(1, Math.round(u.total_chars / 2))
-  return t('agent.context_usage', String(u.message_count), String(tokens))
+  if (u.has_usage) {
+    // pi 上报了真实用量：按计费口径展示（输入/输出分开，缓存命中不计入输入）
+    const base = t(
+      'agent.context_usage_actual',
+      String(u.message_count),
+      String(u.input_tokens),
+      String(u.output_tokens),
+    )
+    // pi 未配置模型价格时 cost 全为 0（models.json 自定义模型默认单价 0），
+    // 显示 $0.000000 会造成「免费」错觉——只展示词元，不拼成本段
+    if (u.cost_micros === 0) return base
+    return base + t('agent.cost_usage', formatCostUsd(u.cost_micros))
+  }
+  // 无上报数据：退回字符数估算（约 2 字符 / 词元）
+  return t('agent.context_usage', String(u.message_count), String(Math.max(1, Math.round(u.total_chars / 2))))
 })
 const usageWarn = computed<boolean>(() => (usage.value?.total_chars ?? 0) > USAGE_WARN_CHARS)
+
+/** 成本微元 → 美元展示串。
+ *  LLM 单次成本常在 1e-5 ~ 1e-1 美元区间，固定 2 位小数会全显示成 $0.00（信息量为零），
+ *  固定 6 位又会让大额变得难读；故按量级自适应保留有效小数位。 */
+function formatCostUsd(micros: number): string {
+  const usd = micros / 1e6
+  if (usd >= 1) return usd.toFixed(2)
+  if (usd >= 0.01) return usd.toFixed(4)
+  return usd.toFixed(6)
+}
 
 // ── 运行历史面板（评审 P1：耗时 / 模型 / 状态 / 引用实体）──
 const historyOpen = ref(false)
@@ -355,11 +461,91 @@ async function saveTimeout() {
   }
 }
 
+// ── pi 常驻进程健康（指示灯 + 状态菜单）──
+// pi 是常驻 RPC 子进程，挂了/卡了 UI 此前毫无感知：提交失败时用户分不清是
+// 配置写错还是进程挂了，只能盲改设置重试。指示灯把「进程在不在」变成可见状态，
+// 重启入口给出一条不依赖排障知识的自救路径。
+//
+// 交互形态：点状态灯弹出菜单（状态详情 + 重启项），而非「点灯即重启」——
+// 灯的语义是状态展示，重启是低频排障操作，混在一个 8px 热区里既看不懂也易误触
+// （未运行时点击更无从「重启」，此前会静默 no-op 并 toast 谎报已重启）。
+// 重启项仅在运行中渲染：未运行时首次提交会自动拉起，无需也没有可重启的对象。
+const rpcStatus = ref<AgentRpcStatus | null>(null)
+const rpcRestarting = ref(false)
+const rpcMenuOpen = ref(false)
+// 菜单 Teleport 到 body 后以灯为锚 fixed 定位：header 在窗口顶缘，
+// absolute 上弹会被 Windows 窗口裁剪、下弹会被后续层叠内容遮挡，fixed + 高 z-index 才能稳定盖在最上层
+const rpcDotEl = ref<HTMLElement | null>(null)
+const rpcMenuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const rpcMenuStyle = computed(() => ({ left: rpcMenuPos.value.x + 'px', top: rpcMenuPos.value.y + 'px' }))
+
+async function loadRpcStatus() {
+  try {
+    rpcStatus.value = await getAgentRpcStatus()
+  } catch {
+    rpcStatus.value = null
+  }
+}
+
+/** 点状态灯开/关菜单。打开时刷新一次：轮询只在 run 进行期间跑，
+ *  空闲期 pid / 存活可能已变化，菜单里的详情要拿新鲜的。 */
+function toggleRpcMenu() {
+  rpcMenuOpen.value = !rpcMenuOpen.value
+  if (rpcMenuOpen.value) {
+    // 以灯为锚往下弹；面板贴窗口右缘时左侧放不下 min-width，则右对齐灯再往左收
+    const rect = rpcDotEl.value?.getBoundingClientRect()
+    if (rect) {
+      const MENU_W = 216 // min-width 208 + 边缘余量
+      rpcMenuPos.value = {
+        x: Math.max(8, Math.min(rect.left, window.innerWidth - MENU_W)),
+        y: rect.bottom + 4,
+      }
+    }
+    void loadRpcStatus()
+    // 与其他弹出层互斥：输入区菜单与 rpc 菜单同屏叠开会被此遮彼挡
+    showModelMenu.value = false
+    showSkillMenu.value = false
+    showEntityMenu.value = false
+  }
+}
+
+/** 配置推迟生效提示（评审 3.8）：改了 pi 路径/模型/skill 后有 run 在跑，
+ *  重启被推迟到当前任务结束——此前这段时间 UI 无任何提示，用户以为改了没生效。 */
+const rpcRestartPending = computed<boolean>(() => rpcStatus.value?.restart_pending === true)
+
+async function handleRestartRpc() {
+  if (rpcRestarting.value) return
+  rpcRestarting.value = true
+  try {
+    const restarted = await restartAgentRpc()
+    // false = 有 run 正在执行，后端拒绝重启（kill 会中断生成、烧掉已有词元）
+    showToast(restarted ? t('agent.rpc_restart_done') : t('agent.rpc_restart_blocked'))
+    await loadRpcStatus()
+  } catch (e) {
+    showToast(String(e))
+  } finally {
+    rpcRestarting.value = false
+    // 重启发出后菜单使命完成，收起让 toast 成为唯一反馈
+    rpcMenuOpen.value = false
+  }
+}
+
 // ── 模型选择：scope model（pi 已配置鉴权可用）+ 当前激活模型（「默认」落点）──
 // selectedModel 按会话记住（存 SessionMeta.model）；null =「默认 - 跟随 pi 当前」。
 const availableModels = ref<RpcAvailableModel[]>([])
 const currentModel = ref<RpcAvailableModel | null>(null)
 const selectedModel = ref<AgentModelRef | null>(null)
+
+// ── 单次模型覆盖（评审「单次模型覆盖」）──
+// 会话级选模型的语义是「这个会话以后都用 X」，改一次会连带影响后续所有轮次；
+// 而真实需求常常只是「这条用便宜模型试一下」。
+// oneShotModel 只作用于下一次提交，提交后即清空、自动回落会话默认——
+// 不写 SessionMeta，因此不会污染会话的长期选择。
+const oneShotModel = ref<AgentModelRef | null>(null)
+const modelOnce = ref(false)
+
+/** 实际用于下次提交的模型：单次覆盖优先，否则用会话级选择。 */
+const effectiveModel = computed<AgentModelRef | null>(() => oneShotModel.value ?? selectedModel.value)
 
 // ── 引用 chip 全文悬浮提示（仅文本被截断时显示，跟随鼠标）──
 const chipTooltip = ref<{ x: number; y: number; text: string } | null>(null)
@@ -388,6 +574,14 @@ function handleChipMove(e: MouseEvent) {
 
 function hideChipTooltip() {
   chipTooltip.value = null
+}
+
+/** 取错误的 i18n key（`err.*`），用于按错误类型分支而非比对翻译后的文案。
+ *  InvokeI18nError 直接带 key；其余情况仅当原文就是未翻译的 err.* 键时返回。 */
+function errorKey(e: unknown): string | null {
+  if (e instanceof InvokeI18nError) return e.key
+  const raw = (e instanceof Error ? e.message : String(e)).replace(/^Error:\s*/, '')
+  return raw.startsWith('err.') ? raw.split('|')[0] : null
 }
 const runs = ref<AgentRunSummary[]>([])
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
@@ -509,6 +703,39 @@ let unlistenRpcStream: UnlistenFn | undefined
 let pollTimer: ReturnType<typeof setInterval> | undefined
 let pollDeadline: number | undefined
 
+// ── 本地文件附件（评审「本地文件/图片附件」）──
+// 应用内实体（监控源/版本）之外，真实任务常要看本地日志 / 截图。
+// 只传绝对路径、不读内容：内容由 pi 自己的工具按需读取（避免把大文件塞进上下文），
+// 路径走 prompt 的权威指令区，不进不可信外部数据区。
+const files = ref<string[]>([])
+
+async function handleAttachFiles() {
+  try {
+    const picked = await open({ multiple: true, directory: false, title: t('agent.attach_file') })
+    if (!picked) return
+    const list = Array.isArray(picked) ? picked : [picked]
+    let added = 0
+    for (const p of list) {
+      if (!p || files.value.includes(p)) continue
+      files.value.push(p)
+      added++
+    }
+    if (added > 0) showToast(t('agent.file_attached', String(added)))
+  } catch (e) {
+    showToast(String(e))
+  }
+}
+
+function removeFile(index: number) {
+  files.value.splice(index, 1)
+}
+
+/** chip 上只显示文件名（完整路径放 title，悬浮可见）。 */
+function fileDisplayName(path: string): string {
+  const name = path.replace(/\\/g, '/').split('/').filter(Boolean).pop()
+  return name || path
+}
+
 // ── 事件桥：主窗口「发送到 Agent」/ 拖拽热区 → 加入引用 ──
 function addEntity(e: AgentEntityRefSeed) {
   if (!entities.value.some((x) => x.kind === e.kind && x.id === e.id)) {
@@ -586,6 +813,14 @@ const sessionsWithState = computed(() =>
   sessions.value.map((s) => ({ ...s, state: sessionRunState(s.key) })),
 )
 
+/** 侧栏实际渲染列表：附状态后再按搜索词过滤标题。 */
+const visibleSessions = computed(() => {
+  const q = sessionQuery.value.trim().toLowerCase()
+  const list = sessionsWithState.value
+  if (!q) return list
+  return list.filter((s) => s.title.toLowerCase().includes(q))
+})
+
 function sessionTitleOf(key: string): string {
   return sessions.value.find((s) => s.key === key)?.title || t('agent.session_untitled')
 }
@@ -652,6 +887,12 @@ async function loadModels() {
   } catch {
     availableModels.value = []
     currentModel.value = null
+  } finally {
+    // 模型枚举会惰性拉起常驻 pi 进程（Agent 启用时），它与挂载时的 loadRpcStatus
+    // 并发，后者可能先于进程就绪返回 false，灯便停在过时的灰色快照上，直到用户
+    // 点灯才变绿——观感像「点击把进程点出来了」。枚举结束后补查一次，
+    // 让灯与实际进程状态一致（查询本身惰性，不额外拉起进程）
+    void loadRpcStatus()
   }
 }
 
@@ -668,6 +909,8 @@ function startPolling() {
     await Promise.all([loadMessages(), loadQueue()])
     scrollToBottomIfNear()
   }, 1500)
+  // 进程指示灯：轮询周期内顺带刷新（run 开始/结束时进程状态会变，重启标记也会被消费）
+  void loadRpcStatus()
 }
 
 function stopPolling() {
@@ -717,7 +960,8 @@ async function handleSubmit() {
   for (const e of all) {
     if (!merged.some((x) => x.kind === e.kind && x.id === e.id)) merged.push(e)
   }
-  if (cleaned.trim() === '' && merged.length === 0) {
+  // 只附加了文件、没写指令也算有效提交（"看看这个日志" 的意图已由附件承载）
+  if (cleaned.trim() === '' && merged.length === 0 && files.value.length === 0) {
     showToast(t('agent.empty_job'))
     return
   }
@@ -740,13 +984,19 @@ async function handleSubmit() {
       entities: merged,
       skillPath: skillPath.value,
       instruction: cleaned.trim(),
-      model: selectedModel.value,
+      model: effectiveModel.value,
+      files: files.value.length > 0 ? [...files.value] : null,
     })
     submittedRunId.value = runId
     track('agent.submit')
     instruction.value = ''
+    // 单次覆盖已消费：清掉一次性选择与附件，回落会话默认（不写 SessionMeta）
+    oneShotModel.value = null
+    modelOnce.value = false
+    files.value = []
     // 会话登记（标题取首次指令前 40 字）+ 固化本次模型选择 + 清除草稿标记
     // （新建即登记后 key 恒在索引中；draft 清除 = 已提交，不再是「新会话」）
+    // 注意固化的是 selectedModel（会话长期选择），一次性覆盖不落库。
     const now = Date.now()
     const idx = sessions.value.findIndex((s) => s.key === activeKey.value)
     const title = cleaned.trim() ? [...cleaned.trim()].slice(0, 40).join('') : sessionTitle.value
@@ -983,12 +1233,22 @@ function modelKey(m: RpcAvailableModel | AgentModelRef): string {
   const id = 'model_id' in m ? m.model_id : (m as RpcAvailableModel).id
   return `${m.provider}\u0000${id}`
 }
+/** 菜单高亮跟随实际生效的模型（含单次覆盖），与实际提交口径一致。 */
 function isModelSelected(m: RpcAvailableModel): boolean {
-  return selectedModel.value?.provider === m.provider && selectedModel.value.model_id === m.id
+  return effectiveModel.value?.provider === m.provider && effectiveModel.value.model_id === m.id
 }
-/** 下拉按钮展示：显式选择 → 选中模型名；否则「默认」+ pi 当前模型名。 */
+/** 下拉按钮展示：显式选择 → 选中模型名；否则「默认」+ pi 当前模型名。
+ *  单次覆盖生效时取 effectiveModel（含一次性选择），与实际提交口径一致。
+ *
+ *  显式选择时用 availableModels 里的 name 回查可读名：AgentModelRef 只带
+ *  provider/model_id（无 name），直接走 modelLabel 会把「DeepSeek V4 Flash」
+ *  显示成「deepseek-v4-flash」——同一个模型选前选后两个样子。 */
 const activeModelLabel = computed<string>(() => {
-  if (selectedModel.value) return modelLabel(selectedModel.value)
+  const m = effectiveModel.value
+  if (m) {
+    const known = availableModels.value.find((x) => x.provider === m.provider && x.id === m.model_id)
+    return known ? modelLabel(known) : m.model_id
+  }
   return currentModel.value ? modelLabel(currentModel.value) : t('agent.model_default')
 })
 /** 「默认」副标题：当前 pi 实际将用的模型（provider · id）。 */
@@ -1004,7 +1264,7 @@ function toggleModelMenu() {
   showSkillMenu.value = false
   showEntityMenu.value = false
   showModelMenu.value = true
-  modelMenuIndex.value = selectedModel.value ? availableModels.value.findIndex(isModelSelected) + 1 : 0
+  modelMenuIndex.value = effectiveModel.value ? availableModels.value.findIndex(isModelSelected) + 1 : 0
 }
 
 /** 点菜单及其触发控件之外任意区域 → 收起当前打开的菜单（下拉菜单通用行为）。 */
@@ -1015,16 +1275,37 @@ function onDocumentPointerDown(e: MouseEvent | PointerEvent) {
   if (!(t instanceof Element)) return
   if (t.closest('.agent-ws-menu')) return
   if (t.closest('.agent-ws-model-btn')) return // 模型菜单的触发按钮，交给 toggleModelMenu
-  if (t.closest('.agent-ws-textarea')) return // 技能/实体菜单跟随输入，点击输入框不干扰
+  if (t.closest('.agent-ws-session-menu')) return // 会话 ⋯ 菜单
+  if (t.closest('.agent-ws-session-more')) return // 会话 ⋯ 触发按钮，交给 toggleSessionMenu
+  if (t.closest('.agent-ws-rpc-wrap')) return // pi 状态菜单及其触发灯，交给 toggleRpcMenu
+  // 点输入框：技能/实体菜单跟随输入（显隐由输入框自身事件管理），保持不动；
+  // 但与输入无关的模型菜单 / pi 状态菜单 / 会话菜单仍应收起——
+  // 此前无条件 return 把它们一并豁免，导致点输入框时这些菜单悬而不收
+  const inTextarea = t.closest('.agent-ws-textarea') !== null
   if (showModelMenu.value) showModelMenu.value = false
-  if (showSkillMenu.value) showSkillMenu.value = false
-  if (showEntityMenu.value) showEntityMenu.value = false
+  if (!inTextarea) {
+    if (showSkillMenu.value) showSkillMenu.value = false
+    if (showEntityMenu.value) showEntityMenu.value = false
+  }
+  // pi 状态菜单：点空白即收起
+  if (rpcMenuOpen.value) rpcMenuOpen.value = false
+  // 会话菜单：点空白即收起（重命名输入框有自己的 Enter/Esc，不走这里）
+  if (openMenuKey.value && !t.closest('.agent-ws-rename-input')) openMenuKey.value = null
 }
 
-/** 选模型：写入当前会话 meta（按会话记住）。null = 默认（跟随 pi 当前）。 */
+/** 选模型。
+ *  - 「仅本次」开启：只写 oneShotModel，不动 SessionMeta（不改变会话长期选择）；
+ *  - 否则：写入当前会话 meta（按会话记住）。
+ *  null = 默认（跟随 pi 当前）；清空选择时两种模式都清掉对应槽位。 */
 function pickModel(m: RpcAvailableModel | null) {
-  selectedModel.value = m ? { provider: m.provider, model_id: m.id } : null
+  const ref_value = m ? { provider: m.provider, model_id: m.id } : null
   showModelMenu.value = false
+  if (modelOnce.value) {
+    oneShotModel.value = ref_value
+    return
+  }
+  oneShotModel.value = null
+  selectedModel.value = ref_value
   const now = Date.now()
   const idx = sessions.value.findIndex((s) => s.key === activeKey.value)
   if (idx >= 0) {
@@ -1033,6 +1314,12 @@ function pickModel(m: RpcAvailableModel | null) {
     sessions.value.unshift({ key: activeKey.value, title: sessionTitle.value, model: selectedModel.value, updatedAt: now })
   }
   persistSessions()
+}
+
+/** 切换「仅本次」：关掉时丢弃一次性选择，回落会话默认（避免残留一个隐形覆盖）。 */
+function toggleModelOnce() {
+  modelOnce.value = !modelOnce.value
+  if (!modelOnce.value) oneShotModel.value = null
 }
 
 function pickEntity(kind: 'source' | 'release', id: number) {
@@ -1146,7 +1433,8 @@ async function onRunFinished(payload: AgentRunFinished) {
   // 场景下 agent_settled 可能不达，run 终态事件统一收尾
   liveMessages.value = []
   historySnapshot.value = []
-  await loadChat()
+  // run 收尾：进程可能刚重启过、推迟标记也刚被消费，指示灯需同步
+  await Promise.all([loadChat(), loadRpcStatus()])
 }
 
 /** 失败原因文案：run.error 形如 `err.agent.timeout|300`（i18n 键|参数）。 */
@@ -1158,19 +1446,19 @@ function runErrorText(run: AgentRunSummary | undefined): string | null {
   return text === key ? null : text
 }
 
-/** 失败 run 的内联备注（failed/timeout 且可解析出文案时返回；否则 null）。
+/** 失败 run 的内联备注（非成功终态且可解析出文案时返回；否则 null）。
  * 挂在对应 user 消息气泡下，让「哪一轮为什么挂了」在对话流里可追溯——
  * 横幅只展示最近一次 run，历史失败原因不再随新提交成功而消失。 */
 function runFailedNote(run: AgentRunSummary | undefined): string | null {
   if (!run) return null
-  if (run.status !== 'failed' && run.status !== 'timeout') return null
+  if (run.status !== 'failed' && run.status !== 'timeout' && run.status !== 'unknown') return null
   return runErrorText(run)
 }
 
-/** 该 run 是否值得重试（非成功终态即终点不明：失败 / 超时 / 被取消）。 */
+/** 该 run 是否值得重试（非成功终态即终点不明：失败 / 超时 / 被取消 / 结果未知）。 */
 function canRetry(run: AgentRunSummary | undefined): boolean {
   if (!run) return false
-  return run.status === 'failed' || run.status === 'timeout' || run.status === 'cancelled'
+  return run.status === 'failed' || run.status === 'timeout' || run.status === 'cancelled' || run.status === 'unknown'
 }
 
 /** run 记录固化的模型选择（JSON 字符串；解析失败按「默认」处理）。 */
@@ -1180,6 +1468,17 @@ function runModel(run: AgentRunSummary): AgentModelRef | null {
     return JSON.parse(run.model) as AgentModelRef
   } catch {
     return null
+  }
+}
+
+/** run 记录固化的本地文件附件（JSON 字符串数组；解析失败按无附件处理）。 */
+function runFiles(run: AgentRunSummary): string[] {
+  if (!run.files) return []
+  try {
+    const parsed = JSON.parse(run.files) as unknown
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
   }
 }
 
@@ -1206,6 +1505,8 @@ function applyRunToComposer(run: AgentRunSummary) {
   entities.value = alive
   skillPath.value = run.skill_path || null
   selectedModel.value = runModel(run)
+  // 附件随重试一并还原（否则"再跑一次这个日志"会静默丢掉文件）
+  files.value = runFiles(run)
 }
 
 /** 重试：用同一条 run 的输入原样重新提交。 */
@@ -1289,7 +1590,7 @@ function handleDropNewSession(e: DragEvent) {
 
 onMounted(async () => {
   applySeed()
-  await Promise.all([loadCatalog(), loadChat()])
+  await Promise.all([loadCatalog(), loadChat(), loadRpcStatus()])
   // 磁盘发现放在首次加载之后：会话文件是索引的兜底来源，索引缺失时补入，
   // 补入的会话不打断当前激活会话（仅侧栏可见）
   const recovered = await discoverSessions()
@@ -1342,6 +1643,43 @@ watch(
         <span>{{ t('agent.workspace_title') }}</span>
       </div>
       <div class="agent-ws-header-actions">
+        <!-- pi 常驻进程健康指示：点灯弹状态菜单（状态详情 + 重启入口）。
+             重启是低频排障操作，收进菜单而非一级按钮；未运行时菜单不提供
+             重启项（无物可重启，首次提交时进程会自动拉起）。 -->
+        <div class="agent-ws-rpc-wrap">
+          <button
+            ref="rpcDotEl"
+            class="agent-ws-rpc-dot"
+            :class="{ running: rpcStatus?.running, restarting: rpcRestarting }"
+            :title="rpcStatus?.running ? t('agent.rpc_running') : t('agent.rpc_stopped')"
+            :aria-label="t('agent.rpc_status')"
+            @click="toggleRpcMenu"
+          ></button>
+          <!-- Teleport 到 body：header 贴窗口顶缘，absolute 定位无论上弹/下弹
+               都会被窗口边缘或后续层叠内容吃掉；fixed + 高 z-index 才能盖在最上层 -->
+          <Teleport to="body">
+            <div v-if="rpcMenuOpen" class="agent-ws-menu agent-ws-menu-rpc" :style="rpcMenuStyle">
+              <!-- 状态详情（非交互）：只陈述事实，操作在下方独立分区 -->
+              <div class="agent-ws-rpc-status">
+                <span class="agent-ws-rpc-status-dot" :class="{ on: rpcStatus?.running }" aria-hidden="true"></span>
+                <div class="agent-ws-rpc-status-text">
+                  <span class="agent-ws-rpc-status-main">{{ rpcStatus?.running ? t('agent.rpc_running') : t('agent.rpc_stopped') }}</span>
+                  <span v-if="rpcStatus?.running && rpcStatus.pid" class="agent-ws-rpc-status-sub">pid {{ rpcStatus.pid }}</span>
+                  <span v-else class="agent-ws-rpc-status-sub">{{ t('agent.rpc_not_started_hint') }}</span>
+                </div>
+              </div>
+              <!-- 重启入口：仅运行中提供（未运行时点击无物可重启，且首次提交会自动拉起） -->
+              <button
+                v-if="rpcStatus?.running"
+                class="agent-ws-menu-item"
+                :disabled="rpcRestarting"
+                @click="handleRestartRpc"
+              >
+                <span class="agent-ws-menu-main">{{ t('agent.rpc_restart') }}</span>
+              </button>
+            </div>
+          </Teleport>
+        </div>
         <button class="btn-sm" :title="t('agent.session_new')" @click="startNewSession">
           <svg class="agent-ws-btn-icon"><use href="/icons.svg#plus-icon" /></svg>
           <span class="agent-ws-btn-label">{{ t('agent.session_new') }}</span>
@@ -1402,10 +1740,11 @@ watch(
           </span>
         </div>
 
-        <!-- 会话上下文水位（消息数 / 估算 token；接近上限提示开新会话） -->
-        <div v-if="usageText" class="agent-ws-usage" :class="{ warn: usageWarn }">
-          <span class="agent-ws-usage-text" :title="usageWarn ? usageText : undefined">{{ usageWarn ? t('agent.context_near_limit') : usageText }}</span>
-          <button v-if="usageWarn" class="btn-sm agent-ws-usage-new" :title="usageText ?? ''" @click="startNewSession">{{ t('agent.session_new') }}</button>
+        <!-- 配置推迟生效提示：改了 pi 路径/模型/skill 后有 run 在跑，
+             重启被推迟到当前任务结束——不提示的话用户会以为改了没生效（评审 3.8） -->
+        <div v-if="rpcRestartPending" class="agent-ws-pending-restart">
+          <span class="agent-ws-pending-restart-icon" aria-hidden="true"></span>
+          <span class="agent-ws-pending-restart-text">{{ t('agent.config_pending_restart') }}</span>
         </div>
 
         <!-- 运行历史面板（浮层）：耗时 / 模型 / 状态 / 引用实体 -->
@@ -1470,12 +1809,18 @@ watch(
                 <div
                   v-if="canRetry(runForMessage(idx))"
                   class="agent-ws-run-failed"
-                  :class="{ 'run-cancelled': runForMessage(idx)!.status === 'cancelled' }"
+                  :class="{
+                    'run-cancelled': runForMessage(idx)!.status === 'cancelled',
+                    'run-unknown': runForMessage(idx)!.status === 'unknown',
+                  }"
                 >
                   <span class="agent-ws-run-failed-status">{{ runStatusLabel(runForMessage(idx)!.status) }}</span>
                   <span class="agent-ws-run-failed-text" :title="runFailedNote(runForMessage(idx)) ?? ''">
                     {{ runFailedNote(runForMessage(idx)) || runStatusLabel(runForMessage(idx)!.status) }}
                   </span>
+                  <!-- 结果未知（终态事件丢失）：与真失败区分——任务可能已经跑完，
+                       直接重跑会重复烧词元、重复副作用（评审 3.1） -->
+                  <span v-if="runForMessage(idx)!.status === 'unknown'" class="agent-ws-run-advice">{{ t('agent.unknown_advice') }}</span>
                   <span class="agent-ws-run-failed-actions">
                     <button class="btn-sm" :title="t('agent.retry')" @click="handleRetry(runForMessage(idx)!)">
                       {{ t('agent.retry') }}
@@ -1574,6 +1919,19 @@ watch(
                 <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
               </button>
             </span>
+            <!-- 本地文件附件：chip 只显示文件名，完整路径放 title -->
+            <span
+              v-for="(f, i) in files"
+              :key="f"
+              class="agent-ws-chip agent-ws-chip-file"
+              :title="f"
+            >
+              <svg class="agent-ws-chip-file-icon" viewBox="0 0 16 16"><path d="M4 1.5h5L12.5 5v9.5H4z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M9 1.5V5h3.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
+              <span class="agent-ws-chip-text">{{ fileDisplayName(f) }}</span>
+              <button class="agent-ws-chip-remove" :title="t('agent.remove_file')" @click="removeFile(i)">
+                <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+              </button>
+            </span>
           </div>
           <div class="agent-ws-input-row">
             <textarea
@@ -1586,29 +1944,44 @@ watch(
               @keydown="handleKeydown"
             ></textarea>
           </div>
-          <!-- 底部操作行：模型选择（左）+ 发送/停止（右），共占一行 -->
+          <!-- 底部操作行：模型选择（最左）+ 附件/发送（右侧成组），共占一行 -->
           <div class="agent-ws-input-actions">
             <button class="agent-ws-model-btn" :class="{ open: showModelMenu }" :title="t('agent.model_pick')" @click="toggleModelMenu">
               <svg class="agent-ws-model-icon" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>
               <span class="agent-ws-model-label">{{ activeModelLabel }}</span>
               <svg class="agent-ws-model-caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
             </button>
-            <button
-              class="btn-primary agent-ws-submit"
-              :class="{ 'agent-ws-stop': canStop }"
-              :disabled="submitting && !canStop"
-              :title="canStop ? t('agent.stop_hint') : ''"
-              @click="canStop ? handleCancel() : handleSubmit()"
-            >
-              {{ canStop ? (cancelling ? t('agent.stopping') : t('agent.stop')) : submitting ? t('agent.running') : t('agent.submit') }}
-            </button>
+            <div class="agent-ws-input-actions-right">
+              <button class="agent-ws-attach-btn" :title="t('agent.attach_file')" @click="handleAttachFiles">
+                <svg viewBox="0 0 16 16"><path d="M13 7.5L8 12.5a3 3 0 01-4.2-4.2l5-5a2 2 0 012.8 2.8l-5 5a1 1 0 01-1.4-1.4l4.3-4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+              </button>
+              <button
+                class="btn-primary agent-ws-submit"
+                :class="{ 'agent-ws-stop': canStop }"
+                :disabled="submitting && !canStop"
+                :title="canStop ? t('agent.stop_hint') : ''"
+                @click="canStop ? handleCancel() : handleSubmit()"
+              >
+                {{ canStop ? (cancelling ? t('agent.stopping') : t('agent.stop')) : submitting ? t('agent.running') : t('agent.submit') }}
+              </button>
+            </div>
 
-            <!-- 模型选择菜单：定位在操作行上方（bottom:100%），紧贴按钮弹出 -->
+            <!-- 模型选择菜单：定位在操作行上方（bottom:100%），紧贴左侧模型按钮弹出 -->
             <div v-if="showModelMenu" class="agent-ws-menu agent-ws-menu-model">
               <div class="agent-ws-menu-title">{{ t('agent.model_pick') }}</div>
+              <!-- 单次覆盖开关：开启后选择只作用于下一次提交，不改会话长期模型 -->
+              <button
+                class="agent-ws-menu-item agent-ws-menu-once"
+                :class="{ selected: modelOnce }"
+                :title="t('agent.model_once_hint')"
+                @click="toggleModelOnce"
+              >
+                <span class="agent-ws-menu-check">{{ modelOnce ? '✓' : '' }}</span>
+                <span class="agent-ws-menu-main">{{ t('agent.model_once') }}</span>
+              </button>
               <button
                 class="agent-ws-menu-item"
-                :class="{ selected: !selectedModel }"
+                :class="{ selected: !effectiveModel }"
                 @mouseenter="modelMenuIndex = 0"
                 @click="pickModel(null)"
               >
@@ -1628,6 +2001,14 @@ watch(
               </button>
               <div v-if="availableModels.length === 0" class="agent-ws-menu-empty">{{ t('agent.model_none') }}</div>
             </div>
+          </div>
+
+          <!-- 会话上下文水位（消息数 / 词元 / 成本）：对齐主流 chat 应用惯例放在输入框下方，
+               顶部不再堆叠「状态横幅 + 水位条」两条；接近上限时警告色 + 新建会话快捷入口 -->
+          <div v-if="usageText" class="agent-ws-usage" :class="{ warn: usageWarn }">
+            <span class="agent-ws-usage-text" :title="usageWarn ? usageText : undefined">{{ usageWarn ? t('agent.context_near_limit') : usageText }}</span>
+            <span v-if="!usageWarn && usage && !usage.has_usage" class="agent-ws-usage-est" :title="t('agent.usage_estimate_hint')">≈</span>
+            <button v-if="usageWarn" class="btn-sm agent-ws-usage-new" :title="usageText ?? ''" @click="startNewSession">{{ t('agent.session_new') }}</button>
           </div>
 
           <!-- @ Skill 菜单 -->
@@ -1694,34 +2075,76 @@ watch(
       <!-- 右侧：会话侧栏（可折叠，折叠时聊天区占满全宽） -->
       <aside class="agent-ws-sidebar" :class="{ collapsed: !sidebarOpen }">
         <div class="agent-ws-sidebar-title">{{ t('agent.session_list') }}</div>
+        <!-- 会话搜索：标题自动取首条指令前 40 字，高度相似且上限 200 条，
+             没有搜索就只能靠「清理旧会话」一刀切 -->
+        <div v-if="sessions.length > 1" class="agent-ws-session-search">
+          <input
+            v-model="sessionQuery"
+            class="agent-ws-session-search-input"
+            type="search"
+            :placeholder="t('agent.session_search_placeholder')"
+            :aria-label="t('agent.session_search')"
+          />
+        </div>
         <ul class="agent-ws-session-list">
           <li
-            v-for="s in sessionsWithState"
+            v-for="s in visibleSessions"
             :key="s.key"
             class="agent-ws-session-item"
             :class="{ active: s.key === activeKey, draft: s.draft }"
             :title="s.title"
             @click="switchSession(s.key)"
           >
-            <span class="agent-ws-session-name">
-              {{ s.title }}
-              <!-- 运行状态点：执行中（蓝）/ 排队第 N 位（橙）——全局队列驱动（评审 1.3） -->
-              <span
-                v-if="s.state"
-                class="agent-ws-session-dot"
-                :class="`st-${s.state.status}`"
-                :title="s.state.status === 'running' ? t('agent.session_running_hint') : t('agent.session_queued_hint', String(s.state.position))"
-              >{{ s.state.status === 'running' ? t('agent.status_running') : t('agent.queue_position', String(s.state.position)) }}</span>
-              <span v-if="s.recovered" class="agent-ws-session-badge" :title="t('agent.session_recovered_hint')">
-                {{ t('agent.session_recovered') }}
+            <!-- 重命名编辑态：Enter 提交 / Esc 取消 / 失焦提交 -->
+            <input
+              v-if="renamingKey === s.key"
+              :ref="(el) => setRenameEl(el, s.key)"
+              v-model="renameInput"
+              class="agent-ws-rename-input"
+              type="text"
+              :placeholder="t('agent.session_rename_placeholder')"
+              @click.stop
+              @keydown.enter.prevent="commitRename"
+              @keydown.esc.prevent="cancelRename"
+              @blur="commitRename"
+            />
+            <template v-else>
+              <span class="agent-ws-session-name">
+                {{ s.title }}
+                <!-- 运行状态点：执行中（蓝）/ 排队第 N 位（橙）——全局队列驱动（评审 1.3） -->
+                <span
+                  v-if="s.state"
+                  class="agent-ws-session-dot"
+                  :class="`st-${s.state.status}`"
+                  :title="s.state.status === 'running' ? t('agent.session_running_hint') : t('agent.session_queued_hint', String(s.state.position))"
+                >{{ s.state.status === 'running' ? t('agent.status_running') : t('agent.queue_position', String(s.state.position)) }}</span>
+                <span v-if="s.recovered" class="agent-ws-session-badge" :title="t('agent.session_recovered_hint')">
+                  {{ t('agent.session_recovered') }}
+                </span>
               </span>
-            </span>
-            <span class="agent-ws-session-time">{{ formatDate(new Date(s.updatedAt).toISOString()) }}</span>
-            <button class="agent-ws-session-del" :title="t('agent.delete_session')" @click.stop="handleDeleteSession(s.key)">
-              <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
-            </button>
+              <span class="agent-ws-session-time">{{ formatDate(new Date(s.updatedAt).toISOString()) }}</span>
+              <!-- ⋯ 菜单：重命名 / 导出 md / 导出 json / 删除 -->
+              <button class="agent-ws-session-more" :title="t('agent.session_menu')" @click.stop="toggleSessionMenu(s.key)">
+                <svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor"/></svg>
+              </button>
+              <div v-if="openMenuKey === s.key" class="agent-ws-menu agent-ws-session-menu" @click.stop>
+                <button class="agent-ws-menu-item" @click="startRename(s.key)">
+                  <span class="agent-ws-menu-main">{{ t('agent.session_rename') }}</span>
+                </button>
+                <button class="agent-ws-menu-item" @click="handleExportSession(s.key, 'md')">
+                  <span class="agent-ws-menu-main">{{ t('agent.session_export_md') }}</span>
+                </button>
+                <button class="agent-ws-menu-item" @click="handleExportSession(s.key, 'json')">
+                  <span class="agent-ws-menu-main">{{ t('agent.session_export_json') }}</span>
+                </button>
+                <button class="agent-ws-menu-item danger" @click="openMenuKey = null; handleDeleteSession(s.key)">
+                  <span class="agent-ws-menu-main">{{ t('agent.delete_session') }}</span>
+                </button>
+              </div>
+            </template>
           </li>
           <li v-if="sessions.length === 0" class="agent-ws-session-empty">{{ t('agent.session_empty') }}</li>
+          <li v-else-if="visibleSessions.length === 0" class="agent-ws-session-empty">{{ t('agent.session_no_match') }}</li>
         </ul>
         <button v-if="sessions.length > 1" class="agent-ws-session-clear" :title="t('agent.session_clear')" @click="handleClearSessions">
           <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
@@ -2042,7 +2465,40 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   font-size: 10px;
   opacity: 0.5;
 }
-.agent-ws-session-del {
+.agent-ws-session-empty {
+  padding: 12px 8px;
+  font-size: 12px;
+  opacity: 0.5;
+  text-align: center;
+}
+
+/* 会话搜索框 */
+.agent-ws-session-search {
+  padding: 0 8px 6px;
+}
+.agent-ws-session-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 24px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+.agent-ws-session-search-input:focus {
+  border-color: #2e6fd0;
+}
+.agent-ws-session-search-input::placeholder {
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+
+/* 会话 ⋯ 更多菜单（重命名 / 导出 / 删除）*/
+.agent-ws-session-more {
   position: absolute;
   top: 6px;
   right: 6px;
@@ -2058,22 +2514,56 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   border-radius: 50%;
   padding: 0;
 }
-.agent-ws-session-item:hover .agent-ws-session-del {
+.agent-ws-session-item:hover .agent-ws-session-more {
   display: flex;
 }
-.agent-ws-session-del:hover {
-  color: #d64545;
+.agent-ws-session-more:hover {
+  color: var(--text);
   background: var(--bg-hover);
 }
-.agent-ws-session-del svg {
-  width: 10px;
-  height: 10px;
+.agent-ws-session-more svg {
+  width: 12px;
+  height: 12px;
 }
-.agent-ws-session-empty {
-  padding: 12px 8px;
+/* 菜单定位在会话项内（absolute 相对 .agent-ws-session-item），浮在其他项之上。
+ * 双类选择器抬高特异性：基类 .agent-ws-menu 定义在本文件更靠后，单类时其
+ * bottom/left/right 会反杀这里的重置，top 与 bottom 双锚同样把高度拉伸成 0 */
+.agent-ws-menu.agent-ws-session-menu {
+  top: 22px;
+  right: 4px;
+  left: auto;
+  bottom: auto;
+  min-width: 132px;
+  z-index: 30;
+}
+.agent-ws-menu-item.danger .agent-ws-menu-main {
+  color: #d64545;
+}
+.agent-ws-menu-item.danger:hover {
+  background: rgba(214, 69, 69, 0.08);
+}
+/* 「仅本次」开关行：勾选态标记左置，与普通菜单项区分 */
+.agent-ws-menu-once {
+  border-bottom: 1px solid var(--border);
+}
+.agent-ws-menu-check {
+  flex-shrink: 0;
+  width: 12px;
+  font-size: 11px;
+  color: #2e6fd0;
+}
+.agent-ws-rename-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 22px;
+  padding: 0 6px;
   font-size: 12px;
-  opacity: 0.5;
-  text-align: center;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid #2e6fd0;
+  border-radius: 5px;
+  outline: none;
 }
 .agent-ws-session-clear {
   margin: 2px 8px 10px;
@@ -2188,20 +2678,18 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   color: #2e6fd0;
 }
 
-/* 上下文水位条：消息数 / 估算 token；接近上限时置顶提示开新会话 */
+/* 上下文水位：移至输入框下方（对齐主流 chat 应用惯例），顶部不再堆叠
+ * 「状态横幅 + 水位条」两条；接近上限时警告色 + 新建会话快捷入口 */
 .agent-ws-usage {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 3px 14px;
+  gap: 6px;
+  margin-top: 6px;
   font-size: 11px;
   color: var(--text-muted);
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-subtle);
 }
 .agent-ws-usage.warn {
   color: #b0882e;
-  background: rgba(214, 158, 46, 0.08);
 }
 .agent-ws-usage-text {
   flex: 1;
@@ -2215,6 +2703,134 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   height: 20px;
   padding: 0 8px;
   font-size: 11px;
+}
+/* 估算标记：pi 未上报用量时，词元数是按字符数估的，标一个 ≈ 免得被当成精确计费值 */
+.agent-ws-usage-est {
+  flex-shrink: 0;
+  font-style: normal;
+  opacity: 0.65;
+  cursor: help;
+}
+
+/* 配置推迟生效提示（评审 3.8）*/
+.agent-ws-pending-restart {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 14px;
+  font-size: 11px;
+  color: #2e6fd0;
+  background: rgba(46, 111, 208, 0.08);
+  border-bottom: 1px solid var(--border);
+}
+.agent-ws-pending-restart-icon {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #2e6fd0;
+  animation: agent-ws-pulse 1.4s ease-in-out infinite;
+}
+.agent-ws-pending-restart-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes agent-ws-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* pi 进程健康指示：点击热区大于视觉圆点（8px 点太小，Fitts），圆点用 ::before 画 */
+.agent-ws-rpc-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.agent-ws-rpc-dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+.agent-ws-rpc-dot::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.45;
+  transition: opacity 0.15s ease;
+}
+.agent-ws-rpc-dot:hover::before {
+  opacity: 1;
+}
+.agent-ws-rpc-dot.running::before {
+  /* 运行中：绿色实心（与「未运行」的灰点一眼可辨） */
+  background: #35a06b;
+  opacity: 1;
+}
+.agent-ws-rpc-dot.restarting::before {
+  animation: agent-ws-pulse 0.9s ease-in-out infinite;
+}
+
+/* 状态菜单：Teleport 到 body 后 fixed 定位在灯正下方（坐标由 toggleRpcMenu 计算）。
+ * header 贴窗口顶缘：absolute 上弹会被 Windows 窗口裁剪，下弹会被聊天区后续内容遮挡，
+ * 故脱离文档流盖在最上层（与 chip-tooltip 同一策略，z-index 对齐 10002）。
+ * 双类选择器抬高特异性覆盖基类（.agent-ws-menu 定义在本文件更靠后，单类会被其
+ * bottom: calc(100% - 8px)/max-height/overflow 反杀：inline top 与基类 bottom 双锚
+ * 把高度拉伸成 0，菜单被压成窄条滚动区）——与 agent-ws-menu-model 同一策略。 */
+.agent-ws-menu.agent-ws-menu-rpc {
+  position: fixed;
+  bottom: auto;
+  right: auto;
+  min-width: 208px;
+  max-height: none;
+  overflow-y: visible;
+  z-index: 10002;
+}
+/* 状态详情行（非交互，与操作项分区） */
+.agent-ws-rpc-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 4px;
+}
+.agent-ws-rpc-status-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  opacity: 0.45;
+}
+.agent-ws-rpc-status-dot.on {
+  background: #35a06b;
+  opacity: 1;
+}
+.agent-ws-rpc-status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.agent-ws-rpc-status-main {
+  font-size: 12px;
+  font-weight: 600;
+}
+.agent-ws-rpc-status-sub {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.agent-ws-menu-rpc .agent-ws-menu-item {
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+  margin-top: 2px;
 }
 
 /* 运行历史面板：覆盖整个聊天区的浮层（顶部含标题与关闭；依托 .agent-ws-chat 的 relative 定位） */
@@ -2440,6 +3056,15 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 .agent-ws-run-failed.run-cancelled {
   border-color: var(--border);
   background: var(--bg-subtle);
+}
+/* 结果未知：既不是失败（可能跑成了），也不是取消（不是用户主动停的）——
+   用中性的琥珀色，与红（失败）/灰（取消）三方区分 */
+.agent-ws-run-failed.run-unknown {
+  border-color: rgba(214, 158, 46, 0.45);
+  background: rgba(214, 158, 46, 0.09);
+}
+.agent-ws-run-failed.run-unknown .agent-ws-run-failed-status {
+  color: #b0882e;
 }
 .agent-ws-run-failed-status {
   font-weight: 600;
@@ -2695,7 +3320,11 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
 }
 .agent-ws-submit {
   flex-shrink: 0;
-  height: 36px;
+  /* 对齐 composer 30px/8px 基线，覆盖全局 .btn-primary 的 padding/字号/圆角 */
+  height: 30px;
+  padding: 0 16px;
+  font-size: 12px;
+  border-radius: 8px;
 }
 .agent-ws-submit.agent-ws-stop {
   background: #d64545;
@@ -2706,7 +3335,10 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   border-color: #c0392b;
 }
 
-/* 底部操作行：模型选择（左）+ 发送/停止（右），共占一行 */
+/* 底部操作行：模型选择（最左）+ 附件/发送（右侧成组），共占一行。
+ * 三按钮统一几何基线：30px 高 + 8px 圆角（与输入框一致），
+ * 次级（模型/附件）同款灰底细边框，主操作（发送）墨色实心——
+ * 样式语言只有一种次级 + 一种主级，高度/圆角不再各吹各调 */
 .agent-ws-input-actions {
   position: relative;
   display: flex;
@@ -2715,13 +3347,60 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   gap: 8px;
   margin-top: 6px;
 }
+/* 右侧操作组：附件 + 发送/停止 */
+.agent-ws-input-actions-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+/* 附加本地文件按钮：与模型按钮同高的纯图标次级按钮（30px 基线） */
+.agent-ws-attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  color: var(--text-muted);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.agent-ws-attach-btn:hover {
+  color: var(--text);
+  border-color: var(--accent, #2e6fd0);
+  background: rgba(46, 111, 208, 0.08);
+}
+.agent-ws-attach-btn svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* 文件附件 chip（与实体 chip 同形，加一个文件图标以区分来源） */
+.agent-ws-chip-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.agent-ws-chip-file-icon {
+  flex-shrink: 0;
+  width: 11px;
+  height: 11px;
+  opacity: 0.7;
+}
+
 .agent-ws-model-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   max-width: 100%;
-  padding: 3px 9px;
-  font-size: 11px;
+  height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
   color: var(--text);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
@@ -2756,7 +3435,7 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   transform: rotate(180deg);
 }
 /* 模型选择菜单：作为 .agent-ws-input-actions 的子元素定位（position:relative 的 parent），
-   bottom:100% 使面板紧贴在操作行（模型按钮）上方弹出，而非输入区顶部；
+   bottom:100% 使面板紧贴在操作行（左侧模型按钮）上方弹出，而非输入区顶部；
    高优先级选择器覆盖 .agent-ws-menu 基类的 footer 定位，不依赖顺序 */
 .agent-ws-menu.agent-ws-menu-model {
   position: absolute;

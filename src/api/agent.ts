@@ -8,6 +8,7 @@ import type {
   AgentModelsInfo,
   AgentQueueItem,
   AgentQueueStatus,
+  AgentRpcStatus,
   AgentRunSummary,
   AgentSessionInfo,
   AgentSessionUsage,
@@ -21,6 +22,7 @@ export type {
   AgentModelsInfo,
   AgentQueueItem,
   AgentQueueStatus,
+  AgentRpcStatus,
   AgentRunSummary,
   AgentSessionInfo,
   AgentSessionUsage,
@@ -45,6 +47,8 @@ export interface AgentJobInput {
   instruction: string
   /** 本次提交显式选择的模型（null = 跟随 pi 当前/默认模型）。 */
   model: AgentModelRef | null
+  /** 本次提交附带的本地文件绝对路径（文件对话框自选；null/空 = 无附件）。 */
+  files: string[] | null
 }
 
 /** 工作区提交：返回 run_id，终态经 AgentRunFinished 事件推送。 */
@@ -56,6 +60,7 @@ export async function runAgentJob(input: AgentJobInput): Promise<number> {
       skill_path: input.skillPath,
       instruction: input.instruction,
       model: input.model,
+      files: input.files,
     }),
   )
 }
@@ -118,4 +123,26 @@ export async function getAgentSessionCommand(runId: number): Promise<string> {
 /** 在新终端窗口中打开该次运行的 pi 会话（恢复完整执行过程）。 */
 export async function openAgentSession(runId: number): Promise<void> {
   await invokeI18nFn(() => commands.openAgentSession(runId))
+}
+
+/** 查询 pi 常驻进程状态（健康指示 + 配置推迟提示）。
+ *
+ * 惰性：不会为了让指示灯变绿而主动拉起进程——进程未启动属正常（首次提交时才 spawn）。
+ */
+export async function getAgentRpcStatus(): Promise<AgentRpcStatus> {
+  return invokeI18nFn(commands.getAgentRpcStatus)
+}
+
+/** 手动重启 pi 常驻进程。返回 false = 因有 run 正在执行而拒绝重启。 */
+export async function restartAgentRpc(): Promise<boolean> {
+  return invokeI18nFn(commands.restartAgentRpc)
+}
+
+/** 导出会话为 Markdown / JSON 文件（后端弹出保存对话框），返回实际写入路径。 */
+export async function exportAgentSession(
+  sessionKey: string,
+  title: string,
+  format: 'md' | 'json',
+): Promise<string> {
+  return invokeI18nFn(() => commands.exportAgentSession(sessionKey, title, format))
 }

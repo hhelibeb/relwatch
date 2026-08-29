@@ -157,7 +157,8 @@ pub struct AgentRun {
     pub model: Option<String>,
     /// 本次提交落盘的 pi 会话文件（`pi --session <path>` 恢复/继续）。
     pub session_path: Option<String>,
-    /// pending | running | success | failed | timeout。
+    /// pending | running | success | failed | timeout | cancelled | unknown。
+    /// `unknown` = 结果未知（终态事件丢失 / 应用重启时未落终态），**可能已执行完成**。
     pub status: String,
     pub exit_code: Option<i64>,
     pub stdout: Option<String>,
@@ -167,24 +168,47 @@ pub struct AgentRun {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
+    /// 本次提交附带的本地文件绝对路径（JSON 字符串数组；无附件时 None）。
+    /// 与 entities 分列：实体是应用内数据（source/release），文件是用户本地磁盘路径，
+    /// 两者的校验规则与渲染方式都不同。
+    pub files: Option<String>,
+}
+
+/// 新建一次提交的全部输入。
+///
+/// 位置参数已超 clippy 的 too_many_arguments 阈值，收敛为结构体——与
+/// `types::ReleaseNotifyParams` 同例：新增字段不必再动全部调用点，
+/// 且调用处每个字段都有名字，不会把 model / session_path / files 这类
+/// 同为 `Option<&str>` 的相邻参数传错位。
+pub struct NewRun<'a> {
+    pub session_key: &'a str,
+    pub skill_path: Option<&'a str>,
+    pub entities: &'a [AgentEntityRef],
+    pub instruction: &'a str,
+    /// 显式选择的模型（JSON 字符串）；None = 跟随 pi 当前/默认模型。
+    pub model: Option<&'a str>,
+    pub session_path: Option<&'a str>,
+    /// 本地文件附件（JSON 字符串数组）；None = 无附件。
+    pub files: Option<&'a str>,
 }
 
 /// 创建一次提交（初始状态 pending，等待调度器执行）。
-pub fn create_run(
-    conn: &Connection,
-    session_key: &str,
-    skill_path: Option<&str>,
-    entities: &[AgentEntityRef],
-    instruction: &str,
-    model: Option<&str>,
-    session_path: Option<&str>,
-) -> Result<i64, String> {
+pub fn create_run(conn: &Connection, run: &NewRun<'_>) -> Result<i64, String> {
     let now = chrono::Utc::now().to_rfc3339();
-    let entities_json = serde_json::to_string(entities).map_err(|e| e.to_string())?;
+    let entities_json = serde_json::to_string(run.entities).map_err(|e| e.to_string())?;
     conn.execute(
-        "INSERT INTO agent_runs (session_key, skill_path, entities, instruction, model, session_path, status, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
-        params![session_key, skill_path, entities_json, instruction, model, session_path, now],
+        "INSERT INTO agent_runs (session_key, skill_path, entities, instruction, model, session_path, status, created_at, files)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
+        params![
+            run.session_key,
+            run.skill_path,
+            entities_json,
+            run.instruction,
+            run.model,
+            run.session_path,
+            now,
+            run.files
+        ],
     )
     .map_err(|e| e.to_string())?;
     Ok(conn.last_insert_rowid())
@@ -237,7 +261,7 @@ pub fn get_run(conn: &Connection, run_id: i64) -> Result<Option<AgentRun>, Strin
     let mut stmt = conn
         .prepare(
             "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
-                    stdout, stderr, error, started_at, finished_at, created_at
+                    stdout, stderr, error, started_at, finished_at, created_at, files
              FROM agent_runs WHERE id = ?1",
         )
         .map_err(|e| e.to_string())?;
@@ -266,6 +290,8 @@ pub struct AgentRunSummary {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
+    /// 本次提交附带的本地文件绝对路径（JSON 字符串数组；无附件时 None）。
+    pub files: Option<String>,
 }
 
 /// 按工作区会话列出提交记录摘要（倒序，不含 stdout/stderr 大字段）。
@@ -277,7 +303,7 @@ pub fn list_run_summaries(
     let mut stmt = conn
         .prepare(
             "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
-                    error, started_at, finished_at, created_at
+                    error, started_at, finished_at, created_at, files
              FROM agent_runs WHERE session_key = ?1
              ORDER BY id DESC LIMIT ?2",
         )
@@ -298,6 +324,7 @@ pub fn list_run_summaries(
                 started_at: row.get(10)?,
                 finished_at: row.get(11)?,
                 created_at: row.get(12)?,
+                files: row.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -309,7 +336,7 @@ pub fn list_runs(conn: &Connection, session_key: &str, limit: i64) -> Result<Vec
     let mut stmt = conn
         .prepare(
             "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
-                    stdout, stderr, error, started_at, finished_at, created_at
+                    stdout, stderr, error, started_at, finished_at, created_at, files
              FROM agent_runs WHERE session_key = ?1
              ORDER BY id DESC LIMIT ?2",
         )
@@ -414,6 +441,26 @@ pub fn agent_queue(conn: &Connection) -> Result<Vec<AgentQueueItem>, String> {
         });
     }
     Ok(out)
+}
+
+/// 某会话**全部**活跃 run 的 id（pending / running，按创建顺序升序）。
+///
+/// 替代此前「拉最近 50 条摘要再筛状态」的做法（评审 3.9）：摘要查询带
+/// `ORDER BY id DESC LIMIT 50`，理论上存在「活跃 run 落到第 51 条之后被漏掉」的窗口
+/// ——全局单并发下极难触发，但按状态直接查询成本更低且**从定义上无窗口**，
+/// 删除会话这类「漏一个就破坏承诺」的场景不该依赖概率。
+pub fn active_runs_for_session(conn: &Connection, session_key: &str) -> Result<Vec<i64>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id FROM agent_runs
+             WHERE session_key = ?1 AND status IN ('pending','running')
+             ORDER BY id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![session_key], |row| row.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
 }
 
 /// 某会话当前活跃 run 数量（pending / running）。
@@ -526,6 +573,7 @@ fn run_from_row(row: &rusqlite::Row) -> rusqlite::Result<AgentRun> {
         started_at: row.get(12)?,
         finished_at: row.get(13)?,
         created_at: row.get(14)?,
+        files: row.get(15)?,
     })
 }
 
@@ -576,14 +624,15 @@ mod tests {
             AgentEntityRef { kind: "source".into(), id: 1 },
             AgentEntityRef { kind: "release".into(), id: 42 },
         ];
-        let run_id = create_run(&conn, "ws-abc", Some("/tmp/my-skill"), &entities, "帮我总结", None, None)
-            .unwrap();
+        let run_id = create_run(&conn, &NewRun { session_key: "ws-abc", skill_path: Some("/tmp/my-skill"), entities: &entities, instruction: "帮我总结", model: None, session_path: None, files: None })
+        .unwrap();
 
         let run = get_run(&conn, run_id).unwrap().unwrap();
         assert_eq!(run.status, "pending");
         assert_eq!(run.session_key, "ws-abc");
         assert_eq!(run.skill_path.as_deref(), Some("/tmp/my-skill"));
         assert_eq!(run.instruction, "帮我总结");
+        assert!(run.files.is_none(), "未带附件时 files 为 None");
         let parsed: Vec<AgentEntityRef> = serde_json::from_str(&run.entities).unwrap();
         assert_eq!(parsed, entities);
 
@@ -599,8 +648,8 @@ mod tests {
         assert!(done.finished_at.is_some());
 
         // 同一会话第二次提交 → 倒序列表 + 会话路径可继续
-        let run2 = create_run(&conn, "ws-abc", None, &[], "继续", Some("C:/data/agent-sessions/ws-abc.jsonl"), None)
-            .unwrap();
+        let run2 = create_run(&conn, &NewRun { session_key: "ws-abc", skill_path: None, entities: &[], instruction: "继续", model: Some("C:/data/agent-sessions/ws-abc.jsonl"), session_path: None, files: None })
+        .unwrap();
         let runs = list_runs(&conn, "ws-abc", 10).unwrap();
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].id, run2);
@@ -618,6 +667,48 @@ mod tests {
     }
 
     #[test]
+    fn run_persists_local_file_attachments() {
+        // 本地文件附件独立于 entities（应用内实体）存储，并随摘要回传供重试/历史还原
+        let conn = init_memory_db().unwrap();
+        let files_json = serde_json::to_string(&vec!["C:/logs/app.log", "C:/img/shot.png"]).unwrap();
+        let run_id = create_run(&conn, &NewRun { session_key: "ws-files", skill_path: None, entities: &[], instruction: "看看这个日志", model: None, session_path: None, files: Some(&files_json) })
+        .unwrap();
+
+        let run = get_run(&conn, run_id).unwrap().unwrap();
+        assert_eq!(run.files.as_deref(), Some(files_json.as_str()));
+        let parsed: Vec<String> = serde_json::from_str(run.files.as_deref().unwrap()).unwrap();
+        assert_eq!(parsed, vec!["C:/logs/app.log", "C:/img/shot.png"]);
+        // 摘要同样带 files（历史面板/重试还原用）
+        let summaries = list_run_summaries(&conn, "ws-files", 10).unwrap();
+        assert_eq!(summaries[0].files.as_deref(), Some(files_json.as_str()));
+    }
+
+    #[test]
+    fn active_runs_for_session_lists_all_active_ids() {
+        // 按状态直接查询：不依赖 LIMIT，活跃 run 无论多少条都不漏
+        let conn = init_memory_db().unwrap();
+        assert!(active_runs_for_session(&conn, "ws-a").unwrap().is_empty());
+
+        let r1 = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A1", model: None, session_path: None, files: None }).unwrap();
+        let r2 = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A2", model: None, session_path: None, files: None }).unwrap();
+        let other = create_run(&conn, &NewRun { session_key: "ws-b", skill_path: None, entities: &[], instruction: "B", model: None, session_path: None, files: None }).unwrap();
+        mark_run_started(&conn, r1).unwrap();
+
+        // 升序返回（创建顺序 = 执行顺序）
+        assert_eq!(active_runs_for_session(&conn, "ws-a").unwrap(), vec![r1, r2]);
+        assert_eq!(active_runs_for_session(&conn, "ws-b").unwrap(), vec![other]);
+
+        // r1 结束后只剩 r2 —— 与 active_run_count_for_session 口径一致
+        finish_run(&conn, r1, "success", Some(0), Some(""), None, None).unwrap();
+        assert_eq!(active_runs_for_session(&conn, "ws-a").unwrap(), vec![r2]);
+        assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 1);
+
+        // 全部结束 → 空
+        finish_run(&conn, r2, "cancelled", None, None, None, None).unwrap();
+        assert!(active_runs_for_session(&conn, "ws-a").unwrap().is_empty());
+    }
+
+    #[test]
     fn queue_status_reports_position_and_other_running() {
         let conn = init_memory_db().unwrap();
         // 空：无 pending
@@ -627,9 +718,9 @@ mod tests {
         assert!(st.running_sessions.is_empty());
 
         // 会话 A 先建 run（running），会话 B 建 pending → B 队列位置 2、other_running
-        let ra = create_run(&conn, "ws-a", None, &[], "任务A", None, None).unwrap();
+        let ra = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "任务A", model: None, session_path: None, files: None }).unwrap();
         mark_run_started(&conn, ra).unwrap();
-        let rb = create_run(&conn, "ws-b", None, &[], "任务B", None, None).unwrap();
+        let rb = create_run(&conn, &NewRun { session_key: "ws-b", skill_path: None, entities: &[], instruction: "任务B", model: None, session_path: None, files: None }).unwrap();
         let st = agent_queue_status(&conn, "ws-b").unwrap();
         assert_eq!(st.position, Some(2));
         assert!(st.other_running);
@@ -641,7 +732,7 @@ mod tests {
         assert!(st.running_sessions.is_empty());
 
         // 第三个会话 pending：位置 3
-        let _rc = create_run(&conn, "ws-c", None, &[], "任务C", None, None).unwrap();
+        let _rc = create_run(&conn, &NewRun { session_key: "ws-c", skill_path: None, entities: &[], instruction: "任务C", model: None, session_path: None, files: None }).unwrap();
         let st = agent_queue_status(&conn, "ws-c").unwrap();
         assert_eq!(st.position, Some(3));
 
@@ -670,10 +761,10 @@ mod tests {
         assert!(agent_queue(&conn).unwrap().is_empty());
 
         // A 先建 run（running 占用执行位），B、C 排队（pending）
-        let ra = create_run(&conn, "ws-a", None, &[], "A", None, None).unwrap();
+        let ra = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A", model: None, session_path: None, files: None }).unwrap();
         mark_run_started(&conn, ra).unwrap();
-        let rb = create_run(&conn, "ws-b", None, &[], "B", None, None).unwrap();
-        let rc = create_run(&conn, "ws-c", None, &[], "C", None, None).unwrap();
+        let rb = create_run(&conn, &NewRun { session_key: "ws-b", skill_path: None, entities: &[], instruction: "B", model: None, session_path: None, files: None }).unwrap();
+        let rc = create_run(&conn, &NewRun { session_key: "ws-c", skill_path: None, entities: &[], instruction: "C", model: None, session_path: None, files: None }).unwrap();
 
         let q = agent_queue(&conn).unwrap();
         assert_eq!(q.len(), 3);
@@ -701,12 +792,12 @@ mod tests {
     fn active_run_count_guards_per_session() {
         let conn = init_memory_db().unwrap();
         assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 0);
-        let ra = create_run(&conn, "ws-a", None, &[], "A", None, None).unwrap();
+        let ra = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A", model: None, session_path: None, files: None }).unwrap();
         assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 1);
         // 其他会话不受影响
         assert_eq!(active_run_count_for_session(&conn, "ws-b").unwrap(), 0);
         // 排队中的同会话第二个 run 也计数
-        let _ra2 = create_run(&conn, "ws-a", None, &[], "A2", None, None).unwrap();
+        let _ra2 = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A2", model: None, session_path: None, files: None }).unwrap();
         assert_eq!(active_run_count_for_session(&conn, "ws-a").unwrap(), 2);
         // 结束（终态）后不再计数
         finish_run(&conn, ra, "success", Some(0), Some(""), None, None).unwrap();
@@ -718,9 +809,9 @@ mod tests {
         let conn = init_memory_db().unwrap();
         assert!(latest_run_digests(&conn).unwrap().is_empty());
 
-        let a1 = create_run(&conn, "ws-a", None, &[], "A1", None, None).unwrap();
-        create_run(&conn, "ws-b", None, &[], "B1", None, None).unwrap();
-        let a2 = create_run(&conn, "ws-a", None, &[], "A2", None, None).unwrap();
+        let a1 = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A1", model: None, session_path: None, files: None }).unwrap();
+        create_run(&conn, &NewRun { session_key: "ws-b", skill_path: None, entities: &[], instruction: "B1", model: None, session_path: None, files: None }).unwrap();
+        let a2 = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A2", model: None, session_path: None, files: None }).unwrap();
         mark_run_started(&conn, a2).unwrap();
 
         let digests = latest_run_digests(&conn).unwrap();
@@ -744,7 +835,7 @@ mod tests {
     #[test]
     fn run_serializes_for_specta() {
         let conn = init_memory_db().unwrap();
-        let run_id = create_run(&conn, "ws-x", Some("/s"), &[], "指令", None, None).unwrap();
+        let run_id = create_run(&conn, &NewRun { session_key: "ws-x", skill_path: Some("/s"), entities: &[], instruction: "指令", model: None, session_path: None, files: None }).unwrap();
         let run = get_run(&conn, run_id).unwrap().unwrap();
         let v = serde_json::to_value(&run).unwrap();
         assert_eq!(v["status"], "pending");

@@ -42,6 +42,101 @@ pub struct RpcAvailableModel {
 /// 事件广播容量（文本 delta 高频，留足缓冲；executor 消费慢时允许丢旧帧）。
 const EVENT_CAPACITY: usize = 1024;
 
+/// pi 进程生命周期域（Windows JobObject 句柄）。
+///
+/// 优雅退出靠「关 stdin → pi 自己清理」，强杀 relwatch 时 OS 关闭管道句柄也能触发
+/// pi 退出（见文件头注释）。但**句柄关闭不等于 pi 一定来得及清理它 spawn 的工具子进程**：
+/// pi 正在执行长工具时，自身退出与子进程清理之间存在窗口，会留下孤儿。
+/// 把 pi 纳入 JobObject 并设 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`：句柄随 RpcProcess
+/// 一起释放时，**内核一次性终止作业内全部进程**（含 pi 及其所有后代），窗口由内核关闭。
+/// Unix 侧对应机制是 `process_group(0)`（spawn 时已设置，负 pid 整树击杀）。
+#[cfg(windows)]
+struct ProcessScope {
+    job: windows::Win32::Foundation::HANDLE,
+}
+
+#[cfg(windows)]
+impl ProcessScope {
+    /// 创建 JobObject 并把指定进程纳入其中（失败返回 None：降级为无生命周期域，
+    /// 不影响主流程——JobObject 只是兜底加固，不是进程运行的前提）。
+    fn attach(pid: u32) -> Option<Self> {
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
+        use windows::Win32::System::JobObjects::{
+            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        };
+        use windows::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+
+        unsafe {
+            let job = match CreateJobObjectW(None, None) {
+                Ok(h) => h,
+                Err(e) => {
+                    log::warn!("agent JobObject 创建失败，进程生命周期域降级: {}", e);
+                    return None;
+                }
+            };
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION =
+                std::mem::zeroed::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+            .is_ok();
+            if !ok {
+                log::warn!("agent JobObject 限制设置失败，进程生命周期域降级");
+                let _ = CloseHandle(job);
+                return None;
+            }
+            // 打开目标进程需 TERMINATE + SET_QUOTA（后者是 Assign 到 JobObject 所需）
+            let proc = OpenProcess(
+                PROCESS_SET_QUOTA | PROCESS_TERMINATE,
+                false,
+                pid,
+            );
+            let proc = match proc {
+                Ok(h) => h,
+                Err(e) => {
+                    log::warn!("agent JobObject 打开进程失败，进程生命周期域降级: {}", e);
+                    let _ = CloseHandle(job);
+                    return None;
+                }
+            };
+            let assigned = AssignProcessToJobObject(job, proc).is_ok();
+            let _ = CloseHandle(proc);
+            if !assigned {
+                log::warn!("agent JobObject 纳管进程失败，进程生命周期域降级");
+                let _ = CloseHandle(job);
+                return None;
+            }
+            let _: HANDLE = job;
+            Some(ProcessScope { job })
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ProcessScope {
+    fn drop(&mut self) {
+        use windows::Win32::Foundation::CloseHandle;
+        // 关句柄即触发 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE：作业内进程被内核终止。
+        // 正常路径下 pi 早已优雅退出（作业为空，无副作用）；异常路径才是它的意义所在。
+        unsafe {
+            let _ = CloseHandle(self.job);
+        }
+    }
+}
+
+// Windows 句柄非 Send（原始指针），ProcessScope 只在 spawn/kill 路径上被持有与释放，
+// 不跨线程共享；显式声明以满足 RpcProcess 的 Send 约束。
+#[cfg(windows)]
+unsafe impl Send for ProcessScope {}
+#[cfg(windows)]
+unsafe impl Sync for ProcessScope {}
+
 /// RPC 常驻进程管理器（AppState 单例，工作区共享）。
 pub struct RpcManager {
     db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
@@ -368,7 +463,13 @@ impl RpcManager {
             let _ = events.send(json!({"type": "rpc_exited"}));
         });
 
+        // 纳管进生命周期域（此时进程刚 spawn，尚未 spawn 自己的子进程，纳管即时生效）
+        #[cfg(windows)]
+        let scope = child.id().and_then(ProcessScope::attach);
+
         Ok(RpcProcess {
+            #[cfg(windows)]
+            _scope: scope,
             _child: child,
             stdin,
             pending,
@@ -376,6 +477,35 @@ impl RpcManager {
             dead,
             session: Arc::new(std::sync::Mutex::new(None)),
         })
+    }
+
+    /// 当前进程 pid（无存活进程时 None）——进程健康指示的数据源。
+    pub async fn pid(&self) -> Option<u32> {
+        let guard = self.inner.lock().await;
+        guard.as_ref().and_then(|p| p.pid())
+    }
+
+    /// 进程级配置变更是否正处于「推迟生效」状态（等当前 run 结束后重启）。
+    ///
+    /// 用户改了 pi 路径 / 模型 / skill 后，若有 run 正在生成，重启会被推迟以避免
+    /// 打断生成（烧掉已产生的词元）。此前这段时间 UI 无任何提示，用户以为改了没生效
+    /// （评审 3.8）；现在把它暴露出来，前端可在设置保存后提示「将在当前任务结束后生效」。
+    pub fn restart_pending(&self) -> bool {
+        self.pending_restart.load(Ordering::SeqCst)
+    }
+
+    /// 手动重启常驻进程（进程健康指示的「一键重启」）。
+    ///
+    /// 有正在执行的 run 时拒绝重启（与 request_restart 同守卫）：kill 会以 rpc_exited
+    /// 中断当前 run、记 failed 且已产生的词元作废，代价太大。
+    /// 返回是否真的执行了重启（false = 因有 run 在跑而拒绝）。
+    pub async fn restart_now(&self) -> bool {
+        if self.has_running_run().await {
+            log::info!("agent manual restart skipped: a run is in progress");
+            return false;
+        }
+        self.kill_now().await;
+        true
     }
 }
 
@@ -548,6 +678,9 @@ pub fn resolve_agent_binary(config: &AgentConfig) -> Result<String, String> {
 /// 一个存活（或待清理）的 RPC 进程句柄。
 struct RpcProcess {
     _child: tokio::process::Child,
+    /// Windows 生命周期域（JobObject 句柄）；Unix 侧靠 process_group 击杀整树，无需它。
+    #[cfg(windows)]
+    _scope: Option<ProcessScope>,
     stdin: tokio::sync::Mutex<tokio::process::ChildStdin>,
     pending: Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     next_id: Arc<AtomicU64>,
@@ -557,6 +690,14 @@ struct RpcProcess {
 }
 
 impl RpcProcess {
+    /// 进程 pid（进程已退出时 tokio 仍返回上次的 id，故与 dead 标记一起判定）。
+    fn pid(&self) -> Option<u32> {
+        if self.dead.load(Ordering::SeqCst) {
+            return None;
+        }
+        self._child.id()
+    }
+
     /// 发送一条命令并等待响应（带超时）。
     async fn command(&self, mut obj: Value) -> Result<Value, String> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst).to_string();
@@ -623,6 +764,40 @@ mod tests {
             assert_eq!(normalize_path(r"C:\Data\Sessions\ws-1.jsonl"), "c:/data/sessions/ws-1.jsonl");
             assert_eq!(normalize_path(r"E:\a\b"), "e:/a/b");
         }
+    }
+
+    /// JobObject 生命周期域：句柄释放时作业内进程应被内核终止。
+    ///
+    /// 这段是本次改动里唯一的 unsafe FFI，且失败是静默的（日志 warn 后降级），
+    /// 必须有运行时验证——否则「纳管失败」与「纳管成功但标志无效」都无人察觉。
+    #[cfg(windows)]
+    #[test]
+    fn process_scope_terminates_child_on_drop() {
+        use std::process::{Command, Stdio};
+        // `cmd /C pause` 等一次按键：stdin 管道保持打开且从不写入 → 进程会一直阻塞，
+        // 用它当「不会自己退出」的探针，避免依赖 sleep 时长（测试确定性与耗时都更好）。
+        let mut child = Command::new("cmd")
+            .args(["/C", "pause"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn cmd /C pause");
+        let pid = child.id();
+
+        let scope = ProcessScope::attach(pid).expect("JobObject 纳管应成功");
+        drop(scope); // 关闭句柄 → JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 生效
+
+        // 子进程应被终止；若纳管/标志无效，pause 会一直阻塞到超时，测试失败
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            let _ = tx.send(());
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_secs(5)).is_ok(),
+            "JobObject 句柄关闭后，作业内的子进程应被内核终止"
+        );
     }
 
     fn model(provider: &str, id: &str, name: Option<&str>) -> RpcAvailableModel {
