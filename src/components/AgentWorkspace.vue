@@ -147,6 +147,7 @@ function switchSession(key: string) {
   // 切回会话时由 loadChat 从 runs 推导恢复停止按钮——各会话独立启停，互不误杀
   activeKey.value = key
   stopPolling()
+  discardPendingRpcEvents()
   submittedRunId.value = null
   cancelling.value = false
   liveMessages.value = []
@@ -254,6 +255,7 @@ function startNewSession() {
   runs.value = []
   liveMessages.value = []
   historySnapshot.value = []
+  discardPendingRpcEvents()
   submittedRunId.value = null
   cancelling.value = false
   void loadChat()
@@ -617,6 +619,13 @@ const displayedMessages = computed(() =>
     : messages.value,
 )
 
+/** 该消息是否属于流式实时内容（仍在增长的 live 消息）：流式 Markdown 走
+ *  noCache 渲染——内容每个合帧批次都变，写缓存只会以内容前缀形式冲刷掉
+ *  列表/详情等静态场景的缓存条目（FIFO 100 条撑不过一次长输出的 delta 数）。 */
+function isLiveMessage(msg: AgentChatMessage): boolean {
+  return liveMessages.value.indexOf(msg) >= 0
+}
+
 /** 当前流式 assistant 消息（没有则创建一条）。 */
 function liveAssistant(): AgentChatMessage {
   let cur = liveMessages.value[liveMessages.value.length - 1]
@@ -627,8 +636,10 @@ function liveAssistant(): AgentChatMessage {
   return cur
 }
 
-/** 处理 pi RPC 事件流（打字机文本 / 工具状态 / 流式 bash 输出）。 */
-function handleRpcStream(payload: { session_key: string; run_id: number; event: string }) {
+/** 处理单个 pi RPC 流事件（打字机文本 / 工具状态 / 流式 bash 输出）。
+ *  事件原序逐个处理，处理逻辑与合帧前完全一致；事件含 session_key，
+ *  flush 时逐个重新校验，切会话后旧事件不会写入新会话的流式消息。 */
+function processRpcEvent(payload: { session_key: string; run_id: number; event: string }) {
   if (payload.session_key !== activeKey.value) return
   let ev: Record<string, unknown>
   try {
@@ -685,8 +696,50 @@ function handleRpcStream(payload: { session_key: string; run_id: number; event: 
   }
 }
 
-// 流式期间跟随滚动（仅当用户停留在底部附近时）
-watch(liveMessages, () => scrollToBottomIfNear(), { deep: true })
+// ── 流式事件合帧：pi 的 delta 事件可达每秒数十上百条，逐条触发渲染会让主线程
+// 饱和（每 delta 一次全量 Markdown 重解析 + 整组件重渲染）。事件先入队，
+// 50ms 窗口内合并成一批处理，渲染次数从 delta 频率降到 ≤20 次/秒。
+// 处理逻辑零改动（processRpcEvent = 原逐条处理函数），批末统一跟随滚动
+// （替代原 deep watch —— 原地追加 text 只有深度遍历才能监听到，代价是每个
+// delta 遍历整棵流式消息树；现在每批只滚一次）。
+const RPC_FLUSH_MS = 50
+let pendingRpcEvents: { session_key: string; run_id: number; event: string }[] = []
+let rpcFlushTimer: ReturnType<typeof setTimeout> | undefined
+
+/** 丢弃未处理的流式事件（切会话 / run 终态 / 卸载时调用）：
+ *  终态后 UI 以 loadChat 全量校准为准，残留的流式 delta 已无意义；
+ *  特别是 run 终态（onRunFinished）可能先于队列 flush 到达，不清队列
+ *  会让旧 delta 在清空 liveMessages 后又重建出幽灵流式消息。 */
+function discardPendingRpcEvents() {
+  if (rpcFlushTimer !== undefined) {
+    clearTimeout(rpcFlushTimer)
+    rpcFlushTimer = undefined
+  }
+  pendingRpcEvents = []
+}
+
+/** 事件监听回调：入队并调度合帧 flush。 */
+function handleRpcStream(payload: { session_key: string; run_id: number; event: string }) {
+  pendingRpcEvents.push(payload)
+  if (rpcFlushTimer === undefined) {
+    rpcFlushTimer = setTimeout(flushRpcEvents, RPC_FLUSH_MS)
+  }
+}
+
+/** 合帧 flush：按到达顺序处理整批事件（单个事件异常不中断后续），批末跟随滚动。 */
+function flushRpcEvents() {
+  rpcFlushTimer = undefined
+  const batch = pendingRpcEvents
+  pendingRpcEvents = []
+  for (const payload of batch) {
+    try {
+      processRpcEvent(payload)
+    } catch {
+      // 单事件处理异常不丢弃同批后续事件（原逐条处理下异常只影响该事件）
+    }
+  }
+  scrollToBottomIfNear()
+}
 
 // ── 引用菜单状态 ──
 const showSkillMenu = ref(false)
@@ -747,12 +800,17 @@ function removeEntity(index: number) {
   entities.value.splice(index, 1)
 }
 
+// 实体 id → 目录项索引（chip 可读名查询 O(1)化：流式期间渲染函数每批重跑，
+// 原逐 chip 的 sources/releases 线性扫描会随目录规模线性放大）
+const sourceById = computed(() => new Map(sources.value.map((s) => [s.id, s])))
+const releaseById = computed(() => new Map(releases.value.map((r) => [r.id, r])))
+
 function entityLabel(e: AgentEntityRefSeed): string {
   if (e.kind === 'source') {
-    const s = sources.value.find((x) => x.id === e.id)
+    const s = sourceById.value.get(e.id)
     return s ? `${s.source_type} | ${sourceDisplayName(s)}` : `source #${e.id}`
   }
-  const r = releases.value.find((x) => x.id === e.id)
+  const r = releaseById.value.get(e.id)
   return r ? releaseDisplayName(r) : `release #${e.id}`
 }
 
@@ -896,7 +954,7 @@ async function loadModels() {
   }
 }
 
-// ── 轮询：提交后增量拉取消息，直到运行结束事件 ──
+// ── 轮询：run 进行期间的兜底刷新（RPC 流事件丢帧 / agent_settled 不达时 UI 仍能收敛）──
 function startPolling() {
   stopPolling()
   pollDeadline = Date.now() + 120_000 // 兜底：120s 后强制停止
@@ -905,8 +963,14 @@ function startPolling() {
       stopPolling()
       return
     }
-    // 轮询期顺带刷新全局队列：排队 run 开始/结束时侧栏状态点及时更新（轻量 SQL）
-    await Promise.all([loadMessages(), loadQueue()])
+    // 全量消息拉取只在流式内容尚未接管显示时进行（切回正在运行的会话、
+    // delta 首达前，它是 pi 已落盘进度的唯一可见通道）；流式接管后
+    // displayedMessages 走快照+流式，全量读盘结果不进展示链，跳过以省下
+    // MB 级读盘 + 全量 JSONL 解析 + IPC 序列化。队列状态是轻量 SQL，
+    // 保留刷新（侧栏状态点 / 排队横幅）。
+    const tasks: Promise<void>[] = [loadQueue()]
+    if (liveMessages.value.length === 0) tasks.push(loadMessages())
+    await Promise.all(tasks)
     scrollToBottomIfNear()
   }, 1500)
   // 进程指示灯：轮询周期内顺带刷新（run 开始/结束时进程状态会变，重启标记也会被消费）
@@ -1012,6 +1076,7 @@ async function handleSubmit() {
     showToast(String(e))
     // 提交被拒（未创建 run，不会有 AgentRunFinished 事件兜底）：
     // 清掉本地回显与历史快照，避免失败消息永久滞留成「幽灵消息」
+    discardPendingRpcEvents()
     liveMessages.value = []
     historySnapshot.value = []
   } finally {
@@ -1034,7 +1099,7 @@ async function handleCancel() {
 }
 
 // ── 消息渲染辅助 ──
-// 时间窗对位（fallback）：runs（倒序）按顺序对位 user 消息。runForMessage 优先用
+// 时间窗对位（fallback）：runs（倒序）按顺序对位 user 消息。messageDecorations 优先用
 // 后端直连的 msg.run_id（list_agent_messages 按创建顺序填好，见其命令注释），
 // 此处仅兜底旧数据 / 后端异常未填充的场景。
 const userRunMap = computed<Map<number, AgentRunSummary>>(() => {
@@ -1057,18 +1122,33 @@ const userRunMap = computed<Map<number, AgentRunSummary>>(() => {
   return map
 })
 
-/** 某条 user 消息对应的 run：优先 run_id 直连（后端 list_agent_messages 已按创建
- * 顺序对位并带 started_at 邻近校验——run 未产生消息的路径如排队中取消/派发前失败
- * 已被跳过，评审 1.5 + 复核）。直连命中后仍校验 started_at 与消息时间邻近
- * （防御旧版本绑定/后端异常），不通过落回 60 秒时间窗兜底——双层拒绝错挂。 */
-function runForMessage(idx: number): AgentRunSummary | undefined {
-  const msg = messages.value[idx]
-  if (msg?.run_id) {
-    const byId = runs.value.find((r) => r.id === msg.run_id)
-    if (byId && byId.started_at && timeAdjacent(byId.started_at, msg.timestamp)) return byId
-  }
-  return userRunMap.value.get(idx)
-}
+/** user 消息渲染装饰（预计算）：run 对位、引用实体、主/折叠文本拆分。
+ *  流式期间渲染函数每批重跑，模板内联函数（runs.find + Date 解析 + JSON.parse
+ *  + 正则拆分）会在每条 user 消息上重复十余次——并入 computed 每批每条只算一次
+ *  （同侧栏 sessionsWithState 的预计算先例）。对位口径与原内联函数完全一致：
+ *  run_id 直连（60s 邻近校验）→ 时间窗兜底。 */
+const messageDecorations = computed(() => {
+  const runById = new Map(runs.value.map((r) => [r.id, r]))
+  const fallback = userRunMap.value
+  return displayedMessages.value.map((msg, idx) => {
+    if (msg.role !== 'user') return null
+    // run_id 直连（后端 list_agent_messages 已按创建顺序对位；直连命中后仍
+    // 二次校验时间邻近，防御旧版本绑定/后端异常），不通过落回时间窗兜底
+    let run: AgentRunSummary | undefined
+    if (msg.run_id) {
+      const byId = runById.get(msg.run_id)
+      if (byId && byId.started_at && timeAdjacent(byId.started_at, msg.timestamp)) run = byId
+    }
+    if (!run) run = fallback.get(idx)
+    const split = splitUserBlocks(msg.blocks)
+    return {
+      run,
+      entities: run ? runEntities(run) : [],
+      main: split.main,
+      folded: split.folded,
+    }
+  })
+})
 
 /** 两个 RFC3339 时间是否在 60 秒窗内（run_id 直连与时间窗兜底的共同校验）。 */
 function timeAdjacent(a: string, b: string): boolean {
@@ -1430,7 +1510,10 @@ async function onRunFinished(payload: AgentRunFinished) {
   stopPolling()
   cancelling.value = false
   // 兜底清理：正常路径 agent_settled 已清；abort / 超时 / 模型错误等
-  // 场景下 agent_settled 可能不达，run 终态事件统一收尾
+  // 场景下 agent_settled 可能不达，run 终态事件统一收尾。
+  // 同时丢弃合帧队列：终态可能先于队列 flush 到达，残留 delta 会在
+  // 清空后重建出幽灵流式消息（loadChat 全量校准才是权威）。
+  discardPendingRpcEvents()
   liveMessages.value = []
   historySnapshot.value = []
   // run 收尾：进程可能刚重启过、推迟标记也刚被消费，指示灯需同步
@@ -1615,6 +1698,7 @@ watch(
 
 onUnmounted(() => {
   stopPolling()
+  discardPendingRpcEvents()
   unlistenRunFinished?.()
   unlistenRpcStream?.()
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
@@ -1788,8 +1872,8 @@ watch(
             >
               <!-- user 消息：右对齐气泡 -->
               <div v-if="msg.role === 'user'" class="agent-ws-bubble agent-ws-bubble-user">
-                <div v-if="runForMessage(idx)" class="agent-ws-bubble-meta">
-                  <span v-for="e in runEntities(runForMessage(idx))" :key="`${e.kind}:${e.id}`" class="agent-ws-chip">
+                <div v-if="messageDecorations[idx]?.run" class="agent-ws-bubble-meta">
+                  <span v-for="e in messageDecorations[idx]?.entities ?? []" :key="`${e.kind}:${e.id}`" class="agent-ws-chip">
                     <span
                       class="agent-ws-chip-text"
                       @mouseenter="handleChipEnter($event, `${entityKindLabel(e.kind)} · ${entityLabel(e)}`)"
@@ -1797,40 +1881,40 @@ watch(
                       @mouseleave="hideChipTooltip"
                     >{{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}</span>
                   </span>
-                  <span v-if="runForMessage(idx)?.skill_path" class="agent-ws-skill-badge">@{{ skillShortName(runForMessage(idx)!.skill_path ?? '') }}</span>
+                  <span v-if="messageDecorations[idx]?.run?.skill_path" class="agent-ws-skill-badge">@{{ skillShortName(messageDecorations[idx]?.run?.skill_path ?? '') }}</span>
                 </div>
-                <p class="agent-ws-msg-text">{{ splitUserBlocks(msg.blocks).main || '…' }}</p>
-                <details v-if="splitUserBlocks(msg.blocks).folded" class="agent-ws-fold agent-ws-fold-prompt">
+                <p class="agent-ws-msg-text">{{ messageDecorations[idx]?.main || '…' }}</p>
+                <details v-if="messageDecorations[idx]?.folded" class="agent-ws-fold agent-ws-fold-prompt">
                   <summary>{{ t('agent.prompt_full') }}</summary>
-                  <pre class="agent-ws-fold-body">{{ splitUserBlocks(msg.blocks).folded }}</pre>
+                  <pre class="agent-ws-fold-body">{{ messageDecorations[idx]?.folded }}</pre>
                 </details>
                 <!-- 非成功终态内联备注 + 重试入口：这轮为什么挂了、怎么再来一次，
                      都在对话流里可追溯（横幅只显示最近一次 run） -->
                 <div
-                  v-if="canRetry(runForMessage(idx))"
+                  v-if="canRetry(messageDecorations[idx]?.run)"
                   class="agent-ws-run-failed"
                   :class="{
-                    'run-cancelled': runForMessage(idx)!.status === 'cancelled',
-                    'run-unknown': runForMessage(idx)!.status === 'unknown',
+                    'run-cancelled': messageDecorations[idx]?.run?.status === 'cancelled',
+                    'run-unknown': messageDecorations[idx]?.run?.status === 'unknown',
                   }"
                 >
-                  <span class="agent-ws-run-failed-status">{{ runStatusLabel(runForMessage(idx)!.status) }}</span>
-                  <span class="agent-ws-run-failed-text" :title="runFailedNote(runForMessage(idx)) ?? ''">
-                    {{ runFailedNote(runForMessage(idx)) || runStatusLabel(runForMessage(idx)!.status) }}
+                  <span class="agent-ws-run-failed-status">{{ runStatusLabel(messageDecorations[idx]!.run!.status) }}</span>
+                  <span class="agent-ws-run-failed-text" :title="runFailedNote(messageDecorations[idx]?.run) ?? ''">
+                    {{ runFailedNote(messageDecorations[idx]?.run) || runStatusLabel(messageDecorations[idx]!.run!.status) }}
                   </span>
                   <!-- 结果未知（终态事件丢失）：与真失败区分——任务可能已经跑完，
                        直接重跑会重复烧词元、重复副作用（评审 3.1） -->
-                  <span v-if="runForMessage(idx)!.status === 'unknown'" class="agent-ws-run-advice">{{ t('agent.unknown_advice') }}</span>
+                  <span v-if="messageDecorations[idx]!.run!.status === 'unknown'" class="agent-ws-run-advice">{{ t('agent.unknown_advice') }}</span>
                   <span class="agent-ws-run-failed-actions">
-                    <button class="btn-sm" :title="t('agent.retry')" @click="handleRetry(runForMessage(idx)!)">
+                    <button class="btn-sm" :title="t('agent.retry')" @click="handleRetry(messageDecorations[idx]!.run!)">
                       {{ t('agent.retry') }}
                     </button>
-                    <button class="btn-sm" :title="t('agent.retry_edit')" @click="handleRetryEdit(runForMessage(idx)!)">
+                    <button class="btn-sm" :title="t('agent.retry_edit')" @click="handleRetryEdit(messageDecorations[idx]!.run!)">
                       {{ t('agent.retry_edit') }}
                     </button>
                   </span>
                   <!-- 超时引导（评审 3.6）：行动建议 + 就地调时长（timeout 每次调度重读，无需重启进程） -->
-                  <template v-if="isTimeoutRun(runForMessage(idx))">
+                  <template v-if="isTimeoutRun(messageDecorations[idx]?.run)">
                     <span class="agent-ws-run-advice">{{ t('agent.timeout_advice') }}</span>
                     <span v-if="!adjustingTimeout" class="agent-ws-run-advice-actions">
                       <button class="btn-sm" :title="t('agent.timeout_adjust')" @click="adjustingTimeout = true; timeoutInput = String(timeoutSecs)">
@@ -1858,7 +1942,7 @@ watch(
               <div v-else-if="msg.role === 'assistant'" class="agent-ws-bubble agent-ws-bubble-assistant">
                 <div v-if="msg.model" class="agent-ws-bubble-model">{{ msg.model }}</div>
                 <template v-for="(block, bi) in msg.blocks" :key="bi">
-                  <MarkdownContent v-if="block.kind === 'text'" :content="block.kind === 'text' ? block.text : ''" />
+                  <MarkdownContent v-if="block.kind === 'text'" :content="block.kind === 'text' ? block.text : ''" :no-cache="isLiveMessage(msg)" />
                   <details v-else-if="block.kind === 'thinking'" class="agent-ws-fold agent-ws-fold-thinking">
                     <summary>{{ t('agent.thinking') }}</summary>
                     <pre class="agent-ws-fold-body">{{ block.kind === 'thinking' ? block.text : '' }}</pre>

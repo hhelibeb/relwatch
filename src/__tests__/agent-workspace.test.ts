@@ -72,6 +72,7 @@ vi.mock('../utils', async (importOriginal) => {
 })
 
 import AgentWorkspace from '../components/AgentWorkspace.vue'
+
 import {
   listAgentMessages,
   listAgentRuns,
@@ -90,6 +91,13 @@ import { getReleases } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
 import { ShowToastKey } from '../injection-keys'
 import { InvokeI18nError } from '../api/client'
+
+/** 等待流式合帧窗口（组件内 50ms）刷完：RPC 事件入队后须等真实 timer
+ *  触发 flush，flushPromises 只清微任务等不到 50ms 定时器。 */
+async function flushRpcFrame() {
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  await flushPromises()
+}
 
 /** Teleport 到 body 的浮层（rpc 状态菜单）不在 wrapper 子树内，须以 document.body 为根查找。 */
 function findTeleported(selector: string): DOMWrapper<Element> {
@@ -299,14 +307,14 @@ describe('AgentWorkspace 冒烟', () => {
       const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
       handler?.({ payload: { session_key: 'test-session', run_id: 1, event } })
     }
-    // 流式：同轮内容以 text_delta 到达
+    // 流式：同轮内容以 text_delta 到达（合帧窗口内合并处理）
     emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '总结：这是 v1.0.0 版本' } }))
-    await flushPromises()
+    await flushRpcFrame()
     const count = wrapper.text().split('总结：这是 v1.0.0 版本').length - 1
     expect(count).toBe(1) // 流式优先，全量未叠加 → 只出现一次
     // 终态：回落全量校准，仍不重复
     emitRpc(JSON.stringify({ type: 'agent_settled' }))
-    await flushPromises()
+    await flushRpcFrame()
     expect(wrapper.text().split('总结：这是 v1.0.0 版本').length - 1).toBe(1)
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
@@ -520,16 +528,96 @@ describe('AgentWorkspace 冒烟', () => {
     emitRpc(
       JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '流式补充' } }),
     )
-    await flushPromises()
+    await flushRpcFrame()
     // 历史（JSONL 全量）+ 本地回显 user + 流式内容同屏可见
     expect(wrapper.text()).toContain('帮我总结这个版本')
     expect(wrapper.text()).toContain('测试指令')
     expect(wrapper.text()).toContain('流式补充')
     // 终态：清流式，回落全量校准（JSONL 无流式内容）
     emitRpc(JSON.stringify({ type: 'agent_settled' }))
-    await flushPromises()
+    await flushRpcFrame()
     expect(wrapper.text()).not.toContain('流式补充')
     expect(wrapper.text()).toContain('帮我总结这个版本')
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('同一合帧窗口内的多个 delta 顺序拼接，一次 flush 后完整呈现', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const emitRpc = (event: string) => {
+      const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
+      handler?.({ payload: { session_key: 'test-session', run_id: 1, event } })
+    }
+    // 三个 delta 在同一 50ms 合帧窗口内先后到达：入队不逐条渲染，
+    // flush 时按到达顺序拼接进同一 text block
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '第一' } }))
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '，第二' } }))
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '段。' } }))
+    await flushRpcFrame()
+    expect(wrapper.text()).toContain('第一，第二段。')
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('run 终态先于合帧窗口到达：残留流式事件被丢弃，不产生幽灵流式消息', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    // 会话内有活跃 run：onRunFinished 才会走终态收尾路径
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ id: 22, status: 'running', error: null, started_at: '2025-01-01T00:00:00.000Z' }),
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    // delta 入队（尚未 flush），run 终态事件先到达（终态兑底路径清空流式）
+    const emitRpc = (event: string) => {
+      const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
+      handler?.({ payload: { session_key: 'test-session', run_id: 22, event } })
+    }
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '幽灵文本' } }))
+    const runFinished = rpcHandlers.get('agent-run-finished') as ((e: { payload: unknown }) => void) | undefined
+    runFinished?.({
+      payload: { run_id: 22, session_key: 'test-session', status: 'success', message: null },
+    })
+    await flushPromises()
+    await flushRpcFrame()
+    // 终态以 loadChat 全量校准为准：队列残留的 delta 被一并丢弃，
+    // 不在清空 liveMessages 后又重建出幽灵流式消息
+    expect(wrapper.text()).not.toContain('幽灵文本')
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('切会话丢弃未处理的流式事件：旧会话 delta 不写入新会话', async () => {
+    const base = Date.now()
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([
+        { key: 'session-a', title: 'a', updatedAt: base },
+        { key: 'session-b', title: 'b', updatedAt: base - 1000 },
+      ]),
+    )
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    // 旧会话（session-a，激活中）的 delta 入队后立即切到 session-b
+    const emitRpc = (event: string) => {
+      const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
+      handler?.({ payload: { session_key: 'session-a', run_id: 1, event } })
+    }
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '旧会话流式文本' } }))
+    const itemB = wrapper.findAll('.agent-ws-session-item').find((i) => i.text().includes('b'))
+    await itemB!.trigger('click')
+    await flushPromises()
+    await flushRpcFrame()
+    // 新会话消息区不出现旧会话的流式文本（事件被丢弃，不复活）
+    expect(wrapper.text()).not.toContain('旧会话流式文本')
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })

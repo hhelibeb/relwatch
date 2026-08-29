@@ -713,7 +713,7 @@ describe('App.vue — Tauri 事件处理', () => {
     expect(wrapper.findComponent(LogTabStub).props('refreshKey')).toBe(refreshKeyBefore + 1)
   })
 
-  it('release-state-changed 触发 releases 刷新', async () => {
+  it('release-state-changed 触发 releases 刷新（50ms 合帧窗口内合并）', async () => {
     await mountRealApp()
 
     vi.mocked(getReleases).mockClear()
@@ -722,8 +722,31 @@ describe('App.vue — Tauri 事件处理', () => {
     expect(stateCall).toBeDefined()
 
     await stateCall![1]({ payload: {} })
+    // 刷新走 50ms 合帧调度器（与组件 emit('update') 双路径合并成一次重拉），
+    // flushPromises 只清微任务等不到定时器，须等真实 timer
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    await flushPromises()
 
-    expect(getReleases).toHaveBeenCalled()
+    expect(getReleases).toHaveBeenCalledTimes(1)
+  })
+
+  it('release-state-changed 与组件 emit(update) 双路径到达时合并成一次重拉', async () => {
+    const wrapper = await mountRealApp()
+
+    vi.mocked(getReleases).mockClear()
+
+    const stateCall = vi.mocked(mockListen).mock.calls.find(c => c[0] === 'release-state-changed')
+    expect(stateCall).toBeDefined()
+    // 同一次用户操作（如标记已读）：后端命令成功 → 组件 emit('update') +
+    // 后端 emit release-state-changed，两条路径前后到达
+    const stub = wrapper.findComponent(ReleaseTabStub)
+    stub.vm.$emit('update')
+    await stateCall![1]({ payload: {} })
+    await new Promise((resolve) => setTimeout(resolve, 60))
+    await flushPromises()
+
+    // 双路径合帧去重：50ms 窗口内只重拉一次全量（此前是两次）
+    expect(getReleases).toHaveBeenCalledTimes(1)
   })
 
   it('source-auto-disabled 显示 Toast 并刷新数据（真实文案）', async () => {

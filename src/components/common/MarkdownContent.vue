@@ -17,6 +17,25 @@ const htmlCache = new Map<string, string>()
 function renderMarkdownHtml(content: string): string {
   const cached = htmlCache.get(content)
   if (cached !== undefined) return cached
+  const sanitized = parseAndSanitize(content)
+  htmlCache.set(content, sanitized)
+  // FIFO 淘汰最旧条目，防止缓存无限增长
+  if (htmlCache.size > CACHE_MAX) {
+    const oldest = htmlCache.keys().next().value
+    if (oldest !== undefined) htmlCache.delete(oldest)
+  }
+  return sanitized
+}
+
+/** 流式渲染路径：不读不写缓存。流式期间内容每个合帧批次都不同，
+ *  写入只会以「内容前缀」形式灌满并冲刷掉列表/详情等静态场景的缓存
+ *  （FIFO 100 条撑不过一次长输出的 delta 数），读则永远 miss。 */
+function renderMarkdownHtmlUncached(content: string): string {
+  return parseAndSanitize(content)
+}
+
+/** parse + 清洗（缓存读写之外的可复用部分）。 */
+function parseAndSanitize(content: string): string {
   const raw = marked.parse(content, { async: false }) as string
   // DOMPurify 清洗：移除 script/事件处理器等危险内容，保留常见 Markdown 渲染产物
   const sanitized = DOMPurify.sanitize(raw, {
@@ -27,12 +46,6 @@ function renderMarkdownHtml(content: string): string {
     ],
     ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'target', 'rel'],
   })
-  htmlCache.set(content, sanitized)
-  // FIFO 淘汰最旧条目，防止缓存无限增长
-  if (htmlCache.size > CACHE_MAX) {
-    const oldest = htmlCache.keys().next().value
-    if (oldest !== undefined) htmlCache.delete(oldest)
-  }
   return sanitized
 }
 </script>
@@ -40,11 +53,11 @@ function renderMarkdownHtml(content: string): string {
 <script setup lang="ts">
 import { computed } from 'vue'
 
-const props = defineProps<{ content: string | null }>()
+const props = defineProps<{ content: string | null; noCache?: boolean }>()
 
 const html = computed(() => {
   if (!props.content) return ''
-  return renderMarkdownHtml(props.content)
+  return props.noCache ? renderMarkdownHtmlUncached(props.content) : renderMarkdownHtml(props.content)
 })
 </script>
 

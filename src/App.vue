@@ -406,6 +406,31 @@ async function loadReleases() {
     showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
   }
 }
+
+// ── 刷新合帧：组件 emit('update')（操作成功后就近刷新）与后端 release-state-changed
+// 事件（托盘角标主消费，前端列表顺手监听）会在同一次操作中先后到达，双路径各拉
+// 一次全量（200 行含 body 全文列）。50ms 窗口内合并成一次实际重拉，
+// 首次加载/轮询完成等单路径刷新不受影响（直接调 loadReleases）。──
+let releasesRefreshTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleLoadReleases() {
+  if (releasesRefreshTimer !== null) return
+  releasesRefreshTimer = setTimeout(() => {
+    releasesRefreshTimer = null
+    void loadReleases()
+  }, 50)
+}
+
+/** 日志刷新合帧：refreshLogs 本身极轻（logRefreshKey++），但双路径到达两个 tick
+ *  会各触发一次 LogTab 重拉，同样 50ms 合并。 */
+let logsRefreshTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRefreshLogs() {
+  if (logsRefreshTimer !== null) return
+  logsRefreshTimer = setTimeout(() => {
+    logsRefreshTimer = null
+    refreshLogs()
+  }, 50)
+}
+
 async function loadSettings() {
   try {
     settings.value = await getSettings()
@@ -559,8 +584,8 @@ onMounted(async () => {
   unlisteners.push(pollUnlisten)
 
   const stateUnlisten = await events.releaseStateChanged.listen(() => {
-    loadReleases()
-    refreshLogs()
+    scheduleLoadReleases()
+    scheduleRefreshLogs()
   })
   unlisteners.push(stateUnlisten)
 
@@ -581,6 +606,15 @@ onUnmounted(() => {
   if (panelWidthSaveTimer) {
     clearTimeout(panelWidthSaveTimer)
     panelWidthSaveTimer = null
+  }
+  // 刷新合帧定时器（同上，防卸载后回调修改已销毁组件的 ref）
+  if (releasesRefreshTimer !== null) {
+    clearTimeout(releasesRefreshTimer)
+    releasesRefreshTimer = null
+  }
+  if (logsRefreshTimer !== null) {
+    clearTimeout(logsRefreshTimer)
+    logsRefreshTimer = null
   }
   // 清理定时器与媒体监听，避免卸载后回调修改已销毁组件的 ref（HMR/测试场景）
   if (countdownTimer) {
@@ -641,12 +675,12 @@ onUnmounted(() => {
 
     <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
       <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts" :show-source-type-icons="settings.show_source_type_icons"
-        @update="loadSources(); loadReleases(); refreshLogs()"
+        @update="loadSources(); scheduleLoadReleases(); scheduleRefreshLogs()"
         @check-result="handleSourceCheckResult"
         @check-busy="sourceChecking = $event"
         @open-releases="openSourceReleases"
         @open-unread-releases="openSourceUnreadReleases" />
-      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="loadReleases(); refreshLogs()" />
+      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
       <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
       <SettingsTab v-show="activeTab === 'settings'" :settings="settings"
         @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"

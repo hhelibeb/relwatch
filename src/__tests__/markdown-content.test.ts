@@ -81,4 +81,22 @@ describe('MarkdownContent', () => {
     expect(html).toContain('<blockquote>')
     expect(html).toContain('这是引用')
   })
+
+  it('noCache（流式路径）渲染结果与缓存路径一致', () => {
+    const md = '- 项目一\n- 项目二'
+    const cached = mount(MarkdownContent, { props: { content: md } })
+    const uncached = mount(MarkdownContent, { props: { content: md, noCache: true } })
+    expect(uncached.find('.markdown-body').element.innerHTML).toBe(
+      cached.find('.markdown-body').element.innerHTML,
+    )
+  })
+
+  it('noCache（流式路径）XSS 清洗仍生效', () => {
+    const md = `<script>alert(1)<` + `/script>正常文本`
+    const wrapper = mount(MarkdownContent, { props: { content: md, noCache: true } })
+    const html = wrapper.find('.markdown-body').element.innerHTML
+    expect(html).not.toContain('<script>')
+    expect(html).not.toContain('alert(1)')
+    expect(html).toContain('正常文本')
+  })
 })
