@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-08-29
+
+### Added
+- Agent 会话恢复：索引丢失的会话自动补回侧栏并标记「已恢复」。
+- Agent 消息失败/超时/取消后可「重试 / 编辑后重试」，失败时已生成内容保留。
+- Agent 工作区支持本地文件附件（最多 10 个、总量 20 MB）。
+- 全局队列可视化：侧栏显示运行状态点，被占用时横幅提示并可一键跳转停止。
+- 会话上下文水位提示，接近上限时建议开新会话。
+- 运行历史面板：查看耗时、模型、状态与引用实体，超时可就地调整时长。
+- pi 常驻进程健康指示与一键重启。
+- 会话词元与成本统计。
+- 会话重命名、标题搜索，会话可导出为 Markdown / JSON。
+- 单次提交可临时覆盖模型，提交前预检模型可用性。
+
+### Changed
+- Agent 工作区可靠性加固：消息与运行记录精确关联、同会话并发提交守卫、停止操作优先作用于运行中的任务、Windows 下停止可彻底回收进程树、应用重启遗留的运行不再误判重跑。
+- 中文界面将 token 统一译作「词元」。
+- 标题栏 Agent 开合按钮与「立即检查」之间增加分隔线，避免误触。
+- 调整 README 格式并提升表述清晰度。
+
+### Fixed
+- 静音源的新版本不再点亮托盘红点，静音/取消静音时角标实时刷新。
+
 ## [1.12.0] - 2026-08-22
 
 ### Added
@@ -331,7 +354,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.13.0...HEAD
+[1.13.0]: https://github.com/hhelibeb/relwatch/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/hhelibeb/relwatch/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/hhelibeb/relwatch/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/hhelibeb/relwatch/compare/v1.10.0...v1.11.0
