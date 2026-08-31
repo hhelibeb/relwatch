@@ -891,6 +891,17 @@ fn spawn_terminal(binary: &str, session_path: &str, working_dir: Option<&str>) -
     }
 }
 
+/// 应用内更新安装前调用：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理其子进程）。
+/// 与 `RunEvent::Exit` 的关闭语义一致——更新安装会硬杀主进程（Windows NSIS `exit(0)` /
+/// Linux relaunch），不走 `RunEvent::Exit`，若不提前关闭 pi 会残留。
+/// 仅 Linux/macOS 在 `relaunch()` 前调用本命令；Windows 上安装器接管退出，前端不会执行到。
+#[tauri::command]
+#[specta::specta]
+pub async fn agent_shutdown_for_update(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    state.agent_rpc.shutdown().await;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

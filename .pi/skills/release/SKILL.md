@@ -184,6 +184,22 @@ npm install --package-lock-only
 )
 ```
 
+> ⚠️ **不要在本地跑 `tauri build` 来验证更新产物**：`tauri.conf.json` 的
+> `bundle.createUpdaterArtifacts` 为 `true`，构建时 tauri CLI 必须有签名私钥，
+> 缺 `TAURI_SIGNING_PRIVATE_KEY`（以及有密码时的 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`）
+> 会**直接构建失败**——这是上游设计，不是配置错误。
+> （注意：`.env` 文件对这两个变量无效，只能走真实环境变量。）
+>
+> 两条可行路径：
+> 1. **本地验证打包（需要密钥）**：先注入私钥再构建
+>    ```powershell
+>    $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content .tauri\update.key -Raw
+>    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<密码>"
+>    pnpm run tauri build
+>    ```
+> 2. **不碰密钥** —— 推荐：更新产物（`.sig` / `latest.json`）的验证一律走
+>    **CI 产出的 draft release**，见 Step 9.2。本地只做上面这些检查即可。
+
 ---
 
 ## Step 6：统一提交版本号和 CHANGELOG
@@ -284,6 +300,64 @@ gh api repos/hhelibeb/relwatch/releases --paginate \
 - ✅ `draft` 为 `true`
 - ✅ `tag_name` 是 `v<新版本>`
 - ✅ assets 包含 Windows `.exe/.msi` 和 Linux `.deb`/`.AppImage`
+- ✅ **应用内更新产物（v1.14.0 起）**：assets 包含 `latest.json` 与各平台 `.sig` 签名文件
+  （`RelWatch_<v>_x64-setup.exe.sig` / `RelWatch_<v>_amd64.AppImage.sig` 等；deb 的 `.sig`
+  是否生成以首次带签构建实测为准）。缺 `.sig`/`latest.json` 说明 CI 未注入
+  `TAURI_SIGNING_PRIVATE_KEY*` secrets 或签名步骤被跳过（构建日志会有告警），判发布不合格。
+- ✅ **latest.json 双平台断言**：下载 latest.json 并断言 `platforms` 同时含
+  `windows-x86_64`（`-nsis`）与 `linux-x86_64`（`-appimage` / `-deb`）变体——
+  tauri-action 的 latest.json 上传是「读旧 → 叠加本 job → 删旧传新」的非原子读改写，
+  windows/ubuntu 双 job 并发时后写覆盖先写会产出单平台 latest.json，且发布"看起来"成功
+  （另一平台用户永远收不到更新）：
+
+  ```bash
+  gh api repos/hhelibeb/relwatch/releases --paginate --jq '.[] | select(.tag_name=="v<新版本>") | .assets[] | select(.name=="latest.json") | .url' \
+    | head -1 | xargs curl -sL | tee /tmp/latest.json
+  # 断言：windows-x86_64 与 linux-x86_64 同时存在，缺任一 → 立即手动补传/重跑，不得发布
+  node -e "const p=Object.keys(require('/tmp/latest.json').platforms); if(!p.some(k=>k.startsWith('windows-x86_64'))||!p.some(k=>k.startsWith('linux-x86_64'))){console.error('FATAL: platforms 缺平台:',p);process.exit(1)};console.log('platforms OK:',p.join(', '))"
+  ```
+
+  > ⚠️ **这条断言只做检测、不做消除**：tauri-action 的 latest.json 上传是
+  > 「读旧 → 叠加本 job → 删旧传新」的非原子读改写，windows / ubuntu 两个 matrix job
+  > 并发时后写覆盖先写，被覆盖那半份内容已随旧 asset 删除而丢失，重跑 workflow 之前
+  > 只能手工拼回。**触发后按以下步骤补传**（从 release 上现存的 `.sig` + 安装包重建）：
+
+  ```bash
+  VERSION=<新版本>
+  TMP=$(mktemp -d) && cd "$TMP"
+
+  # 1. 拉下现有 latest.json 与全部 .sig
+  gh release download "v$VERSION" -p 'latest.json' -p '*.sig'
+
+  # 2. 补缺失平台（已有的不动）：signature 取同名 .sig，url 取安装包下载直链
+  cat > fix-latest-json.cjs <<'EOF'
+  const fs = require('fs')
+  const { execSync } = require('child_process')
+  const v = process.env.VERSION
+  const j = JSON.parse(fs.readFileSync('latest.json', 'utf8'))
+  if (!j.platforms || typeof j.platforms !== 'object') j.platforms = {}
+  const assets = JSON.parse(execSync(`gh release view v${v} --json assets`).toString()).assets
+  const want = { 'windows-x86_64': '_x64-setup.exe', 'linux-x86_64': '_amd64.AppImage' }
+  for (const [platform, suffix] of Object.entries(want)) {
+    if (j.platforms?.[platform]) continue
+    const name = `RelWatch_${v}${suffix}`
+    const asset = assets.find(a => a.name === name)
+    const sigFile = `${name}.sig`
+    if (!asset) { console.error(`FATAL: 缺安装包 ${name}`); process.exit(1) }
+    if (!fs.existsSync(sigFile)) { console.error(`FATAL: 缺签名 ${sigFile}`); process.exit(1) }
+    j.platforms[platform] = {
+      signature: fs.readFileSync(sigFile, 'utf8').trim(),
+      url: asset.browser_download_url,
+    }
+  }
+  fs.writeFileSync('latest.json', JSON.stringify(j, null, 2))
+  console.log('platforms:', Object.keys(j.platforms).join(', '))
+  EOF
+  VERSION="$VERSION" node fix-latest-json.cjs
+
+  # 3. 覆盖上传（--clobber 替换同名 asset），然后重跑上面的双平台断言回归
+  gh release upload "v$VERSION" latest.json --clobber
+  ```
 - ⏸️ body 目前是 workflow 的固定文本 `请查看附件下载对应平台的安装包。`，后续会被替换
 
 ---
@@ -385,6 +459,20 @@ gh release edit v<新版本> \
 
 ## Step 12：发布并发布后检查
 
+> **应用内更新时序（v1.14.0 起）**：`gh release edit --draft=false` 发布后，
+> `releases/latest` 才会指向该版本，updater endpoint
+> （`releases/latest/download/latest.json`）随之生效。draft 期间应用内「检查更新」
+> 的表现**分两种情况**，别用错参照：
+>
+> 1. **此前已有带 `latest.json` 的发布**（二次及以后的发布）：`latest` 指向上一版，
+>    其 `latest.json` 存在且版本号低于本次 → 返回旧版本「已是最新」。
+> 2. **本次是首个带 `latest.json` 的发布**（v1.14.0 就是这种）：`latest` 仍指向
+>    v1.13.x，那一版没有 `latest.json` → endpoint 返回 404，插件统一兜底为
+>    `ReleaseNotFound`（`updater.rs`），归类 `no_release` → UI 显示**「暂无可用更新」**
+>    而**不是**「已是最新」。
+>
+> 两种都不是故障，发布后 `latest.json` 生效即可正常检出新版本。
+
 ```bash
 # 发布
 gh release edit v<新版本> --draft=false
@@ -463,3 +551,6 @@ git commit --amend
 |------|------|
 | Release Note 比较范围 | 必须用 `v<旧版本>..v<新版本>`，不要用 `v<新版本>..HEAD`（后者可能为空） |
 | CI 双 ref 检查 | main 分支和 tag ref 对应不同的 workflow，两者都必须检查 |
+| 本地 `tauri build` 会失败 | `createUpdaterArtifacts: true` 要求签名私钥，缺 `TAURI_SIGNING_PRIVATE_KEY` 直接构建失败；打包产物验证走 CI draft（见 Step 5 注意事项） |
+| latest.json 单平台 | 双 matrix job 非原子读改写，后写覆盖先写；Step 9.2 的断言只检测不消除，触发后按旁边的补传步骤手工拼回 |
+| draft 期间「检查更新」的两种表现 | 首个带 `latest.json` 的发布显示「暂无可用更新」，之后的发布才显示「已是最新」（见 Step 12） |

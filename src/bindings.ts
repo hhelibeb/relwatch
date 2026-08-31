@@ -219,6 +219,22 @@ export const commands = {
 	 *  返回实际写入的路径；用户取消对话框时返回 `err.agent.export_cancelled`。
 	 */
 	exportAgentSession: (sessionKey: string, title: string, format: string) => __TAURI_INVOKE<string>("export_agent_session", { sessionKey, title, format }),
+	/**
+	 *  应用内更新安装前调用：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理其子进程）。
+	 *  与 `RunEvent::Exit` 的关闭语义一致——更新安装会硬杀主进程（Windows NSIS `exit(0)` /
+	 *  Linux relaunch），不走 `RunEvent::Exit`，若不提前关闭 pi 会残留。
+	 *  仅 Linux/macOS 在 `relaunch()` 前调用本命令；Windows 上安装器接管退出，前端不会执行到。
+	 */
+	agentShutdownForUpdate: () => __TAURI_INVOKE<null>("agent_shutdown_for_update"),
+	/**  检查应用更新。返回 `None` 表示当前已是最新版本（endpoint 返回 204，或远端版本不高于当前版本）。 */
+	updaterCheck: (timeoutMs: number, proxyMode: string, proxyUrl: string) => __TAURI_INVOKE<{
+	rid: number,
+	currentVersion: string,
+	version: string,
+	date: string | null,
+	body: string | null,
+	rawJson: string,
+} | null>("updater_check", { timeoutMs, proxyMode, proxyUrl }),
 };
 
 /** Events */
@@ -633,6 +649,23 @@ export type TestDeepseekPayload = {
 	proxyBypass: boolean | null,
 	proxyUrl: string | null,
 	proxyMode: string | null,
+};
+
+/**
+ *  检查更新的返回结构，字段与 tauri-plugin-updater 内部的 `commands::Metadata` 一致
+ *  （含 camelCase 重命名），保证前端 `new Update(meta)` 直接可用。
+ * 
+ *  `raw_json` 走字符串传递：specta rc.25 对 `serde_json::Value` 的 Type 实现是
+ *  递归内联的枚举（Array/Object 又引用回 Value），导出 TS 时会触发 inline cycle panic。
+ *  前端 `JSON.parse` 还原即可（latest.json 很小，开销可忽略）。
+ */
+export type UpdaterMetadata = {
+	rid: number,
+	currentVersion: string,
+	version: string,
+	date: string | null,
+	body: string | null,
+	rawJson: string,
 };
 
 /**  单日计数（按本地时区 YYYY-MM-DD 分桶）。 */

@@ -15,6 +15,8 @@
     "notification:allow-notify",
     "opener:default",
     "opener:allow-open-url",
+    "updater:default",
+    "process:allow-restart",
     "dialog:default",
     "clipboard-manager:default",
     "clipboard-manager:allow-read-text"

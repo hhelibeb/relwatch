@@ -42,6 +42,10 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-prevent-default = "5"
+# 应用内检查更新：静态 JSON（GitHub Releases latest.json）+ Ed25519 强制签名验证
+tauri-plugin-updater = "2"
+# relaunch() 重启用（仅 Linux/macOS 更新安装完成后调用；Windows 由 NSIS /R 接管）
+tauri-plugin-process = "2"
 # 直接依赖以便在主线程上执行剪贴板写入（插件在 tokio worker 线程调用会触发 Windows 1418）
 arboard = "3.6"
 sys-locale = "0.3"
