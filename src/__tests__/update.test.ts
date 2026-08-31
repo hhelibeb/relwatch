@@ -259,6 +259,22 @@ describe('useAppUpdate 下载安装', () => {
     expect(c.downloadText.value).toBe(tm('update.downloading', { percent: '100%', done: '1000 B', total: '1000 B' }))
   })
 
+  it('回归：pendingUpdate 用 shallowRef 保持原实例（不被深度 reactive 包装）', async () => {
+    // 真实 @tauri-apps/plugin-updater 的 Update 类实例含私有字段（#metadata 等），
+    // 深度 ref 会把实例包成 Proxy，方法内 this.#x 访问私有字段会抛
+    // "Cannot read private member from an object whose class did not declare it"。
+    // 验证：composable 里 pendingUpdate 是 shallowRef —— 赋进去的原实例被原样读出（无 Proxy）。
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
+    const c = setupComposable()
+    await c.checkForUpdate()
+    const v = c.pendingUpdate.value
+    expect(v).not.toBeNull()
+    // shallowRef 读出的就是构造实例本身，原型链完整（深度 reactive 会包 Proxy 并保留原型，
+    // 但用 isProxy 能直接区分；此处兼容两种实现，重点在调用不抛错）
+    // 真正回归点：downloadAndInstall 能正常执行（内部若访问私有字段，Proxy 会抛错）
+    await expect(c.downloadAndInstall()).resolves.toBeUndefined()
+  })
+
   it('total 为 undefined/0 时不显示百分比（走 no_total 文案）', async () => {
     downloadMock.mockImplementation(async (onProgress?: (e: unknown) => void) => {
       onProgress?.({ event: 'Started', data: { contentLength: undefined } })

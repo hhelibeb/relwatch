@@ -12,7 +12,7 @@
 //
 // 下载与安装仍走插件自带命令（只接受 headers/timeout）：proxy 随 check 时构建的
 // Update 资源贯穿到下载阶段，无需（也不能）重复传。
-import { computed, ref } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
@@ -91,7 +91,11 @@ export function classifyUpdateError(raw: string): UpdateErrorKind {
 export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
   const status = ref<UpdateStatus>('idle')
   const currentVersion = ref('')
-  const pendingUpdate = ref<Update | null>(null)
+  // pendingUpdate 必须是 shallowRef：插件 Update 实例内部用 JS 私有字段（#metadata 等），
+  // 若用深度 ref 会被 Vue 包成 reactive Proxy，调用 downloadAndInstall() 时 this 是 Proxy，
+  // 访问私有字段会抛 "Cannot read private member from an object whose class did not declare it"。
+  // （单元测试 mock 的 Update 类无私有字段，因此测试全绿但没暴露此问题。）
+  const pendingUpdate = shallowRef<Update | null>(null)
   const errorKind = ref<UpdateErrorKind>('generic')
   /** generic 类错误透传的原始消息（update.error.generic 的 {message}） */
   const errorDetail = ref('')
