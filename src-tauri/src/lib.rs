@@ -96,6 +96,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::restart_agent_rpc,
         commands::export_agent_session,
         commands::agent_shutdown_for_update,
+        commands::updater_check,
     ])
 }
 

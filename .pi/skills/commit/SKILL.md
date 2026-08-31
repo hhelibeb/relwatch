@@ -50,6 +50,9 @@ git log --pretty=%s -n 20 2>/dev/null || true
    3. **前端测试**: `pnpm exec vitest run` — 全部通过
    4. **前端 Lint**: `pnpm run lint` — 无 error
    5. **Rust 编译**: `cargo build`（或 `cargo check`）— 成功
+      > 只做 Rust 编译即可，**不要跑 `tauri build`**：`bundle.createUpdaterArtifacts` 为 `true` 时
+      > tauri CLI 强制要求签名私钥，缺 `TAURI_SIGNING_PRIVATE_KEY` 会直接构建失败（上游设计）。
+      > 打包/更新产物的验证走 CI 产出的 draft release，详见 release skill Step 5。
    6. **Rust 测试**: `cargo test` — 全部通过
    7. **Rust Clippy**: `cargo clippy -- -D warnings` — 无 error
    8. **bindings.ts 同步检查**: `bash scripts/check-bindings.sh` — 输出 `✓ bindings.ts 与 Rust 代码同步` 且退出码 0

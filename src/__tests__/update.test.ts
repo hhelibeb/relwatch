@@ -1,29 +1,65 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
-import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import SettingsTab from '../components/SettingsTab.vue'
 import { openReleaseUrl } from '../api/client'
 import { useAppUpdate, classifyUpdateError } from '../api/update'
-import { commands } from '../bindings'
+import { commands, type UpdaterMetadata } from '../bindings'
 import { ShowToastKey } from '../injection-keys'
 import { defaultSettings } from './helpers'
 import { t, tm } from '../i18n'
 
-vi.mock('@tauri-apps/plugin-updater', () => ({ check: vi.fn() }))
+// 下载由 Update 实例发起：mock 的 Update 由 composable 内部 new 出来，
+// 测试拿不到构造前的引用，因此让所有实例共享同一个 vi.fn 以便按用例编程。
+const { downloadMock, closeMock } = vi.hoisted(() => ({ downloadMock: vi.fn(), closeMock: vi.fn() }))
+vi.mock('@tauri-apps/plugin-updater', () => ({
+  Update: class {
+    rid: number
+    currentVersion: string
+    version: string
+    date?: string
+    body?: string
+    rawJson: Record<string, unknown>
+    downloadAndInstall = downloadMock
+    close = closeMock
+    constructor(m: {
+      rid: number
+      currentVersion: string
+      version: string
+      date?: string
+      body?: string
+      rawJson: Record<string, unknown>
+    }) {
+      this.rid = m.rid
+      this.currentVersion = m.currentVersion
+      this.version = m.version
+      this.date = m.date
+      this.body = m.body
+      this.rawJson = m.rawJson
+    }
+  },
+}))
 vi.mock('@tauri-apps/plugin-process', () => ({ relaunch: vi.fn() }))
 vi.mock('@tauri-apps/api/app', () => ({ getVersion: vi.fn() }))
 vi.mock('@tauri-apps/plugin-dialog', () => ({ confirm: vi.fn(), message: vi.fn() }))
-vi.mock('../api/client', () => ({ openReleaseUrl: vi.fn() }))
+vi.mock('../api/client', () => ({
+  openReleaseUrl: vi.fn(),
+  // 透传包装：错误翻译链路在 client.ts 单测覆盖，这里直接执行原函数
+  invokeI18nFn: (fn: () => Promise<unknown>) => fn(),
+}))
 // bindings 只暴露本功能用到的命令；SettingsTab 挂载时 loadAgentConfig 调用
 // 缺失的 getAgentConfig 会抛 TypeError，由其内部 try/catch 吞掉（与既有测试一致）
 vi.mock('../bindings', () => ({
-  commands: { getAgentQueue: vi.fn(), agentShutdownForUpdate: vi.fn() },
+  commands: {
+    getAgentQueue: vi.fn(),
+    agentShutdownForUpdate: vi.fn(),
+    updaterCheck: vi.fn(),
+  },
 }))
 
-const checkMock = vi.mocked(check)
+const checkMock = vi.mocked(commands.updaterCheck)
 const relaunchMock = vi.mocked(relaunch)
 const getVersionMock = vi.mocked(getVersion)
 const confirmMock = vi.mocked(confirm)
@@ -31,12 +67,16 @@ const openReleaseUrlMock = vi.mocked(openReleaseUrl)
 const getAgentQueueMock = vi.mocked(commands.getAgentQueue)
 const shutdownMock = vi.mocked(commands.agentShutdownForUpdate)
 
-/** Update 最小 mock：downloadAndInstall 可编程，按需触发进度事件 */
-function fakeUpdate(version: string): Update & { downloadAndInstall: ReturnType<typeof vi.fn> } {
+/** updater_check 的返回体最小 mock；downloadAndInstall 走全局 downloadMock 编程 */
+function fakeUpdate(version: string): UpdaterMetadata {
   return {
+    rid: 1,
+    currentVersion: '1.13.0',
     version,
-    downloadAndInstall: vi.fn().mockResolvedValue(undefined),
-  } as unknown as Update & { downloadAndInstall: ReturnType<typeof vi.fn> }
+    date: null,
+    body: null,
+    rawJson: '{}',
+  }
 }
 
 type Composable = ReturnType<typeof useAppUpdate>
@@ -79,6 +119,10 @@ describe('classifyUpdateError（§4.5 错误表，锚点对 tauri-plugin-updater
 describe('useAppUpdate 检查状态机', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // 实例间共享的 mock：清掉上一用例残留的实现，避免进度事件串联
+    downloadMock.mockReset()
+    downloadMock.mockResolvedValue(undefined)
+    closeMock.mockReset()
     getVersionMock.mockResolvedValue('1.13.0')
     getAgentQueueMock.mockResolvedValue([])
     shutdownMock.mockResolvedValue(null)
@@ -101,6 +145,18 @@ describe('useAppUpdate 检查状态机', () => {
     expect(c.pendingUpdate.value?.version).toBe('1.14.0')
   })
 
+  it('再次检查时 close 旧 Update（防 rid 资源累积）', async () => {
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
+    const c = setupComposable()
+    await c.checkForUpdate()
+    const first = c.pendingUpdate.value
+    checkMock.mockResolvedValue(fakeUpdate('1.15.0'))
+    await c.checkForUpdate()
+    expect(closeMock).toHaveBeenCalledTimes(1)
+    expect(c.pendingUpdate.value?.version).toBe('1.15.0')
+    expect(closeMock.mock.instances[0]).toBe(first)
+  })
+
   it('检查失败（网络）→ error，文案用 network key', async () => {
     checkMock.mockRejectedValue(new Error('error sending request for url (https://github.com/x)'))
     const c = setupComposable()
@@ -118,21 +174,37 @@ describe('useAppUpdate 检查状态机', () => {
     expect(c.errorText.value).toBe(t('update.error.signature'))
   })
 
-  it('代理映射：custom 传 proxy_url，none/system 不传（undefined）', async () => {
+  it('代理三态原样传给 updater_check（none/system/custom 由 Rust 侧解释）', async () => {
     checkMock.mockResolvedValue(null)
     const custom = setupComposable({ mode: 'custom', url: 'http://127.0.0.1:17890' })
     await custom.checkForUpdate()
-    expect(checkMock).toHaveBeenCalledWith({ timeout: 30_000, proxy: 'http://127.0.0.1:17890' })
+    expect(checkMock).toHaveBeenCalledWith(30_000, 'custom', 'http://127.0.0.1:17890')
 
     checkMock.mockClear()
     const none = setupComposable({ mode: 'none', url: '' })
     await none.checkForUpdate()
-    expect(checkMock).toHaveBeenCalledWith({ timeout: 30_000, proxy: undefined })
+    expect(checkMock).toHaveBeenCalledWith(30_000, 'none', '')
 
     checkMock.mockClear()
     const system = setupComposable({ mode: 'system', url: '' })
     await system.checkForUpdate()
-    expect(checkMock).toHaveBeenCalledWith({ timeout: 30_000, proxy: undefined })
+    expect(checkMock).toHaveBeenCalledWith(30_000, 'system', '')
+  })
+
+  it('Update 由 updater_check 返回的 metadata 构造（rawJson 从字符串还原）', async () => {
+    checkMock.mockResolvedValue({
+      rid: 7,
+      currentVersion: '1.13.0',
+      version: '1.14.0',
+      date: '2026-08-31T00:00:00Z',
+      body: 'notes',
+      rawJson: '{"note":"x"}',
+    })
+    const c = setupComposable()
+    await c.checkForUpdate()
+    expect(c.pendingUpdate.value?.version).toBe('1.14.0')
+    expect(c.pendingUpdate.value?.rawJson).toEqual({ note: 'x' })
+    expect(c.pendingUpdate.value?.date).toBe('2026-08-31T00:00:00Z')
   })
 
   it('打开 Release 说明 / 下载页', async () => {
@@ -149,6 +221,9 @@ describe('useAppUpdate 检查状态机', () => {
 describe('useAppUpdate 下载安装', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    downloadMock.mockReset()
+    downloadMock.mockResolvedValue(undefined)
+    closeMock.mockReset()
     getVersionMock.mockResolvedValue('1.13.0')
     getAgentQueueMock.mockResolvedValue([])
     shutdownMock.mockResolvedValue(null)
@@ -156,12 +231,11 @@ describe('useAppUpdate 下载安装', () => {
   })
 
   it('下载安装成功：shutdown 先于 relaunch（仅 Linux/macOS 路径）', async () => {
-    const u = fakeUpdate('1.14.0')
-    checkMock.mockResolvedValue(u)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
     const c = setupComposable()
     await c.checkForUpdate()
     await c.downloadAndInstall()
-    expect(u.downloadAndInstall).toHaveBeenCalledTimes(1)
+    expect(downloadMock).toHaveBeenCalledTimes(1)
     expect(shutdownMock).toHaveBeenCalledTimes(1)
     expect(relaunchMock).toHaveBeenCalledTimes(1)
     expect(shutdownMock.mock.invocationCallOrder[0]).toBeLessThan(relaunchMock.mock.invocationCallOrder[0])
@@ -169,14 +243,13 @@ describe('useAppUpdate 下载安装', () => {
   })
 
   it('进度事件：total 只在 Started 记录一次，不被 Progress 冲掉', async () => {
-    const u = fakeUpdate('1.14.0')
-    u.downloadAndInstall.mockImplementation(async (onProgress?: (e: unknown) => void) => {
+    downloadMock.mockImplementation(async (onProgress?: (e: unknown) => void) => {
       onProgress?.({ event: 'Started', data: { contentLength: 1000 } })
       onProgress?.({ event: 'Progress', data: { chunkLength: 400 } })
       onProgress?.({ event: 'Progress', data: { chunkLength: 600 } })
       onProgress?.({ event: 'Finished' })
     })
-    checkMock.mockResolvedValue(u)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
     const c = setupComposable()
     await c.checkForUpdate()
     await c.downloadAndInstall()
@@ -187,12 +260,11 @@ describe('useAppUpdate 下载安装', () => {
   })
 
   it('total 为 undefined/0 时不显示百分比（走 no_total 文案）', async () => {
-    const u = fakeUpdate('1.14.0')
-    u.downloadAndInstall.mockImplementation(async (onProgress?: (e: unknown) => void) => {
+    downloadMock.mockImplementation(async (onProgress?: (e: unknown) => void) => {
       onProgress?.({ event: 'Started', data: { contentLength: undefined } })
       onProgress?.({ event: 'Progress', data: { chunkLength: 600 } })
     })
-    checkMock.mockResolvedValue(u)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
     const c = setupComposable()
     await c.checkForUpdate()
     await c.downloadAndInstall()
@@ -201,15 +273,14 @@ describe('useAppUpdate 下载安装', () => {
   })
 
   it('下载失败 → error；重试回 available；重试时 downloaded 归零', async () => {
-    const u = fakeUpdate('1.14.0')
-    u.downloadAndInstall
+    downloadMock
       .mockImplementationOnce(async (onProgress?: (e: unknown) => void) => {
         onProgress?.({ event: 'Started', data: { contentLength: 1000 } })
         onProgress?.({ event: 'Progress', data: { chunkLength: 400 } })
         throw 'error sending request for url (https://objects.githubusercontent.com/...)'
       })
       .mockRejectedValueOnce('connection reset by peer')
-    checkMock.mockResolvedValue(u)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
     const c = setupComposable()
     await c.checkForUpdate()
     await c.downloadAndInstall()
@@ -222,7 +293,7 @@ describe('useAppUpdate 下载安装', () => {
 
     // 第二次点击下载：进度状态已清理（done/total 归零重建），再次失败仍落 error
     await c.downloadAndInstall()
-    expect(u.downloadAndInstall).toHaveBeenCalledTimes(2)
+    expect(downloadMock).toHaveBeenCalledTimes(2)
     expect(c.status.value).toBe('error')
     expect(c.done.value).toBe(0)
     expect(c.total.value).toBeUndefined()
@@ -231,36 +302,35 @@ describe('useAppUpdate 下载安装', () => {
   it('Agent 任务守卫：队列非空时确认弹窗，取消则不下载', async () => {
     getAgentQueueMock.mockResolvedValue([{} as never])
     confirmMock.mockResolvedValue(false)
-    const u = fakeUpdate('1.14.0')
-    checkMock.mockResolvedValue(u)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
     const c = setupComposable()
     await c.checkForUpdate()
     await c.downloadAndInstall()
     expect(confirmMock).toHaveBeenCalledTimes(1)
     expect(confirmMock.mock.calls[0][0]).toBe(t('update.error.agent_busy'))
-    expect(u.downloadAndInstall).not.toHaveBeenCalled()
+    expect(downloadMock).not.toHaveBeenCalled()
     expect(c.status.value).toBe('available')
 
     confirmMock.mockResolvedValue(true)
     await c.downloadAndInstall()
-    expect(u.downloadAndInstall).toHaveBeenCalledTimes(1)
+    expect(downloadMock).toHaveBeenCalledTimes(1)
   })
 
   it('Agent 队列查询失败时降级放行（守卫不堵死更新路径）', async () => {
     getAgentQueueMock.mockRejectedValue(new Error('db unavailable'))
-    const u = fakeUpdate('1.14.0')
-    checkMock.mockResolvedValue(u)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
     const c = setupComposable()
     await c.checkForUpdate()
     await c.downloadAndInstall()
     expect(confirmMock).not.toHaveBeenCalled()
-    expect(u.downloadAndInstall).toHaveBeenCalledTimes(1)
+    expect(downloadMock).toHaveBeenCalledTimes(1)
   })
 })
 
-describe('SettingsTab「软件更新」分组', () => {
-  function mountSettingsTab() {
-    return mount(SettingsTab, {
+describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
+  /** 挂载并切到「关于」tab（软件更新分组已从常规设置迁移至关于） */
+  async function mountSettingsTabOnAbout() {
+    const wrapper = mount(SettingsTab, {
       props: { settings: { ...defaultSettings } },
       global: {
         provide: {
@@ -268,6 +338,10 @@ describe('SettingsTab「软件更新」分组', () => {
         },
       },
     })
+    await flushPromises()
+    await wrapper.get('[data-testid="settings-tab-about"]').trigger('click')
+    await flushPromises()
+    return wrapper
   }
 
   afterEach(() => {
@@ -276,8 +350,7 @@ describe('SettingsTab「软件更新」分组', () => {
 
   it('dev 构建：按钮置灰 + 提示文案', async () => {
     vi.stubEnv('DEV', true)
-    const wrapper = mountSettingsTab()
-    await flushPromises()
+    const wrapper = await mountSettingsTabOnAbout()
     const btn = wrapper.get('[data-testid="update-check-btn"]')
     expect(btn.attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain(t('update.dev_disabled'))
@@ -287,8 +360,7 @@ describe('SettingsTab「软件更新」分组', () => {
   it('非 dev 构建：检查 → 已是最新版本（含版本号，tm 命名参数渲染）', async () => {
     vi.stubEnv('DEV', false)
     checkMock.mockResolvedValue(null)
-    const wrapper = mountSettingsTab()
-    await flushPromises()
+    const wrapper = await mountSettingsTabOnAbout()
     const btn = wrapper.get('[data-testid="update-check-btn"]')
     expect(btn.attributes('disabled')).toBeUndefined()
 
@@ -304,8 +376,7 @@ describe('SettingsTab「软件更新」分组', () => {
   it('发现新版本：available 文案 + 操作按钮渲染', async () => {
     vi.stubEnv('DEV', false)
     checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
-    const wrapper = mountSettingsTab()
-    await flushPromises()
+    const wrapper = await mountSettingsTabOnAbout()
     await wrapper.get('[data-testid="update-check-btn"]').trigger('click')
     await flushPromises()
 
@@ -318,8 +389,7 @@ describe('SettingsTab「软件更新」分组', () => {
   it('签名错误渲染专属文案（与网络错误区分）', async () => {
     vi.stubEnv('DEV', false)
     checkMock.mockRejectedValue('The signature verification failed')
-    const wrapper = mountSettingsTab()
-    await flushPromises()
+    const wrapper = await mountSettingsTabOnAbout()
     await wrapper.get('[data-testid="update-check-btn"]').trigger('click')
     await flushPromises()
 
@@ -328,6 +398,14 @@ describe('SettingsTab「软件更新」分组', () => {
     // 签名错误无「重试」按钮，只有「前往下载页」（§4.5 错误表）
     expect(wrapper.text()).not.toContain(t('update.retry'))
     expect(wrapper.text()).toContain(t('update.open_download_page'))
+    wrapper.unmount()
+  })
+
+  it('关于页展示应用信息与软件更新分组标题', async () => {
+    const wrapper = await mountSettingsTabOnAbout()
+    expect(wrapper.text()).toContain(t('about.app_name'))
+    expect(wrapper.text()).toContain(t('about.version'))
+    expect(wrapper.text()).toContain(t('update.section_title'))
     wrapper.unmount()
   })
 })

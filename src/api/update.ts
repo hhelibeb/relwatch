@@ -1,19 +1,24 @@
 // 应用内检查更新（tauri-plugin-updater）：
-// - 仅手动触发（设置页 general tab「软件更新」分组），无自动检查、无持久化设置项
+// - 仅手动触发（设置页 about tab「软件更新」分组），无自动检查、无持久化设置项
 // - 静态 JSON endpoint（GitHub Releases latest.json），Ed25519 签名验证不可关闭
 // - 代理策略（设计稿 §4.3）：复用既有 proxy_mode/proxy_url——
-//   none → 直连；system → 不传 proxy（Windows/macOS 走系统代理，Linux 等同直连）；
-//   custom → 显式传 proxy_url。
-//   注意（以插件 2.10.1 实际 API 核对）：proxy 只能在 check() 传入，
-//   download/download_and_install 的 Rust 命令只接受 headers/timeout——
-//   check() 配置的 proxy 随 Update 资源贯穿到下载阶段，无需（也不能）重复传。
+//   none → 直连；system → 走系统代理；custom → 显式走 proxy_url。
+//
+// 检查走自建的 `updater_check` 命令（src-tauri/src/commands/updater.rs），
+// 不用插件的 `check()`：插件 JS API 的 CheckOptions 只有 proxy、没有表达「强制直连」
+// 的字段，而插件内部用 `reqwest::ClientBuilder::new()` 建客户端（默认
+// auto_sys_proxy: true），proxy 为 undefined 时会追加系统代理——那么 proxy_mode=none
+// 在检查更新上就是假的，与后台监控（http.rs 对 none 调 no_proxy()）语义相反。
+//
+// 下载与安装仍走插件自带命令（只接受 headers/timeout）：proxy 随 check 时构建的
+// Update 资源贯穿到下载阶段，无需（也不能）重复传。
 import { computed, ref } from 'vue'
-import { check, type DownloadEvent, type Update } from '@tauri-apps/plugin-updater'
+import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import { openReleaseUrl } from './client'
-import { commands } from '../bindings'
+import { invokeI18nFn, openReleaseUrl } from './client'
+import { commands, type UpdaterMetadata } from '../bindings'
 import { t, tm } from '../i18n'
 
 export type UpdateStatus =
@@ -49,6 +54,10 @@ const DOWNLOAD_PAGE_URL = 'https://github.com/hhelibeb/relwatch/releases/latest'
 export function classifyUpdateError(raw: string): UpdateErrorKind {
   const m = raw.toLowerCase()
   // 顺序敏感：具体变体在前，兜底网络/泛化在后
+  // ReleaseNotFound 是插件对「endpoint 未给出可用 release」的统一兜底（updater.rs）：
+  // 404（该版本还没有 latest.json）、403/500（GitHub 限流或服务端故障）、JSON 解析失败
+  // 全都落这一种，因此本类的实际含义比文案「暂无可用更新」更宽——服务端故障也会被
+  // 归到这里。检查按钮始终可用，用户重试即可自救，故维持单一归类。
   if (m.includes('could not fetch a valid release json')) return 'no_release'
   if (m.includes('signature') || m.includes('minisign')) return 'signature'
   if (m.includes('was not found in the response') || m.includes('none of the fallback platforms')) return 'targets'
@@ -135,10 +144,18 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     }
   })
 
-  /** 代理映射：none/system → undefined（直连或系统代理），custom → 显式 proxy_url */
-  function resolveProxy(): string | undefined {
-    const { mode, url } = getProxy()
-    return mode === 'custom' && url ? url : undefined
+  /** 把后端返回的 UpdaterMetadata 转成插件 Update 的构造入参：
+   *  rawJson 经字符串传递（见 updater.rs 注释）需 parse 还原；
+   *  null 字段收敛为 undefined，对齐 UpdateMetadata 的可选字段类型。 */
+  function toUpdateMetadata(m: UpdaterMetadata) {
+    return {
+      rid: m.rid,
+      currentVersion: m.currentVersion,
+      version: m.version,
+      date: m.date ?? undefined,
+      body: m.body ?? undefined,
+      rawJson: JSON.parse(m.rawJson) as Record<string, unknown>,
+    }
   }
 
   function onProgress(e: DownloadEvent) {
@@ -162,9 +179,16 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     errorDetail.value = ''
     retryTarget.value = 'check'
     try {
-      const found = await check({ timeout: CHECK_TIMEOUT_MS, proxy: resolveProxy() })
-      pendingUpdate.value = found
-      status.value = found ? 'available' : 'upToDate'
+      // 代理三态在 Rust 侧解释：none → no_proxy()，custom → proxy(url)，system → 系统代理。
+      // 走 invokeI18nFn：err.* 类错误（如无效代理 URL）翻译为用户可读文案，
+      // 非 err.*（网络/签名/ReleaseNotFound）保持英文原文，供 classifyUpdateError 按锚点归类。
+      const { mode, url } = getProxy()
+      const meta = await invokeI18nFn(() => commands.updaterCheck(CHECK_TIMEOUT_MS, mode, url))
+      // 替换旧 Update 前先 close：每次 check 都会在 webview 资源表新增一个 rid，
+      // 不 close 会随检查次数累积（与插件自身 check 行为一致，这里主动收敛）。
+      pendingUpdate.value?.close()
+      pendingUpdate.value = meta ? new Update(toUpdateMetadata(meta)) : null
+      status.value = meta ? 'available' : 'upToDate'
     } catch (e) {
       handleError(e)
     }
@@ -192,7 +216,7 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     total.value = undefined
     retryTarget.value = 'download'
     try {
-      // proxy 随 check() 时构建的 Update 资源生效，下载阶段不重复传（见文件头说明）
+      // proxy 随 updater_check 时构建的 Update 资源生效，下载阶段不重复传（见文件头说明）
       await u.downloadAndInstall(onProgress)
       // Windows：NSIS 安装器 ShellExecuteW 成功后进程 exit(0) 接管，不会执行到这里；
       // 到达此处的仅 Linux/macOS：先优雅关闭 pi RPC（失败不阻塞重启），再 relaunch（§6）
