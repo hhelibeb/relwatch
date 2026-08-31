@@ -95,6 +95,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::get_agent_rpc_status,
         commands::restart_agent_rpc,
         commands::export_agent_session,
+        commands::agent_shutdown_for_update,
     ])
 }
 
@@ -171,6 +172,9 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        // 应用内更新（tauri.conf.json plugins.updater 配置 endpoint/pubkey）与 relaunch
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
