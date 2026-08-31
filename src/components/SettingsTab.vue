@@ -12,8 +12,9 @@ import {
   importBackup,
 } from '../api/settings'
 import { openReleaseUrl } from '../api/client'
+import { useAppUpdate } from '../api/update'
 import { getAgentConfig, saveAgentConfig } from '../api/agent'
-import { t, setLocale, languages } from '../i18n'
+import { t, tm, setLocale, languages } from '../i18n'
 import { skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
 import { applyTheme } from '../composables/useTheme'
@@ -130,6 +131,34 @@ const { biliLoginBusy, handleBilibiliLogin, handleClearBilibiliCookie } = useBil
     bilibiliCookie.value = ''
   },
 })
+
+// ── 软件更新（general tab 展示型分组：无持久化设置项，不入 TAB_SETTING_KEYS /
+//    dirty 徽标；设计稿 §4.3）。代理复用既有 proxy_mode/proxy_url（取已持久化的
+//    props.settings，而非表单未保存值——更新行为不应受未保存修改影响）。
+const {
+  status: updateStatus,
+  currentVersion: updateCurrentVersion,
+  pendingUpdate: pendingUpdate,
+  errorKind: updateErrorKind,
+  errorText: updateErrorText,
+  percent: updatePercent,
+  downloadText: updateDownloadText,
+  busy: updateBusy,
+  checkForUpdate,
+  downloadAndInstall,
+  retry: retryUpdate,
+  openReleaseNotes,
+  openDownloadPage,
+} = useAppUpdate(() => ({ mode: props.settings.proxy_mode, url: props.settings.proxy_url.trim() }))
+
+// dev 构建置灰：插件不区分 debug/release，dev 下 check() 会真实访问线上 endpoint
+// 并允许把正式版装进开发版（设计稿 §4.3 开发构建保护）
+const isDevBuild = import.meta.env.DEV
+// error 态兜底动作（§4.5 错误表）：network/generic → 重试；no_release/unsupported → 无动作
+const showUpdateRetry = computed(() => updateErrorKind.value === 'network' || updateErrorKind.value === 'generic')
+const showUpdateDownloadPage = computed(
+  () => updateErrorKind.value !== 'no_release' && updateErrorKind.value !== 'unsupported',
+)
 
 // ── 固定提示词后缀（不可编辑）───────────────────────
 const DEEPSEEK_PROMPT_SUFFIX = '请严格按以下 JSON 格式返回（不要包含其他内容）：\n{"summary":"简短中文摘要","importance":"大|中|小"}'
@@ -517,6 +546,48 @@ async function handleImportBackup() {
             <span class="setting-label" :data-dirty="dirtyFields.has('enable_usage_stats') || null">{{ t('settings.enable_usage_stats') }}</span>
             <span class="setting-hint">{{ t('settings.enable_usage_stats_hint') }}</span>
           </label>
+          <!-- 软件更新：展示型分组，无持久化设置项（不入 TAB_SETTING_KEYS / dirty 徽标） -->
+          <hr class="setting-divider" />
+          <div class="setting-section-title">{{ t('update.section_title') }}</div>
+          <div class="setting-row setting-row-checkbox">
+            <span class="setting-label">{{ t('update.current_version') }} <strong>v{{ updateCurrentVersion }}</strong></span>
+            <button
+              class="btn-secondary"
+              :disabled="isDevBuild || updateBusy"
+              :title="isDevBuild ? t('update.dev_disabled') : undefined"
+              data-testid="update-check-btn"
+              @click="checkForUpdate"
+            >
+              {{ updateStatus === 'checking' ? t('update.checking') : t('update.check') }}
+            </button>
+            <span v-if="isDevBuild" class="setting-note">{{ t('update.dev_disabled') }}</span>
+          </div>
+          <div v-if="updateStatus === 'upToDate'" class="setting-row">
+            <span class="update-status-ok">✓ {{ tm('update.up_to_date', { version: `v${updateCurrentVersion}` }) }}</span>
+          </div>
+          <div v-else-if="updateStatus === 'available'" class="setting-row">
+            <span class="setting-label">{{ tm('update.available', { version: `v${pendingUpdate?.version ?? ''}` }) }}</span>
+            <div class="update-actions">
+              <button class="btn-secondary" :disabled="updateBusy" data-testid="update-install-btn" @click="downloadAndInstall">{{ t('update.download_install') }}</button>
+              <button class="btn-secondary" :disabled="updateBusy" @click="openReleaseNotes">{{ t('update.view_notes') }}</button>
+            </div>
+          </div>
+          <div v-else-if="updateStatus === 'downloading'" class="setting-row">
+            <div class="update-progress">
+              <div class="update-progress-inner" :style="{ width: `${updatePercent ?? 0}%` }"></div>
+            </div>
+            <span class="setting-note">{{ updateDownloadText }}</span>
+          </div>
+          <div v-else-if="updateStatus === 'installing'" class="setting-row">
+            <span class="setting-label">{{ t('update.installing') }}</span>
+          </div>
+          <div v-else-if="updateStatus === 'error'" class="setting-row">
+            <span class="update-status-error">⚠ {{ updateErrorText }}</span>
+            <div v-if="showUpdateRetry || showUpdateDownloadPage" class="update-actions">
+              <button v-if="showUpdateRetry" class="btn-secondary" @click="retryUpdate">{{ t('update.retry') }}</button>
+              <button v-if="showUpdateDownloadPage" class="btn-secondary" @click="openDownloadPage">{{ t('update.open_download_page') }}</button>
+            </div>
+          </div>
         </div>
         <div v-if="settingsTab === 'accounts'" class="settings-form">
           <label class="setting-row">
@@ -1109,6 +1180,40 @@ select.setting-input {
   display: flex;
   gap: 10px;
   margin-top: 8px;
+}
+
+/* ── 软件更新分组 ─────────────────────────────── */
+.update-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.update-progress {
+  width: 100%;
+  max-width: 320px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.update-progress-inner {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+
+.update-status-ok {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.update-status-error {
+  font-size: 13px;
+  color: var(--warning);
+  line-height: 1.5;
 }
 
 .setting-actions {

@@ -590,4 +590,27 @@ export default {
   'agent.model_once': 'This submission only',
   'agent.model_once_hint': 'Applies to the next submission only, then reverts to the session default',
 
+  // ── In-app software update (SettingsTab general tab, display-only section) ──
+  // Keys with {xxx} named params must be rendered via tm(), not t()
+  'update.section_title': 'Software Update',
+  'update.current_version': 'Current version',
+  'update.check': 'Check for updates',
+  'update.checking': 'Checking for updates…',
+  'update.up_to_date': 'Already up to date ({version})',
+  'update.available': 'New version available: {version}',
+  'update.download_install': 'Download and install',
+  'update.view_notes': 'View release notes',
+  'update.downloading': 'Downloading… {percent} ({done}/{total})',
+  'update.downloading_no_total': 'Downloading… {done} downloaded',
+  'update.installing': 'Installing… the app will restart shortly',
+  'update.error.network': 'Network error: could not fetch update info',
+  'update.error.signature': 'Update signature verification failed. Please download manually from the releases page',
+  'update.error.no_release': 'No update available yet',
+  'update.error.unsupported': 'In-app update is not supported in this environment',
+  'update.error.generic': 'Operation failed: {message}',
+  'update.error.agent_busy': 'A task is running. Updating will interrupt it. Continue?',
+  'update.dev_disabled': 'Checking for updates is disabled in dev builds',
+  'update.retry': 'Retry',
+  'update.open_download_page': 'Open download page',
+
 }

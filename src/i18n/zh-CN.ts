@@ -590,4 +590,27 @@ export default {
   'agent.model_once': '仅本次使用',
   'agent.model_once_hint': '只作用于下一次提交，之后自动恢复为会话默认模型',
 
+  // ── 应用内软件更新（设置页 general tab 展示型分组，无持久化设置项）──
+  // 带 {xxx} 命名参数的 key 一律用 tm() 渲染，t() 会输出字面 {version}
+  'update.section_title': '软件更新',
+  'update.current_version': '当前版本',
+  'update.check': '检查更新',
+  'update.checking': '正在检查更新…',
+  'update.up_to_date': '已是最新版本（{version}）',
+  'update.available': '发现新版本 {version}',
+  'update.download_install': '下载并安装',
+  'update.view_notes': '查看 Release 说明',
+  'update.downloading': '正在下载… {percent}（{done}/{total}）',
+  'update.downloading_no_total': '正在下载… 已下载 {done}',
+  'update.installing': '正在安装，应用即将重启…',
+  'update.error.network': '网络错误：无法获取更新信息',
+  'update.error.signature': '更新包签名验证失败，请前往下载页手动下载',
+  'update.error.no_release': '暂无可用更新',
+  'update.error.unsupported': '当前环境不支持应用内更新',
+  'update.error.generic': '操作失败：{message}',
+  'update.error.agent_busy': '有进行中的任务，更新将中断该任务，确认继续？',
+  'update.dev_disabled': '开发构建不支持检查更新',
+  'update.retry': '重试',
+  'update.open_download_page': '前往下载页',
+
 }
