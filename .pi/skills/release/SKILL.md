@@ -284,6 +284,22 @@ gh api repos/hhelibeb/relwatch/releases --paginate \
 - ✅ `draft` 为 `true`
 - ✅ `tag_name` 是 `v<新版本>`
 - ✅ assets 包含 Windows `.exe/.msi` 和 Linux `.deb`/`.AppImage`
+- ✅ **应用内更新产物（v1.14.0 起）**：assets 包含 `latest.json` 与各平台 `.sig` 签名文件
+  （`RelWatch_<v>_x64-setup.exe.sig` / `RelWatch_<v>_amd64.AppImage.sig` 等；deb 的 `.sig`
+  是否生成以首次带签构建实测为准）。缺 `.sig`/`latest.json` 说明 CI 未注入
+  `TAURI_SIGNING_PRIVATE_KEY*` secrets 或签名步骤被跳过（构建日志会有告警），判发布不合格。
+- ✅ **latest.json 双平台断言**：下载 latest.json 并断言 `platforms` 同时含
+  `windows-x86_64`（`-nsis`）与 `linux-x86_64`（`-appimage` / `-deb`）变体——
+  tauri-action 的 latest.json 上传是「读旧 → 叠加本 job → 删旧传新」的非原子读改写，
+  windows/ubuntu 双 job 并发时后写覆盖先写会产出单平台 latest.json，且发布"看起来"成功
+  （另一平台用户永远收不到更新）：
+
+  ```bash
+  gh api repos/hhelibeb/relwatch/releases --paginate --jq '.[] | select(.tag_name=="v<新版本>") | .assets[] | select(.name=="latest.json") | .url' \
+    | head -1 | xargs curl -sL | tee /tmp/latest.json
+  # 断言：windows-x86_64 与 linux-x86_64 同时存在，缺任一 → 立即手动补传/重跑，不得发布
+  node -e "const p=Object.keys(require('/tmp/latest.json').platforms); if(!p.some(k=>k.startsWith('windows-x86_64'))||!p.some(k=>k.startsWith('linux-x86_64'))){console.error('FATAL: platforms 缺平台:',p);process.exit(1)};console.log('platforms OK:',p.join(', '))"
+  ```
 - ⏸️ body 目前是 workflow 的固定文本 `请查看附件下载对应平台的安装包。`，后续会被替换
 
 ---
@@ -384,6 +400,11 @@ gh release edit v<新版本> \
 ---
 
 ## Step 12：发布并发布后检查
+
+> **应用内更新时序（v1.14.0 起）**：`gh release edit --draft=false` 发布后，
+> `releases/latest` 才会指向该版本，updater endpoint
+> （`releases/latest/download/latest.json`）随之生效——draft 期间应用内「检查更新」
+> 仍返回旧版本「已是最新」，属预期时序，不是故障。
 
 ```bash
 # 发布

@@ -46,10 +46,16 @@ jobs:
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # 应用内更新（tauri-plugin-updater）：签名私钥与密码注入后，
+          # tauri-action 会生成 .sig 签名资产并上传 latest.json（includeUpdaterJson）
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: 'v__VERSION__'
           releaseBody: '请查看附件下载对应平台的安装包。'
           releaseDraft: true
           prerelease: false
+          # 自动生成并上传 latest.json（updater 静态 JSON；显式写出防上游默认值变化）
+          includeUpdaterJson: true
           args: ${{ matrix.args }}
