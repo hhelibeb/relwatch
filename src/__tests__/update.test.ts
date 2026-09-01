@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
 import { confirm } from '@tauri-apps/plugin-dialog'
@@ -67,14 +67,19 @@ const openReleaseUrlMock = vi.mocked(openReleaseUrl)
 const getAgentQueueMock = vi.mocked(commands.getAgentQueue)
 const shutdownMock = vi.mocked(commands.agentShutdownForUpdate)
 
+// SettingsTab 会挂载 UpdateNotesModal（Teleport + window keydown + registerOverlayActive）；
+// 断言失败会跳过用例末尾的手工 wrapper.unmount()，innerHTML='' 不触发 Vue 生命周期，
+// 监听与 overlayStates 会跨用例泄漏。enableAutoUnmount 保证无论是否抛错都走卸载。
+enableAutoUnmount(afterEach)
+
 /** updater_check 的返回体最小 mock；downloadAndInstall 走全局 downloadMock 编程 */
-function fakeUpdate(version: string): UpdaterMetadata {
+function fakeUpdate(version: string, body: string | null = null): UpdaterMetadata {
   return {
     rid: 1,
     currentVersion: '1.13.0',
     version,
     date: null,
-    body: null,
+    body,
     rawJson: '{}',
   }
 }
@@ -362,6 +367,7 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
 
   afterEach(() => {
     vi.unstubAllEnvs()
+    document.body.innerHTML = ''
   })
 
   it('dev 构建：按钮置灰 + 提示文案', async () => {
@@ -429,6 +435,49 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
     // 该分支也可能是本版本确实没有 latest.json（如旧版用户），不能只给重试堵死升级路径
     expect(wrapper.text()).toContain(t('update.retry'))
     expect(wrapper.text()).toContain(t('update.open_download_page'))
+    wrapper.unmount()
+  })
+
+  it('发现新版本且 latest.json 带 notes：应用内弹窗展示 Release Note', async () => {
+    vi.stubEnv('DEV', false)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0', '## 新功能\n\n- 应用内显示 Release Note'))
+    const wrapper = await mountSettingsTabOnAbout()
+    await wrapper.get('[data-testid="update-check-btn"]').trigger('click')
+    await flushPromises()
+
+    // 弹窗未打开前 body 里没有弹窗节点
+    expect(document.body.querySelector('.update-notes-modal')).toBeNull()
+
+    await wrapper.get('[data-testid="update-notes-btn"]').trigger('click')
+    await flushPromises()
+
+    // 弹窗 Teleport 到 body：脱离设置页窄栏，正文按 Markdown 渲染
+    const modal = document.body.querySelector('.update-notes-modal')
+    expect(modal).toBeTruthy()
+    expect(modal!.textContent).toContain('v1.14.0')
+    const html = document.body.querySelector('.update-notes-modal .markdown-body')!.innerHTML
+    expect(html).toContain('<h2>')
+    expect(html).toContain('应用内显示 Release Note')
+    // 走应用内弹窗，不再外跳浏览器
+    expect(openReleaseUrlMock).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('notes 缺失（latest.json 未写 notes）降级为浏览器打开 Release 页', async () => {
+    vi.stubEnv('DEV', false)
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
+    const wrapper = await mountSettingsTabOnAbout()
+    await wrapper.get('[data-testid="update-check-btn"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="update-notes-btn"]').trigger('click')
+    await flushPromises()
+
+    // 空框不如不弹：降级走浏览器，用户仍看得见更新内容
+    expect(document.body.querySelector('.update-notes-modal')).toBeNull()
+    expect(openReleaseUrlMock).toHaveBeenCalledWith(
+      'https://github.com/hhelibeb/relwatch/releases/tag/v1.14.0',
+    )
     wrapper.unmount()
   })
 

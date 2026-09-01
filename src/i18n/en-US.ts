@@ -617,5 +617,9 @@ export default {
   'update.dev_disabled': 'Checking for updates is disabled in dev builds',
   'update.retry': 'Retry',
   'update.open_download_page': 'Open download page',
+  // Release Note modal (UpdateNotesModal)
+  'update.notes_built_at': 'Built at {0}',
+  'update.notes_empty': 'No release notes provided for this version',
+  'update.notes_open_in_browser': 'View in browser',
 
 }

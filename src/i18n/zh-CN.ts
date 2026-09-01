@@ -617,5 +617,9 @@ export default {
   'update.dev_disabled': '开发构建不支持检查更新',
   'update.retry': '重试',
   'update.open_download_page': '前往下载页',
+  // Release Note 弹窗（UpdateNotesModal）
+  'update.notes_built_at': '构建于 {0}',
+  'update.notes_empty': '该版本未提供更新说明',
+  'update.notes_open_in_browser': '在浏览器中查看',
 
 }

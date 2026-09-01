@@ -449,6 +449,40 @@ gh release edit v<新版本> \
 
 如果后续需要再次更新 release note，重复执行上述命令即可。
 
+### 10.5 把 Release Note 同步回 latest.json（应用内弹窗的数据源）
+
+> **为什么必须做**：应用内「查看 Release 说明」弹窗读的是 **latest.json 的 `notes` 字段**，
+> 而该字段由 tauri-action 在 CI 构建时写入，取的是 workflow 里的
+> `releaseBody: '请查看附件下载对应平台的安装包。'`（`.github/workflows/release.yml`）。
+> 上面 `gh release edit --notes-file` 只改 GitHub Release 的 body，**不会回写 latest.json**——
+> 少这一步，用户点开弹窗看到的就是那句占位文本。
+
+```bash
+cd "$(mktemp -d)"
+
+# 1. 拉下当前 latest.json（若 Step 9.2 手工补传过平台，这里拿到的是补传后的完整版本）
+gh release download "v<新版本>" -p 'latest.json'
+
+# 2. 读旧改新：只覆盖 notes，platforms / version / pub_date 原样保留
+cat > set-notes.cjs <<'EOF'
+const fs = require('fs')
+const notes = fs.readFileSync(process.env.NOTES_FILE, 'utf8').trim()
+const j = JSON.parse(fs.readFileSync('latest.json', 'utf8'))
+j.notes = notes
+fs.writeFileSync('latest.json', JSON.stringify(j, null, 2))
+console.log('notes 首行:', notes.split('\n')[0])
+console.log('version:', j.version, '| platforms:', Object.keys(j.platforms).join(', '))
+EOF
+NOTES_FILE="<项目根>/.rpiv/artifacts/release-notes/v<新版本>.md" node set-notes.cjs
+
+# 3. 覆盖上传（--clobber 替换同名 asset）
+gh release upload "v<新版本>" latest.json --clobber
+```
+
+> ⚠️ **绝不要凭空重建 latest.json**：只改 `notes` 一个字段。
+> 重建会丢掉 `platforms` 里另一半平台（同 Step 9.2 的并发覆盖坑），
+> 且 `signature` 无法从零推导——必须从 release 上现存的 `.sig` 读取。
+
 ---
 
 ## Step 11：等待用户确认
@@ -485,6 +519,17 @@ git tag -n v<新版本>
 
 # 可选：拉取最新状态
 git fetch --tags origin
+```
+
+**应用内弹窗数据源断言（Step 10.5 的回归检查）**：确认 latest.json 的 `notes`
+已是正式 Release Note，而不是 CI 写入的占位文本——漏了 10.5 这一步，用户点开
+「查看 Release 说明」看到的就是「请查看附件下载对应平台的安装包。」：
+
+```bash
+curl -sL https://github.com/hhelibeb/relwatch/releases/latest/download/latest.json \
+  | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);\
+    if(j.notes.includes('请查看附件下载')){console.error('FATAL: notes 仍是占位文本，补跑 Step 10.5');process.exit(1)}\
+    console.log('notes OK:', j.notes.split('\n')[0])})"
 ```
 
 ---
@@ -554,4 +599,6 @@ git commit --amend
 | CI 双 ref 检查 | main 分支和 tag ref 对应不同的 workflow，两者都必须检查 |
 | 本地 `tauri build` 会失败 | `createUpdaterArtifacts: true` 要求签名私钥，缺 `TAURI_SIGNING_PRIVATE_KEY` 直接构建失败；打包产物验证走 CI draft（见 Step 5 注意事项） |
 | latest.json 单平台 | 双 matrix job 非原子读改写，后写覆盖先写；Step 9.2 的断言只检测不消除，触发后按旁边的补传步骤手工拼回 |
+| latest.json 的 notes 是占位文本 | CI 用 workflow 的 `releaseBody` 写 notes，与 `gh release edit --notes-file` 互不同步；每次更新 release note 都要补跑 Step 10.5 回写，否则应用内弹窗显示占位句 |
+| 改 latest.json 必须读旧改新 | 凭空重建会丢 `platforms` 另一半平台，`signature` 也无法从零推导（同 10.5 警告） |
 | draft 期间「检查更新」的两种表现 | 首个带 `latest.json` 的发布显示「检查更新失败，请稍后重试」（`no_release`，带重试 + 打开下载页），之后的发布才显示「已是最新」（见 Step 12） |

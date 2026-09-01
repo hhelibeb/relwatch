@@ -20,6 +20,7 @@ import { track } from '../composables/useUsageTracking'
 import { applyTheme } from '../composables/useTheme'
 import { usePreviewSelect } from '../composables/usePreviewSelect'
 import { useBilibiliLogin } from '../composables/useBilibiliLogin'
+import UpdateNotesModal from './UpdateNotesModal.vue'
 
 const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{
@@ -144,10 +145,14 @@ const {
   percent: updatePercent,
   downloadText: updateDownloadText,
   busy: updateBusy,
+  showNotes: showUpdateNotes,
+  notesVersion: updateNotesVersion,
+  notesDate: updateNotesDate,
+  notesBody: updateNotesBody,
   checkForUpdate,
   downloadAndInstall,
   retry: retryUpdate,
-  openReleaseNotes,
+  openReleaseNotes: openUpdateNotes,
   openDownloadPage,
 } = useAppUpdate(() => ({ mode: props.settings.proxy_mode, url: props.settings.proxy_url.trim() }))
 
@@ -858,7 +863,7 @@ async function handleImportBackup() {
             <span class="setting-label">{{ tm('update.available', { version: `v${pendingUpdate?.version ?? ''}` }) }}</span>
             <div class="update-actions">
               <button class="btn-secondary" :disabled="updateBusy" data-testid="update-install-btn" @click="downloadAndInstall">{{ t('update.download_install') }}</button>
-              <button class="btn-secondary" :disabled="updateBusy" @click="openReleaseNotes">{{ t('update.view_notes') }}</button>
+              <button class="btn-secondary" :disabled="updateBusy" data-testid="update-notes-btn" @click="openUpdateNotes">{{ t('update.view_notes') }}</button>
             </div>
           </div>
           <div v-else-if="updateStatus === 'downloading'" class="setting-row">
@@ -885,6 +890,15 @@ async function handleImportBackup() {
         </div>
       </div>
     </div>
+
+    <!-- Release Note 弹窗：Teleport 到 body，脱离设置页窄栏布局（组件内部自绘） -->
+    <UpdateNotesModal
+      v-if="showUpdateNotes && updateNotesBody"
+      :version="updateNotesVersion"
+      :date="updateNotesDate"
+      :body="updateNotesBody"
+      @close="showUpdateNotes = false"
+    />
   </section>
 </template>
 <style scoped>

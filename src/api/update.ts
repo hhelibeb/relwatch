@@ -12,7 +12,7 @@
 //
 // 下载与安装仍走插件自带命令（只接受 headers/timeout）：proxy 随 check 时构建的
 // Update 资源贯穿到下载阶段，无需（也不能）重复传。
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { Update, type DownloadEvent } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 import { getVersion } from '@tauri-apps/api/app'
@@ -104,6 +104,8 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
   const total = ref<number | undefined>(undefined)
   /** error 态的重试去向：检查失败 → 重跑 check；下载失败 → 回 available */
   const retryTarget = ref<'check' | 'download'>('check')
+  /** Release Note 弹窗开关（SettingsTab 据此挂载 UpdateNotesModal） */
+  const showNotes = ref(false)
 
   // getVersion 失败（非 Tauri 环境等）静默兜底，版本号显示为空即可
   void getVersion()
@@ -246,10 +248,37 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     }
   }
 
-  function openReleaseNotes(): void {
+  /** 弹窗内展示的 Release Note（latest.json 的 notes）；无 body 时为 null（不弹窗） */
+  const notesBody = computed(() => pendingUpdate.value?.body ?? null)
+  /** 新版本的构建日期（latest.json 的 pub_date），可能为空 */
+  const notesVersion = computed(() => pendingUpdate.value?.version ?? '')
+  const notesDate = computed(() => pendingUpdate.value?.date ?? null)
+
+  /** 浏览器打开 GitHub Release 页：带安装包、commit 与历史版本，
+   *  是弹窗内 Markdown 覆盖不到的部分。 */
+  function openReleasePage(): void {
     const v = pendingUpdate.value?.version
     if (v) void openReleaseUrl(`https://github.com/hhelibeb/relwatch/releases/tag/v${v}`)
   }
+
+  /** 「查看 Release 说明」：有 notes 走应用内弹窗；
+   *  notes 缺失（latest.json 未写 notes，见发布流程）降级为浏览器打开 Release 页——
+   *  此时弹一个空框不如不弹，但用户仍要看得见更新内容。 */
+  function openReleaseNotes(): void {
+    if (notesBody.value) {
+      showNotes.value = true
+      return
+    }
+    openReleasePage()
+  }
+
+  /** 离开 available 态（开始下载/重新检查/出错）时收起弹窗，避免残留旧版本内容。
+   *  刻意不做「下载失败 → retry 回 available 后自动重开弹窗」：下载失败已进 error 态，
+   *  用户主动 retry 后需要重新点「查看 Release 说明」——避免看到与已重置状态不符的旧版
+   *  Release Note，也让用户对「重来一次」有明确心智。 */
+  watch(status, (s) => {
+    if (s !== 'available') showNotes.value = false
+  })
 
   function openDownloadPage(): void {
     void openReleaseUrl(DOWNLOAD_PAGE_URL)
@@ -266,10 +295,15 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     percent,
     downloadText,
     busy,
+    showNotes,
+    notesVersion,
+    notesDate,
+    notesBody,
     checkForUpdate,
     downloadAndInstall,
     retry,
     openReleaseNotes,
+    openReleasePage,
     openDownloadPage,
   }
 }
