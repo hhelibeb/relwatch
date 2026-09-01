@@ -241,6 +241,7 @@ export const commands = {
 export const events = {
 	agentRpcStream: makeEvent<AgentRpcStream>("agent-rpc-stream"),
 	agentRunFinished: makeEvent<AgentRunFinished>("agent-run-finished"),
+	focusRelease: makeEvent<FocusRelease>("focus-release"),
 	navigate: makeEvent<Navigate>("navigate"),
 	pollCompleted: makeEvent<PollCompleted>("poll-completed"),
 	releaseStateChanged: makeEvent<ReleaseStateChanged>("release-state-changed"),
@@ -527,6 +528,13 @@ export type AppSettings = {
 	youtube_api_key_set: boolean,
 	bilibili_cookie_set: boolean,
 };
+
+/**
+ *  点击桌面通知**主体**请求前端聚焦某条 release，payload 为 release id。
+ *  与「前往」按钮区分：点主体只唤起窗口并定位，**不改通知状态**（语义为「去看一眼」，
+ *  不代表已处理），因此不 emit ReleaseStateChanged，托盘红点与未读计数保持不变。
+ */
+export type FocusRelease = number;
 
 export type LogEntry = {
 	id: number,

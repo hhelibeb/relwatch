@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { defineComponent } from 'vue'
 import { t, setLocale } from '../i18n'
+import { releaseMatchesSearch } from '../utils'
 import { defaultSettings } from './helpers'
 
 // ========== Tauri 边界 Mocks（应用内模块一律走真实实现） ==========
@@ -213,13 +214,14 @@ describe('App.vue — 挂载初始化', () => {
     expect(useEscapeToTray).toHaveBeenCalled()
   })
 
-  it('注册 4 个 Tauri 事件监听器', async () => {
+  it('注册 5 个 Tauri 事件监听器', async () => {
     await mountRealApp()
 
     expect(mockListen).toHaveBeenCalledWith('navigate', expect.any(Function))
     expect(mockListen).toHaveBeenCalledWith('poll-completed', expect.any(Function))
     expect(mockListen).toHaveBeenCalledWith('release-state-changed', expect.any(Function))
     expect(mockListen).toHaveBeenCalledWith('source-auto-disabled', expect.any(Function))
+    expect(mockListen).toHaveBeenCalledWith('focus-release', expect.any(Function))
   })
 
   it('注册 contextMenuBus：菜单可被总线统一关闭', async () => {
@@ -263,9 +265,9 @@ describe('App.vue — 挂载初始化', () => {
     await flushPromises()
     wrapper2.unmount()
 
-    // 两次挂载共 8 次 listen，全部 unlisten 都被调用（无泄漏）
-    expect(mockListen).toHaveBeenCalledTimes(8)
-    expect(mockUnlisten).toHaveBeenCalledTimes(8)
+    // 两次挂载共 10 次 listen，全部 unlisten 都被调用（无泄漏）
+    expect(mockListen).toHaveBeenCalledTimes(10)
+    expect(mockUnlisten).toHaveBeenCalledTimes(10)
   })
 })
 
@@ -616,6 +618,85 @@ describe('App.vue — 跨 Tab 导航（子组件事件入口）', () => {
     expect(wrapper.findAll('nav.tabs button')[1].classes()).toContain('active')
     expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('vuejs/core')
     expect(wrapper.findComponent(ReleaseTabStub).props('statusFilter')).toBe('unread')
+  })
+})
+
+describe('App.vue — 点击通知主体定位 release（focus-release 事件）', () => {
+  /** 取出 focus-release 的监听回调，按后端 payload（release id）触发一次。 */
+  async function emitFocusRelease(wrapper: Awaited<ReturnType<typeof mountRealApp>>, id: number) {
+    const call = vi.mocked(mockListen).mock.calls.find(c => c[0] === 'focus-release')
+    expect(call).toBeDefined()
+    await call![1]({ payload: id })
+    await wrapper.vm.$nextTick()
+  }
+
+  function activeTabIsReleases(wrapper: Awaited<ReturnType<typeof mountRealApp>>) {
+    return wrapper.findAll('nav.tabs button')[1].classes().includes('active')
+  }
+
+  it('focus-release 事件 → 切到版本列表并回填 owner/repo 搜索词', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 7)
+
+    expect(activeTabIsReleases(wrapper)).toBe(true)
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('tauri-apps/tauri')
+    expect(wrapper.findComponent(ReleaseTabStub).props('statusFilter')).toBe('all')
+  })
+
+  it('同仓库多条 release 时过滤出多条（搜索过滤方案的已知取舍）', async () => {
+    const releases = [
+      { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2', release_name: 'R2', body: null, source_description: null },
+      { id: 8, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v1', release_name: 'R1', body: null, source_description: null },
+      { id: 9, source_type: 'github', owner: 'vuejs', repo: 'core', tag_name: 'v3', release_name: 'R3', body: null, source_description: null },
+    ]
+    vi.mocked(getReleases).mockResolvedValue(releases as never)
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 7)
+    const query = wrapper.findComponent(ReleaseTabStub).props('search') as string
+
+    // 用真实过滤函数验证：命中该仓库的全部 release，而非被点击的那一条
+    const matched = releases.filter(r => releaseMatchesSearch(r, query))
+    expect(matched.map(r => r.id)).toEqual([7, 8])
+  })
+
+  it('release id 不存在时仅切 tab，不改搜索词且不报错', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 1, source_type: 'github', owner: 'a', repo: 'b', tag_name: 'v1' } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 999)
+
+    expect(activeTabIsReleases(wrapper)).toBe(true)
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('')
+  })
+
+  it('视频源（repo 为空）退化为按频道名 source_description 过滤', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 3, source_type: 'youtube', owner: 'UCabc', repo: '', tag_name: '', source_description: '某频道' } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 3)
+
+    expect(activeTabIsReleases(wrapper)).toBe(true)
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('某频道')
+  })
+
+  it('视频源且无 source_description 时回退为 owner', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 4, source_type: 'bilibili', owner: '12345', repo: '', tag_name: '', source_description: null } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 4)
+
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('12345')
   })
 })
 

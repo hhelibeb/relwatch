@@ -43,6 +43,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::PollCompleted,
             events::SourceAutoDisabled,
             events::Navigate,
+            events::FocusRelease,
             events::AgentRunFinished,
             events::AgentRpcStream,
         ])
@@ -111,8 +112,30 @@ pub fn export_bindings() {
         .expect("Failed to export typescript bindings");
 }
 
+/// 声明进程的 AppUserModelID（AUMID），使 Windows 通知归属到 RelWatch 而非 PowerShell。
+///
+/// 必须在**创建任何窗口之前**调用（此处位于 `tauri::Builder` 构建之前），否则任务栏
+/// 分组与 toast 归属可能不生效。AUMID 值由 NSIS 安装器写入快捷方式
+/// （`nsis/utils.nsh` 的 `SetLnkAppUserModelId`），与 `notify::WINDOWS_AUMID` 同源。
+/// 失败时仅告警：退回当前行为（通知仍会显示，只是来源名可能不正确）。
+#[cfg(windows)]
+fn declare_app_user_model_id() {
+    use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+    use windows::core::PCWSTR;
+
+    let aumid: Vec<u16> = format!("{}\0", notify::WINDOWS_AUMID).encode_utf16().collect();
+    // 此刻日志插件尚未注册（setup 中才挂载），log 宏是空操作，故用 eprintln
+    if let Err(e) = unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(aumid.as_ptr())) } {
+        eprintln!("WARNING: 设置 AppUserModelID 失败，通知来源可能显示不正确: {}", e);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // 先声明 AUMID 再建窗口（Windows 要求在任何 UI 创建前设置）
+    #[cfg(windows)]
+    declare_app_user_model_id();
+
     if let Err(e) = crypto::initialize_master_key() {
         eprintln!(
             "FATAL: 无法初始化加密密钥: {}\n请确保 OS keyring 可用（Linux 需安装并运行 dbus 和密钥环守护进程）。\nLinux: sudo apt install gnome-keyring 或 secret-service-dbus\nmacOS / Windows: 通常无需额外操作",

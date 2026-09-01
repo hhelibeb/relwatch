@@ -307,6 +307,8 @@ export default {
 
   'release.go': 'Go to release {owner}/{repo} {tag} id={id}',
   'release.go_unknown': 'Go to release id={id}',
+  'release.focus': 'Notification body clicked, focusing {owner}/{repo} {tag} id={id}',
+  'release.focus_unknown': 'Notification body clicked, focusing id={id} (record no longer exists)',
   'release.ignored': 'Ignore release {owner}/{repo} {tag} id={id}',
   'release.ignored_unknown': 'Ignore release id={id}',
   'release.snoozed': 'Snooze release {owner}/{repo} {tag} id={id}',

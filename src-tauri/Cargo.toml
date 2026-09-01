@@ -74,6 +74,9 @@ windows = { version = "0.61", features = [
     # CreateJobObjectW 的 SECURITY_ATTRIBUTES 形参由 Win32_Security 提供，
     # 未启用该 feature 时该函数被 cfg 掉（windows crate 的按依赖剪裁）
     "Win32_Security",
+    # SetCurrentProcessExplicitAppUserModelID：声明进程 AUMID，使 toast 通知归属于
+    # RelWatch 而非 PowerShell（快捷方式 AUMID 已由 NSIS 安装器写入，此处对齐进程侧）
+    "Win32_UI_Shell",
 ] }
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]

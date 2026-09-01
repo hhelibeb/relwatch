@@ -307,6 +307,8 @@ export default {
 
   'release.go': '前往版本 {owner}/{repo} {tag} id={id}',
   'release.go_unknown': '前往版本 id={id}',
+  'release.focus': '点击通知主体，定位版本 {owner}/{repo} {tag} id={id}',
+  'release.focus_unknown': '点击通知主体，定位版本 id={id}（记录已不存在）',
   'release.ignored': '忽略版本 {owner}/{repo} {tag} id={id}',
   'release.ignored_unknown': '忽略版本 id={id}',
   'release.snoozed': '推迟版本 {owner}/{repo} {tag} id={id}',

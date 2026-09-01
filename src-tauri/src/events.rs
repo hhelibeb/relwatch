@@ -28,6 +28,12 @@ pub struct SourceAutoDisabled {
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct Navigate(pub String);
 
+/// 点击桌面通知**主体**请求前端聚焦某条 release，payload 为 release id。
+/// 与「前往」按钮区分：点主体只唤起窗口并定位，**不改通知状态**（语义为「去看一眼」，
+/// 不代表已处理），因此不 emit ReleaseStateChanged，托盘红点与未读计数保持不变。
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct FocusRelease(pub i64);
+
 /// 一次 Agent 提交运行结束（成功/失败/超时/取消），前端据此刷新工作区记录。
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct AgentRunFinished {
@@ -47,4 +53,22 @@ pub struct AgentRpcStream {
     pub session_key: String,
     pub run_id: i64,
     pub event: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 事件名由 tauri-specta 从结构体名推导（kebab-case）。
+    /// 前端 `src/bindings.ts` 依赖此名监听，改名会静默断链，故锁在这里。
+    #[test]
+    fn focus_release_event_name_is_kebab_case() {
+        assert_eq!(<FocusRelease as tauri_specta::Event>::NAME, "focus-release");
+    }
+
+    /// 对照：既有事件的命名规则未受影响。
+    #[test]
+    fn navigate_event_name_unchanged() {
+        assert_eq!(<Navigate as tauri_specta::Event>::NAME, "navigate");
+    }
 }

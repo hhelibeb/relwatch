@@ -516,6 +516,25 @@ function openSourceReleases(query: string) {
   activeTab.value = 'releases'
 }
 
+/** 点击通知主体：切到版本列表并回填搜索词过滤出该 release。
+ *  同仓库存在多条 release 时不能精确到唯一条（搜索过滤方案固有，用户已接受此取舍）。 */
+function focusReleaseById(id: number) {
+  const release = releases.value.find(r => r.id === id)
+  if (!release) {
+    // release 尚未加载（冷启动竞态）或已被删除：仅切 tab，不做过滤
+    activeTab.value = 'releases'
+    return
+  }
+  // 视频源无 repo 语义，退化为按频道名（source_description）过滤；
+  // releaseMatchesSearch 会匹配 source_description，故能命中
+  const query = release.repo
+    ? `${release.owner}/${release.repo}`
+    : (release.source_description ?? release.owner)
+  releaseSearch.value = query
+  releaseStatusFilter.value = 'all'
+  activeTab.value = 'releases'
+}
+
 function openSourceUnreadReleases(query: string) {
   releaseSearch.value = query
   releaseStatusFilter.value = 'unread'
@@ -574,6 +593,13 @@ onMounted(async () => {
     }
   })
   unlisteners.push(navigateUnlisten)
+
+  // 点击桌面通知主体（非按钮）：定位到该条 release。
+  // 注册在 loadAll() 之后，此时 releases 已就绪，正常情况下能命中
+  const focusUnlisten = await events.focusRelease.listen((event) => {
+    focusReleaseById(event.payload)
+  })
+  unlisteners.push(focusUnlisten)
 
   const pollUnlisten = await events.pollCompleted.listen(() => {
     loadSources()

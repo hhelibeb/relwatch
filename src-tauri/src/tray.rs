@@ -14,16 +14,23 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
     let settings = MenuItemBuilder::with_id("tray_settings", "设置").build(app)?;
     let check_now = MenuItemBuilder::with_id("tray_check_now", "立即检查").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+    // 仅 debug 构建：手动触发一条通知，用于验证「点击通知主体」链路
+    // （Windows 上该行为无法自动断言，必须真人点击一次）
+    #[cfg(debug_assertions)]
+    let test_notification =
+        MenuItemBuilder::with_id("tray_test_notification", "发送测试通知（debug）").build(app)?;
 
+    // 用 shadowing 而非 mut：release 下 debug_assertions 为 false，
+    // 若声明 mut 会出现 unused_mut 警告（dev clippy 测不到，release 构建会红）
     let menu = MenuBuilder::new(app)
         .item(&sources)
         .item(&releases)
         .item(&settings)
         .separator()
-        .item(&check_now)
-        .separator()
-        .item(&quit)
-        .build()?;
+        .item(&check_now);
+    #[cfg(debug_assertions)]
+    let menu = menu.separator().item(&test_notification);
+    let menu = menu.separator().item(&quit).build()?;
 
     let icon = app.default_window_icon().cloned().ok_or("no icon")?;
 
@@ -57,6 +64,10 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
                 }
                 "tray_check_now" => {
                     crate::poll::trigger_poll_async(app.clone());
+                }
+                #[cfg(debug_assertions)]
+                "tray_test_notification" => {
+                    crate::notify::send_test_notification(app);
                 }
                 "quit" => {
                     crate::poll::stop_poll();
