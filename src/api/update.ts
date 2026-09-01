@@ -56,8 +56,9 @@ export function classifyUpdateError(raw: string): UpdateErrorKind {
   // 顺序敏感：具体变体在前，兜底网络/泛化在后
   // ReleaseNotFound 是插件对「endpoint 未给出可用 release」的统一兜底（updater.rs）：
   // 404（该版本还没有 latest.json）、403/500（GitHub 限流或服务端故障）、JSON 解析失败
-  // 全都落这一种，因此本类的实际含义比文案「暂无可用更新」更宽——服务端故障也会被
-  // 归到这里。检查按钮始终可用，用户重试即可自救，故维持单一归类。
+  // 全都落这一种，因此本类的实际含义比文案「检查更新失败」更宽——它也可能只是
+  // 本版本还没有 latest.json（旧版用户），并非真的出了故障。UI 上重试与打开下载页
+  // 两个入口并存（SettingsTab.showUpdate*），两条出路都不堵，故维持单一归类。
   if (m.includes('could not fetch a valid release json')) return 'no_release'
   if (m.includes('signature') || m.includes('minisign')) return 'signature'
   if (m.includes('was not found in the response') || m.includes('none of the fallback platforms')) return 'targets'

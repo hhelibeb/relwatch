@@ -468,8 +468,9 @@ gh release edit v<新版本> \
 >    其 `latest.json` 存在且版本号低于本次 → 返回旧版本「已是最新」。
 > 2. **本次是首个带 `latest.json` 的发布**（v1.14.0 就是这种）：`latest` 仍指向
 >    v1.13.x，那一版没有 `latest.json` → endpoint 返回 404，插件统一兜底为
->    `ReleaseNotFound`（`updater.rs`），归类 `no_release` → UI 显示**「暂无可用更新」**
->    而**不是**「已是最新」。
+>    `ReleaseNotFound`（`updater.rs`），归类 `no_release` → UI 显示
+>    **「检查更新失败，请稍后重试」**（`update.error.no_release`）而**不是**「已是最新」，
+>    同时给出「重试」与「打开下载页」两个按钮。
 >
 > 两种都不是故障，发布后 `latest.json` 生效即可正常检出新版本。
 
@@ -553,4 +554,4 @@ git commit --amend
 | CI 双 ref 检查 | main 分支和 tag ref 对应不同的 workflow，两者都必须检查 |
 | 本地 `tauri build` 会失败 | `createUpdaterArtifacts: true` 要求签名私钥，缺 `TAURI_SIGNING_PRIVATE_KEY` 直接构建失败；打包产物验证走 CI draft（见 Step 5 注意事项） |
 | latest.json 单平台 | 双 matrix job 非原子读改写，后写覆盖先写；Step 9.2 的断言只检测不消除，触发后按旁边的补传步骤手工拼回 |
-| draft 期间「检查更新」的两种表现 | 首个带 `latest.json` 的发布显示「暂无可用更新」，之后的发布才显示「已是最新」（见 Step 12） |
+| draft 期间「检查更新」的两种表现 | 首个带 `latest.json` 的发布显示「检查更新失败，请稍后重试」（`no_release`，带重试 + 打开下载页），之后的发布才显示「已是最新」（见 Step 12） |

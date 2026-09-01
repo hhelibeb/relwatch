@@ -154,10 +154,18 @@ const {
 // dev 构建置灰：插件不区分 debug/release，dev 下 check() 会真实访问线上 endpoint
 // 并允许把正式版装进开发版（设计稿 §4.3 开发构建保护）
 const isDevBuild = import.meta.env.DEV
-// error 态兜底动作（§4.5 错误表）：network/generic → 重试；no_release/unsupported → 无动作
-const showUpdateRetry = computed(() => updateErrorKind.value === 'network' || updateErrorKind.value === 'generic')
+// error 态兜底动作（§4.5 错误表）：network/generic → 重试；no_release → 重试（「检查失败」，重跑 check 自救）；signature/targets/format/mount/unsupported → 无动作
+// 注：no_release 是 updater 插件对「endpoint 拿不到合法 release JSON」（404/403/500/JSON 解析失败）的统一归类，
+// 语义上是检查失败而非「没有更新」——真正的无更新走 upToDate（绿色 ✓）。
+const showUpdateRetry = computed(() =>
+  updateErrorKind.value === 'network' || updateErrorKind.value === 'generic' || updateErrorKind.value === 'no_release',
+)
 const showUpdateDownloadPage = computed(
-  () => updateErrorKind.value !== 'no_release' && updateErrorKind.value !== 'unsupported',
+  // no_release 也保留下载页：它是插件对「endpoint 拿不到合法 release JSON」的统一兜底，
+  // 除限流/服务端故障外，也可能是当前版本确实没有 latest.json（旧版用户）——
+  // 只给重试会堵死手动升级路径，故重试与下载页并存（两者不互斥）。
+  // 仅 unsupported（环境不支持应用内更新）不给下载页：跳过去同样装不了。
+  () => updateErrorKind.value !== 'unsupported',
 )
 
 // ── 固定提示词后缀（不可编辑）───────────────────────

@@ -92,7 +92,7 @@ describe('classifyUpdateError（§4.5 错误表，锚点对 tauri-plugin-updater
     expect(classifyUpdateError('connection refused')).toBe('network')
   })
 
-  it('ReleaseNotFound 归 no_release（暂无可用更新，比网络错误准确）', () => {
+  it('ReleaseNotFound 归 no_release（endpoint 拿不到合法 release JSON → 检查失败）', () => {
     expect(classifyUpdateError('Could not fetch a valid release JSON from the remote')).toBe('no_release')
   })
 
@@ -413,6 +413,21 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
     expect(wrapper.text()).not.toContain(t('update.error.network'))
     // 签名错误无「重试」按钮，只有「前往下载页」（§4.5 错误表）
     expect(wrapper.text()).not.toContain(t('update.retry'))
+    expect(wrapper.text()).toContain(t('update.open_download_page'))
+    wrapper.unmount()
+  })
+
+  it('检查失败（no_release：endpoint 拿不到合法 release JSON）→ 显示失败文案 + 重试按钮', async () => {
+    vi.stubEnv('DEV', false)
+    checkMock.mockRejectedValue('Could not fetch a valid release JSON from the remote')
+    const wrapper = await mountSettingsTabOnAbout()
+    await wrapper.get('[data-testid="update-check-btn"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain(t('update.error.no_release'))
+    // no_release 是「检查失败」而非「没有更新」：重试自救 + 手动下载页并存——
+    // 该分支也可能是本版本确实没有 latest.json（如旧版用户），不能只给重试堵死升级路径
+    expect(wrapper.text()).toContain(t('update.retry'))
     expect(wrapper.text()).toContain(t('update.open_download_page'))
     wrapper.unmount()
   })
