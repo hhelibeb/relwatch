@@ -204,6 +204,10 @@ export default {
 
   'release.search': 'Search releases...',
   'release.no_match': 'No matching releases',
+  'release.no_match_deep_hint': 'No match. Try "{0}" to search release body',
+  'release.deep_search_label': 'Deep search',
+  'release.deep_search': 'Deep',
+  'release.deep_search_hint': 'Search GitHub/HuggingFace release body and translation',
   'release.empty': 'No releases yet. Add a source and click "Check Now".',
   'release.prerelease': 'Prerelease',
   'release.published_at': 'Published: {0}',

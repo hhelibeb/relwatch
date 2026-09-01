@@ -42,6 +42,8 @@ function handleBack() {
   </button>
   <div class="date-detail-title">{{ dateDetailTitle }}</div>
   <div class="release-list">
+    <!-- TODO(fulltext-search)：日历钻取视图空态可考虑同步「试试深度搜索」出口，
+         见 docs/release-fulltext-search-impl.md 步骤 3b。 -->
     <div v-if="dateDetailReleases.length === 0" class="empty">{{ t('release.no_match') }}</div>
     <ReleaseItem
       v-for="release in dateDetailReleases"

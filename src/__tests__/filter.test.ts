@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ref, computed, defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
-import { isUnreadStatus, isReadStatus, releaseMatchesSearch } from '../utils'
+import { isUnreadStatus, isReadStatus, filterReleaseIndices, buildBodyIndex } from '../utils'
 
 // 模拟 ReleaseTab.vue 的 filteredReleases + sortedReleases 逻辑
 // 绕过真实组件依赖（Tauri API、inject 等），直接测试筛选/排序计算
@@ -13,6 +13,7 @@ interface MockRelease {
   tag_name: string
   release_name: string
   body: string | null
+  source_type: string
   published_at: string
   notification_status: string
   snooze_until: string | null
@@ -27,6 +28,7 @@ function makeRelease(id: number, overrides: Partial<MockRelease> = {}): MockRele
     tag_name: `v${id}.0.0`,
     release_name: `Release ${id}.0.0`,
     body: null,
+    source_type: 'github', // ← 默认 GitHub：body 归 Tier2，常规搜索不命中
     published_at: `2025-01-${String(id).padStart(2, '0')}T00:00:00Z`,
     notification_status: 'pending',
     snooze_until: null,
@@ -41,6 +43,8 @@ const FilterTester = defineComponent({
     search: { type: String, default: '' },
     statusFilter: { type: String, default: 'all' },
     importanceFilter: { type: String, default: 'all' },
+    // 深度搜索索引（与 releases 对齐）；传入即启用 Tier2 搜索
+    bodyIndex: { type: Array as () => string[][] | null, default: null },
   },
   emits: ['result'],
   setup(props, { emit }) {
@@ -51,8 +55,11 @@ const FilterTester = defineComponent({
     const filteredReleases = computed(() => {
       let list = props.releases as MockRelease[]
 
-      const q = releaseSearch.value.trim().toLowerCase()
-      if (q) list = list.filter(r => releaseMatchesSearch(r, q))
+      const q = releaseSearch.value.trim()
+      if (q) {
+        const picked = filterReleaseIndices(list, q, props.bodyIndex)
+        list = picked.map(i => list[i])
+      }
 
       if (statusFilter.value === 'unread') {
         list = list.filter(r => isUnreadStatus(r.notification_status, r.snooze_until))
@@ -121,8 +128,14 @@ describe('ReleaseTab — 筛选/排序逻辑', () => {
     expect(result[0].id).toBe(5)
   })
 
-  it('搜索 body 内容', () => {
+  it('GitHub body 默认不命中常规搜索（需深度搜索）', () => {
     const wrapper = mount(FilterTester, { props: { releases, search: 'Major release' } })
+    const result = wrapper.emitted('result')![0][0] as MockRelease[]
+    expect(result).toHaveLength(0)
+  })
+
+  it('传入 bodyIndex（深度搜索）后 GitHub body 可命中', () => {
+    const wrapper = mount(FilterTester, { props: { releases, search: 'Major release', bodyIndex: buildBodyIndex(releases) } })
     const result = wrapper.emitted('result')![0][0] as MockRelease[]
     expect(result).toHaveLength(1)
     expect(result[0].id).toBe(5)

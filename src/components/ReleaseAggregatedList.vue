@@ -105,6 +105,8 @@ function handleOpenUrl(url: string) {
 <template>
   <div v-if="repoGroups.length === 0" class="empty">
     {{ props.isFiltering ? t('release.no_match') : t('release.empty') }}
+    <!-- TODO(fulltext-search)：同步 ReleaseSimpleList 的三态空结果文案（含「试试深度搜索」出口），
+         见 docs/release-fulltext-search-impl.md 步骤 3b。 -->
   </div>
   <div v-else class="repo-toolbar">
     <button class="btn-sm" @click="toggleAllRepos">

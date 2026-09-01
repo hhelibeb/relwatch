@@ -14,6 +14,8 @@ const props = withDefaults(defineProps<{
   viewMode: ViewMode
   showSearch?: boolean
   count?: number
+  deepSearch?: boolean
+  deepSearching?: boolean
 }>(), {
   showSearch: true,
 })
@@ -24,6 +26,7 @@ const emit = defineEmits<{
   'update:importanceFilter': [value: ReleaseImportanceFilter]
   'update:sourceFilter': [value: ReleaseSourceFilter]
   'update:viewMode': [value: ViewMode]
+  'update:deepSearch': [value: boolean]
   searchEnter: []
 }>()
 
@@ -115,6 +118,7 @@ function selectViewMode(value: ViewMode) {
         @keydown.enter.prevent="onSearchEnter"
       />
       <span v-if="count !== undefined" class="release-count" :class="{ 'has-clear': modelValue !== '' }" :title="t('release.versions', String(count))">({{ count }})</span>
+      <button v-if="modelValue" type="button" class="deep-search-btn" :class="{ active: deepSearch }" :disabled="deepSearching" :title="t('release.deep_search_hint')" @click="emit('update:deepSearch', !deepSearch)">{{ t('release.deep_search') }}</button>
       <button v-if="modelValue" type="button" class="input-clear-btn" :title="t('input.clear')" @click="emit('update:modelValue', '')">✕</button>
     </div>
     <div class="filter-group" @mouseleave="filterDropdown.hoverLeave()">
@@ -189,12 +193,47 @@ function selectViewMode(value: ViewMode) {
 }
 
 .release-count.has-clear {
-  right: 34px;
+  right: 84px;
 }
 
-/* 为计数徽标 + 清空按钮预留右侧空间，避免输入长文本时重叠 */
+/* 深度搜索切换按钮：位于清空按钮左侧，仅在有搜索词时显示。
+   开启态高亮为 primary 色；构建期间禁用防止重复触发。 */
+.deep-search-btn {
+  position: absolute;
+  right: 32px;
+  top: 50%;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transform: translateY(-50%);
+}
+
+.deep-search-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.deep-search-btn.active {
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
+  color: var(--primary-soft-text);
+}
+
+.deep-search-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 为计数徽标 + 清空按钮 + 深度按钮预留右侧空间，避免输入长文本时重叠 */
 .input-clear-wrap .search-input {
-  padding-right: 72px;
+  padding-right: 130px;
 }
 
 /* 类型徽标图标（来源筛选触发按钮与下拉选项共用） */
