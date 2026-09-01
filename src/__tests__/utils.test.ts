@@ -2,6 +2,8 @@ import { describe, it, expect, vi } from 'vitest'
 import {
   formatDate,
   releaseMatchesSearch,
+  tokenizeQuery,
+  getSearchIndex,
   logLevelClass,
   statusLabel,
   statusClass,
@@ -9,6 +11,7 @@ import {
   isReadStatus,
   skillShortName,
 } from '../utils'
+import { sourceTypeDefs } from '../api/source-registry'
 
 // ── releaseMatchesSearch ──────────────────────────────────────────
 
@@ -19,6 +22,7 @@ function makeRelease(overrides = {}) {
     tag_name: 'v1.0.0',
     release_name: 'RelWatch 1.0.0',
     body: null,
+    source_type: 'github',      // ← 默认 GitHub，body 归 Tier2；视频源需显式指定
     ...overrides,
   }
 }
@@ -50,10 +54,15 @@ describe('releaseMatchesSearch', () => {
     expect(releaseMatchesSearch(makeRelease(), 'RelWatch')).toBe(true)
   })
 
-  it('匹配 body 内容', () => {
-    const release = makeRelease({ body: 'This release fixes critical bugs' })
+  it('匹配 body 内容（视频源：body 即简介，进 Tier1）', () => {
+    const release = makeRelease({ source_type: 'bilibili', body: 'This release fixes critical bugs' })
     expect(releaseMatchesSearch(release, 'critical')).toBe(true)
     expect(releaseMatchesSearch(release, 'bugs')).toBe(true)
+  })
+
+  it('GitHub body 不进 Tier1（2 参调用不命中，需深度搜索）', () => {
+    const release = makeRelease({ body: 'This release fixes critical bugs' })
+    expect(releaseMatchesSearch(release, 'critical')).toBe(false)
   })
 
   it('body 为 null 时不报错', () => {
@@ -74,6 +83,83 @@ describe('releaseMatchesSearch', () => {
   it('无匹配返回 false', () => {
     expect(releaseMatchesSearch(makeRelease(), 'nonexistent')).toBe(false)
     expect(releaseMatchesSearch(makeRelease(), 'v2.0.0')).toBe(false)
+  })
+})
+
+// ── tokenizeQuery ────────────────────────────────────────────────
+
+describe('tokenizeQuery', () => {
+  it('按空白切词并小写', () => {
+    expect(tokenizeQuery('RelWatch V1.14')).toEqual(['relwatch', 'v1.14'])
+  })
+  it('空查询返回空数组', () => {
+    expect(tokenizeQuery('')).toEqual([])
+    expect(tokenizeQuery('   ')).toEqual([])
+  })
+  it('版本号不按点拆分', () => {
+    expect(tokenizeQuery('v1.14.0')).toEqual(['v1.14.0'])
+  })
+})
+
+// ── releaseMatchesSearch — 词元 AND ──────────────────────────────
+
+describe('releaseMatchesSearch — 词元 AND', () => {
+  it('跨字段组合：relwatch v1.14', () => {
+    expect(releaseMatchesSearch(makeRelease({ tag_name: 'v1.14.0' }), 'relwatch v1.14')).toBe(true)
+    expect(releaseMatchesSearch(makeRelease({ tag_name: 'v1.14.0' }), 'relwatch v2.0')).toBe(false)
+  })
+  it('【回归】owner/repo 必须作为整体可匹配', () => {
+    // 若 haystack 用 join(' ') 把 owner/repo 拆开，此用例会失败
+    expect(releaseMatchesSearch(makeRelease(), 'hhelibeb/relwatch')).toBe(true)
+  })
+  it('中文子串匹配 ai_summary', () => {
+    expect(releaseMatchesSearch(makeRelease({ ai_summary: '新增服务模式启动支持' }), '服务模式')).toBe(true)
+  })
+  it('【新增】视频源 body 进 Tier1（简介/标签可直接搜）', () => {
+    const bili = makeRelease({ source_type: 'bilibili', body: '助眠 asmr 标签' })
+    expect(releaseMatchesSearch(bili, '助眠')).toBe(true)
+    expect(releaseMatchesSearch(bili, 'asmr')).toBe(true)
+  })
+  it('GitHub body 不进 Tier1（无论长短，一律需深度搜索）', () => {
+    const gh = (b: string) => makeRelease({ source_type: 'github', body: b })
+    expect(releaseMatchesSearch(gh('aaa'), 'aaa')).toBe(false)
+    expect(releaseMatchesSearch(gh('b'.repeat(1000)), 'bbb')).toBe(false)
+    // 显式传入 bodyFields 时可命中
+    expect(releaseMatchesSearch(gh('b'.repeat(1000)), 'bbb', ['b'.repeat(1000), ''])).toBe(true)
+  })
+  it('【回归】Tier1 判定跟随注册表能力位（运行时覆写后自动生效）', () => {
+    // 搜索分层不再镜像类型集合：把 github 临时标为 aiSummary:false，其 body 应即时进 Tier1；
+    // 还原后回落 Tier2。对应 syncSourceCapabilities() 依后端 ai_eligible 覆写的场景。
+    const gh = sourceTypeDefs.find(d => d.type === 'github')!
+    const before = gh.aiSummary
+    try {
+      gh.aiSummary = false
+      expect(releaseMatchesSearch(makeRelease({ source_type: 'github', body: '助眠 asmr' }), '助眠')).toBe(true)
+      gh.aiSummary = true
+      expect(releaseMatchesSearch(makeRelease({ source_type: 'github', body: '助眠 asmr' }), '助眠')).toBe(false)
+    } finally {
+      gh.aiSummary = before
+    }
+  })
+  it('大小写不敏感', () => {
+    expect(releaseMatchesSearch(makeRelease(), 'RELWATCH')).toBe(true)
+  })
+  it('空查询恒真', () => {
+    expect(releaseMatchesSearch(makeRelease(), '')).toBe(true)
+    expect(releaseMatchesSearch(makeRelease(), '   ')).toBe(true)
+  })
+})
+
+// ── getSearchIndex ───────────────────────────────────────────────
+
+describe('getSearchIndex', () => {
+  it('同一数组引用只构建一次（WeakMap 幂等）', () => {
+    const arr = [makeRelease()]
+    expect(getSearchIndex(arr)).toBe(getSearchIndex(arr))
+  })
+  it('包含 owner/repo 片段', () => {
+    const idx = getSearchIndex([makeRelease()])
+    expect(idx[0][0]).toBe('hhelibeb/relwatch')
   })
 })
 

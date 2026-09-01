@@ -204,6 +204,10 @@ export default {
 
   'release.search': '搜索版本...',
   'release.no_match': '无匹配版本',
+  'release.no_match_deep_hint': '无匹配版本，试试「{0}」搜索正文全文',
+  'release.deep_search_label': '深度搜索',
+  'release.deep_search': '深度',
+  'release.deep_search_hint': '搜索 GitHub / HuggingFace 版本正文与译文全文',
   'release.empty': '暂无版本记录，请先添加监控源后点击"立即检查"。',
   'release.prerelease': '预发布',
   'release.published_at': '发布时间: {0}',

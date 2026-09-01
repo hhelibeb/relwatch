@@ -10,15 +10,15 @@ const expandAll = vi.fn()
 
 const SearchBarStub = defineComponent({
   name: 'ReleaseSearchBarStub',
-  props: ['count'],
-  emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'searchEnter'],
+  props: ['count', 'deepSearch', 'deepSearching'],
+  emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'update:deepSearch', 'searchEnter'],
   template: '<div class="toolbar-stub" />',
 })
 
 const SimpleListStub = defineComponent({
   name: 'ReleaseSimpleListStub',
-  props: ['releases', 'isFiltering'],
-  emits: ['update', 'openDetail'],
+  props: ['releases', 'isFiltering', 'hasSearchQuery', 'deepSearch'],
+  emits: ['update', 'openDetail', 'enableDeep'],
   template: '<div class="simple-stub" />',
 })
 
@@ -173,6 +173,152 @@ describe('ReleaseTab 渲染与过滤', () => {
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).exists()).toBe(false)
     expect(wrapper.findComponent({ name: 'ReleaseAggregatedListStub' }).exists()).toBe(true)
+  })
+})
+
+// ── 深度搜索（Tier2：GitHub / HF 正文与译文全文）─────────────────
+
+describe('ReleaseTab 深度搜索', () => {
+  /** 等待 runDeepSearch 内部的 requestAnimationFrame 让帧（jsdom rAF ~16ms） */
+  function flushRaf() {
+    return new Promise<void>(resolve => setTimeout(resolve, 25))
+  }
+
+  it('开启后 GitHub body 可命中，关闭后索引释放', async () => {
+    const withBody = [
+      ...releases,
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+    ]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: withBody, search: 'Major release' },
+      global: { stubs },
+    })
+    await nextTick()
+
+    // 常规搜索：GitHub body 不在 Tier1，无命中
+    let list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('releases').map((r: ReleaseInfo) => r.id)).toEqual([])
+    expect(list.props('hasSearchQuery')).toBe(true)
+    expect(list.props('deepSearch')).toBe(false)
+
+    // 开启深度搜索 → 构建 Tier2，body 命中
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
+    await flushRaf()
+    await nextTick()
+    list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('deepSearch')).toBe(true)
+    expect(list.props('releases').map((r: ReleaseInfo) => r.id)).toEqual([4])
+
+    // 关闭深度搜索 → 释放索引，回到常规结果
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', false)
+    await nextTick()
+    list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('deepSearch')).toBe(false)
+    expect(list.props('releases').map((r: ReleaseInfo) => r.id)).toEqual([])
+  })
+
+  it('空结果提示触发 enable-deep 一键开启深度搜索', async () => {
+    const wrapper = mountTab({ search: 'Major release' })
+    await nextTick()
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('hasSearchQuery')).toBe(true)
+    expect(list.props('deepSearch')).toBe(false)
+
+    await list.vm.$emit('enableDeep')
+    await flushRaf()
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('deepSearch')).toBe(true)
+  })
+
+  it('深度搜索态下 releases 整体替换（轮询/标记已读）后索引重建，body 命中不丢失', async () => {
+    const withBody = [
+      ...releases,
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+    ]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: withBody, search: 'Major release' },
+      global: { stubs },
+    })
+    await nextTick()
+
+    // 开启深度搜索 → body 命中
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
+    await flushRaf()
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('releases').map((r: ReleaseInfo) => r.id)).toEqual([4])
+
+    // 模拟 App.vue loadReleases()：整体替换数组引用（轮询完成 / release-state-changed 后重拉）
+    const refreshed = withBody.map(r => ({ ...r }))
+    await wrapper.setProps({ releases: refreshed } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('deepSearch')).toBe(true)          // 仍处于深度搜索态
+    expect(list.props('releases').map((r: ReleaseInfo) => r.id)).toEqual([4])  // 索引已重建，命中仍在
+  })
+
+  it('非深度搜索态下 releases 替换不构建 Tier2 索引', async () => {
+    const withBody = [
+      ...releases,
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+    ]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: withBody, search: 'Major release' },
+      global: { stubs },
+    })
+    await nextTick()
+
+    await wrapper.setProps({ releases: withBody.map(r => ({ ...r })) } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+
+    // 未开启深度搜索 → 不因 releases 变化而偷偷启用 Tier2
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('deepSearch')).toBe(false)
+    expect(list.props('releases').map((r: ReleaseInfo) => r.id)).toEqual([])
+  })
+
+  it('深度搜索态下 releases 替换但搜索词已清空 → 索引不重建', async () => {
+    const withBody = [
+      ...releases,
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+    ]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: withBody, search: 'Major release' },
+      global: { stubs },
+    })
+    await nextTick()
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
+    await flushRaf()
+    await nextTick()
+
+    // 清空搜索词（watch(releaseSearch) 退出深度搜索态）
+    await wrapper.setProps({ search: '' } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+
+    // 随后 releases 刷新：deepSearch 已为 false，不应再构建
+    await wrapper.setProps({ releases: withBody.map(r => ({ ...r })) } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('deepSearch')).toBe(false)
+    expect(list.props('releases')).toHaveLength(4)
+  })
+
+  it('搜索词清空后自动退出深度搜索态并释放', async () => {
+    const wrapper = mountTab({ search: 'Major release' })
+    await nextTick()
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
+    await flushRaf()
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('deepSearch')).toBe(true)
+
+    // 清空搜索词（受控组件：search 由父 props 驱动）→ deepSearch 复位、索引释放、恢复全量列表
+    await wrapper.setProps({ search: '' } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('hasSearchQuery')).toBe(false)
+    expect(list.props('deepSearch')).toBe(false)
+    expect(list.props('releases')).toHaveLength(3)
   })
 })
 

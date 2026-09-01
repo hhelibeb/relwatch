@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
-import { isReadStatus, isUnreadStatus, releaseMatchesSearch } from '../utils'
+import { isReadStatus, isUnreadStatus, filterReleaseIndices, buildBodyIndex } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
 import ReleaseCalendar from './ReleaseCalendar.vue'
 import ReleaseDateDetail from './ReleaseDateDetail.vue'
@@ -52,8 +52,11 @@ const hasActiveFilter = computed(() => {
 const filteredReleases = computed(() => {
   let list = props.releases
 
-  const q = releaseSearch.value.trim().toLowerCase()
-  if (q) list = list.filter(release => releaseMatchesSearch(release, q))
+  const q = releaseSearch.value.trim()
+  if (q) {
+    const picked = filterReleaseIndices(list, q, bodyIndex.value)
+    list = picked.map(i => list[i])
+  }
 
   if (statusFilter.value === 'unread') {
     list = list.filter(release => isUnreadStatus(release.notification_status, release.snooze_until))
@@ -71,6 +74,59 @@ const filteredReleases = computed(() => {
 
   return list
 })
+
+// ── 深度搜索（Tier2：GitHub / HF 正文与译文全文）──────────────
+// 常规搜索只走 Tier1（元数据 + AI 摘要 + 视频源简介）；深度搜索临时构建
+// Tier2 索引，搜完/关闭即释放（Tier2 可达几十 MB，见 docs §1.5）。
+const deepSearch = ref(false)              // 是否处于深度搜索态
+const bodyIndex = shallowRef<string[][] | null>(null)
+const deepSearching = ref(false)           // loading 态
+
+// 关闭深度搜索时释放 Tier2（关键：不释放则常驻几十 MB）
+watch(deepSearch, (on) => {
+  if (!on) bodyIndex.value = null
+})
+// releases 引用变化时旧索引失效（轮询完成 / 标记已读等都会整体替换 releases.value）。
+// 若此时处于深度搜索态，必须就地重建：否则 deepSearch 仍为 true、按钮仍高亮，
+// 过滤却只剩 Tier1，body 命中结果静默消失。重建成本同 runDeepSearch（约 100ms 量级），
+// 且只在深度搜索会话内发生，可接受。
+watch(() => props.releases, () => {
+  bodyIndex.value = null
+  if (deepSearch.value && releaseSearch.value.trim()) {
+    bodyIndex.value = buildBodyIndex(props.releases)
+  }
+})
+// 搜索词被清空时自动退出深度搜索态并释放索引
+watch(releaseSearch, (q) => {
+  if (!q.trim()) {
+    deepSearch.value = false
+    bodyIndex.value = null
+  }
+})
+
+async function runDeepSearch() {
+  if (!releaseSearch.value.trim()) return
+  deepSearching.value = true
+  // 让出一帧，保证 loading 态能渲染出来（20× 下构建约 100ms）
+  await new Promise(r => requestAnimationFrame(() => r(null)))
+  // 竞态防护：等待期间用户已关闭深度搜索（或清空搜索词），丢弃本次构建
+  if (!deepSearch.value || !releaseSearch.value.trim()) {
+    deepSearching.value = false
+    return
+  }
+  bodyIndex.value = buildBodyIndex(props.releases)
+  deepSearching.value = false
+}
+
+function onDeepSearchToggle(on: boolean) {
+  deepSearch.value = on
+  if (on) void runDeepSearch()
+}
+
+function enableDeepSearch() {
+  deepSearch.value = true
+  void runDeepSearch()
+}
 
 function handleSearchEnter() {
   if (viewMode.value === 'aggregated') aggregatedList.value?.expandAll()
@@ -148,6 +204,9 @@ function navigateReleaseDetail(delta: number) {
       v-model:source-filter="sourceFilter"
       v-model:view-mode="viewMode"
       :count="filteredReleases.length"
+      :deep-search="deepSearch"
+      :deep-searching="deepSearching"
+      @update:deep-search="onDeepSearchToggle"
       @search-enter="handleSearchEnter"
     />
 
@@ -155,6 +214,9 @@ function navigateReleaseDetail(delta: number) {
       v-if="viewMode === 'simple'"
       :releases="filteredReleases"
       :is-filtering="hasActiveFilter"
+      :has-search-query="releaseSearch.trim() !== ''"
+      :deep-search="deepSearch"
+      @enable-deep="enableDeepSearch"
       @update="emit('update')"
       @open-detail="openReleaseDetail"
     />
