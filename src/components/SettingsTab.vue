@@ -832,8 +832,7 @@ async function handleImportBackup() {
             <div class="about-version">{{ t('about.version') }} v{{ version }}</div>
             <p class="setting-section-desc">{{ t('about.app_desc') }}</p>
             <div class="setting-row">
-              <button class="btn-secondary" @click="openReleaseUrl('https://github.com/hhelibeb/relwatch')">{{ t('about.open_repo') }}</button>
-              <span class="setting-note">{{ t('about.github') }}: github.com/hhelibeb/relwatch</span>
+              <a class="setting-link" href="https://github.com/hhelibeb/relwatch">{{ t('about.github') }}: github.com/hhelibeb/relwatch</a>
             </div>
           </div>
           <hr class="setting-divider" />
@@ -1110,6 +1109,17 @@ async function handleImportBackup() {
   font-size: 12px;
   color: var(--text-muted);
   line-height: 1.4;
+}
+
+.setting-link {
+  font-size: 12px;
+  color: var(--primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.setting-link:hover {
+  text-decoration: underline;
 }
 
 select.setting-input {

@@ -439,4 +439,13 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
     expect(wrapper.text()).toContain(t('update.section_title'))
     wrapper.unmount()
   })
+
+  it('关于页 GitHub 链接为超链接且指向仓库地址', async () => {
+    const wrapper = await mountSettingsTabOnAbout()
+    const link = wrapper.find('.setting-link')
+    expect(link.exists()).toBe(true)
+    expect(link.attributes('href')).toBe('https://github.com/hhelibeb/relwatch')
+    expect(link.text()).toContain('github.com/hhelibeb/relwatch')
+    wrapper.unmount()
+  })
 })
