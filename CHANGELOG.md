@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内直接查看，不再跳转浏览器。
+
+### Changed
+- 关于页仓库地址改为可点击超链接，并更新应用描述。
+
+### Performance
+- Agent 工作区流式渲染与列表刷新性能优化。
+
+## [1.14.0] - 2026-09-01
+
+### Added
+- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内直接查看，不再跳转浏览器。
+
+### Changed
+- 关于页仓库地址改为可点击超链接，并更新应用描述。
+
+### Performance
+- Agent 工作区流式渲染与列表刷新性能优化。
+
 ## [1.13.0] - 2026-08-29
 
 ### Added
@@ -354,7 +374,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.13.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.14.0...HEAD
+[1.14.0]: https://github.com/hhelibeb/relwatch/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/hhelibeb/relwatch/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/hhelibeb/relwatch/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/hhelibeb/relwatch/compare/v1.11.0...v1.11.1
