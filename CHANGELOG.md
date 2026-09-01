@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内直接查看，不再跳转浏览器。
+- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内弹窗直接查看，不再跳转浏览器。
 
 ### Changed
 - 关于页仓库地址改为可点击超链接，并更新应用描述。
@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.14.0] - 2026-09-01
 
 ### Added
-- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内直接查看，不再跳转浏览器。
+- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内弹窗直接查看，不再跳转浏览器。
 
 ### Changed
 - 关于页仓库地址改为可点击超链接，并更新应用描述。
