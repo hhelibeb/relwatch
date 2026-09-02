@@ -99,9 +99,12 @@ async function flushRpcFrame() {
   await flushPromises()
 }
 
-/** Teleport 到 body 的浮层（rpc 状态菜单）不在 wrapper 子树内，须以 document.body 为根查找。 */
+/** Teleport 到 body 的浮层（rpc 状态菜单 / 会话 ⋯ 菜单）不在 wrapper 子树内，须以 document.body 为根查找。 */
 function findTeleported(selector: string): DOMWrapper<Element> {
   return new DOMWrapper(document.body).find(selector)
+}
+function findTeleportedAll(selector: string): DOMWrapper<Element>[] {
+  return new DOMWrapper(document.body).findAll(selector)
 }
 
 /** 构造一个 run 摘要（默认：本会话第一轮超时失败）。模块级，两个 describe 共用。 */
@@ -1002,7 +1005,7 @@ describe('AgentWorkspace P2 打磨', () => {
 
     const items = wrapper.findAll('.agent-ws-session-item')
     await items[1].find('.agent-ws-session-more').trigger('click')
-    const menuItems = wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')
+    const menuItems = findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')
     await menuItems[0].trigger('click') // 重命名
     const editor = wrapper.find('.agent-ws-rename-input')
     expect(editor.exists()).toBe(true)
@@ -1023,7 +1026,7 @@ describe('AgentWorkspace P2 打磨', () => {
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
     await wrapper.findAll('.agent-ws-session-item')[0].find('.agent-ws-session-more').trigger('click')
-    await wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')[0].trigger('click')
+    await findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')[0].trigger('click')
     const editor = wrapper.find('.agent-ws-rename-input')
     await editor.setValue('改坏了')
     await editor.trigger('keydown.esc')
@@ -1041,7 +1044,7 @@ describe('AgentWorkspace P2 打磨', () => {
     await flushPromises()
 
     await wrapper.findAll('.agent-ws-session-item')[2].find('.agent-ws-session-more').trigger('click')
-    const items = wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')
+    const items = findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')
     expect(items[1].text()).toBe(t('agent.session_export_md'))
     expect(items[2].text()).toBe(t('agent.session_export_json'))
     await items[1].trigger('click')
@@ -1049,7 +1052,7 @@ describe('AgentWorkspace P2 打磨', () => {
     expect(vi.mocked(exportAgentSession)).toHaveBeenCalledWith('s3', '排查构建日志里的报错', 'md')
 
     await wrapper.findAll('.agent-ws-session-item')[2].find('.agent-ws-session-more').trigger('click')
-    await wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')[2].trigger('click')
+    await findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')[2].trigger('click')
     await flushPromises()
     expect(vi.mocked(exportAgentSession)).toHaveBeenLastCalledWith('s3', '排查构建日志里的报错', 'json')
     wrapper.unmount()
@@ -1061,7 +1064,7 @@ describe('AgentWorkspace P2 打磨', () => {
     await flushPromises()
     // 删除入口由侧栏常驻的 X 按钮移入 ⋯ 菜单：少一次误触，同时腾出位置放重命名/导出
     await wrapper.findAll('.agent-ws-session-item')[1].find('.agent-ws-session-more').trigger('click')
-    const items = wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')
+    const items = findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')
     expect(items[3].text()).toBe(t('agent.delete_session'))
     expect(vi.mocked(confirmDialog)).not.toHaveBeenCalled()
     await items[3].trigger('click')
@@ -1082,7 +1085,7 @@ describe('AgentWorkspace P2 打磨', () => {
     const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
     await flushPromises()
     await wrapper.findAll('.agent-ws-session-item')[0].find('.agent-ws-session-more').trigger('click')
-    await wrapper.findAll('.agent-ws-session-menu .agent-ws-menu-item')[1].trigger('click')
+    await findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')[1].trigger('click')
     await flushPromises()
     expect(showToast).not.toHaveBeenCalled()
     wrapper.unmount()

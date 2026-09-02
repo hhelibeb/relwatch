@@ -211,10 +211,45 @@ function setRenameEl(el: Element | ComponentPublicInstance | null, key: string) 
   if (key === renamingKey.value) renameEl.value = (el as HTMLInputElement | null) ?? null
 }
 
+/** 会话 ⋯ 菜单：Teleport 到 body 后以触发按钮为锚 fixed 定位。
+ * 侧边栏宽仅 140px 且 overflow:hidden，absolute 定位的菜单超宽部分会被裁剪显示不全；
+ * 脱离文档流盖在最上层（与 RPC 状态菜单同一策略，z-index 对齐 10002）。 */
+const sessionMoreEls = new Map<string, HTMLElement>()
+function setSessionMoreEl(el: Element | ComponentPublicInstance | null, key: string) {
+  if (el) sessionMoreEls.set(key, el as HTMLElement)
+  else sessionMoreEls.delete(key)
+}
+const sessionMenuPos = ref<{ x: number; y: number }>({ x: 0, y: 0 })
+const sessionMenuStyle = computed(() => ({ left: sessionMenuPos.value.x + 'px', top: sessionMenuPos.value.y + 'px' }))
+
 function toggleSessionMenu(key: string) {
   openMenuKey.value = openMenuKey.value === key ? null : key
   // 重命名与菜单互斥：同时开着会互相遮挡（菜单浮层盖住输入框）
-  if (openMenuKey.value) renamingKey.value = null
+  if (openMenuKey.value) {
+    renamingKey.value = null
+    // 以 ⋯ 按钮为锚往下弹，右对齐按钮右缘再往左收，保证完整落在视口内
+    const rect = sessionMoreEls.get(key)?.getBoundingClientRect()
+    if (rect) {
+      const MENU_W = 148 // 与 .agent-ws-session-menu 的 min-width 保持一致
+      sessionMenuPos.value = {
+        x: Math.max(8, Math.min(rect.right - MENU_W, window.innerWidth - MENU_W)),
+        y: rect.bottom + 4,
+      }
+    }
+  }
+}
+
+/** 会话列表滚动时收起 ⋯ 菜单：菜单 fixed 定位不随列表滚动，继续悬浮会与锚点按钮错位。 */
+function onSessionListScroll() {
+  if (openMenuKey.value) openMenuKey.value = null
+}
+
+/** 删除入口：先取 key 再关菜单。菜单浮层移到 Teleport 后模板无法像原来那样
+ * 「先置 null 再传循环变量」，这里保证取到的 key 在关闭菜单前仍有效。 */
+function handleDeleteFromMenu() {
+  const key = openMenuKey.value
+  openMenuKey.value = null
+  if (key) void handleDeleteSession(key)
 }
 
 /** 导出会话：后端弹保存对话框并写成 md / json，返回实际路径。 */
@@ -2218,7 +2253,7 @@ watch(
             :aria-label="t('agent.session_search')"
           />
         </div>
-        <ul class="agent-ws-session-list">
+        <ul class="agent-ws-session-list" @scroll="onSessionListScroll">
           <li
             v-for="s in visibleSessions"
             :key="s.key"
@@ -2255,24 +2290,15 @@ watch(
                 </span>
               </span>
               <span class="agent-ws-session-time">{{ formatDate(new Date(s.updatedAt).toISOString()) }}</span>
-              <!-- ⋯ 菜单：重命名 / 导出 md / 导出 json / 删除 -->
-              <button class="agent-ws-session-more" :title="t('agent.session_menu')" @click.stop="toggleSessionMenu(s.key)">
+              <!-- ⋯ 菜单：重命名 / 导出 md / 导出 json / 删除（菜单浮层在下方 Teleport，见 agent-ws-session-menu） -->
+              <button
+                :ref="(el) => setSessionMoreEl(el, s.key)"
+                class="agent-ws-session-more"
+                :title="t('agent.session_menu')"
+                @click.stop="toggleSessionMenu(s.key)"
+              >
                 <svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor"/></svg>
               </button>
-              <div v-if="openMenuKey === s.key" class="agent-ws-menu agent-ws-session-menu" @click.stop>
-                <button class="agent-ws-menu-item" @click="startRename(s.key)">
-                  <span class="agent-ws-menu-main">{{ t('agent.session_rename') }}</span>
-                </button>
-                <button class="agent-ws-menu-item" @click="handleExportSession(s.key, 'md')">
-                  <span class="agent-ws-menu-main">{{ t('agent.session_export_md') }}</span>
-                </button>
-                <button class="agent-ws-menu-item" @click="handleExportSession(s.key, 'json')">
-                  <span class="agent-ws-menu-main">{{ t('agent.session_export_json') }}</span>
-                </button>
-                <button class="agent-ws-menu-item danger" @click="openMenuKey = null; handleDeleteSession(s.key)">
-                  <span class="agent-ws-menu-main">{{ t('agent.delete_session') }}</span>
-                </button>
-              </div>
             </template>
           </li>
           <li v-if="sessions.length === 0" class="agent-ws-session-empty">{{ t('agent.session_empty') }}</li>
@@ -2283,6 +2309,26 @@ watch(
           {{ t('agent.session_clear') }}
         </button>
       </aside>
+
+      <!-- 会话 ⋯ 菜单：Teleport 到 body 后以 ⋯ 按钮为锚 fixed 定位。
+           侧边栏仅 140px 宽且 overflow:hidden，absolute 定位的菜单超宽部分会被裁剪看不到；
+           脱离文档流浮在聊天区上层完整展示（与 RPC 状态菜单同一策略，z-index 对齐 10002）。 -->
+      <Teleport to="body">
+        <div v-if="openMenuKey" class="agent-ws-menu agent-ws-session-menu" :style="sessionMenuStyle" @click.stop>
+          <button class="agent-ws-menu-item" @click="startRename(openMenuKey!)">
+            <span class="agent-ws-menu-main">{{ t('agent.session_rename') }}</span>
+          </button>
+          <button class="agent-ws-menu-item" @click="handleExportSession(openMenuKey!, 'md')">
+            <span class="agent-ws-menu-main">{{ t('agent.session_export_md') }}</span>
+          </button>
+          <button class="agent-ws-menu-item" @click="handleExportSession(openMenuKey!, 'json')">
+            <span class="agent-ws-menu-main">{{ t('agent.session_export_json') }}</span>
+          </button>
+          <button class="agent-ws-menu-item danger" @click="handleDeleteFromMenu">
+            <span class="agent-ws-menu-main">{{ t('agent.delete_session') }}</span>
+          </button>
+        </div>
+      </Teleport>
 
       <!-- 引用 chip 全文悬浮提示（跟随鼠标，仅文本截断时显示） -->
       <div v-if="chipTooltip" class="agent-ws-chip-tooltip" :style="{ left: chipTooltip.x + 'px', top: chipTooltip.y + 'px' }">
@@ -2657,16 +2703,22 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   width: 12px;
   height: 12px;
 }
-/* 菜单定位在会话项内（absolute 相对 .agent-ws-session-item），浮在其他项之上。
+/* 会话 ⋯ 菜单：Teleport 到 body 后 fixed 定位，坐标由 toggleSessionMenu 计算。
+ * 侧边栏宽仅 140px 且 overflow:hidden，absolute 定位会被裁剪显示不全；
+ * 脱离文档流盖在聊天区上层完整展示（与 RPC 状态菜单同一策略，z-index 对齐 10002）。
  * 双类选择器抬高特异性：基类 .agent-ws-menu 定义在本文件更靠后，单类时其
- * bottom/left/right 会反杀这里的重置，top 与 bottom 双锚同样把高度拉伸成 0 */
+ * bottom/left/right/max-height/overflow 会反杀这里的重置（top 与 bottom 双锚
+ * 同样把高度拉伸成 0）——与 agent-ws-menu-rpc 同一策略。 */
 .agent-ws-menu.agent-ws-session-menu {
-  top: 22px;
-  right: 4px;
-  left: auto;
+  position: fixed;
+  top: auto;
+  right: auto;
   bottom: auto;
-  min-width: 132px;
-  z-index: 30;
+  left: auto;
+  min-width: 148px;
+  max-height: none;
+  overflow-y: visible;
+  z-index: 10002;
 }
 .agent-ws-menu-item.danger .agent-ws-menu-main {
   color: #d64545;
