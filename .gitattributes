@@ -1,1 +1,8 @@
 src/bindings.ts text eol=lf
+
+# Rust 生态惯例用 LF（cargo 写出的文件也是 LF）。
+# 显式固定 eol=lf，使入库行尾不随本机 core.autocrlf=true 变化，
+# 并消除 "LF will be replaced by CRLF" 警告。
+*.toml text eol=lf
+Cargo.lock text eol=lf
+.gitattributes text eol=lf
