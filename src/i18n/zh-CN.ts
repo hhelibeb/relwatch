@@ -459,6 +459,7 @@ export default {
   'agent.entity_source': '监控源',
   'agent.entity_release': '版本',
   'agent.attached': '已加入引用',
+  'agent.attached_exists': '引用已存在',
   'agent.remove_entity': '移除引用',
   'agent.clear_skill': '清除 Skill',
   'agent.send_to': '发送到 Agent',

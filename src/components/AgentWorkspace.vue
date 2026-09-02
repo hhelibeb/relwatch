@@ -790,10 +790,48 @@ function fileDisplayName(path: string): string {
 }
 
 // ── 事件桥：主窗口「发送到 Agent」/ 拖拽热区 → 加入引用 ──
-function addEntity(e: AgentEntityRefSeed) {
+/** 返回是否真的新增（已存在则原样保留，供调用方决定反馈方式）。 */
+function addEntity(e: AgentEntityRefSeed): boolean {
   if (!entities.value.some((x) => x.kind === e.kind && x.id === e.id)) {
     entities.value.push(e)
+    return true
   }
+  return false
+}
+
+// 引用变更的就地反馈：chip 短暂高亮 + 无障碍播报。
+// 此前这里弹的是全局 Toast，而 Toast 是 fixed 右下角、正好压在发送/附件按钮上——
+// 既挡视线又吞点击，鼠标停在按钮上还会触发它的悬浮暂停而永不消失。
+// 拖入的视觉焦点本就在落点（输入区），反馈放回落点即可，无需再去右下角播报一次。
+const FLASH_DURATION = 1200
+const flashKey = ref<string | null>(null)
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+// 屏幕阅读器播报（视觉上不可见）：补回 Toast 原先承担的告知作用。
+// 注意别与上方流式消息集合 liveMessages（差一个 s，语义完全无关）混淆
+const attachAnnouncement = ref('')
+
+function flashEntity(e: AgentEntityRefSeed, added: boolean) {
+  flashKey.value = `${e.kind}:${e.id}`
+  // 重复拖入已有引用时 chip 同样高亮（告诉用户「在这儿、已经加过了」），
+  // 但播报文案要区分，不能谎称「已加入」
+  attachAnnouncement.value = added ? t('agent.attached') : t('agent.attached_exists')
+  if (flashTimer) clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => {
+    flashTimer = null
+    flashKey.value = null
+    attachAnnouncement.value = ''
+  }, FLASH_DURATION)
+}
+
+/** 拖入/加入引用的统一收尾：高亮对应 chip，并把光标送到输入框末尾（拖完即可打字发送）。 */
+function afterAttach(e: AgentEntityRefSeed, added: boolean) {
+  flashEntity(e, added)
+  nextTick(() => {
+    const el = textareaRef.value
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  })
 }
 
 function removeEntity(index: number) {
@@ -1635,8 +1673,7 @@ function handleDrop(e: DragEvent) {
   try {
     const entity = JSON.parse(raw) as AgentEntityRefSeed
     if (entity.kind === 'source' || entity.kind === 'release') {
-      addEntity(entity)
-      showToast(t('agent.attached'))
+      afterAttach(entity, addEntity(entity))
     }
   } catch {
     // 非本应用拖入内容，忽略
@@ -1663,8 +1700,7 @@ function handleDropNewSession(e: DragEvent) {
     const entity = JSON.parse(raw) as AgentEntityRefSeed
     if (entity.kind === 'source' || entity.kind === 'release') {
       startNewSession()
-      addEntity(entity)
-      showToast(t('agent.attached'))
+      afterAttach(entity, addEntity(entity))
     }
   } catch {
     // 非本应用拖入内容，忽略
@@ -1699,6 +1735,10 @@ watch(
 onUnmounted(() => {
   stopPolling()
   discardPendingRpcEvents()
+  if (flashTimer) {
+    clearTimeout(flashTimer)
+    flashTimer = null
+  }
   unlistenRunFinished?.()
   unlistenRpcStream?.()
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
@@ -1986,7 +2026,14 @@ watch(
         <!-- 输入区 -->
         <footer class="agent-ws-input">
           <div class="agent-ws-input-meta">
-            <span v-for="(e, i) in entities" :key="`${e.kind}:${e.id}`" class="agent-ws-chip agent-ws-chip-attached">
+            <!-- 引用变更不再走 Toast（会遮挡发送按钮），改由 chip 高亮就地反馈；
+                 屏幕阅读器由下方 live region 播报，Toast 的告知作用不丢失 -->
+            <span
+              v-for="(e, i) in entities"
+              :key="`${e.kind}:${e.id}`"
+              class="agent-ws-chip agent-ws-chip-attached"
+              :class="{ 'is-new': flashKey === `${e.kind}:${e.id}` }"
+            >
               <span
                 class="agent-ws-chip-text"
                 @mouseenter="handleChipEnter($event, `${entityKindLabel(e.kind)} · ${entityLabel(e)}`)"
@@ -2016,6 +2063,7 @@ watch(
                 <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
               </button>
             </span>
+            <span class="agent-ws-sr-only" aria-live="polite">{{ attachAnnouncement }}</span>
           </div>
           <div class="agent-ws-input-row">
             <textarea
@@ -3380,6 +3428,46 @@ function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
   gap: 4px;
   margin-bottom: 6px;
   min-height: 18px;
+}
+/* 引用加入的就地高亮——替代原先压在发送按钮上的 Toast。
+   只做描边/底色 + 光晕，不改尺寸位移，避免 chip 换行引起输入区抖动。
+   动画时长须与脚本里的 FLASH_DURATION（1200ms）保持一致 */
+.agent-ws-chip-attached.is-new {
+  border-color: var(--accent, #2e6fd0);
+  background: rgba(46, 111, 208, 0.14);
+  animation: agent-ws-chip-flash 1.2s ease-out;
+}
+@keyframes agent-ws-chip-flash {
+  0% {
+    background: rgba(46, 111, 208, 0.28);
+    box-shadow: 0 0 0 0 rgba(46, 111, 208, 0.45);
+  }
+  35% {
+    box-shadow: 0 0 0 3px rgba(46, 111, 208, 0.18);
+  }
+  100% {
+    background: rgba(46, 111, 208, 0.14);
+    box-shadow: 0 0 0 0 rgba(46, 111, 208, 0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-ws-chip-attached.is-new {
+    animation: none;
+  }
+}
+/* 屏幕阅读器专用（视觉不可见）：承接 Toast 原先的告知作用。
+   absolute 定位使其脱离 flex 流，不会给 chip 行挤进额外间距 */
+.agent-ws-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
 }
 .agent-ws-input-row {
   display: flex;

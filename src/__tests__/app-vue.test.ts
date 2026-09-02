@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import { defineComponent } from 'vue'
+import fs from 'node:fs'
+import path from 'node:path'
 import { t, setLocale } from '../i18n'
 import { releaseMatchesSearch } from '../utils'
 import { defaultSettings } from './helpers'
@@ -322,7 +324,7 @@ describe('App.vue — Toast 系统', () => {
     expect(wrapper.find('.toast').text()).toBe(t('app.new_found', '1'))
   })
 
-  it('Toast 3 秒后自动隐藏', async () => {
+  it('短文案 Toast 按下限时长（2.6s）自动隐藏', async () => {
     vi.useFakeTimers()
     vi.mocked(listSources).mockResolvedValue([
       { id: 1, owner: 'a', repo: 'b', enabled: false } as never,
@@ -333,9 +335,35 @@ describe('App.vue — Toast 系统', () => {
     await flushPromises()
     expect(wrapper.find('.toast').exists()).toBe(true)
 
+    vi.advanceTimersByTime(2599)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.toast').exists()).toBe(true)
+
+    vi.advanceTimersByTime(1)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.toast').exists()).toBe(false)
+  })
+
+  it('长文案 Toast 按字数延长停留', async () => {
+    vi.useFakeTimers()
+    vi.mocked(listSources).mockResolvedValue([
+      { id: 1, owner: 'a', repo: 'b', enabled: true } as never,
+    ])
+    vi.mocked(triggerPoll).mockRejectedValue(new Error('网络连接超时，请检查代理设置后重试一次'))
+    const wrapper = await mountRealApp()
+
+    await wrapper.find('.btn-primary').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.toast').exists()).toBe(true)
+
+    // 短文案此刻早已消失（下限 2.6s），长文案仍在
     vi.advanceTimersByTime(3000)
     await wrapper.vm.$nextTick()
+    expect(wrapper.find('.toast').exists()).toBe(true)
 
+    // 累计 6s 达到封顶时长后消失
+    vi.advanceTimersByTime(3000)
+    await wrapper.vm.$nextTick()
     expect(wrapper.find('.toast').exists()).toBe(false)
   })
 
@@ -387,18 +415,59 @@ describe('App.vue — Toast 系统', () => {
     await flushPromises()
     vi.advanceTimersByTime(1000)
 
+    // 悬浮暂停：用户移过来选中复制错误详情/导出路径时不该消失
     await wrapper.find('.toast').trigger('mouseenter')
     vi.advanceTimersByTime(10000)
     expect(wrapper.find('.toast').exists()).toBe(true)
 
+    // 移开后重新计时（本条文案按下限 2.6s）
     await wrapper.find('.toast').trigger('mouseleave')
-    // 移开后重新计时 3 秒
     vi.advanceTimersByTime(2000)
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.toast').exists()).toBe(true)
     vi.advanceTimersByTime(1000)
     await wrapper.vm.$nextTick()
     expect(wrapper.find('.toast').exists()).toBe(false)
+  })
+
+  it('Agent 面板打开时 Toast 左移到面板左侧，不压住输入区按钮', async () => {
+    vi.useFakeTimers()
+    mockWindow.innerSize.mockResolvedValue({ width: 1920, height: 1080 })
+    mockWindow.scaleFactor.mockResolvedValue(1)
+    mockWindow.setSize.mockResolvedValue(undefined)
+    vi.mocked(listSources).mockResolvedValue([
+      { id: 1, owner: 'a', repo: 'b', enabled: false } as never,
+    ])
+    const wrapper = await mountRealApp()
+    const toastRight = () => (wrapper.find('.toast').element as HTMLElement).style.right
+
+    await wrapper.find('.btn-primary').trigger('click')
+    await flushPromises()
+    // 面板关闭：常规右下角 20px
+    expect(toastRight()).toBe('20px')
+
+    // 展开面板：右移「面板宽 440 + 分隔线 5 + 边距 20」
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.agent-divider').exists()).toBe(true)
+    expect(toastRight()).toBe('465px')
+
+    // 收起面板：回到常规右下角
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+    expect(toastRight()).toBe('20px')
+  })
+
+  it('Toast 不设 pointer-events: none，文本可被选中复制', () => {
+    // 纯 CSS 行为在 jsdom 下读不到计算样式，直接对 SFC 源码做回归守卫。
+    // 错误详情、导出/备份路径依赖选中复制，一旦加回 none 就会静默失效。
+    const src = fs.readFileSync(path.resolve(process.cwd(), 'src/App.vue'), 'utf-8')
+    const start = src.indexOf('.toast {')
+    const rule = src.slice(start, src.indexOf('.toast-enter-active', start))
+    expect(start).toBeGreaterThan(-1)
+    // 注释里会解释「为什么不用 pointer-events」，断言前先剥掉注释
+    const declarations = rule.replace(/\/\*[\s\S]*?\*\//g, '')
+    expect(declarations).not.toContain('pointer-events')
   })
 })
 

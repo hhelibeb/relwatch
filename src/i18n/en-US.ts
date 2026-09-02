@@ -459,6 +459,7 @@ export default {
   'agent.entity_source': 'Source',
   'agent.entity_release': 'Release',
   'agent.attached': 'Attached',
+  'agent.attached_exists': 'Already attached',
   'agent.remove_entity': 'Remove reference',
   'agent.clear_skill': 'Clear skill',
   'agent.send_to': 'Send to Agent',

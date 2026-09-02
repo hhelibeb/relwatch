@@ -423,10 +423,14 @@ describe('AgentWorkspace 冒烟', () => {
       },
     })
     await flushPromises()
-    // 已切换为新建的草稿会话（新建即登记，评审 1.2）+ 引用 chip 放入 + toast 仅一次
+    // 已切换为新建的草稿会话（新建即登记，评审 1.2）+ 引用 chip 放入
     expect(wrapper.find('.agent-ws-session-item.draft').exists()).toBe(true)
     expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
-    expect(showToast).toHaveBeenCalledTimes(1)
+    // 不再弹 Toast（右下角 Toast 会压住发送/附件按钮并吞点击），改为 chip 高亮就地反馈
+    expect(showToast).not.toHaveBeenCalled()
+    expect(wrapper.find('.agent-ws-chip-attached').classes()).toContain('is-new')
+    // Toast 原先承担的告知作用交给屏幕阅读器 live region
+    expect(wrapper.find('.agent-ws-sr-only').text()).toBe(t('agent.attached'))
     // 拖放结束提示层消失
     expect(wrapper.find('.agent-ws-drop-hint-header').exists()).toBe(false)
     wrapper.unmount()
@@ -458,10 +462,12 @@ describe('AgentWorkspace 冒烟', () => {
       },
     })
     await flushPromises()
-    // 仍处于旧会话（未新建）+ 引用加入当前会话 + toast 一次
+    // 仍处于旧会话（未新建）+ 引用加入当前会话 + 就地高亮（不弹 Toast）
     expect(wrapper.find('.agent-ws-session-item.draft').exists()).toBe(false)
     expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
-    expect(showToast).toHaveBeenCalledTimes(1)
+    expect(showToast).not.toHaveBeenCalled()
+    expect(wrapper.find('.agent-ws-chip-attached').classes()).toContain('is-new')
+    expect(wrapper.find('.agent-ws-sr-only').text()).toBe(t('agent.attached'))
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })

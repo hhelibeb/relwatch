@@ -209,10 +209,37 @@ let toastTimer: ReturnType<typeof setTimeout> | null = null
 // Toast 队列：新消息在当前消息显示期间进入队列，等旧消息消失后依次显示
 const toastQueue: string[] = []
 let toastSwapTimer: ReturnType<typeof setTimeout> | null = null
+// 鼠标悬浮在 Toast 上时暂停消失计时。必须保留：错误详情、导出/备份路径这类内容
+// 用户要移过去选中复制，没有暂停就选不完。
 let toastHovered = false
-const TOAST_DURATION = 3000
 // 与 .toast-leave-active 过渡时长（0.3s）对齐，离场动画结束后再显示下一条
 const TOAST_SWAP_DELAY = 350
+const TOAST_MIN_DURATION = 2600
+const TOAST_MAX_DURATION = 6000
+// 按字数定停留时长：取中文默读约 5.7 字/秒 + 约 1.2s 反应余量，短按下限、超长封顶。
+// 这只是"够读完"的基础时长，需要复制时靠悬浮暂停续命。
+function toastDuration(message: string): number {
+  const n = [...message].length
+  return Math.min(TOAST_MAX_DURATION, Math.max(TOAST_MIN_DURATION, 1200 + n * 175))
+}
+
+// Toast 是视口 fixed 定位，Agent 面板打开时窗口右下角正好是面板的输入区（发送/附件按钮）。
+// 曾尝试用 pointer-events: none 让点击穿透，但那是错的：按钮在视觉上仍被盖住，
+// 用户得"越过一个看得见的浮层去点一个看不见的按钮"，而且 Toast 里的错误信息、
+// 导出路径从此无法选中复制。正解是让 Toast 整块左移到面板左侧——既不压按钮，
+// 又完整保留 hover 暂停与文本选择。面板宽度可拖拽，故用响应式状态算而非硬编码。
+const TOAST_GAP = 20
+const AGENT_DIVIDER_WIDTH = 5
+const toastStyle = computed(() => {
+  const panelVisible = agentPanelOpen.value && agentConfig.value?.enabled
+  const right = panelVisible
+    ? agentPanelWidth.value + AGENT_DIVIDER_WIDTH + TOAST_GAP
+    : TOAST_GAP
+  return {
+    right: `${right}px`,
+    maxWidth: `min(360px, calc(100vw - ${right + TOAST_GAP}px))`,
+  }
+})
 
 const selectionMenu = ref<{ x: number; y: number } | null>(null)
 const inputContextMenu = ref<{ x: number; y: number; target: HTMLElement } | null>(null)
@@ -309,7 +336,7 @@ function startToastTimer() {
   toastTimer = setTimeout(() => {
     toastTimer = null
     dismissCurrentToast()
-  }, TOAST_DURATION)
+  }, toastDuration(toastMessage.value))
 }
 
 function clearToastTimer() {
@@ -317,16 +344,6 @@ function clearToastTimer() {
     clearTimeout(toastTimer)
     toastTimer = null
   }
-}
-
-function dismissCurrentToast() {
-  if (!toastVisible.value) return
-  toastVisible.value = false
-  // 等离场动画结束再显示队列中的下一条，避免新旧消息内容跳变
-  toastSwapTimer = setTimeout(() => {
-    toastSwapTimer = null
-    showNextToast()
-  }, TOAST_SWAP_DELAY)
 }
 
 function handleToastMouseEnter() {
@@ -337,6 +354,16 @@ function handleToastMouseEnter() {
 function handleToastMouseLeave() {
   toastHovered = false
   if (toastVisible.value) startToastTimer()
+}
+
+function dismissCurrentToast() {
+  if (!toastVisible.value) return
+  toastVisible.value = false
+  // 等离场动画结束再显示队列中的下一条，避免新旧消息内容跳变
+  toastSwapTimer = setTimeout(() => {
+    toastSwapTimer = null
+    showNextToast()
+  }, TOAST_SWAP_DELAY)
 }
 
 provide(ShowToastKey, showToast)
@@ -714,7 +741,15 @@ onUnmounted(() => {
     </main>
 
     <Transition name="toast">
-      <div v-if="toastVisible" class="toast" @mouseenter="handleToastMouseEnter" @mouseleave="handleToastMouseLeave">{{ toastMessage }}</div>
+      <div
+        v-if="toastVisible"
+        class="toast"
+        :style="toastStyle"
+        role="status"
+        aria-live="polite"
+        @mouseenter="handleToastMouseEnter"
+        @mouseleave="handleToastMouseLeave"
+      >{{ toastMessage }}</div>
     </Transition>
 
     <ContextMenu v-if="selectionMenu" :x="selectionMenu.x" :y="selectionMenu.y" :items="selectionMenuItems" @action="handleSelectionMenuAction" @close="selectionMenu = null" />
@@ -788,7 +823,6 @@ onUnmounted(() => {
 /* Toast */
 .toast {
   position: fixed;
-  right: 20px;
   bottom: 20px;
   z-index: 9999;
   padding: 9px 18px;
@@ -797,6 +831,14 @@ onUnmounted(() => {
   border-radius: var(--radius);
   font-size: 13px;
   box-shadow: var(--shadow-lg);
+  /* right / max-width 由 toastStyle 绑定：面板打开时整块左移到面板左侧，
+     避开面板底部的发送/附件按钮（详见 toastStyle 注释）。
+     这里刻意不设 pointer-events: none——那会让 Toast 里的错误详情、导出
+     路径无法选中复制，且按钮视觉上仍被盖住，只是把「点不动」换成了「看不见」。 */
+  overflow-wrap: anywhere;
+  /* 错误详情等需要复制；拖拽分隔线时 style.css 的 !important 仍会压过这里 */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .toast-enter-active {
