@@ -7,14 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-09-02
+
 ### Added
-- 应用内检查更新：发现新版本后可直接下载并安装，更新检查的代理设置与全局网络代理保持一致；新版本 Release 说明可在应用内弹窗直接查看，不再跳转浏览器。
+- 发布列表全文搜索：支持对元数据与 AI 摘要的常规搜索，以及针对 Release 正文与译文的深度搜索。
+- 点击通知主体即可唤起主窗口并定位到对应版本（Windows / Linux）。
 
 ### Changed
-- 关于页仓库地址改为可点击超链接，并更新应用描述。
+- README 功能说明术语更新。
 
-### Performance
-- Agent 工作区流式渲染与列表刷新性能优化。
+### Fixed
+- Agent 工作区会话「⋯」菜单在窄侧栏下被裁剪、显示不全的问题。
+- 拖拽引用时提示不再遮挡发送按钮。
 
 ## [1.14.0] - 2026-09-01
 
@@ -374,7 +378,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.14.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.15.0...HEAD
+[1.15.0]: https://github.com/hhelibeb/relwatch/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/hhelibeb/relwatch/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/hhelibeb/relwatch/compare/v1.12.0...v1.13.0
 [1.12.0]: https://github.com/hhelibeb/relwatch/compare/v1.11.1...v1.12.0
