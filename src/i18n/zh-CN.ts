@@ -628,5 +628,12 @@ export default {
   'update.notes_built_at': '构建于 {0}',
   'update.notes_empty': '该版本未提供更新说明',
   'update.notes_open_in_browser': '在浏览器中查看',
+  // 操作日志（Rust 端 write_log_key 渲染，与前端 t()/tm() 共用字典）
+  'update.log.check_success': '检查更新：已是最新版本',
+  'update.log.check_found': '检查更新：发现新版本 {version}',
+  'update.log.check_failed': '检查更新失败：{error}',
+  'update.log.download_started': '开始下载更新 {version}',
+  'update.log.download_failed': '更新下载失败：{error}',
+  'update.log.install_started': '开始安装更新 {version}，应用即将重启…',
 
 }

@@ -628,5 +628,12 @@ export default {
   'update.notes_built_at': 'Built at {0}',
   'update.notes_empty': 'No release notes provided for this version',
   'update.notes_open_in_browser': 'View in browser',
+  // 操作日志（Rust 端 write_log_key 渲染，与前端 t()/tm() 共用字典）
+  'update.log.check_success': 'Update check: already up to date',
+  'update.log.check_found': 'Update check: new version found {version}',
+  'update.log.check_failed': 'Update check failed: {error}',
+  'update.log.download_started': 'Started downloading update {version}',
+  'update.log.download_failed': 'Update download failed: {error}',
+  'update.log.install_started': 'Started installing update {version}, the app will restart…',
 
 }

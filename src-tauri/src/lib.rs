@@ -98,6 +98,9 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::export_agent_session,
         commands::agent_shutdown_for_update,
         commands::updater_check,
+        commands::updater_download_started,
+        commands::updater_download_failed,
+        commands::updater_install_started,
     ])
 }
 
