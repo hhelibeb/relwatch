@@ -4,7 +4,7 @@ import type { ComponentPublicInstance } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { confirm, open } from '@tauri-apps/plugin-dialog'
 import MarkdownContent from './common/MarkdownContent.vue'
-import { events, type AgentRunFinished } from '../bindings'
+import { events } from '../bindings'
 import { ShowToastKey, type AgentEntityRefSeed, type AgentWorkspaceSeed } from '../injection-keys'
 import {
   getAgentConfig,
@@ -37,9 +37,26 @@ import {
 import { listSources, type Source } from '../api/sources'
 import { getReleases, type ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
-import { InvokeI18nError } from '../api/client'
 import { formatDate, skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
+import {
+  bashExitLabel,
+  canRetry,
+  errorKey,
+  escapeRegExp,
+  formatCostUsd,
+  isToolError,
+  runDurationText,
+  runEntities,
+  runErrorText,
+  runFiles,
+  runModel,
+  runModelLabel,
+  splitUserBlocks,
+  timeAdjacent,
+  toolCardBody,
+  toolCardName,
+} from './agent/agentChatUtils'
 
 const props = defineProps<{ seed?: AgentWorkspaceSeed | null; width?: number }>()
 const emit = defineEmits<{ close: [] }>()
@@ -431,36 +448,8 @@ const usageText = computed<string | null>(() => {
 })
 const usageWarn = computed<boolean>(() => (usage.value?.total_chars ?? 0) > USAGE_WARN_CHARS)
 
-/** 成本微元 → 美元展示串。
- *  LLM 单次成本常在 1e-5 ~ 1e-1 美元区间，固定 2 位小数会全显示成 $0.00（信息量为零），
- *  固定 6 位又会让大额变得难读；故按量级自适应保留有效小数位。 */
-function formatCostUsd(micros: number): string {
-  const usd = micros / 1e6
-  if (usd >= 1) return usd.toFixed(2)
-  if (usd >= 0.01) return usd.toFixed(4)
-  return usd.toFixed(6)
-}
-
 // ── 运行历史面板（评审 P1：耗时 / 模型 / 状态 / 引用实体）──
 const historyOpen = ref(false)
-
-function runDurationText(run: AgentRunSummary): string {
-  if (!run.started_at || !run.finished_at) return '—'
-  const start = new Date(run.started_at).getTime()
-  const end = new Date(run.finished_at).getTime()
-  if (!Number.isFinite(start) || !Number.isFinite(end)) return '—'
-  const secs = Math.max(0, Math.round((end - start) / 1000))
-  // 耗时文案走 i18n（英文界面不再漏中文）
-  if (secs < 60) return t('agent.duration_secs', String(secs))
-  const mins = Math.floor(secs / 60)
-  if (mins < 60) return secs % 60 > 0 ? t('agent.duration_min_secs', String(mins), String(secs % 60)) : t('agent.duration_min', String(mins))
-  return t('agent.duration_hour_min', String(Math.floor(mins / 60)), String(mins % 60))
-}
-
-function runModelLabel(run: AgentRunSummary): string {
-  const m = runModel(run)
-  return m ? m.model_id : t('agent.run_model_default')
-}
 
 function runEntityCount(run: AgentRunSummary): number {
   return runEntities(run).length
@@ -613,13 +602,6 @@ function hideChipTooltip() {
   chipTooltip.value = null
 }
 
-/** 取错误的 i18n key（`err.*`），用于按错误类型分支而非比对翻译后的文案。
- *  InvokeI18nError 直接带 key；其余情况仅当原文就是未翻译的 err.* 键时返回。 */
-function errorKey(e: unknown): string | null {
-  if (e instanceof InvokeI18nError) return e.key
-  const raw = (e instanceof Error ? e.message : String(e)).replace(/^Error:\s*/, '')
-  return raw.startsWith('err.') ? raw.split('|')[0] : null
-}
 const runs = ref<AgentRunSummary[]>([])
 const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const scrollRef = ref<HTMLElement | null>(null)
@@ -1223,13 +1205,6 @@ const messageDecorations = computed(() => {
   })
 })
 
-/** 两个 RFC3339 时间是否在 60 秒窗内（run_id 直连与时间窗兜底的共同校验）。 */
-function timeAdjacent(a: string, b: string): boolean {
-  const ta = new Date(a).getTime()
-  const tb = new Date(b).getTime()
-  return Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) < 60_000
-}
-
 /** 最近一次 run（状态横幅用）。 */
 const latestRun = computed<AgentRunSummary | undefined>(() => runs.value[0])
 
@@ -1575,7 +1550,7 @@ function handleMenuKeydown(e: KeyboardEvent) {
 }
 
 // ── 事件 ──
-async function onRunFinished(payload: AgentRunFinished) {
+async function onRunFinished() {
   // 不按 session_key 过滤：当前会话若有活跃 run（pending/running），任意会话的
   // run 结束都可能影响它（其他会话结束 → 本会话排队 run 开始执行；本会话结束 →
   // 横幅/停止按钮收尾）。统一刷新，保证「排队中」横幅在别的会话结束后自动更新。
@@ -1593,49 +1568,13 @@ async function onRunFinished(payload: AgentRunFinished) {
   await Promise.all([loadChat(), loadRpcStatus()])
 }
 
-/** 失败原因文案：run.error 形如 `err.agent.timeout|300`（i18n 键|参数）。 */
-function runErrorText(run: AgentRunSummary | undefined): string | null {
-  if (!run?.error) return null
-  const [key, ...args] = run.error.split('|')
-  const text = t(key, ...args)
-  // i18n 未命中时 t() 原样返回 key：不渲染裸键
-  return text === key ? null : text
-}
-
 /** 失败 run 的内联备注（非成功终态且可解析出文案时返回；否则 null）。
  * 挂在对应 user 消息气泡下，让「哪一轮为什么挂了」在对话流里可追溯——
  * 横幅只展示最近一次 run，历史失败原因不再随新提交成功而消失。 */
 function runFailedNote(run: AgentRunSummary | undefined): string | null {
   if (!run) return null
   if (run.status !== 'failed' && run.status !== 'timeout' && run.status !== 'unknown') return null
-  return runErrorText(run)
-}
-
-/** 该 run 是否值得重试（非成功终态即终点不明：失败 / 超时 / 被取消 / 结果未知）。 */
-function canRetry(run: AgentRunSummary | undefined): boolean {
-  if (!run) return false
-  return run.status === 'failed' || run.status === 'timeout' || run.status === 'cancelled' || run.status === 'unknown'
-}
-
-/** run 记录固化的模型选择（JSON 字符串；解析失败按「默认」处理）。 */
-function runModel(run: AgentRunSummary): AgentModelRef | null {
-  if (!run.model) return null
-  try {
-    return JSON.parse(run.model) as AgentModelRef
-  } catch {
-    return null
-  }
-}
-
-/** run 记录固化的本地文件附件（JSON 字符串数组；解析失败按无附件处理）。 */
-function runFiles(run: AgentRunSummary): string[] {
-  if (!run.files) return []
-  try {
-    const parsed = JSON.parse(run.files) as unknown
-    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : []
-  } catch {
-    return []
-  }
+  return runErrorText(run, t)
 }
 
 /** 过滤掉已删除的引用实体：重试历史 run 时，被引用的监控源/版本可能已被清理，
@@ -1749,8 +1688,8 @@ onMounted(async () => {
   // 补入的会话不打断当前激活会话（仅侧栏可见）
   const recovered = await discoverSessions()
   if (recovered > 0) showToast(t('agent.sessions_recovered', String(recovered)))
-  unlistenRunFinished = await events.agentRunFinished.listen((e) => {
-    void onRunFinished(e.payload)
+  unlistenRunFinished = await events.agentRunFinished.listen(() => {
+    void onRunFinished()
   })
   unlistenRpcStream = await events.agentRpcStream.listen((e) => {
     handleRpcStream(e.payload)
@@ -1878,7 +1817,7 @@ watch(
             :title="queueHint"
             @click="queueOccupiedBy && switchSession(queueOccupiedBy)"
           >{{ queueOccupiedBy ? t('agent.queue_occupied_by', sessionTitleOf(queueOccupiedBy)) : queueHint }}</span>
-          <span v-if="runErrorText(latestRun)" class="agent-ws-banner-error" :title="runErrorText(latestRun) ?? ''">{{ runErrorText(latestRun) }}</span>
+          <span v-if="runErrorText(latestRun, t)" class="agent-ws-banner-error" :title="runErrorText(latestRun, t) ?? ''">{{ runErrorText(latestRun, t) }}</span>
           <span class="agent-ws-banner-text">{{ latestRun.instruction || sessionTitle }}</span>
           <span v-if="latestRun.status === 'running' || latestRun.status === 'pending'" class="agent-ws-banner-spinner" aria-hidden="true"></span>
           <span class="agent-ws-banner-actions">
@@ -1920,7 +1859,7 @@ watch(
               <span class="agent-ws-history-main">
                 <span class="agent-ws-history-instr" :title="r.instruction">{{ r.instruction || sessionTitle }}</span>
                 <span class="agent-ws-history-meta">
-                  {{ runModelLabel(r) }} · {{ runDurationText(r) }}
+                  {{ runModelLabel(r, t) }} · {{ runDurationText(r, t) }}
                   <template v-if="runEntityCount(r) > 0"> · {{ t('agent.run_entities_n', String(runEntityCount(r))) }}</template>
                 </span>
               </span>
@@ -2337,77 +2276,6 @@ watch(
     </div>
   </div>
 </template>
-
-<script lang="ts">
-// ── 纯函数辅助（模块级，供模板调用，无组件状态）──
-import type { AgentChatBlock } from '../bindings'
-
-/** 正则转义：skill 短名可能含 . - 等元字符（如 code-review）。 */
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** pi 展开 /skill: 命令时把 skill 全文注入 user 消息（<skill name=…>…</skill>）。
- * 折叠为空白：skill 徽章由 run.skill_path 渲染，避免全文刷屏（对齐 pi TUI 的「加载 Skill」提示）。 */
-function stripSkillBlock(text: string): string {
-  return text.replace(/<skill name="[^"]*"[^>]*>[\s\S]*?<\/skill>\s*/, '')
-}
-
-/** 用户气泡显示文本拆分（模块级纯函数）：
- * - main：<用户指令> 标签内的用户真实指令（skill 块已剥离）
- * - folded：标签外的模板脚手架（订阅说明 / 外部数据区 / 不可信声明等）
- * 首轮完整模板不再整段刷屏，折叠为可展开的详情块，完整上下文仍可见；
- * 无标签（旧格式 / 多轮精简）时整段作为主文本，行为不变。 */
-function splitUserBlocks(blocks: AgentChatBlock[]): { main: string; folded: string | null } {
-  const text = blocks
-    .filter((b) => b.kind === 'text')
-    .map((b) => (b as { kind: 'text'; text?: string }).text ?? '')
-    .join('\n')
-  const cleaned = stripSkillBlock(text)
-  const m = cleaned.match(/<用户指令>\s*([\s\S]*?)\s*<\/用户指令>/)
-  if (!m) return { main: cleaned.trim(), folded: null }
-  const folded = cleaned.replace(m[0], '').trim()
-  return { main: m[1].trim(), folded: folded || null }
-}
-
-function isToolError(msg: AgentChatMessage): boolean {
-  return msg.blocks.some((b) => b.kind === 'toolResult' && b.is_error)
-}
-
-function toolCardName(msg: AgentChatMessage): string {
-  for (const b of msg.blocks) {
-    if (b.kind === 'toolResult') return b.tool_name
-    if (b.kind === 'bash') return 'bash'
-  }
-  return msg.role
-}
-
-function bashExitLabel(msg: AgentChatMessage): string {
-  const b = msg.blocks.find((x) => x.kind === 'bash') as Extract<AgentChatBlock, { kind: 'bash' }> | undefined
-  return b ? `exit ${b.exit_code ?? '?'}` : ''
-}
-
-function toolCardBody(msg: AgentChatMessage): string {
-  const parts: string[] = []
-  for (const b of msg.blocks) {
-    if (b.kind === 'toolResult') {
-      parts.push(b.text)
-    } else if (b.kind === 'bash') {
-      parts.push(`$ ${b.command}`, b.output)
-    }
-  }
-  return parts.filter((p) => p.trim()).join('\n')
-}
-
-function runEntities(run: AgentRunSummary | undefined): AgentEntityRefSeed[] {
-  if (!run) return []
-  try {
-    return JSON.parse(run.entities) as AgentEntityRefSeed[]
-  } catch {
-    return []
-  }
-}
-</script>
 
 <style scoped>
 .agent-ws {
