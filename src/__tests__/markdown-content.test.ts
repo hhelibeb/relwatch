@@ -35,8 +35,16 @@ describe('MarkdownContent', () => {
     const md = '![alt](https://example.com/x.png)'
     const wrapper = mount(MarkdownContent, { props: { content: md } })
     const html = wrapper.find('.markdown-body').element.innerHTML
-    expect(html).toContain('<img src="https://example.com/x.png"')
+    // 远程图片被改写为 media 网关地址（Rust 按代理设置下载）
+    expect(html).toContain('<img src="http://media.localhost/' + encodeURIComponent('https://example.com/x.png') + '"')
     expect(html).toContain('alt="alt"')
+  })
+
+  it('渲染相对/自身资源图片不改写', () => {
+    const md = '![本地](/icons.svg#x)'
+    const wrapper = mount(MarkdownContent, { props: { content: md } })
+    const html = wrapper.find('.markdown-body').element.innerHTML
+    expect(html).toContain('<img src="/icons.svg#x"')
   })
 
   it('保留内联 <br> 标签', () => {

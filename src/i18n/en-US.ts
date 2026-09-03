@@ -377,6 +377,7 @@ export default {
   'err.bili_login_window_missing': 'Login window closed',
   'err.bili_login_not_logged_in': 'Login not detected yet. Scan the QR code or sign in inside the window',
   'err.bili_login_cookie_read': 'Failed to read login cookie: {0}',
+  'err.bili_login_window_create': 'Failed to create login window: {0}',
   'err.source_not_found': 'Source not found',
   'err.db_connect': 'Database connection failed: {0}',
   'err.query_failed': 'Query failed: {0}',

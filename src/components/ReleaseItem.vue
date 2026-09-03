@@ -8,6 +8,7 @@ import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
+import { mediaUrlOrEmpty } from '../utils/imageProxy'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { useLineClamp } from '../composables/useLineClamp'
@@ -380,7 +381,9 @@ const youtubeMeta = computed<YoutubeMeta | null>(() => {
   }
 })
 
-const youtubeThumb = computed(() => youtubeMeta.value?.thumbnail ?? null)
+// 封面走 media 网关（mediaUrlOrEmpty：null → '' 兼容模板 v-if；远程 URL 改写为
+// http://media.localhost/<原图>，由 Rust 按代理设置下载；data:/相对路径原样保留）
+const youtubeThumb = computed(() => mediaUrlOrEmpty(youtubeMeta.value?.thumbnail ?? null))
 const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
 
 // Data API 的 ISO 8601 时长（PT1H2M3S / PT12M34S）→ 人类可读（1:02:03 / 12:34）；RSS 模式无时长返回空

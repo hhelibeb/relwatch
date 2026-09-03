@@ -17,6 +17,8 @@ pub mod source;
 mod deepseek;
 mod poll;
 mod retry;
+mod net;
+mod media;
 pub mod agent;
 pub mod agent_rpc;
 pub mod agent_session;
@@ -66,6 +68,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::set_credential,
         commands::read_bilibili_login_cookie,
         commands::close_bilibili_login_window,
+        commands::open_bilibili_login_window,
         commands::test_deepseek_connection,
         commands::search_logs,
         commands::export_backup,
@@ -229,6 +232,28 @@ pub fn run() {
         // 命令清单单一来源：invoke_handler 从同一个 specta Builder 生成，
         // 与 collect_commands! 共用一份清单，不再存在第二份手工副本。
         .invoke_handler(specta_builder().invoke_handler())
+        // media 图片网关：前端把远程图片改写为 http://media.localhost/<url>，
+        // 此处拦截并用已按 ProxyPolicy 构建的 reqwest client 下载返回（继承应用代理）。
+        // 注册必须在使用前完成；handler 闭包在每次请求时触发，经 UriSchemeContext
+        // 取 app handle（读 DB 代理设置），下载在独立线程执行后经 responder 异步返回，
+        // 避免阻塞 WebView 请求线程。
+        .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let uri = request.uri().to_string();
+            std::thread::spawn(move || {
+                let app = app.clone();
+                let response = tauri::async_runtime::block_on(async move {
+                    // 提取 path：http://media.localhost/<path> → <path>
+                    let path = uri
+                        .split("localhost/")
+                        .nth(1)
+                        .map(|p| p.to_string())
+                        .unwrap_or_default();
+                    crate::media::handle_media_request(&app, &path).await
+                });
+                responder.respond(response);
+            });
+        })
         .setup(|app| {
             // 注册事件名映射（release 构建的 emit 同样依赖），必须在 emit 之前挂载
             specta_builder().mount_events(app);

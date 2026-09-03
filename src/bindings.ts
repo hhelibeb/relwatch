@@ -53,6 +53,17 @@ export const commands = {
 	readBilibiliLoginCookie: (windowLabel: string) => __TAURI_INVOKE<boolean>("read_bilibili_login_cookie", { windowLabel }),
 	/**  关闭登录窗口（前端在登录成功或用户放弃时调用）。 */
 	closeBilibiliLoginWindow: (windowLabel: string) => __TAURI_INVOKE<null>("close_bilibili_login_window", { windowLabel }),
+	/**
+	 *  用 Rust 建窗打开 B 站登录窗口（可注入应用代理设置）。
+	 * 
+	 *  为什么不用前端 `new WebviewWindow`：JS 的 `WindowOptions` 没有 proxy 字段，
+	 *  登录窗口加载整个远程站点时网络请求只能走系统代理。此命令在 Tauri 侧建窗，
+	 *  按 `net::ProxyPolicy` 决定是否注入 `proxy_url`——
+	 *  `custom` + 非空 url → 注入（登录页/后续请求走应用自定义代理）；
+	 *  `system` / `none` / 空 url → 不注入（交由平台默认 = 系统代理）。
+	 *  若窗口已存在（如轮询期间用户重复点击）则静默成功（幂等）。
+	 */
+	openBilibiliLoginWindow: (title: string) => __TAURI_INVOKE<null>("open_bilibili_login_window", { title }),
 	testDeepseekConnection: (payload: {
 	model: string | null,
 	baseUrl: string | null,
@@ -76,9 +87,8 @@ export const commands = {
 	 *  前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 	 *  返回 `Vec<u8>`，IPC 序列化为 number[]。
 	 * 
-	 *  SSRF 防护（H-2）：禁用 reqwest 自动重定向，改为手动跟随（最多 10 跳），
-	 *  **每一跳都重新执行 `ensure_public_url` 校验**——自动跟随不会对跳转目标
-	 *  重新校验，恶意服务器可用 302 把请求导向内网（如 169.254.169.254 云元数据）。
+	 *  SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——禁自动重定向、手动
+	 *  跟随（最多 10 跳）且每跳重新执行 `ensure_public_url`（含云元数据私网拦截）。
 	 */
 	fetchUrlBytes: (url: string) => __TAURI_INVOKE<number[]>("fetch_url_bytes", { url }),
 	/**

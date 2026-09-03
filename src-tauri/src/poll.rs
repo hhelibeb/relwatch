@@ -1065,7 +1065,8 @@ mod tests {
             ..Default::default()
         });
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("Invalid proxy URL"));
+        // 非法代理 URL 现在收敛到 net::ProxyPolicy 判定，返回 i18n 错误码
+        assert_eq!(result.unwrap_err(), "err.invalid_url");
     }
 
     #[test]

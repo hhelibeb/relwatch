@@ -67,27 +67,22 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
     } else {
         builder = builder.default_headers(headers);
     }
-    match config.proxy_mode {
-        "none" => {
+    // 三态语义唯一来源（见 net::ProxyPolicy）：none/custom+空 → 直连，
+    // custom → 显式代理，system/未知 → 由 reqwest 追加系统代理。
+    // 代理 URL 非法（协议不支持/解析失败）时返回 i18n 错误码，由调用方翻译。
+    match crate::net::ProxyPolicy::resolve(config.proxy_mode, config.proxy_url)? {
+        crate::net::ProxyDecision::NoProxy => {
             builder = builder.no_proxy();
         }
-        "system" => {
-            // 不设置任何 proxy，让 reqwest 使用系统代理（Windows 默认行为）
+        crate::net::ProxyDecision::Proxy(url) => {
+            // resolve 已保证 scheme ∈ {http,https,socks5} 且 Url 可解析；
+            // Proxy::all 仅在这些约束不满足时失败，此分支实际不可达，防御性兜底。
+            let proxy = reqwest::Proxy::all(url.to_string())
+                .map_err(|_| "err.invalid_url".to_string())?;
+            builder = builder.proxy(proxy);
         }
-        _ => {
-            // "custom" 或其他值：使用 proxy_url
-            if !config.proxy_url.is_empty() {
-                if let Ok(proxy) = reqwest::Proxy::all(config.proxy_url) {
-                    builder = builder.proxy(proxy);
-                } else {
-                    return Err(format!(
-                        "Invalid proxy URL: {} — 仅支持 http://、https:// 和 socks5:// 协议",
-                        config.proxy_url
-                    ));
-                }
-            } else {
-                builder = builder.no_proxy();
-            }
+        crate::net::ProxyDecision::System => {
+            // 不设置任何 proxy，让 reqwest 使用系统代理（Windows 默认行为）
         }
     }
     builder.build().map_err(|e| e.to_string())
@@ -413,9 +408,10 @@ pub async fn ensure_public_url(url: &str) -> Result<(), String> {
 /// 下载 URL 的原始字节（剪贴板图片等场景），限制最大 `max_bytes` 防止异常响应撑爆内存。
 /// scheme 校验由调用方负责；错误统一为 `err.*` i18n 格式。
 ///
-/// 注意：`fetch_url_bytes`（commands/download.rs）因 SSRF 逐跳校验已内联实现下载，
-/// 本函数保留为通用下载原语（wiremock 测试覆盖响应处理逻辑，未来可复用）。
-/// 重定向跟随为 reqwest 默认行为，仅适用于调用方已自行校验目标的场景。
+/// 注意：`fetch_url_bytes`（commands/download.rs）与 media 网关共用
+/// `fetch_public_bytes`（带 SSRF 逐跳校验）；本函数保留为通用下载原语
+/// （wiremock 测试覆盖响应处理逻辑），跟随 reqwest 默认重定向，仅适用于
+/// 调用方已自行校验目标的场景。
 #[cfg_attr(not(test), allow(dead_code))]
 pub async fn download_bytes(
     client: &reqwest::Client,
@@ -447,6 +443,88 @@ pub async fn download_bytes(
         ));
     }
     Ok(bytes.to_vec())
+}
+
+/// 带 SSRF 逐跳校验的公开资源下载核心：供「下载任意 URL」与 media:// 协议共用。
+///
+/// - 要求 URL 为 http/https；
+/// - 手动跟随重定向（最多 10 跳），**每一跳重新执行 `ensure_public_url`**——禁自动
+///   重定向是因为 reqwest 自动跟随不会对跳转目标重新校验，恶意服务器可用 302 把
+///   请求导向内网（如 169.254.169.254 云元数据）；
+/// - 响应体不得超过 `max_bytes`。
+///
+/// 代理语义不在本函数内：调用方用已按 ProxyPolicy 构建好的 client 传入。
+/// `client` 应禁自动重定向（`redirect::Policy::none`），本函数按 Location 手动跟随。
+pub async fn fetch_public_bytes(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>, String> {
+    let (bytes, _content_type) = fetch_public_with_headers(client, url, max_bytes).await?;
+    Ok(bytes)
+}
+
+/// `fetch_public_bytes` 的带 Content-Type 版本。media:// 需要把远端响应的
+/// Content-Type 原样透传给 Chromium，否则某些 `<img>` 场景可能被误判。
+pub async fn fetch_public_with_headers(
+    client: &reqwest::Client,
+    url: &str,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("err.invalid_url".to_string());
+    }
+    let mut current = url.to_string();
+    for _ in 0..10 {
+        ensure_public_url(&current).await?;
+        let resp = client
+            .get(&current)
+            .send()
+            .await
+            .map_err(|e| format!("err.request_failed|{}", e))?;
+        if let Some(loc) = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+        {
+            current = reqwest::Url::parse(&current)
+                .map_err(|_| "err.invalid_url".to_string())?
+                .join(loc)
+                .map_err(|_| "err.invalid_url".to_string())?
+                .to_string();
+            // 只跟随 http/https 跳转（join 已保证绝对 URL 合法，这里再收紧 scheme）
+            if !(current.starts_with("https://") || current.starts_with("http://")) {
+                return Err("err.invalid_url".to_string());
+            }
+            continue;
+        }
+        let status = resp.status();
+        if !status.is_success() {
+            return Err(format!("err.download_failed|HTTP {}", status.as_u16()));
+        }
+        if let Some(len) = resp.content_length() {
+            if len as usize > max_bytes {
+                return Err(format!("err.download_failed|file too large ({} bytes)", len));
+            }
+        }
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| format!("err.request_failed|{}", e))?;
+        if bytes.len() > max_bytes {
+            return Err(format!(
+                "err.download_failed|file too large ({} bytes)",
+                bytes.len()
+            ));
+        }
+        return Ok((bytes.to_vec(), content_type));
+    }
+    Err("err.download_failed|too many redirects".to_string())
 }
 
 #[cfg(test)]

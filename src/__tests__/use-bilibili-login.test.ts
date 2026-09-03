@@ -5,34 +5,14 @@ import { useBilibiliLogin } from '../composables/useBilibiliLogin'
 import { InvokeI18nError } from '../api/client'
 import {
   readBilibiliLoginCookie,
+  openBilibiliLoginWindow,
   closeBilibiliLoginWindow,
   setCredential,
 } from '../api/settings'
 
-// WebviewWindow 假实现：记录实例，once 回调可手动触发（tauri://created / tauri://error）
-const { MockWebviewWindow } = vi.hoisted(() => {
-  class MockWebviewWindow {
-    static instances: MockWebviewWindow[] = []
-    onceCallbacks: Record<string, () => void> = {}
-    constructor(public label: string, public options?: unknown) {
-      MockWebviewWindow.instances.push(this)
-    }
-    once(event: string, cb: () => void) {
-      this.onceCallbacks[event] = cb
-    }
-    fire(event: string) {
-      this.onceCallbacks[event]?.()
-    }
-  }
-  return { MockWebviewWindow }
-})
-
-vi.mock('@tauri-apps/api/webviewWindow', () => ({
-  WebviewWindow: MockWebviewWindow,
-}))
-
 vi.mock('../api/settings', () => ({
   readBilibiliLoginCookie: vi.fn(),
+  openBilibiliLoginWindow: vi.fn().mockResolvedValue(undefined),
   closeBilibiliLoginWindow: vi.fn().mockResolvedValue(undefined),
   setCredential: vi.fn().mockResolvedValue(undefined),
 }))
@@ -49,6 +29,7 @@ vi.mock('../composables/useUsageTracking', () => ({
 import { t } from '../i18n'
 
 const readBilibiliLoginCookieMock = vi.mocked(readBilibiliLoginCookie)
+const openBilibiliLoginWindowMock = vi.mocked(openBilibiliLoginWindow)
 const closeBilibiliLoginWindowMock = vi.mocked(closeBilibiliLoginWindow)
 const setCredentialMock = vi.mocked(setCredential)
 
@@ -86,8 +67,8 @@ function mountHarness() {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.useFakeTimers()
-  MockWebviewWindow.instances = []
   readBilibiliLoginCookieMock.mockRejectedValue(new InvokeI18nError('err.bili_login_window_missing', [], 'window missing'))
+  openBilibiliLoginWindowMock.mockResolvedValue(undefined)
   closeBilibiliLoginWindowMock.mockResolvedValue(undefined)
   setCredentialMock.mockResolvedValue(undefined)
 })
@@ -97,26 +78,25 @@ afterEach(() => {
 })
 
 describe('useBilibiliLogin — 登录状态机', () => {
-  it('窗口缺失时创建登录窗口并进入轮询（busy 置位）', async () => {
+  it('窗口缺失时经 Rust 建窗并进入轮询（busy 置位）', async () => {
     const { wrapper } = mountHarness()
 
     const p = wrapper.get('.login').trigger('click')
     await nextTick()
 
-    expect(MockWebviewWindow.instances).toHaveLength(1)
-    expect(MockWebviewWindow.instances[0].label).toBe('bilibili-login')
+    // 探测窗口缺失 → 调用 Rust 建窗命令（传入窗口标题）
+    expect(openBilibiliLoginWindowMock).toHaveBeenCalledWith(t('settings.bilibili_login_title'))
     expect(wrapper.find('.busy').exists()).toBe(true)
-    // 等待窗口 created 事件
-    MockWebviewWindow.instances[0].fire('tauri://created')
+    // 命令 resolve 后进入轮询
     await p
+    expect(readBilibiliLoginCookieMock).toHaveBeenCalled()
   })
 
   it('窗口创建失败：提示失败并复位 busy', async () => {
+    openBilibiliLoginWindowMock.mockRejectedValue(new Error('create failed'))
     const { wrapper, showToast } = mountHarness()
 
     const p = wrapper.get('.login').trigger('click')
-    await nextTick()
-    MockWebviewWindow.instances[0].fire('tauri://error')
     await p
     await nextTick()
 
@@ -131,7 +111,7 @@ describe('useBilibiliLogin — 登录状态机', () => {
     await wrapper.get('.login').trigger('click')
     await nextTick()
 
-    expect(MockWebviewWindow.instances).toHaveLength(0)
+    expect(openBilibiliLoginWindowMock).not.toHaveBeenCalled()
     expect(onLoginSuccess).toHaveBeenCalledOnce()
     expect(closeBilibiliLoginWindowMock).toHaveBeenCalledWith('bilibili-login')
     expect(showToast).toHaveBeenCalledWith(t('settings.bilibili_login_success'))
@@ -145,7 +125,7 @@ describe('useBilibiliLogin — 登录状态机', () => {
     await wrapper.get('.login').trigger('click')
     await nextTick()
 
-    expect(MockWebviewWindow.instances).toHaveLength(0)
+    expect(openBilibiliLoginWindowMock).not.toHaveBeenCalled()
 
     // 第一次轮询仍未登录
     await vi.advanceTimersByTimeAsync(2000)

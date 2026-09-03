@@ -377,6 +377,7 @@ export default {
   'err.bili_login_window_missing': '登录窗口已关闭',
   'err.bili_login_not_logged_in': '尚未检测到登录，请在窗口内扫码或输入账号完成登录',
   'err.bili_login_cookie_read': '读取登录 Cookie 失败: {0}',
+  'err.bili_login_window_create': '打开登录窗口失败: {0}',
   'err.source_not_found': '监控源不存在',
   'err.db_connect': '数据库连接失败: {0}',
   'err.query_failed': '查询失败: {0}',
