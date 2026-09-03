@@ -89,7 +89,14 @@ export function classifyUpdateError(raw: string): UpdateErrorKind {
 
 /** total 单独存 ref：插件只在 Started 事件给一次 contentLength，
  * Progress 事件只有 chunkLength——不要把 total 传成 undefined 冲掉它（设计稿 §4.3）。 */
-export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
+/**
+ * @param onLogWritten 更新链路每次写完操作日志后回调（落库在 Rust 端，前端 fire-and-forget
+ *   触发）——宿主用它重拉日志列表，否则日志页是 v-show 常驻的，看不到新写的日志。
+ */
+export function useAppUpdate(
+  getProxy: () => { mode: string; url: string },
+  onLogWritten?: () => void,
+) {
   const status = ref<UpdateStatus>('idle')
   const currentVersion = ref('')
   // pendingUpdate 必须是 shallowRef：插件 Update 实例内部用 JS 私有字段（#metadata 等），
@@ -199,6 +206,8 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     } catch (e) {
       handleError(e)
     }
+    // 成功/失败均已各写一条检查日志，通知宿主重拉日志列表
+    onLogWritten?.()
   }
 
   async function downloadAndInstall(): Promise<void> {
@@ -222,15 +231,21 @@ export function useAppUpdate(getProxy: () => { mode: string; url: string }) {
     done.value = 0
     total.value = undefined
     retryTarget.value = 'download'
+    // 写「开始下载」操作日志（Rust 端落库，失败不阻塞下载）；写完通知宿主重拉日志列表
+    commands.updaterDownloadStarted(u.version).catch(() => null).finally(() => onLogWritten?.())
     try {
       // proxy 随 updater_check 时构建的 Update 资源生效，下载阶段不重复传（见文件头说明）
       await u.downloadAndInstall(onProgress)
       // Windows：NSIS 安装器 ShellExecuteW 成功后进程 exit(0) 接管，不会执行到这里；
       // 到达此处的仅 Linux/macOS：先优雅关闭 pi RPC（失败不阻塞重启），再 relaunch（§6）
       status.value = 'installing'
+      commands.updaterInstallStarted(u.version).catch(() => null).finally(() => onLogWritten?.())
       await commands.agentShutdownForUpdate().catch(() => null)
       await relaunch()
     } catch (e) {
+      // 写「下载失败」操作日志（Rust 端落库，失败不阻塞错误处理）
+      const raw = e instanceof Error ? e.message : String(e)
+      commands.updaterDownloadFailed(u.version, raw).catch(() => null).finally(() => onLogWritten?.())
       handleError(e)
     }
   }

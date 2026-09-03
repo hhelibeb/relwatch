@@ -56,6 +56,9 @@ vi.mock('../bindings', () => ({
     getAgentQueue: vi.fn(),
     agentShutdownForUpdate: vi.fn(),
     updaterCheck: vi.fn(),
+    updaterDownloadStarted: vi.fn(),
+    updaterDownloadFailed: vi.fn(),
+    updaterInstallStarted: vi.fn(),
   },
 }))
 
@@ -86,8 +89,11 @@ function fakeUpdate(version: string, body: string | null = null): UpdaterMetadat
 
 type Composable = ReturnType<typeof useAppUpdate>
 
-function setupComposable(proxy: { mode: string; url: string } = { mode: 'none', url: '' }): Composable {
-  return useAppUpdate(() => proxy)
+function setupComposable(
+  proxy: { mode: string; url: string } = { mode: 'none', url: '' },
+  onLogWritten?: () => void,
+): Composable {
+  return useAppUpdate(() => proxy, onLogWritten)
 }
 
 describe('classifyUpdateError（§4.5 错误表，锚点对 tauri-plugin-updater 2.10.1 实测）', () => {
@@ -132,6 +138,10 @@ describe('useAppUpdate 检查状态机', () => {
     getAgentQueueMock.mockResolvedValue([])
     shutdownMock.mockResolvedValue(null)
     confirmMock.mockResolvedValue(true)
+    // 操作日志命令：默认成功（返回 resolved Promise），个别用例单独断言调用参数
+    vi.mocked(commands.updaterDownloadStarted).mockResolvedValue(null)
+    vi.mocked(commands.updaterDownloadFailed).mockResolvedValue(null)
+    vi.mocked(commands.updaterInstallStarted).mockResolvedValue(null)
   })
 
   it('null → upToDate', async () => {
@@ -148,6 +158,21 @@ describe('useAppUpdate 检查状态机', () => {
     await c.checkForUpdate()
     expect(c.status.value).toBe('available')
     expect(c.pendingUpdate.value?.version).toBe('1.14.0')
+  })
+
+  it('检查完成（成功或失败）都回调 onLogWritten——宿主借此重拉日志列表', async () => {
+    const onLogWritten = vi.fn()
+    checkMock.mockResolvedValue(null)
+    const c = setupComposable({ mode: 'none', url: '' }, onLogWritten)
+    await c.checkForUpdate()
+    expect(c.status.value).toBe('upToDate')
+    expect(onLogWritten).toHaveBeenCalledTimes(1)
+
+    // 失败同样写日志（check_failed），也要通知刷新
+    checkMock.mockRejectedValue(new Error('connection refused'))
+    await c.checkForUpdate()
+    expect(c.status.value).toBe('error')
+    expect(onLogWritten).toHaveBeenCalledTimes(2)
   })
 
   it('再次检查时 close 旧 Update（防 rid 资源累积）', async () => {
@@ -233,6 +258,10 @@ describe('useAppUpdate 下载安装', () => {
     getAgentQueueMock.mockResolvedValue([])
     shutdownMock.mockResolvedValue(null)
     confirmMock.mockResolvedValue(true)
+    // 操作日志命令：默认成功
+    vi.mocked(commands.updaterDownloadStarted).mockResolvedValue(null)
+    vi.mocked(commands.updaterDownloadFailed).mockResolvedValue(null)
+    vi.mocked(commands.updaterInstallStarted).mockResolvedValue(null)
   })
 
   it('下载安装成功：shutdown 先于 relaunch（仅 Linux/macOS 路径）', async () => {
@@ -245,6 +274,10 @@ describe('useAppUpdate 下载安装', () => {
     expect(relaunchMock).toHaveBeenCalledTimes(1)
     expect(shutdownMock.mock.invocationCallOrder[0]).toBeLessThan(relaunchMock.mock.invocationCallOrder[0])
     expect(c.status.value).toBe('installing')
+    // 操作日志：下载前写「开始下载」，下载完成后写「开始安装」
+    expect(commands.updaterDownloadStarted).toHaveBeenCalledWith('1.14.0')
+    expect(commands.updaterInstallStarted).toHaveBeenCalledWith('1.14.0')
+    expect(commands.updaterDownloadFailed).not.toHaveBeenCalled()
   })
 
   it('进度事件：total 只在 Started 记录一次，不被 Progress 冲掉', async () => {
@@ -308,6 +341,10 @@ describe('useAppUpdate 下载安装', () => {
     expect(c.status.value).toBe('error')
     expect(c.errorKind.value).toBe('network')
     expect(c.done.value).toBe(400)
+    // 操作日志：下载前写「开始下载」，失败后写「下载失败」
+    expect(commands.updaterDownloadStarted).toHaveBeenCalledWith('1.14.0')
+    expect(commands.updaterDownloadFailed).toHaveBeenCalledWith('1.14.0', 'error sending request for url (https://objects.githubusercontent.com/...)')
+    expect(commands.updaterInstallStarted).not.toHaveBeenCalled()
 
     c.retry()
     expect(c.status.value).toBe('available')
@@ -318,6 +355,18 @@ describe('useAppUpdate 下载安装', () => {
     expect(c.status.value).toBe('error')
     expect(c.done.value).toBe(0)
     expect(c.total.value).toBeUndefined()
+  })
+
+  it('下载日志写完回调 onLogWritten——started/failed 各通知一次（宿主借此重拉日志列表）', async () => {
+    const onLogWritten = vi.fn()
+    downloadMock.mockRejectedValue('connection reset by peer')
+    checkMock.mockResolvedValue(fakeUpdate('1.14.0'))
+    const c = setupComposable({ mode: 'none', url: '' }, onLogWritten)
+    await c.checkForUpdate()
+    await c.downloadAndInstall()
+    expect(c.status.value).toBe('error')
+    // 通知挂在日志命令的 finally 上，晚于 downloadAndInstall 返回，需等 microtask 落地
+    await vi.waitFor(() => expect(onLogWritten).toHaveBeenCalledTimes(2))
   })
 
   it('Agent 任务守卫：队列非空时确认弹窗，取消则不下载', async () => {

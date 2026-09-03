@@ -226,7 +226,10 @@ export const commands = {
 	 *  仅 Linux/macOS 在 `relaunch()` 前调用本命令；Windows 上安装器接管退出，前端不会执行到。
 	 */
 	agentShutdownForUpdate: () => __TAURI_INVOKE<null>("agent_shutdown_for_update"),
-	/**  检查应用更新。返回 `None` 表示当前已是最新版本（endpoint 返回 204，或远端版本不高于当前版本）。 */
+	/**
+	 *  检查应用更新。返回 `None` 表示当前已是最新版本（endpoint 返回 204，或远端版本不高于当前版本）。
+	 *  检查结果写入操作日志（成功/发现新版本/失败均记录）。
+	 */
 	updaterCheck: (timeoutMs: number, proxyMode: string, proxyUrl: string) => __TAURI_INVOKE<{
 	rid: number,
 	currentVersion: string,
@@ -235,6 +238,12 @@ export const commands = {
 	body: string | null,
 	rawJson: string,
 } | null>("updater_check", { timeoutMs, proxyMode, proxyUrl }),
+	/**  写「开始下载更新」操作日志。由前端在调用 `Update.downloadAndInstall()` 之前触发。 */
+	updaterDownloadStarted: (version: string) => __TAURI_INVOKE<null>("updater_download_started", { version }),
+	/**  写「更新下载失败」操作日志。由前端在下载抛出异常时触发（error 分类文案已由前端生成）。 */
+	updaterDownloadFailed: (version: string, error: string) => __TAURI_INVOKE<null>("updater_download_failed", { version, error }),
+	/**  写「开始安装更新并重启」操作日志。仅 Linux/macOS 路径可到达（下载安装完成后、relaunch 前）。 */
+	updaterInstallStarted: (version: string) => __TAURI_INVOKE<null>("updater_install_started", { version }),
 };
 
 /** Events */

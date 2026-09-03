@@ -737,7 +737,8 @@ onUnmounted(() => {
       <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
       <SettingsTab v-show="activeTab === 'settings'" :settings="settings"
         @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"
-        @agent-config-changed="loadAgentConfig()" />
+        @agent-config-changed="loadAgentConfig()"
+        @update-log-written="scheduleRefreshLogs()" />
     </main>
 
     <Transition name="toast">

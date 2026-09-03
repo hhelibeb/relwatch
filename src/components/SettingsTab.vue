@@ -26,6 +26,8 @@ const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{
   update: [pollIntervalChanged: boolean, forceReload?: boolean]
   agentConfigChanged: []
+  /** 更新链路（检查/下载/安装）写完操作日志——宿主重拉日志列表 */
+  updateLogWritten: []
 }>()
 const showToast = inject(ShowToastKey)!
 
@@ -154,7 +156,7 @@ const {
   retry: retryUpdate,
   openReleaseNotes: openUpdateNotes,
   openDownloadPage,
-} = useAppUpdate(() => ({ mode: props.settings.proxy_mode, url: props.settings.proxy_url.trim() }))
+} = useAppUpdate(() => ({ mode: props.settings.proxy_mode, url: props.settings.proxy_url.trim() }), () => emit('updateLogWritten'))
 
 // dev 构建置灰：插件不区分 debug/release，dev 下 check() 会真实访问线上 endpoint
 // 并允许把正式版装进开发版（设计稿 §4.3 开发构建保护）

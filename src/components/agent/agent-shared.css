@@ -1,0 +1,138 @@
+/* AgentWorkspace 子组件共享样式（非 scoped）。
+ * 菜单基类族供编排层与各子组件（含 Teleport 到 body 的浮层）共同命中：
+ * Teleport 内容只携带渲染它的子组件的 data-v 属性，编排层 scoped 规则不再
+ * 覆盖，故基类必须全局化。agent-ws-* 前缀为本组件系专用，无全局竞争。
+ * 特异性约定：各菜单的定位覆盖规则用双类选择器（如
+ * .agent-ws-menu.agent-ws-menu-rpc）抬高特异性压制本基类，级联顺序无关。 */
+
+/* 引用菜单 */
+.agent-ws-menu {
+  position: absolute;
+  bottom: calc(100% - 8px);
+  left: 14px;
+  right: 14px;
+  max-height: 260px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-lg);
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 20;
+}
+.agent-ws-menu-title {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.6;
+  padding: 2px 8px 4px;
+}
+.agent-ws-menu-group {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.5;
+  padding: 6px 8px 2px;
+}
+.agent-ws-menu-group-icon {
+  width: 12px;
+  height: 12px;
+}
+.agent-ws-menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  text-align: left;
+  padding: 6px 8px;
+  font-size: 12px;
+  border: none;
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 6px;
+}
+.agent-ws-menu-item:hover,
+.agent-ws-menu-item.selected {
+  background: var(--bg-hover);
+}
+.agent-ws-menu-main {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-ws-menu-sub {
+  font-size: 10px;
+  opacity: 0.55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--mono-font, monospace);
+}
+.agent-ws-menu-empty {
+  padding: 10px 8px;
+  font-size: 12px;
+  opacity: 0.6;
+  text-align: center;
+}
+
+/* chips / 徽章基础族（消息区实体 chip + skill 徽章跨子组件使用） */
+.agent-ws-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-subtle);
+  white-space: nowrap;
+  /* 截断限制移到 .agent-ws-chip-text——之前 max-width+overflow 会把删除按钮一起裁掉 */
+}
+.agent-ws-chip-text {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* chip 的移除按钮（实体 / skill / 文件 chip 共用，AgentComposer 渲染）。
+   靠 .agent-ws-chip 的 gap 与 chip 文本分隔，自身不占额外间距。 */
+.agent-ws-chip-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.agent-ws-chip-remove:hover {
+  color: #d64545;
+  background: var(--bg-hover);
+}
+.agent-ws-chip-remove svg {
+  width: 9px;
+  height: 9px;
+}
+.agent-ws-skill-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  background: rgba(46, 111, 208, 0.12);
+  color: #2e6fd0;
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
