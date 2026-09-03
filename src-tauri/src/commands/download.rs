@@ -9,18 +9,14 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
 /// 前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 /// 返回 `Vec<u8>`，IPC 序列化为 number[]。
 ///
-/// SSRF 防护（H-2）：禁用 reqwest 自动重定向，改为手动跟随（最多 10 跳），
-/// **每一跳都重新执行 `ensure_public_url` 校验**——自动跟随不会对跳转目标
-/// 重新校验，恶意服务器可用 302 把请求导向内网（如 169.254.169.254 云元数据）。
+/// SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——禁自动重定向、手动
+/// 跟随（最多 10 跳）且每跳重新执行 `ensure_public_url`（含云元数据私网拦截）。
 #[tauri::command]
 
 #[specta::specta]pub async fn fetch_url_bytes(
     state: tauri::State<'_, AppState>,
     url: String,
 ) -> Result<Vec<u8>, String> {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err("err.invalid_url".to_string());
-    }
     let (proxy_url, proxy_mode);
     {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
@@ -37,55 +33,5 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
         follow_redirects: false,
         ..Default::default()
     })?;
-
-    // 手动跟随重定向：每跳先校验目标地址，再发请求；
-    // 非重定向响应（2xx/4xx/5xx）直接处理，Location 缺失视为普通响应。
-    let mut current = url;
-    for _ in 0..10 {
-        // SSRF 校验在命令层（download_bytes 被 wiremock 测试以 127.0.0.1 直连，
-        // 下载函数本身保持通用）：拒绝私网/回环/链路本地/保留地址（含云元数据）。
-        http::ensure_public_url(&current).await?;
-        let resp = client
-            .get(&current)
-            .send()
-            .await
-            .map_err(|e| format!("err.request_failed|{}", e))?;
-        if let Some(loc) = resp
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-        {
-            current = reqwest::Url::parse(&current)
-                .map_err(|_| "err.invalid_url".to_string())?
-                .join(loc)
-                .map_err(|_| "err.invalid_url".to_string())?
-                .to_string();
-            // 只跟随 http/https 跳转（join 已保证绝对 URL 合法，这里再收紧 scheme）
-            if !(current.starts_with("https://") || current.starts_with("http://")) {
-                return Err("err.invalid_url".to_string());
-            }
-            continue;
-        }
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(format!("err.download_failed|HTTP {}", status.as_u16()));
-        }
-        if let Some(len) = resp.content_length() {
-            if len as usize > MAX_DOWNLOAD_BYTES {
-                return Err(format!("err.download_failed|file too large ({} bytes)", len));
-            }
-        }
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("err.request_failed|{}", e))?;
-        if bytes.len() > MAX_DOWNLOAD_BYTES {
-            return Err(format!(
-                "err.download_failed|file too large ({} bytes)",
-                bytes.len()
-            ));
-        }
-        return Ok(bytes.to_vec());
-    }
-    Err("err.download_failed|too many redirects".to_string())
+    http::fetch_public_bytes(&client, &url, MAX_DOWNLOAD_BYTES).await
 }

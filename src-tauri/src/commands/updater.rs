@@ -13,16 +13,12 @@
 //! 环境变量 + 各平台的 OS 代理设置）。
 //!
 //! 结论：`proxy_mode = "none"` 在「检查更新」这条链路上静默失效，与后台监控
-//! （`http.rs::build_http_client` 对 none 显式调 `no_proxy()`）语义相反——
-//! 用户因为系统/环境变量代理坏了才选「不使用代理」，结果监控通了、
+//! 语义相反——用户因为系统/环境变量代理坏了才选「不使用代理」，结果监控通了、
 //! 检查更新仍走坏代理，且无从绕开。
 //!
-//! 本命令照插件 `commands::check` 抄一份，按 relwatch 的 proxy_mode 三态显式映射
-//! `no_proxy()` / `proxy()` / 系统代理，使两条链路语义对齐。
-//!
-//! 代理决策与 `http.rs::build_http_client` 逐分支对齐（见 `resolve_proxy`）：
-//! `none` → 直连；`custom` + 非空 url → 显式代理；`custom` + 空 url → 直连
-//! （http.rs 同此处理，避免落入系统代理）；`system` / 未知值 → 系统代理。
+//! 本命令照插件 `commands::check` 抄一份，把三态显式映射到 UpdaterBuilder 上，
+//! 使两条链路语义对齐。三态判定收敛在 `net::ProxyPolicy::resolve`（唯一来源），
+//! `http.rs` 与 update 链路共同消费，避免判定逻辑再次分叉。
 //!
 //! 返回结构与插件内部的 `commands::Metadata` 同构（camelCase），前端用
 //! `new Update(meta)` 构造资源对象；后续 `download` / `install` 仍走插件自带命令——
@@ -55,32 +51,6 @@ pub struct UpdaterMetadata {
     pub date: Option<String>,
     pub body: Option<String>,
     pub raw_json: String,
-}
-
-/// 代理决策：返回 `ProxyDecision`（由 `updater_check` 中的 match 落到 UpdaterBuilder 上）。
-///
-/// 与 `http.rs::build_http_client` 逐分支对齐：
-/// - `none` → `NoProxy`（真正绕过系统与环境变量代理）；
-/// - `custom` + 非空 url → `Proxy(url)`（同时会关掉系统代理探测）；
-/// - `custom` + 空 url → `NoProxy`（与 http.rs 一致，不落入系统代理）；
-/// - `system` / 未知值 → `System`（不设置任何 proxy，由 reqwest 追加系统代理）。
-fn resolve_proxy(proxy_mode: &str, proxy_url: &str) -> Result<ProxyDecision, String> {
-    let url = proxy_url.trim();
-    match proxy_mode {
-        "none" => Ok(ProxyDecision::NoProxy),
-        "custom" if url.is_empty() => Ok(ProxyDecision::NoProxy),
-        "custom" => Ok(ProxyDecision::Proxy(
-            reqwest::Url::parse(url).map_err(|_| "err.invalid_url".to_string())?,
-        )),
-        _ => Ok(ProxyDecision::System),
-    }
-}
-
-#[derive(Debug)]
-enum ProxyDecision {
-    NoProxy,
-    Proxy(reqwest::Url),
-    System,
 }
 
 /// 抹去文本中 URL 的 userinfo：`scheme://user:pass@host` → `scheme://***:***@host`。
@@ -231,10 +201,10 @@ async fn updater_check_impl(
     let mut builder = webview
         .updater_builder()
         .timeout(Duration::from_millis(timeout_ms));
-    match resolve_proxy(proxy_mode, proxy_url)? {
-        ProxyDecision::NoProxy => builder = builder.no_proxy(),
-        ProxyDecision::Proxy(url) => builder = builder.proxy(url),
-        ProxyDecision::System => {}
+    match crate::net::ProxyPolicy::resolve(proxy_mode, proxy_url)? {
+        crate::net::ProxyDecision::NoProxy => builder = builder.no_proxy(),
+        crate::net::ProxyDecision::Proxy(url) => builder = builder.proxy(url),
+        crate::net::ProxyDecision::System => {}
     }
 
     let Some(update) = builder
@@ -324,51 +294,6 @@ pub async fn updater_install_started(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 断言 resolve_proxy 的决策类别，避免匹配到 reqwest::Url 内部字段。
-    fn decision_kind(mode: &str, url: &str) -> &'static str {
-        match resolve_proxy(mode, url).unwrap() {
-            ProxyDecision::NoProxy => "no_proxy",
-            ProxyDecision::Proxy(u) => {
-                // reqwest::Url::parse 会规范化（裸 host 补尾部 `/`），用 host:port 断言
-                assert_eq!(u.host_str(), reqwest::Url::parse(url.trim()).unwrap().host_str());
-                "proxy"
-            }
-            ProxyDecision::System => "system",
-        }
-    }
-
-    #[test]
-    fn proxy_none_is_no_proxy() {
-        assert_eq!(decision_kind("none", ""), "no_proxy");
-        assert_eq!(decision_kind("none", "http://127.0.0.1:17890"), "no_proxy");
-    }
-
-    #[test]
-    fn proxy_custom_with_url_is_explicit_proxy() {
-        assert_eq!(decision_kind("custom", "http://127.0.0.1:17890"), "proxy");
-        assert_eq!(decision_kind("custom", "  http://127.0.0.1:17890  "), "proxy");
-    }
-
-    #[test]
-    fn proxy_custom_with_empty_url_is_no_proxy() {
-        // 与 http.rs::build_http_client 对齐：custom + 空 url → 直连，不落入系统代理
-        assert_eq!(decision_kind("custom", ""), "no_proxy");
-        assert_eq!(decision_kind("custom", "   "), "no_proxy");
-    }
-
-    #[test]
-    fn proxy_system_and_unknown_use_system() {
-        assert_eq!(decision_kind("system", ""), "system");
-        assert_eq!(decision_kind("system", "http://127.0.0.1:17890"), "system");
-        assert_eq!(decision_kind("whatever", ""), "system");
-    }
-
-    #[test]
-    fn proxy_custom_with_invalid_url_errors() {
-        let err = resolve_proxy("custom", "not a url").unwrap_err();
-        assert_eq!(err, "err.invalid_url");
-    }
 
     // ── 操作日志：驱动命令体真正使用的 `*_log_entry` 构造函数 ──
     // 早期版本直接调 `write_log_key` 复述一遍命令内的参数，属于自证式测试：

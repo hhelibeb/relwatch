@@ -1,8 +1,13 @@
 //! B 站一键登录：从登录 WebView 读取 SESSDATA、验证登录态并加密存储。
 //!
-//! 流程：设置页「一键登录」→ 前端新建 WebviewWindow 加载 B 站登录页 →
-//! 用户扫码/账号登录 → 前端轮询本模块命令 → 读到有效 SESSDATA 后加密存库 →
-//! 前端关闭登录窗口。
+//! 流程：设置页「一键登录」→ 前端请求本模块命令用 Rust 建窗（WebviewWindowBuilder）
+//! 加载 B 站登录页 → 用户扫码/账号登录 → 前端轮询本模块命令 → 读到有效 SESSDATA
+//! 后加密存库 → 前端关闭登录窗口。
+//!
+//! 为什么由 Rust 建窗而不是前端 `new WebviewWindow()`：登录窗口加载整个远程站点，
+//! 其网络请求也应继承应用代理设置；Tauri 2 的 JS API `WindowOptions` 没有 proxy
+//! 字段，只有 Rust 侧 `WebviewWindowBuilder::proxy_url()` 能注入。代理语义收敛在
+//! `net::ProxyPolicy`（custom → 注入自定义代理；system/none → 交给平台默认）。
 //!
 //! 不读取系统浏览器的 cookie（Chrome/Edge cookie 为 DPAPI+AES-GCM 加密且新版
 //! 加 app-bound encryption，自动导出脆弱且有安全争议），改为应用内 WebView 登录，
@@ -11,9 +16,11 @@
 use std::str::FromStr;
 
 use tauri::Manager;
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::crypto;
 use crate::db::settings::{self, KEY_BILIBILI_COOKIE, KEY_PROXY_URL, KEY_PROXY_MODE};
+use crate::net::ProxyPolicy;
 use crate::types::AppState;
 
 /// 读取 cookie 的匹配域（SESSDATA 域为 .bilibili.com，www 子域可读）。
@@ -23,6 +30,11 @@ const BILI_NAV_URL: &str = "https://api.bilibili.com/x/web-interface/nav";
 /// B 站对非浏览器 UA 敏感，单请求覆盖 client 级 UA。
 const BILI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                        (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+/// 登录页地址（Rust 建窗加载）。
+const BILI_LOGIN_URL: &str = "https://passport.bilibili.com/login";
+/// 登录窗口尺寸（与前端旧建窗参数一致）。
+const BILI_LOGIN_WIDTH: f64 = 460.0;
+const BILI_LOGIN_HEIGHT: f64 = 640.0;
 
 /// 登录窗口固定 label（capabilities/bilibili-login.json 的 windows 白名单也依赖此值；
 /// 改动时两处必须同步）。
@@ -135,6 +147,69 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
         &serde_json::json!({"source": "webview-login"}).to_string(),
     );
     Ok(true)
+}
+
+/// 用 Rust 建窗打开 B 站登录窗口（可注入应用代理设置）。
+///
+/// 为什么不用前端 `new WebviewWindow`：JS 的 `WindowOptions` 没有 proxy 字段，
+/// 登录窗口加载整个远程站点时网络请求只能走系统代理。此命令在 Tauri 侧建窗，
+/// 按 `net::ProxyPolicy` 决定是否注入 `proxy_url`——
+/// `custom` + 非空 url → 注入（登录页/后续请求走应用自定义代理）；
+/// `system` / `none` / 空 url → 不注入（交由平台默认 = 系统代理）。
+/// 若窗口已存在（如轮询期间用户重复点击）则静默成功（幂等）。
+#[tauri::command]
+
+#[specta::specta]pub fn open_bilibili_login_window(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    title: String,
+) -> Result<(), String> {
+    if app.get_webview_window(BILI_LOGIN_WINDOW_LABEL).is_some() {
+        return Ok(()); // 已存在：幂等复用
+    }
+
+    let login_url: tauri::Url = BILI_LOGIN_URL
+        .parse()
+        .map_err(|_| "err.invalid_url".to_string())?;
+    let mut builder = WebviewWindowBuilder::new(
+        &app,
+        BILI_LOGIN_WINDOW_LABEL,
+        WebviewUrl::External(login_url),
+    )
+    .title(title)
+    .inner_size(BILI_LOGIN_WIDTH, BILI_LOGIN_HEIGHT)
+    .center()
+    .resizable(false);
+
+    // 读代理设置决定是否注入 proxy_url（与后端轮询 client 的语义一致）。
+    // 仅 custom + 有效 URL 注入；none / system / 解析失败不注入（交由平台默认）。
+    {
+        let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
+        let proxy_url = settings::get_setting(&conn, KEY_PROXY_URL)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let proxy_mode = settings::get_setting(&conn, KEY_PROXY_MODE)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                if proxy_url.is_empty() {
+                    "none".to_string()
+                } else {
+                    "custom".to_string()
+                }
+            });
+        drop(conn);
+
+        if let Ok(crate::net::ProxyDecision::Proxy(url)) =
+            ProxyPolicy::resolve(&proxy_mode, &proxy_url)
+        {
+            builder = builder.proxy_url(url);
+        }
+    }
+
+    let _window = builder.build().map_err(|e| format!("err.bili_login_window_create|{}", e))?;
+    Ok(())
 }
 
 /// 关闭登录窗口（前端在登录成功或用户放弃时调用）。

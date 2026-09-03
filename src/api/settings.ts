@@ -56,6 +56,11 @@ export async function readBilibiliLoginCookie(windowLabel: string): Promise<bool
   return invokeI18nFn(() => commands.readBilibiliLoginCookie(windowLabel))
 }
 
+/** 由 Rust 建窗打开 B 站登录窗口（可注入应用代理）。窗口已存在时后端幂等返回。 */
+export async function openBilibiliLoginWindow(title: string): Promise<void> {
+  await invokeI18nFn(() => commands.openBilibiliLoginWindow(title))
+}
+
 export async function closeBilibiliLoginWindow(windowLabel: string): Promise<void> {
   await invokeI18nFn(() => commands.closeBilibiliLoginWindow(windowLabel))
 }

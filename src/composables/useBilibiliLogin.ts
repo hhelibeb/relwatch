@@ -1,7 +1,7 @@
 import { ref, onUnmounted } from 'vue'
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import {
   readBilibiliLoginCookie,
+  openBilibiliLoginWindow,
   closeBilibiliLoginWindow,
   setCredential,
 } from '../api/settings'
@@ -68,19 +68,6 @@ export function useBilibiliLogin(opts: {
     }
   }
 
-  /** 等待窗口创建结果：created 到达 resolve、error 到达 reject（避免 error 先触发时 await 永久挂起）。 */
-  function waitBiliWindowCreated(win: WebviewWindow): Promise<void> {
-    return new Promise((resolve, reject) => {
-      let settled = false
-      win.once('tauri://error', () => {
-        if (!settled) { settled = true; reject(new Error('bilibili login window create failed')) }
-      })
-      win.once('tauri://created', () => {
-        if (!settled) { settled = true; resolve() }
-      })
-    })
-  }
-
   /** 启动登录态轮询（每 2 秒检测一次，直到登录成功或窗口关闭）。 */
   function startBiliLoginPolling() {
     stopBiliLoginPolling()
@@ -141,16 +128,10 @@ export function useBilibiliLogin(opts: {
         needCreate = key === 'err.bili_login_window_missing'
       }
       if (needCreate) {
-        const win = new WebviewWindow(BILI_LOGIN_WINDOW_LABEL, {
-          title: t('settings.bilibili_login_title'),
-          url: 'https://passport.bilibili.com/login',
-          width: 460,
-          height: 640,
-          center: true,
-          resizable: false,
-        })
+        // 由 Rust 建窗（可注入应用代理；窗口已存在时后端幂等返回）。不再需要等待
+        // tauri://created——命令返回即窗口已建好，建窗失败会直接 reject。
         try {
-          await waitBiliWindowCreated(win)
+          await openBilibiliLoginWindow(t('settings.bilibili_login_title'))
         } catch {
           if (attempt !== biliLoginAttempt) return
           biliLoginBusy.value = false

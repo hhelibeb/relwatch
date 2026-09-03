@@ -539,7 +539,10 @@ describe('ReleaseItem.vue — YouTube 源', () => {
     const wrapper = mountRelease(ytRelease({ extra_metadata: JSON.stringify({ kind: 'live', thumbnail: 'https://i.ytimg.com/vi/abc123/mqdefault.jpg' }) }))
     const img = wrapper.find('img.yt-thumb')
     expect(img.exists()).toBe(true)
-    expect(img.attributes('src')).toBe('https://i.ytimg.com/vi/abc123/mqdefault.jpg')
+    // 封面经 media 网关（Rust 按代理设置下载），不再由浏览器直连远程图床
+    expect(img.attributes('src')).toBe(
+      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/mqdefault.jpg'),
+    )
     // no-referrer：B 站 CDN（hdslb.com）对非 bilibili 域名 Referer 返回 403，封面必须裸 Referer 加载
     expect(img.attributes('referrerpolicy')).toBe('no-referrer')
     expect(wrapper.find('.yt-live-badge').exists()).toBe(true)
@@ -649,11 +652,13 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     expect(view.text()).toBe(t('release.yt_views', '1亿'))
   })
 
-  it('http 封面自动升级为 https（兼容 CSP img-src 限制与 B 站旧数据）', () => {
+  it('http 封面自动升级为 https（兼容 CSP img-src 限制与 B 站旧数据）并经 media 网关', () => {
     const wrapper = mountRelease(yt({ extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'http://i0.hdslb.com/bfs/archive/abc.jpg' }) }))
     const img = wrapper.find('img.yt-thumb')
     expect(img.exists()).toBe(true)
-    expect(img.attributes('src')).toBe('https://i0.hdslb.com/bfs/archive/abc.jpg')
+    expect(img.attributes('src')).toBe(
+      'http://media.localhost/' + encodeURIComponent('https://i0.hdslb.com/bfs/archive/abc.jpg'),
+    )
   })
 })
 

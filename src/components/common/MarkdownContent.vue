@@ -1,11 +1,25 @@
 <script lang="ts">
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { toMediaUrl } from '../../utils/imageProxy'
 
 // marked 配置：关闭 mangle/escaping 由 DOMPurify 统一清洗
 marked.setOptions({
   breaks: true,      // 单换行转 <br>，符合 release note 阅读习惯
   gfm: true,         // GitHub Flavored Markdown
+})
+
+// 远程图片一律改走 media 网关：CSP 的 img-src 已不放行任意 https: 图片源（收紧后
+// 漏网远程图显式失败），media 协议由 Rust 按应用代理设置下载返回。此 hook 在
+// DOMPurify 清洗后统一改写存活节点的 src，比在 marked 层做字符串替换可靠——
+// 清洗后仍在的 <img> 一定带合法 src（onerror 等已被剥离）。
+DOMPurify.addHook('afterSanitizeAttributes', (node) => {
+  if (node.tagName === 'IMG') {
+    const src = node.getAttribute('src')
+    if (src) {
+      node.setAttribute('src', toMediaUrl(src))
+    }
+  }
 })
 
 // 渲染结果缓存（模块级共享）：虚拟滚动中行卸载时实例级缓存会随之销毁，

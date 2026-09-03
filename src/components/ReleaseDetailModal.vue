@@ -12,6 +12,7 @@ import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
+import { fromMediaUrl } from '../utils/imageProxy'
 import type { ReleaseContentMode } from './releaseTypes'
 import { getSourceTypeDef } from '../api/source-registry'
 
@@ -101,7 +102,9 @@ function handleBodyContextMenu(e: MouseEvent) {
   }
   const img = target.closest('img[src]') as HTMLImageElement | null
   if (img && /^https?:\/\//i.test(img.src)) {
-    bodyMenu.value = { x: e.clientX, y: e.clientY, kind: 'image', imgSrc: img.src }
+    // 正文图片 src 已改写为 media 网关地址；右键动作（打开/复制链接/复制图片）
+    // 都应对原始图片进行，故还原后再存入菜单
+    bodyMenu.value = { x: e.clientX, y: e.clientY, kind: 'image', imgSrc: fromMediaUrl(img.src) }
     return
   }
   const selection = window.getSelection()?.toString() ?? ''
