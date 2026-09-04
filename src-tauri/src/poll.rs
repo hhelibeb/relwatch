@@ -234,6 +234,268 @@ async fn filter_ai_eligible(
         .collect())
 }
 
+/// 后台派发「待翻译」批的 in-flight 门控：true 表示上一轮派发的后台翻译仍在跑。
+/// 翻译批最长可跑 ~300s（单条超时 × 并发），期间若又有新轮次到达（手动立即
+/// 检查 / 定时轮询），不重复派发——直接跳过本轮，批在跑期间新到的待办由
+/// **下一轮轮询**兜底（`get_releases_without_translation` 重读 DB 一并覆盖）。
+///
+/// 曾实现过「跟随批」：撞上在跑时注册一个 `Notify::notified().await` 等收尾
+/// 续跑。但 `Notify` 不带状态——`notify_one()` 只唤醒**此刻已注册**的等待者，
+/// 跟随批 spawn 后不保证先注册再被 notify，信号会永久丢失（挂起的任务泄漏）。
+/// 而轮询兜底已保证新待办最迟下一轮被翻，跟随批只把延迟从「一轮」缩到
+/// 「批收尾」，收益配不上这份复杂度与风险，故删掉、与摘要侧保持同一套简单语义。
+static TRANSLATION_BATCH_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 后台批门控的复位守卫：构造即视为「批在跑」（flag 由调用方抢执行权时置位），
+/// Drop 时必定复位 flag。
+///
+/// 复位不能写在 async 体末尾：批内任一步 panic（DB 调用、AI 链路）会跳过那几
+/// 行，flag 永久停在 true，此后该进程再不派发该批——静默失效，只能重启恢复。
+/// 守卫借栈展开触发 Drop，panic 与正常收尾走同一条复位路径。
+struct BatchGuard {
+    running: &'static AtomicBool,
+    /// 日志文案，panic 时标识是哪个批。
+    job: &'static str,
+}
+
+impl BatchGuard {
+    fn new(running: &'static AtomicBool, job: &'static str) -> Self {
+        BatchGuard { running, job }
+    }
+}
+
+impl Drop for BatchGuard {
+    fn drop(&mut self) {
+        // 栈展开中正执行 Drop 说明批是 panic 出来的，记一条便于定位（与
+        // 既有 spawn_blocking panic 日志的口径一致）。
+        if std::thread::panicking() {
+            log::error!(
+                "后台{}批 panic，门控已复位（否则后续批次将永久停摆）",
+                self.job
+            );
+        }
+        self.running.store(false, Ordering::Release);
+    }
+}
+
+/// 后台翻译调度入口（fire-and-forget）。
+///
+/// 从 DB 读取「未完成翻译的 release」（= 本轮新入库 + 历史失败重试，两者在
+/// fetch→save 后均已入库，`get_releases_without_translation` 一并覆盖），
+/// 交给后台任务翻译；**调用方不等待**，检查/通知/轮询节奏不被翻译的最长
+/// ~300s 超时拖累（此前同步等待把轮询间隔拉长、手动检查卡到分钟级）。
+///
+/// 批次并发由 `generate_translations_for_new` 内部按 release spawn + 信号量
+/// 限流；失败/超时条目在批内最多试一次，留待下一轮轮询的后台批重读待办续跑
+/// （`get_releases_without_translation` 自带 retry_count<5 封顶，不会无限重试）。
+///
+/// 门控：`TRANSLATION_BATCH_RUNNING` 为 true（上一批在跑）时，**直接跳过本轮**，
+/// 不注册任何等待/续跑机制（理由见该静态的文档注释）——批在跑期间新到的
+/// release 最迟下一轮轮询被补上，不会漏翻。
+fn schedule_translations_background(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    emitter: &std::sync::Arc<dyn crate::types::Emitter>,
+) {
+    // AI 未启用或翻译未开 → generate_translations_for_new 内部会早返回，白占一批
+    if !translation_enabled(db_pool) {
+        return;
+    }
+
+    // 抢执行权前先在调用线程读一次待办：空则直接 return，不为每轮轮询
+    // 都 spawn 一个空任务（轮询密集时避免 task 堆积）。注：与批内的重读
+    // 是两次查询，但换来“不 spawn 空任务”，划算。
+    if read_translation_pending(db_pool).is_empty() {
+        return;
+    }
+
+    // 抢占执行权；失败说明上一批在跑，跳过本轮，新待办由下一轮轮询兜底
+    if TRANSLATION_BATCH_RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+
+    // 成功抢占：后台跑一批（fire-and-forget，守卫负责收尾复位门控）
+    let pool = db_pool.clone();
+    let sem = deepseek_semaphore.clone();
+    let emitter = emitter.clone();
+    tauri::async_runtime::spawn(async move {
+        // 守卫接管复位：批内 panic 也不会让门控永久停在 true
+        let _guard = BatchGuard::new(&TRANSLATION_BATCH_RUNNING, "翻译");
+        run_single_translation_batch(&pool, &sem, &emitter).await;
+    });
+}
+
+/// 读库中仍未完成翻译的 release 列表（排除 ai_eligible=false 源）。
+///
+/// 单条小查询、调用方（do_poll_core / check_single_source 的收尾）本就在
+/// 后台上下文，直接同步查即可；无需 spawn_blocking/block_in_place 的额外开销。
+fn read_translation_pending(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+) -> Vec<(i64, Option<String>)> {
+    let excluded = ai_excluded_types();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    db::releases::get_releases_without_translation(&conn, &excluded).unwrap_or_default()
+}
+
+/// 读一次 AI 开关（DeepSeek 已启用）。
+fn ai_enabled(pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    deepseek::read_config(&conn).enabled
+}
+
+/// 读一次翻译开关（AI 启用且翻译开启）。
+fn translation_enabled(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+) -> bool {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let cfg = deepseek::read_config(&conn);
+    if !cfg.enabled {
+        return false;
+    }
+    db::settings::get_setting(&conn, db::settings::KEY_DEEPSEEK_TRANSLATE_RELEASE)
+        .ok()
+        .flatten()
+        .map(|v| v == "true")
+        .unwrap_or(false)
+}
+
+/// 单批执行：读一次 DB 待办 → 翻译一轮 → 成功落库的逐条 emit 刷新。
+/// 只跑一轮：失败条目留给下一轮轮询 retry（DB 队列自带 retry<5 封顶），
+/// 避免批内对持续失败的条目死循环。
+async fn run_single_translation_batch(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    emitter: &std::sync::Arc<dyn crate::types::Emitter>,
+) {
+    // 读待办放 spawn_blocking：避免在 tokio worker 同步 rusqlite 阻塞线程池
+    let excluded = ai_excluded_types();
+    let pool = db_pool.clone();
+    let saved = match tokio::task::spawn_blocking(move || {
+        let conn = pool.get().ok()?;
+        db::releases::get_releases_without_translation(&conn, &excluded).ok()
+    })
+    .await
+    {
+        Ok(Some(list)) => list,
+        _ => return,
+    };
+    if saved.is_empty() {
+        return;
+    }
+    log::info!("后台翻译批: {} 条待翻译（含历史失败重试）", saved.len());
+
+    deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &saved, false).await;
+
+    // 落库结果回查：DB 已带译文 = 成功，逐条 emit 刷新前端（50ms 合帧重拉）
+    let pool = db_pool.clone();
+    let ok_ids: Vec<i64> = tokio::task::spawn_blocking(move || {
+        let conn = match pool.get() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        saved
+            .iter()
+            .filter(|(id, _)| {
+                db::releases::get_release(&conn, *id)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.body_translated.is_some())
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    if !ok_ids.is_empty() {
+        log::info!("后台翻译批完成，{} 条已落库", ok_ids.len());
+        for id in ok_ids {
+            emitter.emit_release_state_changed(id);
+        }
+    }
+    // 无条件刷新日志：批内无论成功还是失败都写了 DB 日志（成功 INFO / 失败 ERROR）。
+    // 本批是 fire-and-forget，收尾时发起它的那轮轮询早已结束，若不在此时通知，
+    // 日志 tab 会停在用户切过去那一刻的快照——正是「译文失败了但日志里看不到
+    // 原因」的成因。放在末尾覆盖全部写日志路径，不只在成功分支发。
+    emitter.emit_log_appended();
+}
+
+/// 摘要后台补全批的门控（与翻译批独立互斥）。
+///
+/// 与翻译侧同构：不设跟随批，批在跑期间新产生的待办留待下一轮轮询补。
+/// 摘要超时 120s、远短于翻译的 300s，且轮询会兜底重试，无需额外机制。
+static SUMMARY_BATCH_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 后台补全「历史失败/未完成的 AI 摘要」（fire-and-forget）。
+///
+/// 背景：原 do_poll_core 端部 retry 段会同步重试无摘要的 release；摘要改异步后
+/// 若没有后台补全，一次失败的摘要将永久空缺。此函数把「无摘要」的历史待办
+/// （get_releases_without_summary，retry<5 封顶）交给后台任务补全。
+///
+/// 与新 release 的顺序：新 release 的摘要在 do_poll_core 内同步生成（通知带重要
+/// 度），此补全只处理**已入库的历史** release，不产生新通知，无顺序冲突。
+fn schedule_summaries_background(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    emitter: &std::sync::Arc<dyn crate::types::Emitter>,
+) {
+    if !ai_enabled(db_pool) {
+        return;
+    }
+    if read_summary_pending(db_pool).is_empty() {
+        return;
+    }
+    // 上一批在跑则放弃本轮：批在跑期间新到的待办由下一轮轮询补（见上方门控注释）
+    if SUMMARY_BATCH_RUNNING.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let pool = db_pool.clone();
+    let sem = deepseek_semaphore.clone();
+    let emitter = emitter.clone();
+    tauri::async_runtime::spawn(async move {
+        // 守卫接管复位：批内 panic 不会让门控永久停在 true
+        let _guard = BatchGuard::new(&SUMMARY_BATCH_RUNNING, "摘要");
+        run_single_summary_batch(&pool, &sem, &emitter).await;
+    });
+}
+
+/// 读库中无 AI 摘要的 release（排除 ai_eligible=false 源）。
+fn read_summary_pending(
+    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+) -> Vec<(i64, Option<String>)> {
+    let excluded = ai_excluded_types();
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    db::releases::get_releases_without_summary(&conn, &excluded).unwrap_or_default()
+}
+
+/// 单批摘要补全：读一次待办 → 摘要一轮。只跑一轮，失败留给下一轮轮询。
+async fn run_single_summary_batch(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    emitter: &std::sync::Arc<dyn crate::types::Emitter>,
+) {
+    let saved = read_summary_pending(db_pool);
+    if saved.is_empty() {
+        return;
+    }
+    log::info!("后台摘要补全批: {} 条待补全", saved.len());
+    deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &saved).await;
+    // 与翻译批同理：无论成败都写了日志，收尾时通知前端刷新日志 tab
+    emitter.emit_log_appended();
+}
+
 pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
     do_trigger_poll_async(app).await
@@ -243,7 +505,7 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 async fn do_poll_core(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
-    emitter: &dyn crate::types::Emitter,
+    emitter: &std::sync::Arc<dyn crate::types::Emitter>,
     sources: &[db::sources::Source],
     settings: &PollSettings,
     is_manual: bool,
@@ -261,47 +523,25 @@ async fn do_poll_core(
     // 宁可下轮重试也不放行 youtube 条目给 DeepSeek。
     match filter_ai_eligible(db_pool, &all_saved).await {
         Ok(ai_saved) if !ai_saved.is_empty() => {
+            // 摘要保持同步：桌面通知正文带重要度（🔴🟡🟢），需在摘要落库后
+            // 才发通知。摘要 max_tokens=800、秒回，等待成本可忽略。
             deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &ai_saved).await;
-            deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &ai_saved, false).await;
         }
         Ok(_) => {}
         Err(e) => log::error!("err.filter_ai_eligible|{}", e),
     }
 
-    let (_, new_releases) = collect_pending_and_notify(db_pool, emitter, &all_new_ids, is_manual).await;
+    let (_, new_releases) = collect_pending_and_notify(db_pool, &**emitter, &all_new_ids, is_manual).await;
 
-    // 重试之前失败的 AI 摘要 / 译文：两份失败名单读取合并到一次 spawn_blocking，
-    // 避免在 async fn 内同步 DB 调用阻塞 tokio worker（与 Phase 2 的 spawn_blocking 改造一致）。
-    // 重试查询与即时路径共用同一份能力声明（ai_excluded_types），
-    // 保证 youtube/bilibili 等 ai_eligible=false 的源绝不进入 DeepSeek 重试队列。
-    let retry_pool = db_pool.clone();
-    let excluded_types = ai_excluded_types();
-    let (retry_releases, retry_translations) =
-        tokio::task::spawn_blocking(move || {
-            match retry_pool.get() {
-                Ok(conn) => (
-                    db::releases::get_releases_without_summary(&conn, &excluded_types).unwrap_or_default(),
-                    db::releases::get_releases_without_translation(&conn, &excluded_types).unwrap_or_default(),
-                ),
-                Err(e) => {
-                    log::error!("err.db_lock|{}", e);
-                    (Vec::new(), Vec::new())
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|e| {
-            log::error!("do_poll_core retry spawn_blocking panic: {}", e);
-            (Vec::new(), Vec::new())
-        });
-    if !retry_releases.is_empty() {
-        log::info!("正在重试 {} 个之前失败的 AI 摘要", retry_releases.len());
-        deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &retry_releases).await;
-    }
-    if !retry_translations.is_empty() {
-        log::info!("正在重试 {} 个之前失败的 AI 译文", retry_translations.len());
-        deepseek::generate_translations_for_new(db_pool, deepseek_semaphore, &retry_translations, false).await;
-    }
+    // 译文后台批（fire-and-forget）：读 DB 中全部未完成翻译的 release
+    // （= 本轮新入库 + 历史失败重试，两者此时均已入库），交给后台任务翻译，
+    // 本轮回立即结束——不再像旧版那样同步等翻译（曾把单轮拖到 60s+ 超时）。
+    // 译文成功落库后经 emitter 逐条 emit release-state-changed 刷新前端。
+    schedule_translations_background(db_pool, deepseek_semaphore, emitter);
+
+    // 摘要后台补全批（fire-and-forget）：补历史失败/未完成的摘要（原 retry 段
+    // 的语义），不阻塞本轮；只处理已入库旧 release，不产生新通知。
+    schedule_summaries_background(db_pool, deepseek_semaphore, emitter);
 
     (all_new_ids, new_releases)
 }
@@ -323,9 +563,10 @@ async fn do_trigger_poll_async(app: tauri::AppHandle) -> Result<PollResult, Stri
         let state = app.state::<AppState>();
         (state.db.clone(), state.deepseek_semaphore.clone())
     };
-    let emitter: &dyn crate::types::Emitter = &app;
+    let emitter: std::sync::Arc<dyn crate::types::Emitter> =
+        std::sync::Arc::new(app.clone());
     let (_, new_releases) = do_poll_core(
-        &db_pool, &deepseek_semaphore, emitter, &sources, &settings, true,
+        &db_pool, &deepseek_semaphore, &emitter, &sources, &settings, true,
     ).await;
 
     // 手动触发特有逻辑：更新 next_poll_at
@@ -537,7 +778,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         let state = app.state::<AppState>();
         (state.db.clone(), state.deepseek_semaphore.clone())
     };
-    let emitter: &dyn crate::types::Emitter = &app;
+    let emitter: std::sync::Arc<dyn crate::types::Emitter> =
+        std::sync::Arc::new(app.clone());
 
     // client 不携带 default Authorization——github token 由 adapter 按请求设置，
     // 避免 HF 请求泄露 GitHub Token（见 http::HttpClientConfig::set_default_auth）
@@ -598,16 +840,19 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 
     // 跳过 ai_eligible=false 的源（youtube/bilibili）后生成摘要与译文。
     // fail-closed：过滤失败（DB 错误/panic）时跳过本轮 AI 并记日志。
+    // 手动单源检查与轮询语义一致：摘要同步（通知带重要度），译文后台批
+    // （fire-and-forget）——不阻塞手动检查返回，译文完成后经
+    // release-state-changed 刷新可见。
     match filter_ai_eligible(&db_pool, &saved).await {
         Ok(ai_saved) if !ai_saved.is_empty() => {
             deepseek::generate_summaries_for_new(&db_pool, &deepseek_semaphore, &ai_saved).await;
-            deepseek::generate_translations_for_new(&db_pool, &deepseek_semaphore, &ai_saved, false).await;
         }
         Ok(_) => {}
         Err(e) => log::error!("err.filter_ai_eligible|{}", e),
     }
+    schedule_translations_background(&db_pool, &deepseek_semaphore, &emitter);
 
-    let (_, new_releases) = collect_pending_and_notify(&db_pool, emitter, &new_ids, false).await;
+    let (_, new_releases) = collect_pending_and_notify(&db_pool, &*emitter, &new_ids, false).await;
 
     let _ = crate::events::PollCompleted.emit(&app);
 
@@ -712,9 +957,10 @@ async fn do_poll_async(app: tauri::AppHandle) {
         let state = app.state::<AppState>();
         let db_pool = state.db.clone();
         let semaphore = state.deepseek_semaphore.clone();
-        let emitter: &dyn crate::types::Emitter = &app;
+        let emitter: std::sync::Arc<dyn crate::types::Emitter> =
+            std::sync::Arc::new(app.clone());
         do_poll_core(
-            &db_pool, &semaphore, emitter, &enabled, &settings, false,
+            &db_pool, &semaphore, &emitter, &enabled, &settings, false,
         ).await;
     }
 
@@ -1101,25 +1347,25 @@ mod tests {
 
     #[test]
     fn test_build_deepseek_client_system_proxy() {
-        let result = deepseek::build_client("sk-test", "", "system");
+        let result = deepseek::build_client("sk-test", "", "system", 60);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_deepseek_client_success() {
-        let result = deepseek::build_client("sk-test", "", "none");
+        let result = deepseek::build_client("sk-test", "", "none", 60);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_deepseek_client_with_proxy() {
-        let result = deepseek::build_client("sk-test", "http://127.0.0.1:1080", "custom");
+        let result = deepseek::build_client("sk-test", "http://127.0.0.1:1080", "custom", 60);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_build_deepseek_client_invalid_key() {
-        let result = deepseek::build_client("key\nwith\nnewlines", "", "none");
+        let result = deepseek::build_client("key\nwith\nnewlines", "", "none", 60);
         assert!(result.is_err());
     }
 
@@ -1781,9 +2027,14 @@ mod tests {
         // 绝不能降级为空集把 youtube 条目放行给 DeepSeek。
         use r2d2_sqlite::SqliteConnectionManager;
         let manager = SqliteConnectionManager::memory();
+        // connection_timeout 同时约束两处 get：①占连接的 get（若 refill 线程
+        // 还没建好连接，需在窗口内等到）；②filter 内部那个**期望失败**的 get
+        // （连接已被占住，等再久也拿不到，窗口只影响它报 Err 的延迟）。
+        // 曾用 5ms：①在测试并行高负载下（refill 建连 competing CPU）偶发超时
+        // panic。放宽到 100ms 消除①的竞态，代价仅是②多等 ≤100ms，断言不变。
         let pool = r2d2::Pool::builder()
             .max_size(1)
-            .connection_timeout(std::time::Duration::from_millis(5))
+            .connection_timeout(std::time::Duration::from_millis(100))
             .build(manager)
             .unwrap();
         let _held = pool.get().unwrap(); // 占用唯一连接
@@ -1794,6 +2045,397 @@ mod tests {
             err.contains("err.db_lock"),
             "错误应含 err.db_lock，实际: {}",
             err
+        );
+    }
+
+    // ── 后台翻译批（schedule_translations_background）──
+    //
+    // 行为契约（本次异步化改造新增）：
+    // - 派发后调用方不等待（fire-and-forget），译文在后台任务中落库；
+    // - 成功落库的 release 会触发 emitter.emit_release_state_changed（前端刷新）；
+    // - AI/翻译未启用时不派发（不 spawn、不请求、不写库）。
+    //
+    // TRANSLATION_BATCH_RUNNING 是进程级全局门控：操纵它的测试必须互斥执行，
+    // 否则并行测试间互相干扰（实测全量 cargo test：A 置 true 期间 B 的
+    // schedule 被门控跳过，5s 等待落空；反向交错时 B 抢到执行权又派发批）。
+    // --lib 单跑测试数少、时序不同才没暴露。此锁串行化所有动该门控的测试；
+    // 不动它的测试无需拿锁。
+    static TRANSLATION_GATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// 构造已启用 AI+翻译的 memory pool，并插入一条有 body 的 release。
+    fn setup_translate_pool(base_url: &str) -> r2d2::Pool<r2d2_sqlite::SqliteConnectionManager> {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let conn = pool.get().unwrap();
+        crate::crypto::set_test_master_key();
+        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_ENABLED, "true").unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_BASE_URL, base_url).unwrap();
+        db::settings::set_setting(
+            &conn,
+            db::settings::KEY_DEEPSEEK_API_KEY,
+            &crate::crypto::encrypt("test-key"),
+        )
+        .unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_TRANSLATE_RELEASE, "true").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        db::releases::insert_release(
+            &conn,
+            sid,
+            "v1",
+            "v1",
+            "https://github.com/o/r/releases/tag/v1",
+            "2024-01-01T00:00:00Z",
+            false,
+            Some("release body to translate"),
+        )
+        .unwrap();
+        drop(conn);
+        pool
+    }
+
+    fn release_translated(
+        pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        id: i64,
+    ) -> bool {
+        let conn = pool.get().unwrap();
+        db::releases::get_release(&conn, id)
+            .ok()
+            .flatten()
+            .map(|r| r.body_translated.is_some())
+            .unwrap_or(false)
+    }
+
+    /// 后台批成功路径：mock 翻译 200 → schedule 派发 → 轮询等待批完成 →
+    /// 断言译文落库 + emit_release_state_changed 已触发。
+    #[tokio::test]
+    async fn test_schedule_translations_background_translates_and_emits() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+        // 拿全局门控互斥锁：末尾才释放（覆盖整个批生命周期），
+        // 防止并行测试置位/复位门控干扰本批派发
+        let _gate = TRANSLATION_GATE_TEST_LOCK.lock().await;
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "这是译文" } }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let pool = setup_translate_pool(&mock.uri());
+        let id = {
+            let conn = pool.get().unwrap();
+            db::releases::get_releases_without_translation(&conn, &[]).unwrap()[0].0
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        // noop 与 emitter 指向同一 NoopEmitter：emitter 传给调度（后台持 Arc<dyn>），
+        // noop 保留具体类型用于断言 emit 记录。
+        let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
+        let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
+
+        // 门控状态复位（同一进程内其他测试可能动过；已拿互斥锁，此刻无人在跑）
+        TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+
+        schedule_translations_background(&pool, &sem, &emitter);
+
+        // fire-and-forget：轮询等待后台批完成（最多 5s）
+        let mut done = false;
+        for _ in 0..50 {
+            if release_translated(&pool, id) {
+                done = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(done, "后台翻译批应在超时前把译文写入 DB");
+        // 成功落库 → 触发 release-state-changed 刷新
+        assert!(
+            noop.state_changed_ids().contains(&id),
+            "成功落库后应 emit release-state-changed, 实际: {:?}",
+            noop.state_changed_ids()
+        );
+    }
+
+    /// 翻译开关关闭（AI 开但 translate_release=false）：schedule 不派发，
+    /// 不产生任何 AI 请求（通过断言 retry 计数保持 0 与译文未写证明未发起请求）。
+    #[tokio::test]
+    async fn test_schedule_translations_background_noop_when_translate_off() {
+        // 拿门控互斥锁：本测试要复位全局门控，防止干扰并行测试的在跑批
+        let _gate = TRANSLATION_GATE_TEST_LOCK.lock().await;
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            crate::crypto::set_test_master_key();
+            db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_ENABLED, "true").unwrap();
+            // 不设 KEY_DEEPSEEK_TRANSLATE_RELEASE → 默认 false
+            let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+            db::releases::insert_release(
+                &conn, sid, "v1", "v1", "https://x", "2024-01-01T00:00:00Z", false,
+                Some("body"),
+            )
+            .unwrap()
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
+        let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
+        TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+
+        schedule_translations_background(&pool, &sem, &emitter);
+
+        // 给潜在（不应发生的）派发一点时间
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(!release_translated(&pool, id), "翻译关闭时不应写入译文");
+        assert!(
+            noop.state_changed_ids().is_empty(),
+            "翻译关闭时不应触发任何刷新"
+        );
+        let retry = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT COALESCE(translate_retry_count, 0) FROM releases WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(retry, 0, "翻译关闭时不应发起请求（retry 计数保持 0）");
+    }
+
+    /// 批**失败**时同样要通知日志刷新——这是「译文失败了但日志 tab 里看不到
+    /// 原因」的直接成因：失败也写了 ERROR 日志，但 fire-and-forget 的批收尾时
+    /// 发起它的那轮轮询早已结束，无人触发刷新。
+    #[tokio::test]
+    async fn test_translation_batch_notifies_log_refresh_even_on_failure() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+        let mock = MockServer::start().await;
+        // 全部返回 524：模拟上游暂时不可用，批内必然失败并写 ERROR 日志
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(524).set_body_json(serde_json::json!({
+                "error": { "message": "Upstream model provider is temporarily unavailable" }
+            })))
+            .mount(&mock)
+            .await;
+
+        let pool = setup_translate_pool(&mock.uri());
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
+        let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
+        TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+
+        // 直接跑单批（绕过调度门控，聚焦收尾行为）
+        run_single_translation_batch(&pool, &sem, &emitter).await;
+
+        assert_eq!(
+            noop.log_appended_count(),
+            1,
+            "批失败也应通知日志刷新一次（失败日志同样需要用户看见）"
+        );
+        assert!(
+            noop.state_changed_ids().is_empty(),
+            "全失败时不应有 release-state-changed"
+        );
+        // 且失败确实写进了 DB 日志，否则刷新也无内容可看
+        let has_error_log = {
+            let conn = pool.get().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM logs WHERE level='ERROR'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            n > 0
+        };
+        assert!(has_error_log, "翻译失败应写入 ERROR 日志");
+    }
+
+    // ── 摘要后台补全批（schedule_summaries_background）──
+    //
+    // 行为契约：历史无摘要的 release 由后台任务补摘要（原 do_poll_core retry 段
+    // 语义的异步化），补全不触发任何 UI emit（无新通知，仅落库）。
+
+    /// 构造已启用 AI 的 memory pool，插入一条有 body 但无摘要的 release。
+    fn setup_summary_pool(base_url: &str) -> r2d2::Pool<r2d2_sqlite::SqliteConnectionManager> {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let conn = pool.get().unwrap();
+        crate::crypto::set_test_master_key();
+        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_ENABLED, "true").unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_DEEPSEEK_BASE_URL, base_url).unwrap();
+        db::settings::set_setting(
+            &conn,
+            db::settings::KEY_DEEPSEEK_API_KEY,
+            &crate::crypto::encrypt("test-key"),
+        )
+        .unwrap();
+        let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        db::releases::insert_release(
+            &conn,
+            sid,
+            "v1",
+            "v1",
+            "https://github.com/o/r/releases/tag/v1",
+            "2024-01-01T00:00:00Z",
+            false,
+            Some("release body to summarize"),
+        )
+        .unwrap();
+        drop(conn);
+        pool
+    }
+
+    /// 后台摘要补全成功路径：mock 摘要 200 → schedule → 等待落库 → 断言 ai_summary
+    /// 已写入（摘要补全不触发 emit——旧 release 无新通知）。
+    #[tokio::test]
+    async fn test_schedule_summaries_background_backfills() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "{\"summary\":\"测试摘要\",\"importance\":\"中\"}" } }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let pool = setup_summary_pool(&mock.uri());
+        let id = {
+            let conn = pool.get().unwrap();
+            db::releases::get_releases_without_summary(&conn, &[]).unwrap()[0].0
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
+        let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
+        SUMMARY_BATCH_RUNNING.store(false, Ordering::Release);
+
+        schedule_summaries_background(&pool, &sem, &emitter);
+
+        // 轮询等待后台补全完成（最多 5s）
+        let mut done = false;
+        for _ in 0..50 {
+            let has = {
+                let conn = pool.get().unwrap();
+                db::releases::get_release(&conn, id)
+                    .unwrap()
+                    .unwrap()
+                    .ai_summary
+                    .is_some()
+            };
+            if has {
+                done = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(done, "后台摘要补全批应在超时前写入 ai_summary");
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert_eq!(rel.ai_summary.as_deref(), Some("测试摘要"));
+        assert_eq!(rel.ai_importance.as_deref(), Some("中"));
+    }
+
+    /// 门控语义：上一批在跑（flag=true）时本轮**直接跳过**——不派发、不发请求、
+    /// 不递增 retry 计数，新待办由下一轮轮询兜底（见 `schedule_translations_background`
+    /// 的门控注释）。这是删掉跟随批后的核心语义哨兵：若有人改回「在跑时仍派发」
+    /// 或重新引入等待/续跑机制，此测试会抓住。
+    #[tokio::test]
+    async fn test_schedule_translations_background_skips_when_batch_running() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        // 拿门控互斥锁：置 true 的窗口内若有并行测试调用 schedule，会被门控
+        // 跳过而假失败；本测试的 swap 也可能被他人的批收尾复位而假派发。
+        // 锁覆盖全程（置位 → 观察 → 断言 → 复位）。
+        let _gate = TRANSLATION_GATE_TEST_LOCK.lock().await;
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "choices": [{ "message": { "content": "这是译文" } }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let pool = setup_translate_pool(&mock.uri());
+        let id = {
+            let conn = pool.get().unwrap();
+            db::releases::get_releases_without_translation(&conn, &[]).unwrap()[0].0
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
+        let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
+
+        // 模拟「上一批在跑」：置 true 后 schedule 应同步返回、不派发。
+        // 已拿互斥锁，窗口内不会有并行测试复位门控，可安全观察。
+        TRANSLATION_BATCH_RUNNING.store(true, Ordering::Release);
+        schedule_translations_background(&pool, &sem, &emitter);
+        // 给潜在（不应发生的）派发留观察窗口
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // 断言完成后复位，再放锁（drop 顺序：_gate 在函数末尾）
+        TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+
+        assert!(!release_translated(&pool, id), "批在跑时本轮不应翻译");
+        assert_eq!(
+            mock.received_requests().await.unwrap().len(),
+            0,
+            "批在跑时本轮不应发出任何 AI 请求"
+        );
+        let retry = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT COALESCE(translate_retry_count, 0) FROM releases WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(retry, 0, "跳过不应递增 retry 计数");
+    }
+
+    // ── BatchGuard：panic 时的门控复位 ──
+    //
+    // 行为契约：批内 panic 后门控必须回到 false，否则后续批次永久无法派发
+    // （静默失效，只能重启应用恢复）。守卫借栈展开 Drop 实现，与正常收尾
+    // 共用一条复位路径。
+
+    /// 批内 panic → 门控仍应复位。若复位写在 async 体末尾，panic 会跳过它，
+    /// flag 永久停在 true；此测试即守卫该回归。
+    #[tokio::test]
+    async fn test_batch_guard_resets_flag_on_panic() {
+        // 用一对私有的测试用门控，避免动真实批的全局状态（测试并行跑）
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+
+        RUNNING.store(true, Ordering::Release);
+        let handle = tauri::async_runtime::spawn(async move {
+            let _guard = BatchGuard::new(&RUNNING, "测试");
+            panic!("批内模拟 panic");
+        });
+        // panic 的 task 返回 JoinError；吞掉以免测试因 panic 输出噪声失败
+        let _ = handle.await;
+
+        assert!(
+            !RUNNING.load(Ordering::Acquire),
+            "批内 panic 后门控必须复位，否则后续批次永久停摆"
+        );
+    }
+
+    /// 正常收尾 → 门控复位（守卫未改变 happy path 行为）。
+    #[tokio::test]
+    async fn test_batch_guard_resets_flag_on_normal_completion() {
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        RUNNING.store(true, Ordering::Release);
+
+        tauri::async_runtime::spawn(async move {
+            let _guard = BatchGuard::new(&RUNNING, "测试");
+            // 正常返回，无 panic
+        })
+        .await
+        .unwrap();
+
+        assert!(
+            !RUNNING.load(Ordering::Acquire),
+            "正常收尾后门控应复位"
         );
     }
 }

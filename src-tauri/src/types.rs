@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::sync::atomic::AtomicI64;
+use tauri_specta::Event;
 use tokio::sync::Semaphore;
 
 use crate::db::logs::LogEntry;
@@ -14,6 +15,16 @@ pub trait Emitter: Send + Sync {
     /// 发送 release 桌面通知。
     /// 这是 `collect_pending_and_notify` 对 Tauri 主线程的唯一依赖。
     fn notify_release(&self, params: ReleaseNotifyParams);
+
+    /// 通知前端刷新某条 release（后台 AI 译文落库后调用）。
+    /// 真实实现 emit `release-state-changed`（前端 50ms 合帧重拉列表）；
+    /// 默认空实现：测试或纯逻辑场景无需刷新 UI 时不必实现。
+    fn emit_release_state_changed(&self, _release_id: i64) {}
+
+    /// 通知前端刷新日志 tab（后台 AI 批写日志后调用）。
+    /// 后台批可能远晚于发起它的那轮轮询才收尾，此时无人触发日志刷新，
+    /// 默认空实现：测试或纯逻辑场景无需刷新 UI 时不必实现。
+    fn emit_log_appended(&self) {}
 }
 
 /// `Emitter::notify_release` 的参数载体：把原先 8 个位置参数收敛为结构体，
@@ -48,12 +59,24 @@ impl Emitter for tauri::AppHandle {
             );
         });
     }
+
+    fn emit_release_state_changed(&self, release_id: i64) {
+        // 事件 emit 不依赖主线程（notify.rs 的 spawn 闭包内也直接 emit），
+        // 后台 AI 任务完成后可在此调用，通知前端刷新该条 release。
+        let _ = crate::events::ReleaseStateChanged(release_id).emit(self);
+    }
+
+    fn emit_log_appended(&self) {
+        let _ = crate::events::LogAppended.emit(self);
+    }
 }
 
 /// 测试用 Noop Emitter：不发送任何通知，记录调用参数（供断言通知内容可读性）。
 #[cfg(test)]
 pub struct NoopEmitter {
     calls: std::sync::Mutex<Vec<ReleaseNotifyParams>>,
+    state_changed: std::sync::Mutex<Vec<i64>>,
+    log_appended: std::sync::Mutex<usize>,
 }
 
 #[cfg(test)]
@@ -61,6 +84,8 @@ impl NoopEmitter {
     pub const fn new() -> Self {
         NoopEmitter {
             calls: std::sync::Mutex::new(Vec::new()),
+            state_changed: std::sync::Mutex::new(Vec::new()),
+            log_appended: std::sync::Mutex::new(0),
         }
     }
 
@@ -73,12 +98,30 @@ impl NoopEmitter {
     pub fn params(&self) -> Vec<ReleaseNotifyParams> {
         self.calls.lock().unwrap().clone()
     }
+
+    /// 已记录的 release-state-changed 刷新 id（后台 AI 批完成后触发）。
+    pub fn state_changed_ids(&self) -> Vec<i64> {
+        self.state_changed.lock().unwrap().clone()
+    }
+
+    /// 已记录的「日志已追加」通知次数（后台 AI 批收尾时触发，驱动日志 tab 刷新）。
+    pub fn log_appended_count(&self) -> usize {
+        *self.log_appended.lock().unwrap()
+    }
 }
 
 #[cfg(test)]
 impl Emitter for NoopEmitter {
     fn notify_release(&self, params: ReleaseNotifyParams) {
         self.calls.lock().unwrap().push(params);
+    }
+
+    fn emit_release_state_changed(&self, release_id: i64) {
+        self.state_changed.lock().unwrap().push(release_id);
+    }
+
+    fn emit_log_appended(&self) {
+        *self.log_appended.lock().unwrap() += 1;
     }
 }
 

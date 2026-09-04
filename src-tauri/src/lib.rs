@@ -43,6 +43,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         .events(tauri_specta::collect_events![
             events::ReleaseStateChanged,
             events::PollCompleted,
+            events::LogAppended,
             events::SourceAutoDisabled,
             events::Navigate,
             events::FocusRelease,

@@ -273,7 +273,12 @@ pub struct TestDeepseekPayload {
         }
     }
     let api_key = api_key.ok_or("err.deepseek_api_key_missing")?;
-    let client = deepseek::build_client(&api_key, &proxy_url, &proxy_mode)?;
+    let client = deepseek::build_client(
+        &api_key,
+        &proxy_url,
+        &proxy_mode,
+        deepseek::DEEPSEEK_TIMEOUT_SECS_TEST,
+    )?;
     let body = serde_json::json!({
         "model": model,
         "messages": [

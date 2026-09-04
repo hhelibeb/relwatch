@@ -261,6 +261,7 @@ export const events = {
 	agentRpcStream: makeEvent<AgentRpcStream>("agent-rpc-stream"),
 	agentRunFinished: makeEvent<AgentRunFinished>("agent-run-finished"),
 	focusRelease: makeEvent<FocusRelease>("focus-release"),
+	logAppended: makeEvent<LogAppended>("log-appended"),
 	navigate: makeEvent<Navigate>("navigate"),
 	pollCompleted: makeEvent<PollCompleted>("poll-completed"),
 	releaseStateChanged: makeEvent<ReleaseStateChanged>("release-state-changed"),
@@ -554,6 +555,16 @@ export type AppSettings = {
  *  不代表已处理），因此不 emit ReleaseStateChanged，托盘红点与未读计数保持不变。
  */
 export type FocusRelease = number;
+
+/**
+ *  日志表写入了新条目，前端据此刷新日志 tab。
+ * 
+ *  存在意义：后台 AI 批（摘要补全/翻译）是 fire-and-forget，可能在发起它的那轮
+ *  轮询结束几分钟后才收尾写日志。此前只有 `PollCompleted` 会触发日志刷新，
+ *  于是这些延迟到达的成功/失败日志不切走再切回就看不到——用户会误以为
+ *  什么都没发生（实测：译文 524 失败已写入 DB，但日志 tab 停在打开时的快照）。
+ */
+export type LogAppended = null;
 
 export type LogEntry = {
 	id: number,

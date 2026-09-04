@@ -642,6 +642,13 @@ onMounted(async () => {
   })
   unlisteners.push(stateUnlisten)
 
+  // 后台 AI 批（摘要补全/翻译）收尾时写日志：它是 fire-and-forget，可能远晚于
+  // 发起它的那轮轮询才结束，届时已无人触发日志刷新。
+  const logAppendedUnlisten = await events.logAppended.listen(() => {
+    scheduleRefreshLogs()
+  })
+  unlisteners.push(logAppendedUnlisten)
+
   const autoDisabledUnlisten = await events.sourceAutoDisabled.listen((event) => {
     showToast(t('app.source_auto_disabled', event.payload.owner, event.payload.repo, String(event.payload.failures)))
     loadSources()

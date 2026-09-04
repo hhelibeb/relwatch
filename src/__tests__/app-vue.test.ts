@@ -267,9 +267,12 @@ describe('App.vue — 挂载初始化', () => {
     await flushPromises()
     wrapper2.unmount()
 
-    // 两次挂载共 10 次 listen，全部 unlisten 都被调用（无泄漏）
-    expect(mockListen).toHaveBeenCalledTimes(10)
-    expect(mockUnlisten).toHaveBeenCalledTimes(10)
+    // 两次挂载共 12 次 listen（6 个事件 × 2），全部 unlisten 都被调用（无泄漏）。
+    // 事件清单：release-state-changed / poll-completed / log-appended /
+    // source-auto-disabled / navigate / focus-release（+ agent 相关另计）。
+    // 新增事件时同步更新此数字——它正是「监听器是否泄漏」的哨兵。
+    expect(mockListen).toHaveBeenCalledTimes(12)
+    expect(mockUnlisten).toHaveBeenCalledTimes(12)
   })
 })
 

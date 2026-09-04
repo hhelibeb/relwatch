@@ -15,6 +15,15 @@ pub struct ReleaseStateChanged(pub i64);
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct PollCompleted;
 
+/// 日志表写入了新条目，前端据此刷新日志 tab。
+///
+/// 存在意义：后台 AI 批（摘要补全/翻译）是 fire-and-forget，可能在发起它的那轮
+/// 轮询结束几分钟后才收尾写日志。此前只有 `PollCompleted` 会触发日志刷新，
+/// 于是这些延迟到达的成功/失败日志不切走再切回就看不到——用户会误以为
+/// 什么都没发生（实测：译文 524 失败已写入 DB，但日志 tab 停在打开时的快照）。
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct LogAppended;
+
 /// 源因连续失败被自动禁用，payload 携带源信息供前端提示。
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct SourceAutoDisabled {
