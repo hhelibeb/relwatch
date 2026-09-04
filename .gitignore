@@ -42,3 +42,6 @@ piolium/
 
 # Workbuddy scratch space
 .workbuddy/
+
+# 一次性诊断 examples（本地排查工具，不入库；新增正式 example 时临时 force-add 或移除本条）
+src-tauri/examples/
