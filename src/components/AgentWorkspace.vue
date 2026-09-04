@@ -85,7 +85,7 @@ const {
 } = useAgentComposer({ showToast, skills, sources, releases })
 
 // textarea 渲染在 AgentComposer 内：经函数 ref 回填 composable 的元素 ref
-// （focus()/replaceTrigger 等经 textareaRef 读写光标）
+// （focus() 等经 textareaRef 读写光标；键盘导航的菜单索引在编排层持有，经 emit 回写）
 function setTextareaEl(el: Element | ComponentPublicInstance | null) {
   textareaRef.value = el as HTMLTextAreaElement | null
 }
@@ -498,7 +498,6 @@ const composerProps = reactive({
   filteredReleasesCount,
   entityMenuHasMatch,
   showModelMenu,
-  modelMenuIndex,
   availableModels,
   effectiveModel,
   modelOnce,

@@ -79,10 +79,6 @@ export function useAgentModels(deps: {
     modelMenuIndex.value = effectiveModel.value ? availableModels.value.findIndex(isModelSelected) + 1 : 0
   }
 
-  function closeMenu() {
-    showModelMenu.value = false
-  }
-
   /** 选模型。
    *  - 「仅本次」开启：只写 oneShotModel，不动 SessionMeta（不改变会话长期选择）；
    *  - 否则：写入当前会话 meta（按会话记住，经 onPersistModel 落库）。
@@ -132,7 +128,6 @@ export function useAgentModels(deps: {
     activeModelLabel,
     modelDefaultSub,
     toggleModelMenu,
-    closeMenu,
     pickModel,
     toggleModelOnce,
     resetForSessionSwitch,

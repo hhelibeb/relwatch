@@ -36,7 +36,6 @@ defineProps<{
   entityMenuHasMatch: boolean
   // ── D 域状态（模型选择）──
   showModelMenu: boolean
-  modelMenuIndex: number
   availableModels: RpcAvailableModel[]
   effectiveModel: AgentModelRef | null
   modelOnce: boolean

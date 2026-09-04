@@ -340,7 +340,6 @@ export function useAgentComposer(deps: {
     hideChipTooltip,
     sourceDisplayName,
     releaseDisplayName,
-    replaceTrigger,
     pickSkill,
     clearSkill,
     pickEntity,
@@ -350,5 +349,3 @@ export function useAgentComposer(deps: {
     closeMenus,
   }
 }
-
-export { SKILL_TRIGGER, ENTITY_TRIGGER }

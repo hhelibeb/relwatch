@@ -14,11 +14,12 @@ import {
   toolCardBody,
   toolCardName,
   bashExitLabel,
+  runStatusLabel,
 } from './agentChatUtils'
 import { skillShortName } from '../../utils'
 
 /** user 气泡装饰（useAgentChat.messageDecorations 元素）。 */
-export interface MessageDecoration {
+interface MessageDecoration {
   run: AgentRunSummary | undefined
   entities: AgentEntityRefSeed[]
   main: string
@@ -56,11 +57,6 @@ const emit = defineEmits<{
   saveTimeout: []
   cancelAdjustTimeout: []
 }>()
-
-/** 状态文案（agent.status_* i18n 键）。 */
-function runStatusLabel(status: string): string {
-  return t(`agent.status_${status}`)
-}
 
 function isTimeoutRun(run: AgentRunSummary | undefined): boolean {
   return run?.status === 'timeout'
@@ -121,9 +117,9 @@ function toolArgsSummary(args: string): string {
               'run-unknown': messageDecorations[idx]?.run?.status === 'unknown',
             }"
           >
-            <span class="agent-ws-run-failed-status">{{ runStatusLabel(messageDecorations[idx]!.run!.status) }}</span>
+            <span class="agent-ws-run-failed-status">{{ runStatusLabel(messageDecorations[idx]!.run!.status, t) }}</span>
             <span class="agent-ws-run-failed-text" :title="runFailedNote(messageDecorations[idx]?.run) ?? ''">
-              {{ runFailedNote(messageDecorations[idx]?.run) || runStatusLabel(messageDecorations[idx]!.run!.status) }}
+              {{ runFailedNote(messageDecorations[idx]?.run) || runStatusLabel(messageDecorations[idx]!.run!.status, t) }}
             </span>
             <!-- 结果未知（终态事件丢失）：与真失败区分——任务可能已经跑完，
                  直接重跑会重复烧词元、重复副作用（评审 3.1） -->

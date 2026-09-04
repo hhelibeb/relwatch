@@ -9,6 +9,11 @@ import { InvokeI18nError } from '../../api/client'
 /** i18n 翻译函数形状（与 src/i18n 的 t 一致，注入以解耦全局 locale 状态）。 */
 export type TranslateFn = (key: string, ...args: string[]) => string
 
+/** run 状态文案（agent.status_* i18n 键；RunBanner 状态条与消息区失败气泡共用）。 */
+export function runStatusLabel(status: string, t: TranslateFn): string {
+  return t(`agent.status_${status}`)
+}
+
 /** 正则转义：skill 短名可能含 . - 等元字符（如 code-review）。 */
 export function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')

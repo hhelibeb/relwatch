@@ -6,7 +6,7 @@ import { formatDate } from '../../utils'
 import type { ComponentPublicInstance } from 'vue'
 import type { SessionMeta } from './useAgentSessions'
 
-export interface SidebarSession extends SessionMeta {
+interface SidebarSession extends SessionMeta {
   state: { status: string; position: number } | null
 }
 

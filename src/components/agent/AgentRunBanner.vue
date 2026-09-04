@@ -8,6 +8,7 @@ import {
   runEntities,
   runModelLabel,
   runDurationText,
+  runStatusLabel,
 } from './agentChatUtils'
 import type { AgentRunSummary } from '../../api/agent'
 
@@ -34,11 +35,6 @@ const emit = defineEmits<{
   'update:actionsExpanded': [value: boolean]
 }>()
 
-/** 状态文案（agent.status_* i18n 键）。 */
-function runStatusLabel(status: string): string {
-  return t(`agent.status_${status}`)
-}
-
 /** 历史面板引用实体数。 */
 function runEntityCount(run: AgentRunSummary): number {
   return runEntities(run).length
@@ -53,7 +49,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
 <template>
   <!-- 最近 run 状态横幅 -->
   <div v-if="latestRun" class="agent-ws-banner" :class="`status-${latestRun.status}`">
-    <span class="agent-ws-banner-status">{{ runStatusLabel(latestRun.status) }}</span>
+    <span class="agent-ws-banner-status">{{ runStatusLabel(latestRun.status, t) }}</span>
     <!-- 排队提示：被其他会话占用时可点击 → 一键跳到占用会话（在那里点「停止」让路） -->
     <span
       v-if="latestRun.status === 'pending' && queueHint"
@@ -100,7 +96,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
     </div>
     <ul class="agent-ws-history-list">
       <li v-for="r in runs" :key="r.id" class="agent-ws-history-item">
-        <span class="agent-ws-history-status" :class="`st-${r.status}`">{{ runStatusLabel(r.status) }}</span>
+        <span class="agent-ws-history-status" :class="`st-${r.status}`">{{ runStatusLabel(r.status, t) }}</span>
         <span class="agent-ws-history-main">
           <span class="agent-ws-history-instr" :title="r.instruction">{{ r.instruction || sessionTitle }}</span>
           <span class="agent-ws-history-meta">

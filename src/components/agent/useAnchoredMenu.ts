@@ -69,5 +69,6 @@ export function useAnchoredMenu(options: AnchoredMenuOptions) {
     unregisterOverlay()
   })
 
+  // pos 供测试直接断言定位坐标（style 是其字符串化视图）
   return { pos, style, place }
 }

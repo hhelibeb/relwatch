@@ -479,12 +479,8 @@ export function useAgentChat(deps: {
       const m = messages.value[i]
       if (m.role !== 'user') continue
       const run = runsAsc[userIdx]
-      if (run) {
-        const runMs = new Date(run.created_at).getTime()
-        const msgMs = new Date(m.timestamp).getTime()
-        if (Number.isFinite(runMs) && Number.isFinite(msgMs) && Math.abs(runMs - msgMs) < 60_000) {
-          map.set(i, run)
-        }
+      if (run && timeAdjacent(run.created_at, m.timestamp)) {
+        map.set(i, run)
       }
       userIdx++
     }

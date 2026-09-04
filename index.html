@@ -4,8 +4,10 @@
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!-- 全局不携带 Referer：B 站 CDN（hdslb.com）对非 bilibili 域名 Referer 返回 403，
-         封面图请求必须裸 Referer 才能加载（YouTube CDN 不校验，不受影响） -->
+    <!-- 全局不携带 Referer（防御层）：远程图片已全部改写走 media 网关
+         （http://media.localhost，由 Rust 端下载），webview 不再直连 B 站 CDN；
+         保留 no-referrer 以防未来出现绕过网关的直连图片（B 站 CDN 对非
+         bilibili 域名 Referer 返回 403） -->
     <meta name="referrer" content="no-referrer" />
     <title>RelWatch</title>
   </head>
