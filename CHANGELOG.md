@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.16.0] - 2026-09-05
+
+### Added
+- AI Token 用量统计：记录摘要、翻译、语言检测、连接测试的真实 token 消耗，设置页弹窗提供逐日热力图与按监控源、按操作类型的用量视图。
+- 显示设置字体大小调节：WebView 页面缩放（80%–150%）+ 窗口尺寸跟随，保持可见内容量不变。
+- Release 远程图片经 media 图片网关按应用代理设置下载（逐跳 SSRF 校验、SHA-256 缓存、大小与时效上限）；B 站登录窗改由 Rust 按代理策略建窗。
+- 更新链路操作日志：检查 / 下载 / 安装全程落库，错误文本中的代理凭据自动脱敏。
+
+### Changed
+- 后台翻译批异步化：轮询与手动检查不再被翻译耗时拖累，失败摘要自动后台补全；DeepSeek 超时分级、重试判定扩展（429 / 520 / 524 / 网络层错误）。
+- 网络出口代理策略收敛为单一判定来源，非法代理 URL 报错本地化；CSP 收紧（img-src 仅放行 media 源）。
+
+### Fixed
+- DeepSeek 翻译长文在句子中间被截断的问题（翻译截断与 max_tokens 对齐）。
+- AI 客户端构建失败静默无日志的问题。
+
 ## [1.15.0] - 2026-09-02
 
 ### Added
@@ -378,7 +394,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.15.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.16.0...HEAD
+[1.16.0]: https://github.com/hhelibeb/relwatch/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/hhelibeb/relwatch/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/hhelibeb/relwatch/compare/v1.13.0...v1.14.0
 [1.13.0]: https://github.com/hhelibeb/relwatch/compare/v1.12.0...v1.13.0
