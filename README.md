@@ -23,6 +23,10 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hug
 | 版本详情 | Markdown 渲染、图片复制、外链守卫、拖拽调整大小、上/下一版本导航 |
 | 虚拟滚动 | 长列表流畅滚动，Markdown 渲染带缓存 |
 
+![Screenshot](images/screenshot.webp)
+
+*版本列表（默认状态）*
+
 ### AI 能力
 
 | 功能 | 说明 |
@@ -44,6 +48,10 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hug
 | 模型选择 | 支持为会话指定模型，默认模型可全局配置 |
 | 会话管理 | 同一监控上下文自动续接会话，支持删除会话与历史清理，会话记录本地保存（JSONL） |
 | 灵活配置 | Agent 启用开关、pi 路径、工作目录、Prompt 追加、超时时长均可在设置中调整 |
+
+![Agent Workspace](images/screenshot_agent.webp)
+
+*版本列表（开启 Agent 工作区）：将版本记录拖入对话作为上下文，对它说「帮我更新」，即可自动执行更新。可以执行任意查询或命令。*
 
 ### 应用体验
 
@@ -70,10 +78,6 @@ GitHub Release 监控桌面应用，使用 DeepSeek 开发。支持 GitHub / Hug
 ## 安装 & 使用
 
 从 [GitHub Releases](https://github.com/hhelibeb/relwatch/releases/latest) 页面下载对应平台的安装包（Windows NSIS / Linux deb、AppImage），安装后在「监控源」中添加想要监控的仓库、组织、频道或 UP 主即可。
-
-## 界面
-
-![Screenshot](images/screenshot.webp)
 
 ## 技术栈
 
