@@ -3,6 +3,7 @@ use std::error::Error as StdError;
 
 use crate::credential;
 use crate::db;
+use crate::db::ai_usage::{CallUsage, RawUsage};
 use crate::db::settings::{
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
     KEY_DEEPSEEK_PROXY_BYPASS, KEY_DEEPSEEK_PROMPT, KEY_DEEPSEEK_TRANSLATE_RELEASE, KEY_PROXY_URL,
@@ -129,6 +130,45 @@ fn extract_content(json: &serde_json::Value) -> String {
     String::new()
 }
 
+/// chat/completions 的成功结果：content + 原始 usage（可能缺失）+ 耗时。
+#[derive(Debug)]
+pub(crate) struct ChatCompletionOk {
+    pub content: String,
+    pub usage: Option<RawUsage>,
+    pub duration_ms: i64,
+}
+
+/// 从响应 JSON 提取 `usage`。优先标准顶层字段；Cline 式中转外壳（
+/// `{"data":{"choices":[...]}}`）可能把 usage 包在 `data` 里，两处都试。
+/// 任一数值缺失按 0 计（中转可能只回部分字段）。整个 usage 节缺失时返回 None，
+/// 由调用方按字符数估算兜底。
+fn extract_usage(json: &serde_json::Value) -> Option<RawUsage> {
+    let usage = json
+        .get("usage")
+        .or_else(|| json.get("data").and_then(|d| d.get("usage")))?;
+    let get_i64 = |key: &str| usage.get(key).and_then(|v| v.as_i64()).unwrap_or(0);
+    Some(RawUsage {
+        prompt_tokens: get_i64("prompt_tokens"),
+        completion_tokens: get_i64("completion_tokens"),
+        cache_hit_tokens: get_i64("prompt_cache_hit_tokens"),
+        cache_miss_tokens: get_i64("prompt_cache_miss_tokens"),
+    })
+}
+
+/// 统计请求侧字符数（messages 各条 content 之和），供 usage 缺失时估算。
+pub(crate) fn count_prompt_chars(body_json: &serde_json::Value) -> usize {
+    body_json
+        .get("messages")
+        .and_then(|m| m.as_array())
+        .map(|msgs| {
+            msgs.iter()
+                .filter_map(|m| m.get("content").and_then(|c| c.as_str()))
+                .map(|c| c.chars().count())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
 /// DeepSeek 单次请求的总超时（秒）。reqwest `.timeout()` 覆盖建连→发请求→读完响应体全程，
 /// 中转网关往往等到上游生成完才回响应头，故耗时主要由 token 数与网关排队决定。
 /// - 翻译（max_tokens=20000 + 正文截 20000 字符）最重：原先写死 60s，曾在
@@ -169,15 +209,16 @@ pub fn build_client(
     })
 }
 
-/// 通用 chat/completions 调用：POST → 判 success → 取 content → 错误映射。
+/// 通用 chat/completions 调用：POST → 判 success → 取 content + usage → 错误映射。
 /// 三个 call_*（摘要/语言检测/翻译）与连接测试共用此模板，
 /// 改超时/重试/错误格式只需动此处一处。
-/// 返回 (status, msg)：status>0 时 msg 为 API 原始响应文本；status=0 时 msg 为网络/解析错误描述。
+/// 返回 `ChatCompletionOk`（content + usage + 耗时）或 (status, msg)：
+/// status>0 时 msg 为 API 原始响应文本；status=0 时 msg 为网络/解析错误描述。
 pub(crate) async fn chat_completion(
     client: &reqwest::Client,
     base_url: &str,
     body_json: &serde_json::Value,
-) -> Result<String, (u16, String)> {
+) -> Result<ChatCompletionOk, (u16, String)> {
     let endpoint = resolve_chat_completion_url(base_url);
     // 显式要求非流式：部分中转（如 Cline）缺省 stream=true 会返回 SSE 流，
     // 与 relwatch 的 `resp.json()` 解析路径冲突。显式禁止即可规避。
@@ -186,6 +227,7 @@ pub(crate) async fn chat_completion(
     // （"error sending request for url (...)"），真正的失败原因（连接超时/
     // 连接被重置/DNS 等）藏在 source 链里——此前不展开导致日志只能看到
     // 笼统的 url，无法区分是网关超时还是本机断网。逐层展开 source 拼入。
+    let started = std::time::Instant::now();
     let resp = client
         .post(&endpoint)
         .json(&{
@@ -199,9 +241,16 @@ pub(crate) async fn chat_completion(
         .await
         .map_err(|e| (0, format!("请求失败: {}", describe_reqwest_error(&e))))?;
     if resp.status().is_success() {
-        let json: serde_json::Value = resp.json().await.map_err(|e| (0, format!("解析响应失败: {}", e)))?;
-        let content = extract_content(&json);
-        return Ok(content);
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| (0, format!("解析响应失败: {}", e)))?;
+        let duration_ms = started.elapsed().as_millis() as i64;
+        return Ok(ChatCompletionOk {
+            content: extract_content(&json),
+            usage: extract_usage(&json),
+            duration_ms,
+        });
     }
     let status = resp.status().as_u16();
     let text = resp.text().await.unwrap_or_default();
@@ -307,7 +356,7 @@ async fn call_summary(
     base_url: &str,
     prompt_template: &str,
     body_text: &str,
-) -> Result<(String, String), String> {
+) -> Result<((String, String), Vec<CallUsage>), (String, Vec<CallUsage>)> {
     // 组装完整提示词：可编辑部分 + 固定 JSON 格式约束
     let editable = if prompt_template.is_empty() {
         DEFAULT_DEEPSEEK_PROMPT_EDITABLE.to_string()
@@ -326,14 +375,26 @@ async fn call_summary(
         // 注：不传 response_format，以保证对不支持的 OpenAI 兼容供应商可用；
         // JSON 格式已由 DEEPSEEK_PROMPT_FIXED_SUFFIX 在提示词中强制约束。
     });
+    // 每次成功 HTTP 响应都记一条用量（响应后 JSON 解析失败触发重试时，
+    // 已消耗的那次也要计入）；连接级失败（无响应）无 usage 可记，不计。
+    // FnMut 闭包返回的 future 不能借用闭包捕获（&mut 逃逸），用 Arc<Mutex> 收集。
+    // 错误分支同样带回 usages：重试耗尽后的已消耗调用不能凭空丢失。
+    let usages: std::sync::Arc<std::sync::Mutex<Vec<CallUsage>>> = Default::default();
 
-    crate::retry::retry_with_backoff(
+    let outcome = crate::retry::retry_with_backoff(
         &crate::retry::RetryConfig::default(),
         is_retryable,
         || async {
-            let content = chat_completion(client, base_url, &body_json).await?;
-            let parsed: serde_json::Value = serde_json::from_str(&content)
-                .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, content)))?;
+            let outcome = chat_completion(client, base_url, &body_json).await?;
+            usages.lock().unwrap().push(CallUsage::from_outcome(
+                "summary",
+                outcome.usage,
+                &outcome.content,
+                count_prompt_chars(&body_json),
+                outcome.duration_ms,
+            ));
+            let parsed: serde_json::Value = serde_json::from_str(&outcome.content)
+                .map_err(|e| (0, format!("解析摘要 JSON 失败: {} — 原始内容: {}", e, outcome.content)))?;
             let summary = parsed["summary"].as_str().unwrap_or("").to_string();
             let importance = parsed["importance"].as_str().unwrap_or("中").to_string();
             if summary.is_empty() {
@@ -342,8 +403,13 @@ async fn call_summary(
             Ok((summary, importance))
         },
     )
-    .await
-    .map_err(|(status, msg)| format_chat_error(status, &msg))
+    .await;
+    // 独立语句克隆走收集结果，MutexGuard 借用在此结束
+    let collected: Vec<CallUsage> = usages.lock().unwrap().clone();
+    match outcome {
+        Ok(result) => Ok((result, collected)),
+        Err((status, msg)) => Err((format_chat_error(status, &msg), collected)),
+    }
 }
 
 /// 调用 AI 检测文本主体语言。仅取 body 前 500 字符以节省 token。
@@ -354,7 +420,7 @@ async fn call_detect_language(
     model: &str,
     base_url: &str,
     text_sample: &str,
-) -> Result<String, String> {
+) -> Result<(String, Vec<CallUsage>), (String, Vec<CallUsage>)> {
     let prompt = format!(
         "请判断以下文本的主体语言，仅用一个词回答语言名称（如 中文、English、日本語、Français 等），不要输出其他任何内容。\n\n文本：\n{}",
         text_sample
@@ -367,19 +433,31 @@ async fn call_detect_language(
         "temperature": 0.0,
         "max_tokens": 20
     });
-    crate::retry::retry_with_backoff(
+    let usages: std::sync::Arc<std::sync::Mutex<Vec<CallUsage>>> = Default::default();
+    let outcome = crate::retry::retry_with_backoff(
         &crate::retry::RetryConfig::default(),
         is_retryable,
         || async {
-            let content = chat_completion(client, base_url, &body_json).await?;
-            if content.is_empty() {
+            let outcome = chat_completion(client, base_url, &body_json).await?;
+            usages.lock().unwrap().push(CallUsage::from_outcome(
+                "detect_language",
+                outcome.usage,
+                &outcome.content,
+                count_prompt_chars(&body_json),
+                outcome.duration_ms,
+            ));
+            if outcome.content.is_empty() {
                 return Err((0, "语言检测结果为空".to_string()));
             }
-            Ok(content)
+            Ok(outcome.content)
         },
     )
-    .await
-    .map_err(|(status, msg)| format_chat_error(status, &msg))
+    .await;
+    let collected: Vec<CallUsage> = usages.lock().unwrap().clone();
+    match outcome {
+        Ok(result) => Ok((result, collected)),
+        Err((status, msg)) => Err((format_chat_error(status, &msg), collected)),
+    }
 }
 
 /// 调用 AI 翻译 release note 全文。纯文本输出（非 JSON），
@@ -390,7 +468,7 @@ async fn call_translate(
     base_url: &str,
     target_lang: &str,
     body_text: &str,
-) -> Result<String, String> {
+) -> Result<(String, Vec<CallUsage>), (String, Vec<CallUsage>)> {
     let prompt = DEFAULT_DEEPSEEK_TRANSLATE_PROMPT
         .replace("{lang}", target_lang)
         .replace("{}", body_text);
@@ -402,20 +480,31 @@ async fn call_translate(
         "temperature": 0.3,
         "max_tokens": DEEPSEEK_TRANSLATE_MAX_TOKENS
     });
-
-    crate::retry::retry_with_backoff(
+    let usages: std::sync::Arc<std::sync::Mutex<Vec<CallUsage>>> = Default::default();
+    let outcome = crate::retry::retry_with_backoff(
         &crate::retry::RetryConfig::default(),
         is_retryable,
         || async {
-            let content = chat_completion(client, base_url, &body_json).await?;
-            if content.is_empty() {
+            let outcome = chat_completion(client, base_url, &body_json).await?;
+            usages.lock().unwrap().push(CallUsage::from_outcome(
+                "translate",
+                outcome.usage,
+                &outcome.content,
+                count_prompt_chars(&body_json),
+                outcome.duration_ms,
+            ));
+            if outcome.content.is_empty() {
                 return Err((0, "翻译结果为空".to_string()));
             }
-            Ok(content)
+            Ok(outcome.content)
         },
     )
-    .await
-    .map_err(|(status, msg)| format_chat_error(status, &msg))
+    .await;
+    let collected: Vec<CallUsage> = usages.lock().unwrap().clone();
+    match outcome {
+        Ok(result) => Ok((result, collected)),
+        Err((status, msg)) => Err((format_chat_error(status, &msg), collected)),
+    }
 }
 
 /// 写 AI 任务结果日志：统一"成功/失败 × 有/无 release 行"四种组合。
@@ -492,7 +581,13 @@ async fn run_ai_job<T, F, Fut>(
     on_err: impl Fn(&Connection, i64, &str) + Send + Sync + 'static,
 ) where
     F: Fn(reqwest::Client, String, String, String, String) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<T, String>> + Send + 'static,
+    // call 的返回值携带本次任务的用量明细（可能含语言检测 + 翻译多次调用），
+    // 统一由本流水线落 `ai_usage` 表，call_* 与 on_ok 均无需感知统计。
+    // 失败分支同样带回用量：重试耗尽前的已消耗调用也要记录。
+    Fut: std::future::Future<
+            Output = Result<(T, Vec<CallUsage>), (String, Vec<CallUsage>)>,
+        > + Send
+        + 'static,
     T: Send + 'static,
 {
     let (cfg, proxy_url, proxy_mode) = {
@@ -593,8 +688,8 @@ async fn run_ai_job<T, F, Fut>(
                 );
                 return;
             }
-            match call(client, model, base_url, prompt, truncated).await {
-                Ok(result) => {
+            match call(client, model.clone(), base_url, prompt, truncated).await {
+                Ok((result, usages)) => {
                     // 同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
                     let _ = tokio::task::spawn_blocking(move || {
                         let conn = match db.get() {
@@ -604,14 +699,37 @@ async fn run_ai_job<T, F, Fut>(
                                 return;
                             }
                         };
+                        // 用量记录先行（独立于业务结果）：落库失败只记日志，
+                        // 绝不阻塞/影响摘要与翻译的主流程写入。
+                        if !usages.is_empty() {
+                            if let Err(e) = db::ai_usage::insert_call_usage(
+                                &conn,
+                                Some(release_id),
+                                &model,
+                                &usages,
+                            ) {
+                                log::warn!("记录 AI token 用量失败 id={}: {}", release_id, e);
+                            }
+                        }
                         on_ok(&conn, release_id, result);
                     })
                     .await;
                 }
-                Err(e) => {
+                Err((e, usages)) => {
                     log::error!("生成{}失败 id={}: {}", job, release_id, e);
                     let _ = tokio::task::spawn_blocking(move || {
                         if let Ok(conn) = db.get() {
+                            // 失败任务里已成功响应过的调用（如重试前的语言检测）也是真实消耗
+                            if !usages.is_empty() {
+                                if let Err(e) = db::ai_usage::insert_call_usage(
+                                    &conn,
+                                    Some(release_id),
+                                    &model,
+                                    &usages,
+                                ) {
+                                    log::warn!("记录 AI token 用量失败 id={}: {}", release_id, e);
+                                }
+                            }
                             on_err(&conn, release_id, &e);
                         }
                     })
@@ -711,18 +829,31 @@ pub async fn generate_translations_for_new(
             async move {
                 // 语言检测短路：取 body 前 500 字符让 AI 判断主体语言，
                 // 若与目标语言一致则直接把原文返回（由 on_ok 写入 body_translated），
-                // 跳过翻译调用。检测失败时不阻塞翻译（视为语言不一致，照常翻译）。
+                // 跳过翻译调用。检测失败时不阻塞翻译（视为语言不一致，照常翻译），
+                // 但检测侧已产生的用量仍要收集。
                 let sample: String = text.chars().take(500).collect();
-                if let Ok(detected) =
-                    call_detect_language(&client, &model, &base_url, &sample).await
-                {
-                    if detected.trim() == target_lang {
-                        return Ok(TranslateOutcome::Skipped(text));
+                let mut usages: Vec<CallUsage> = Vec::new();
+                match call_detect_language(&client, &model, &base_url, &sample).await {
+                    Ok((detected, mut detect_usages)) => {
+                        usages.append(&mut detect_usages);
+                        if detected.trim() == target_lang {
+                            return Ok((TranslateOutcome::Skipped(text), usages));
+                        }
                     }
+                    Err((_e, mut detect_usages)) => usages.append(&mut detect_usages),
                 }
-                call_translate(&client, &model, &base_url, &target_lang, &text)
-                    .await
-                    .map(TranslateOutcome::Translated)
+                // 不能用 `?`：Err 直接传播会把局部 usages（语言检测的用量）丢掉，
+                // 翻译失败时检测侧已消耗的调用就漏记了。
+                let (translated, mut translate_usages) =
+                    match call_translate(&client, &model, &base_url, &target_lang, &text).await {
+                        Ok(v) => v,
+                        Err((e, mut translate_usages)) => {
+                            usages.append(&mut translate_usages);
+                            return Err((e, usages));
+                        }
+                    };
+                usages.append(&mut translate_usages);
+                Ok((TranslateOutcome::Translated(translated), usages))
             }
         },
         move |conn, release_id, outcome| match outcome {
@@ -783,7 +914,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_ok());
-        let (summary, importance) = result.unwrap();
+        let ((summary, importance), _) = result.unwrap();
         assert_eq!(summary, "测试摘要内容");
         assert_eq!(importance, "中");
     }
@@ -820,7 +951,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("429"));
+        assert!(result.unwrap_err().0.contains("429"));
     }
 
     #[tokio::test]
@@ -836,7 +967,7 @@ mod tests {
         let result = call_summary(&client, "test-model", &mock.uri(), DEFAULT_DEEPSEEK_PROMPT_EDITABLE, "Some release body").await;
         assert!(result.is_err());
         // 非429不重试，错误不应包含"重试"
-        assert!(!result.unwrap_err().contains("重试"));
+        assert!(!result.unwrap_err().0.contains("重试"));
     }
 
     // ── 翻译任务测试 ──────────────────────────────────────
@@ -863,7 +994,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_translate(&client, "test-model", &mock.uri(), "中文", "Some release body").await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "这是译文内容");
+        assert_eq!(result.unwrap().0, "这是译文内容");
     }
 
     #[tokio::test]
@@ -901,7 +1032,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_translate(&client, "test-model", &mock.uri(), "中文", "body").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("为空"));
+        assert!(result.unwrap_err().0.contains("为空"));
     }
 
     #[test]
@@ -950,7 +1081,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_detect_language(&client, "test-model", &mock.uri(), "Fixed a bug").await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "English");
+        assert_eq!(result.unwrap().0, "English");
     }
 
     #[tokio::test]
@@ -965,7 +1096,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_detect_language(&client, "test-model", &mock.uri(), "修复了一个问题").await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "中文");
+        assert_eq!(result.unwrap().0, "中文");
     }
 
     #[tokio::test]
@@ -983,7 +1114,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let result = call_detect_language(&client, "test-model", &mock.uri(), "some text").await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("为空"));
+        assert!(result.unwrap_err().0.contains("为空"));
     }
 
     // ── Semaphore 并发限制测试 ────────────────────────────────────
@@ -1424,7 +1555,7 @@ mod tests {
         .unwrap();
         let out = call_translate(&client, "test-model", &mock.uri(), "中文", "some body").await;
         assert_eq!(
-            out.as_deref(),
+            out.map(|(s, _)| s).as_deref(),
             Ok("这是译文内容"),
             "524 应触发重试并最终拿到译文"
         );
@@ -1467,7 +1598,7 @@ mod tests {
         .unwrap();
         let out = call_translate(&client, "test-model", &mock.uri(), "中文", "some body").await;
         assert_eq!(
-            out.as_deref(),
+            out.map(|(s, _)| s).as_deref(),
             Ok("这是译文内容"),
             "空内容应触发重试并最终拿到译文"
         );

@@ -115,6 +115,12 @@ export const commands = {
 	/**  清空全部使用统计。 */
 	clearUsageStats: () => __TAURI_INVOKE<null>("clear_usage_stats"),
 	/**
+	 *  查询 AI（摘要/翻译/语言检测/连接测试）token 用量聚合：
+	 *  一次返回逐日（热力图）、按监控源（表格）、按操作类型（饼图）三组。
+	 *  `source_id` 为 None 时统计全部源；`days` 为 None 时统计全部历史。
+	 */
+	getAiUsageStats: (sourceId: number | null, days: number | null) => __TAURI_INVOKE<AiUsageStats>("get_ai_usage_stats", { sourceId, days }),
+	/**
 	 *  保存全局 Agent 配置。
 	 *  进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
 	 *  spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
@@ -514,6 +520,53 @@ export type AgentSessionUsage = {
 	 *  到字符数估算，不能把 0 当真实成本展示（那会让「免费」的错觉更危险）。
 	 */
 	has_usage: boolean,
+};
+
+/**  按操作类型聚合行（饼图「按操作」维度：摘要 / 翻译 / 语言检测 / 连接测试）。 */
+export type AiUsageActionRow = {
+	action: string,
+	calls: number,
+	prompt_tokens: number,
+	completion_tokens: number,
+};
+
+/**
+ *  逐日聚合行（热力图数据源）。
+ *  `estimated_tokens`：当日估算行（estimated=1，中转剥离 usage 按字符数兜底）
+ *  的 prompt+completion 合计。0 表示当日全部为真实上报；前端据此提示「含估算值」，
+ *  避免估算数字与真实统计混展时无法分辨。
+ */
+export type AiUsageDaily = {
+	day: string,
+	calls: number,
+	prompt_tokens: number,
+	completion_tokens: number,
+	cache_hit_tokens: number,
+	cache_miss_tokens: number,
+	estimated_tokens: number,
+};
+
+/**
+ *  按监控源聚合行（表格 / 饼图数据源）。`label` 为监控源本身的标识
+ *  `owner/repo`（description 是用户备注，不作为统计维度的显示名）；
+ *  `source_id` 为 None 表示无源调用（连接测试），前端以「无源」聚合展示。
+ */
+export type AiUsageSourceRow = {
+	source_id: number | null,
+	label: string | null,
+	source_type: string | null,
+	calls: number,
+	prompt_tokens: number,
+	completion_tokens: number,
+	cache_hit_tokens: number,
+	cache_miss_tokens: number,
+};
+
+/**  一次查询返回的全部聚合结果（热力图 + 表格 + 饼图共享同一份筛选条件）。 */
+export type AiUsageStats = {
+	daily: AiUsageDaily[],
+	by_source: AiUsageSourceRow[],
+	by_action: AiUsageActionRow[],
 };
 
 /**
