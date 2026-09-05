@@ -55,6 +55,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     fetch_history_count: 1,
     language: 'zh-CN',
     theme: 'light',
+    font_scale: 100,
     show_source_type_icons: true,
     enable_usage_stats: true,
     github_token_set: false,

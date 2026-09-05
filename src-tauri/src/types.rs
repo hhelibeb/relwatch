@@ -176,6 +176,8 @@ pub struct AppSettings {
     pub fetch_history_count: i64,
     pub language: String,
     pub theme: String,
+    /// 界面缩放百分比（80–150，100 = 默认），应用为 WebView 页面缩放（set_zoom）。
+    pub font_scale: i64,
     pub show_source_type_icons: bool,
     pub enable_usage_stats: bool,
     pub github_token_set: bool,
@@ -209,6 +211,7 @@ mod tests {
             fetch_history_count: 100,
             language: "zh-CN".into(),
             theme: "system".into(),
+            font_scale: 100,
             show_source_type_icons: true,
             enable_usage_stats: true,
             github_token_set: true,

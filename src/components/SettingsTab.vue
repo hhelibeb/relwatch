@@ -18,6 +18,7 @@ import { t, tm, setLocale, languages } from '../i18n'
 import { skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
 import { applyTheme } from '../composables/useTheme'
+import { applyFontScale } from '../composables/useFontScale'
 import { usePreviewSelect } from '../composables/usePreviewSelect'
 import { useBilibiliLogin } from '../composables/useBilibiliLogin'
 import UpdateNotesModal from './UpdateNotesModal.vue'
@@ -235,6 +236,36 @@ const {
   onSelect: selectTheme,
 })
 
+// ── 字体大小（界面缩放档位）─────────────────────────
+// 与主题同样走 usePreviewSelect 复用打开/键盘/外点关闭交互，但刻意不做悬停
+// 预览：整窗缩放会把下拉面板移出鼠标下方造成 hover 抖动，仅在确认选中时应用。
+// UI 档位从 90 起：存储 clamp 下限 80（见 useFontScale）留作余量，不作为档位
+const fontScaleOptions = [90, 100, 110, 125, 150]
+
+function selectFontScale(val: string) {
+  form.font_scale = Number(val)
+  track('settings.font_scale')
+  applyFontScale(form.font_scale)
+}
+
+const {
+  dropdownOpen: fontScaleDropdownOpen,
+  selectRef: fontScaleSelectRef,
+  toggle: toggleFontScaleDropdown,
+  handleKeydown: handleFontScaleDropdownKeydown,
+  clearPreview: clearFontScalePreview,
+} = usePreviewSelect({
+  preview: () => {},
+  restore: () => {},
+  onSelect: selectFontScale,
+})
+
+// form.font_scale 理论上只会是档位之一（唯一写入点在下拉选中）；DB 被手动改动等
+// 极端情况下兜底显示默认档，避免 i18n 缺 key 时把原始键名渲染进触发器
+const fontScaleLabel = computed(() =>
+  t(`settings.font_scale_${fontScaleOptions.includes(form.font_scale) ? form.font_scale : 100}`),
+)
+
 
 async function handleSave() {
   savingSettings.value = true
@@ -273,6 +304,7 @@ async function handleSave() {
       fetch_history_count: s.fetch_history_count ?? 1,
       language: s.language,
       theme: s.theme,
+      font_scale: s.font_scale,
       show_source_type_icons: s.show_source_type_icons,
       enable_usage_stats: s.enable_usage_stats,
       github_token_set: s.github_token_set,
@@ -324,8 +356,11 @@ async function handleSave() {
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
     emit('update', pollChanged)
   } catch (e: unknown) {
-    // updateSettings 失败时回滚 UI 语言到已持久化的语言，避免 UI 与后端不一致
+    // updateSettings 失败时回滚「选中即应用」的项到已持久化值，避免实际生效状态
+    // 与后端不一致（缩放还连带窗口物理尺寸，残留影响最大）
     setLocale(props.settings.language)
+    applyTheme(props.settings.theme)
+    applyFontScale(props.settings.font_scale)
     showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     savingSettings.value = false
@@ -341,7 +376,7 @@ async function handleSave() {
 const TAB_SETTING_KEYS: Record<'general' | 'accounts' | 'appearance' | 'ai', readonly string[]> = {
   general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats'],
   accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'],
-  appearance: ['language', 'theme', 'minimize_to_tray', 'show_source_type_icons'],
+  appearance: ['language', 'theme', 'font_scale', 'minimize_to_tray', 'show_source_type_icons'],
   ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'],
 }
 
@@ -379,11 +414,14 @@ function discardChanges() {
   track('settings.discard')
   const langDirty = dirtyFields.value.has('language')
   const themeDirty = dirtyFields.value.has('theme')
+  const fontScaleDirty = dirtyFields.value.has('font_scale')
   Object.assign(form, props.settings)
   if (langDirty) setLocale(form.language)
   // 使用 clearThemePreview 清除预览状态（previewTheme 置 null），避免残留“预览中”语义
   // 导致下次打开下拉时 .previewed 类错误高亮当前主题选项
   if (themeDirty) clearThemePreview()
+  // 选中档位即已应用缩放：放弃后按已保存值恢复
+  if (fontScaleDirty) applyFontScale(form.font_scale)
   deepseekApiKey.value = ''
   githubToken.value = ''
   youtubeApiKey.value = ''
@@ -829,6 +867,30 @@ async function handleImportBackup() {
                   @mouseenter="setThemePreview(opt.value)"
                 >
                   {{ t(opt.label) }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('font_scale') || null">{{ t('settings.font_scale') }}</span>
+            <div ref="fontScaleSelectRef" class="theme-select" @mouseleave="clearFontScalePreview">
+              <button type="button" class="theme-select-trigger setting-input" @click="toggleFontScaleDropdown" @keydown="handleFontScaleDropdownKeydown" :aria-expanded="fontScaleDropdownOpen" aria-haspopup="listbox">
+                <span>{{ fontScaleLabel }}</span>
+                <svg class="theme-select-arrow" viewBox="0 0 12 12" width="12" height="12"><path fill="none" stroke="currentColor" stroke-width="1.5" d="M3 5l3 3 3-3"/></svg>
+              </button>
+              <div v-if="fontScaleDropdownOpen" class="dropdown-panel theme-select-dropdown" role="listbox" @keydown="handleFontScaleDropdownKeydown">
+                <div
+                  v-for="opt in fontScaleOptions"
+                  :key="opt"
+                  class="theme-select-option"
+                  :class="{ selected: form.font_scale === opt }"
+                  :data-value="opt"
+                  tabindex="-1"
+                  role="option"
+                  :aria-selected="form.font_scale === opt"
+                  @click.stop="selectFontScale(String(opt))"
+                >
+                  {{ t('settings.font_scale_' + opt) }}
                 </div>
               </div>
             </div>

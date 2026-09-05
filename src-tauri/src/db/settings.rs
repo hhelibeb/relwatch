@@ -20,6 +20,8 @@ pub const KEY_FETCH_HISTORY: &str = "fetch_history";
 pub const KEY_FETCH_HISTORY_COUNT: &str = "fetch_history_count";
 pub const KEY_LANGUAGE: &str = "language";
 pub const KEY_THEME: &str = "theme";
+/// 界面缩放百分比（80–150，100 = 默认），前端应用为 WebView 页面缩放。
+pub const KEY_FONT_SCALE: &str = "font_scale";
 pub const KEY_SHOW_SOURCE_TYPE_ICONS: &str = "show_source_type_icons";
 /// 诊断统计开关：是否记录功能按钮点击次数（默认开启）。
 /// 关闭后前端 track() 直接 no-op，后端 record_usage 也丢弃写入（双保险）。
@@ -121,8 +123,13 @@ pub const DEFAULT_DEEPSEEK_TRANSLATE_PROMPT: &str = concat!(
 pub const DEFAULT_CHECK_PRERELEASES: &str = "false";
 pub const DEFAULT_FETCH_HISTORY_COUNT: &str = "1";
 pub const DEFAULT_THEME: &str = "system";
+pub const DEFAULT_FONT_SCALE: &str = "100";
 pub const DEFAULT_SHOW_SOURCE_TYPE_ICONS: &str = "true";
 pub const DEFAULT_ENABLE_USAGE_STATS: &str = "true";
+
+/// 界面缩放百分比边界（get/update 两侧共用同一 clamp，防止越界值入库/应用）。
+pub const FONT_SCALE_MIN: i64 = 80;
+pub const FONT_SCALE_MAX: i64 = 150;
 
 // ── 语言检测 ────────────────────────────────────────
 
@@ -209,6 +216,7 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
     SettingSpec { key: KEY_FETCH_HISTORY_COUNT, default: DEFAULT_FETCH_HISTORY_COUNT, label: "setting.fetch_history_count" },
     SettingSpec { key: KEY_LANGUAGE, default: "", label: "setting.language" },
     SettingSpec { key: KEY_THEME, default: DEFAULT_THEME, label: "setting.theme" },
+    SettingSpec { key: KEY_FONT_SCALE, default: DEFAULT_FONT_SCALE, label: "setting.font_scale" },
     SettingSpec { key: KEY_SHOW_SOURCE_TYPE_ICONS, default: DEFAULT_SHOW_SOURCE_TYPE_ICONS, label: "setting.show_source_type_icons" },
     SettingSpec { key: KEY_ENABLE_USAGE_STATS, default: DEFAULT_ENABLE_USAGE_STATS, label: "setting.enable_usage_stats" },
 ];

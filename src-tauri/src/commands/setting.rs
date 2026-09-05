@@ -13,11 +13,12 @@ use crate::db::settings::{
     KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
-    KEY_LANGUAGE, KEY_THEME, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT, KEY_ENABLE_USAGE_STATS,
+    KEY_LANGUAGE, KEY_THEME, KEY_FONT_SCALE, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT, KEY_ENABLE_USAGE_STATS,
     DEFAULT_PROXY_URL,
     DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
     DEFAULT_THEME,
+    FONT_SCALE_MIN, FONT_SCALE_MAX,
     SETTING_SPECS,
     get_setting_str, get_setting_bool, get_setting_i64, get_default_language,
     strip_prompt_suffix,
@@ -54,6 +55,8 @@ use serde_json::json;
         fetch_history_count: get_setting_i64(&conn, KEY_FETCH_HISTORY_COUNT, 1)?.max(0),
         language: get_setting_str(&conn, KEY_LANGUAGE, &get_default_language())?,
         theme: get_setting_str(&conn, KEY_THEME, DEFAULT_THEME)?,
+        // 默认 100 与 db::settings::DEFAULT_FONT_SCALE 对应；clamp 防御 DB 中越界的旧值
+        font_scale: get_setting_i64(&conn, KEY_FONT_SCALE, 100)?.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX),
         show_source_type_icons: get_setting_bool(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, true)?,
         enable_usage_stats: get_setting_bool(&conn, KEY_ENABLE_USAGE_STATS, true)?,
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
@@ -84,6 +87,7 @@ use serde_json::json;
         poll_interval_minutes: payload.poll_interval_minutes.clamp(5, 1440),
         log_retention_days: payload.log_retention_days.clamp(0, 3650),
         fetch_history_count: payload.fetch_history_count.max(0),
+        font_scale: payload.font_scale.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX),
         deepseek_prompt: strip_prompt_suffix(&payload.deepseek_prompt),
         ..payload
     };
@@ -539,6 +543,7 @@ mod tests {
             (KEY_FETCH_HISTORY_COUNT, "3"),
             (KEY_LANGUAGE, "zh-CN"),
             (KEY_THEME, "system"),
+            (KEY_FONT_SCALE, "100"),
             (KEY_SHOW_SOURCE_TYPE_ICONS, "true"),
             (KEY_ENABLE_USAGE_STATS, "true"),
         ];
@@ -566,6 +571,7 @@ mod tests {
             (KEY_FETCH_HISTORY_COUNT, "5"),
             (KEY_LANGUAGE, "en-US"),
             (KEY_THEME, "dark"),
+            (KEY_FONT_SCALE, "125"),
             (KEY_SHOW_SOURCE_TYPE_ICONS, "false"),
             (KEY_ENABLE_USAGE_STATS, "false"),
         ];
@@ -578,7 +584,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 20,
+        assert_eq!(items.len(), 21,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
         );
 
@@ -615,6 +621,7 @@ mod tests {
             "fetch_history_count": 3,
             "language": "zh-CN",
             "theme": "system",
+            "font_scale": 100,
             "show_source_type_icons": true,
             "enable_usage_stats": true,
             "github_token_set": false,
@@ -709,6 +716,7 @@ mod tests {
             "fetch_history_count": 3,
             "language": "zh-CN",
             "theme": "system",
+            "font_scale": 100,
             "show_source_type_icons": true,
             "enable_usage_stats": true,
             "github_token_set": false,
@@ -727,10 +735,10 @@ mod tests {
                 spec.key
             );
         }
-        // 数量守卫：注册表必须覆盖全部可更新项（当前 20 项）
+        // 数量守卫：注册表必须覆盖全部可更新项（当前 21 项）
         assert_eq!(
             SETTING_SPECS.len(),
-            20,
+            21,
             "可更新设置项数量变化！新增/删除配置项时需同步 AppSettings 与 SETTING_SPECS。"
         );
     }
