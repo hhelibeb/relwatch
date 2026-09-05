@@ -18,10 +18,6 @@
 
 若指外部 Agent 工具功能（如 pi 的 subagent / Agent 面板 / worktree / watchdog），会明确说明。排查问题优先查 relwatch 代码与 `%APPDATA%\RelWatch\` 数据。
 
-# Git 命令约定（重要，防卡住）
-
-执行 `git log`、`git show` 等分页命令时统一加 `--no-pager`，防止分页器 less 在非交互终端等待输入而卡住不返回。`--no-pager` 是全局选项，须放在子命令之前（如 `git --no-pager log`）。`git status` 及非交互终端中的 `git diff` 默认不分页，无需额外处理。
-
 # 时区规则（重要，比对之前先统一时区）
 
 排查时经常要比较两类时间，**二者基准不同，比对前必须先换算成同一时区，否则方向/先后会判反**：
