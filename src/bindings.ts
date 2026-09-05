@@ -542,6 +542,8 @@ export type AppSettings = {
 	fetch_history_count: number,
 	language: string,
 	theme: string,
+	/**  界面缩放百分比（80–150，100 = 默认），应用为 WebView 页面缩放（set_zoom）。 */
+	font_scale: number,
 	show_source_type_icons: boolean,
 	enable_usage_stats: boolean,
 	github_token_set: boolean,

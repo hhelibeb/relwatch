@@ -12,6 +12,7 @@ import { registerCloser, unregisterCloser, closeAllContextMenus } from './compos
 import { useEscapeToTray } from './composables/useEscapeToTray'
 import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
 import { applyTheme } from './composables/useTheme'
+import { applyFontScale } from './composables/useFontScale'
 import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
 import { isUnreadStatus, formatCountdown } from './utils'
 import SourceTab from './components/SourceTab.vue'
@@ -463,6 +464,7 @@ async function loadSettings() {
     settings.value = await getSettings()
     setLocale(settings.value.language)
     applyTheme(settings.value.theme)
+    applyFontScale(settings.value.font_scale)
   } catch (e: unknown) {
     showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
   }
