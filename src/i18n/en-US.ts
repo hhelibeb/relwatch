@@ -646,6 +646,8 @@ export default {
   'aiUsage.calls_unit': 'Calls',
   'aiUsage.cache_hit_short': 'Cache hit',
   'aiUsage.cache_hit_note': 'Input tokens served from the provider prompt cache (much cheaper)',
+  'aiUsage.estimated_chip': 'est. {0}',
+  'aiUsage.estimated_note': '{0} tokens in this range are estimated: the relay stripped usage, derived from character count ÷2 and may deviate from actual consumption',
   'aiUsage.reload': 'Refresh',
   'aiUsage.loading': 'Loading…',
   'aiUsage.empty': 'No data yet. Usage is recorded from this version on; earlier history cannot be backfilled.',

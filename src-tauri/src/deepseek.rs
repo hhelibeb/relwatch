@@ -842,8 +842,16 @@ pub async fn generate_translations_for_new(
                     }
                     Err((_e, mut detect_usages)) => usages.append(&mut detect_usages),
                 }
+                // 不能用 `?`：Err 直接传播会把局部 usages（语言检测的用量）丢掉，
+                // 翻译失败时检测侧已消耗的调用就漏记了。
                 let (translated, mut translate_usages) =
-                    call_translate(&client, &model, &base_url, &target_lang, &text).await?;
+                    match call_translate(&client, &model, &base_url, &target_lang, &text).await {
+                        Ok(v) => v,
+                        Err((e, mut translate_usages)) => {
+                            usages.append(&mut translate_usages);
+                            return Err((e, usages));
+                        }
+                    };
                 usages.append(&mut translate_usages);
                 Ok((TranslateOutcome::Translated(translated), usages))
             }

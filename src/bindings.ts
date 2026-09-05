@@ -530,7 +530,12 @@ export type AiUsageActionRow = {
 	completion_tokens: number,
 };
 
-/**  逐日聚合行（热力图数据源）。 */
+/**
+ *  逐日聚合行（热力图数据源）。
+ *  `estimated_tokens`：当日估算行（estimated=1，中转剥离 usage 按字符数兜底）
+ *  的 prompt+completion 合计。0 表示当日全部为真实上报；前端据此提示「含估算值」，
+ *  避免估算数字与真实统计混展时无法分辨。
+ */
 export type AiUsageDaily = {
 	day: string,
 	calls: number,
@@ -538,6 +543,7 @@ export type AiUsageDaily = {
 	completion_tokens: number,
 	cache_hit_tokens: number,
 	cache_miss_tokens: number,
+	estimated_tokens: number,
 };
 
 /**

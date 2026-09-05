@@ -18,7 +18,7 @@ import { registerOverlayActive } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 
-// AI Token 用量统计弹窗：GitHub 风格日历热力图（按天）+ 饼图/表格切换（按源分组）。
+// AI 词元用量统计弹窗：GitHub 风格日历热力图（按天）+ 饼图/表格切换（按源分组）。
 // 数据入口 get_ai_usage_stats：一次返回逐日/按源/按操作三组聚合，筛选条件三者共享。
 const emit = defineEmits<{ close: [] }>()
 
@@ -42,6 +42,7 @@ const {
   totalTokens,
   totalCalls,
   cacheHitTokens,
+  estimatedTokens,
   reload,
 } = useAiUsageStats()
 
@@ -180,6 +181,14 @@ onUnmounted(() => {
             </span>
             <span class="ai-usage-chip" :title="t('aiUsage.cache_hit_note')">
               {{ t('aiUsage.cache_hit_short') }} <b>{{ formatTokens(cacheHitTokens) }}</b>
+            </span>
+            <!-- 估算行（中转剥离 usage 按字符数兜底）混在真实统计里无法分辨，显式标出 -->
+            <span
+              v-if="estimatedTokens > 0"
+              class="ai-usage-chip ai-usage-chip-estimated"
+              :title="t('aiUsage.estimated_note', estimatedTokens.toLocaleString())"
+            >
+              {{ t('aiUsage.estimated_chip', formatTokens(estimatedTokens)) }}
             </span>
           </div>
           <button class="btn-secondary ai-usage-reload" :disabled="loading" @click="reload">{{ t('aiUsage.reload') }}</button>
@@ -376,6 +385,11 @@ onUnmounted(() => {
 .ai-usage-chip b {
   color: var(--text);
   font-variant-numeric: tabular-nums;
+}
+
+/* 估算 chip：虚线边框与真实统计的 chip 区分 */
+.ai-usage-chip-estimated {
+  border-style: dashed;
 }
 
 .ai-usage-reload {

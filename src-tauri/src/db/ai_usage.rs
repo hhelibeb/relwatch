@@ -117,6 +117,9 @@ pub fn insert_call_usage(
 }
 
 /// 逐日聚合行（热力图数据源）。
+/// `estimated_tokens`：当日估算行（estimated=1，中转剥离 usage 按字符数兜底）
+/// 的 prompt+completion 合计。0 表示当日全部为真实上报；前端据此提示「含估算值」，
+/// 避免估算数字与真实统计混展时无法分辨。
 #[derive(Debug, Clone, Serialize, Type)]
 pub struct AiUsageDaily {
     pub day: String,
@@ -125,6 +128,7 @@ pub struct AiUsageDaily {
     pub completion_tokens: i64,
     pub cache_hit_tokens: i64,
     pub cache_miss_tokens: i64,
+    pub estimated_tokens: i64,
 }
 
 /// 按监控源聚合行（表格 / 饼图数据源）。`label` 为监控源本身的标识
@@ -186,7 +190,8 @@ pub fn get_ai_usage_stats(
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT day, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),
-                        SUM(cache_hit_tokens), SUM(cache_miss_tokens)
+                        SUM(cache_hit_tokens), SUM(cache_miss_tokens),
+                        SUM(CASE WHEN estimated = 1 THEN prompt_tokens + completion_tokens ELSE 0 END)
                  FROM ai_usage {} GROUP BY day ORDER BY day",
                 filtered_where()
             ))
@@ -200,6 +205,7 @@ pub fn get_ai_usage_stats(
                     completion_tokens: r.get(3)?,
                     cache_hit_tokens: r.get(4)?,
                     cache_miss_tokens: r.get(5)?,
+                    estimated_tokens: r.get(6)?,
                 })
             })
             .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
@@ -327,6 +333,7 @@ mod tests {
         assert_eq!(d.completion_tokens, 2 + 900 + 1);
         assert_eq!(d.cache_hit_tokens, 400);
         assert_eq!(d.cache_miss_tokens, 100 + 600);
+        assert_eq!(d.estimated_tokens, 1 + 1, "仅估算行（test）计入 estimated_tokens");
 
         // 按源：有源一组（detect+translate），无源一组（test），按 token 合计降序
         assert_eq!(stats.by_source.len(), 2);
@@ -371,6 +378,8 @@ mod tests {
         let recent = get_ai_usage_stats(&conn, None, Some(7)).unwrap();
         assert_eq!(recent.daily.len(), 1, "7 天窗口应排除 10 天前的记录");
         assert_eq!(recent.daily[0].calls, 1);
+        // 当日那行是 estimate("summary", 10, 4)：prompt=(10+1)/2=5、completion=(4+1)/2=2
+        assert_eq!(recent.daily[0].estimated_tokens, 5 + 2, "窗口过滤后估算合计仍正确");
     }
 
     #[test]

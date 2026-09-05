@@ -3,6 +3,7 @@ import { mount } from '@vue/test-utils'
 import {
   buildHeatmap,
   heatLevel,
+  heatmapWeeks,
   aggregateDonutBySource,
   aggregateDonutByAction,
   buildSourceTsv,
@@ -82,7 +83,7 @@ describe('buildHeatmap', () => {
 })
 
 describe('AiUsageHeatmap 组件', () => {
-  it('渲染 maxWeeks×7 个格子 + 图例，future 格不可交互', () => {
+  it('渲染 maxWeeks×7 个格子 + 图例，future 格不触发 tooltip', async () => {
     const data = buildHeatmap(
       [{ day: '2026-09-14', prompt_tokens: 500, completion_tokens: 500, calls: 3 }],
       new Date(2026, 8, 15),
@@ -95,16 +96,51 @@ describe('AiUsageHeatmap 组件', () => {
     const hot = cells.find((c) => c.classes().includes('heat-4'))
     expect(hot).toBeDefined()
     expect(wrapper.findAll('.heatmap-legend .heatmap-cell')).toHaveLength(5) // 图例 5 级
-    // future 占位格不触发 tooltip
+    // future 占位格即使触发 mouseenter（真实浏览器中被 CSS visibility:hidden 挡住）也不显示 tooltip
     const future = cells.find((c) => c.classes().includes('heat-future'))!
     expect(future).toBeDefined()
-    awaitFutureHover(wrapper, future.element)
+    await future.trigger('mouseenter')
+    expect(wrapper.find('.heatmap-tooltip').exists()).toBe(false)
   })
 
-  async function awaitFutureHover(wrapper: ReturnType<typeof mount>, _el: Element) {
-    // future 格 visibility:hidden（CSS），mouseenter 不应设置 tooltip 数据
+  it('有数据的格子 hover 显示 tooltip，离开后清除', async () => {
+    const data = buildHeatmap(
+      [{ day: '2026-09-14', prompt_tokens: 500, completion_tokens: 500, calls: 3 }],
+      new Date(2026, 8, 15),
+      5,
+    )
+    const wrapper = mount(AiUsageHeatmap, { props: { data } })
+    const cells = wrapper.findAll('.heatmap-grid .heatmap-cell')
+    const hot = cells.find((c) => c.classes().includes('heat-4'))!
+    await hot.trigger('mouseenter')
+    const tooltip = wrapper.find('.heatmap-tooltip')
+    expect(tooltip.exists()).toBe(true)
+    expect(tooltip.text()).toContain('1000') // 500 输入 + 500 输出
+    await hot.trigger('mouseleave')
     expect(wrapper.find('.heatmap-tooltip').exists()).toBe(false)
-  }
+  })
+})
+
+describe('heatmapWeeks', () => {
+  const today = new Date(2026, 8, 15) // 2026-09-15（周二），本地时区
+
+  it('固定窗口档按窗口近似收窄', () => {
+    expect(heatmapWeeks([], 30, today)).toBe(6)
+    expect(heatmapWeeks([], 90, today)).toBe(14)
+    expect(heatmapWeeks([], 365, today)).toBe(53)
+  })
+
+  it('「全部」按最早数据日反推周数，热力图覆盖与汇总同口径', () => {
+    // 起点为一个月前：跨度 32 天 → 6 周（firstWeekStart 对齐到首日所在周的周日）
+    expect(heatmapWeeks([{ day: '2026-08-15' }], null, today)).toBe(6)
+    // 无数据退回 53 周
+    expect(heatmapWeeks([], null, today)).toBe(53)
+
+    // 端到端：最早数据日必须出现在「全部」档热力图格子中
+    const daily = [{ day: '2026-06-01', prompt_tokens: 10, completion_tokens: 0, calls: 1 }]
+    const { weeks } = buildHeatmap(daily, today, heatmapWeeks(daily, null, today))
+    expect(weeks.flat().some((c) => c.day === '2026-06-01')).toBe(true)
+  })
 })
 
 describe('aggregateDonutBySource', () => {

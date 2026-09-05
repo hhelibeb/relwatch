@@ -911,7 +911,7 @@ async function handleImportBackup() {
       @close="showUpdateNotes = false"
     />
 
-    <!-- AI Token 用量统计弹窗：Teleport 到 body，脱离设置页窄栏布局（组件内部自绘） -->
+    <!-- AI 词元用量统计弹窗：Teleport 到 body，脱离设置页窄栏布局（组件内部自绘） -->
     <AiUsageStatsModal v-if="showAiUsage" @close="showAiUsage = false" />
   </section>
 </template>

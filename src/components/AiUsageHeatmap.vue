@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import type { HeatmapData } from '../composables/useAiUsageStats'
+import type { HeatCell, HeatmapData } from '../composables/useAiUsageStats'
 import { heatLevel } from '../composables/useAiUsageStats'
 import { parseDateKey } from '../utils/dateKey'
 import { getLocale, t } from '../i18n'
@@ -56,7 +56,8 @@ function formatDay(day: string): string {
   return parseDateKey(day).toLocaleDateString(getLocale(), { month: 'short', day: 'numeric' })
 }
 
-function handleHover(e: MouseEvent, cell: { day: string; tokens: number; calls: number }) {
+function handleHover(e: MouseEvent, cell: HeatCell) {
+  if (cell.isFuture) return // future 占位格不显示 tooltip（不依赖 CSS visibility 挡事件）
   tooltip.value = { x: e.clientX + 12, y: e.clientY + 12, day: cell.day, tokens: cell.tokens, calls: cell.calls }
 }
 

@@ -3,7 +3,7 @@ import { getAiUsageStats } from '../api/aiUsage'
 import type { AiUsageActionRow, AiUsageSourceRow, AiUsageStats } from '../api/aiUsage'
 import type { Source } from '../api/sources'
 import { listSources } from '../api/sources'
-import { toDateKey } from '../utils/dateKey'
+import { toDateKey, parseDateKey } from '../utils/dateKey'
 
 // ── 纯函数（供组件与单测复用） ────────────────────────────────────────
 
@@ -164,13 +164,31 @@ export function buildSourceTsv(headers: string[], rows: AiUsageSourceRow[], noSo
 
 // ── Composable ──────────────────────────────────────────────────────
 
-/** 时间范围选项（null = 全部）。热力图列数随窗口收窄，「全部」封顶 53 周。 */
+/** 时间范围选项（null = 全部）。days 是固定窗口档的热力图近似跨度。 */
 export const AI_USAGE_RANGE_OPTIONS: { value: number | null; days: number }[] = [
   { value: 30, days: 30 },
   { value: 90, days: 90 },
   { value: 365, days: 365 },
   { value: null, days: 365 },
 ]
+
+/** 热力图窗口周数。固定档按窗口近似收窄；「全部」按最早数据日反推周数，
+ *  与顶部汇总（全部历史）同口径——若按固定 53 周截断，汇总数字与热力图
+ *  格子加总会对不上且无解释。防御性封顶 260 周（约 5 年）。 */
+export function heatmapWeeks(
+  daily: { day: string }[],
+  days: number | null,
+  today: Date,
+): number {
+  if (days !== null) {
+    const option = AI_USAGE_RANGE_OPTIONS.find((o) => o.value === days)
+    return Math.min(53, Math.ceil((option?.days ?? 365) / 7) + 1)
+  }
+  const first = daily[0]?.day // daily 按 day 升序返回，首条即最早
+  if (!first) return 53
+  const spanDays = Math.floor((today.getTime() - parseDateKey(first).getTime()) / 86_400_000) + 1
+  return Math.min(260, Math.ceil(spanDays / 7) + 1)
+}
 
 export function useAiUsageStats() {
   const sourceId = ref<number | null>(null)
@@ -206,12 +224,10 @@ export function useAiUsageStats() {
   load()
   loadSources()
 
-  /** 热力图窗口周数：随时间范围收窄，「全部」封顶 53 周。 */
+  /** 热力图窗口周数：随时间范围收窄，「全部」按最早数据日反推（见 heatmapWeeks）。 */
   const heatmap = computed<HeatmapData | null>(() => {
     if (!stats.value) return null
-    const option = AI_USAGE_RANGE_OPTIONS.find((o) => o.value === days.value)
-    const maxWeeks = Math.min(53, Math.ceil((option?.days ?? 365) / 7) + 1)
-    return buildHeatmap(stats.value.daily, new Date(), maxWeeks)
+    return buildHeatmap(stats.value.daily, new Date(), heatmapWeeks(stats.value.daily, days.value, new Date()))
   })
 
   const totalTokens = computed(() =>
@@ -220,6 +236,10 @@ export function useAiUsageStats() {
   const totalCalls = computed(() => (stats.value?.daily ?? []).reduce((s, d) => s + d.calls, 0))
   const cacheHitTokens = computed(() =>
     (stats.value?.daily ?? []).reduce((s, d) => s + d.cache_hit_tokens, 0),
+  )
+  /** 当前筛选窗口内估算行（中转剥离 usage 按字符数兜底）的词元合计，供「含估算」提示。 */
+  const estimatedTokens = computed(() =>
+    (stats.value?.daily ?? []).reduce((s, d) => s + d.estimated_tokens, 0),
   )
 
   return {
@@ -233,6 +253,7 @@ export function useAiUsageStats() {
     totalTokens,
     totalCalls,
     cacheHitTokens,
+    estimatedTokens,
     reload: load,
   }
 }
