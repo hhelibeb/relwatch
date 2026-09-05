@@ -237,6 +237,7 @@ const {
 // ── 字体大小（界面缩放档位）─────────────────────────
 // 与主题同样走 usePreviewSelect 复用打开/键盘/外点关闭交互，但刻意不做悬停
 // 预览：整窗缩放会把下拉面板移出鼠标下方造成 hover 抖动，仅在确认选中时应用。
+// UI 档位从 90 起：存储 clamp 下限 80（见 useFontScale）留作余量，不作为档位
 const fontScaleOptions = [90, 100, 110, 125, 150]
 
 function selectFontScale(val: string) {
@@ -353,8 +354,11 @@ async function handleSave() {
     if (pollChanged) prevPollInterval.value = form.poll_interval_minutes
     emit('update', pollChanged)
   } catch (e: unknown) {
-    // updateSettings 失败时回滚 UI 语言到已持久化的语言，避免 UI 与后端不一致
+    // updateSettings 失败时回滚「选中即应用」的项到已持久化值，避免实际生效状态
+    // 与后端不一致（缩放还连带窗口物理尺寸，残留影响最大）
     setLocale(props.settings.language)
+    applyTheme(props.settings.theme)
+    applyFontScale(props.settings.font_scale)
     showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
   } finally {
     savingSettings.value = false
