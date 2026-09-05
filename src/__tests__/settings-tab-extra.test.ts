@@ -61,6 +61,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     fetch_history_count: 1,
     language: 'zh-CN',
     theme: 'light',
+    font_scale: 100,
     show_source_type_icons: true,
     enable_usage_stats: true,
     github_token_set: false,
@@ -855,7 +856,7 @@ describe('SettingsTab — Tab 导航与版本', () => {
 
     // 切换到 appearance
     await clickSidebar(wrapper, 'settings.appearance')
-    expect(wrapper.findAll('.theme-select').length).toBe(2) // language + theme
+    expect(wrapper.findAll('.theme-select').length).toBe(3) // language + theme + font scale
 
     // 切换到 AI
     await clickSidebar(wrapper, 'settings.ai')

@@ -44,6 +44,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   fetch_history_count: 1,
   language: 'zh-CN',
   theme: 'system',
+  font_scale: 100,
   show_source_type_icons: true,
   enable_usage_stats: true,
   github_token_set: false,

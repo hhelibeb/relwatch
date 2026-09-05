@@ -8,6 +8,7 @@
   "permissions": [
     "core:default",
     "core:webview:allow-create-webview-window",
+    "core:webview:allow-set-webview-zoom",
     "core:window:allow-set-size",
     "notification:default",
     "notification:allow-is-permission-granted",
