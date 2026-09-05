@@ -288,7 +288,7 @@ pub struct TestDeepseekPayload {
         "temperature": 0.0
     });
     // 复用 deepseek::chat_completion 的 POST 模板（连接测试不再自写第 4 份）
-    let _ = deepseek::chat_completion(&client, &base_url, &body)
+    let outcome = deepseek::chat_completion(&client, &base_url, &body)
         .await
         .map_err(|(status, msg)| {
             if status > 0 {
@@ -297,6 +297,20 @@ pub struct TestDeepseekPayload {
                 format!("err.request_failed|{}", msg)
             }
         })?;
+    // 连接测试也是真实消耗，记一条 usage（无源：source_id/release_id 均为 NULL）；
+    // 落库失败静默——统计不影响测试结果。
+    if let Ok(conn) = state.db.get() {
+        let usage = crate::db::ai_usage::CallUsage::from_outcome(
+            "test",
+            outcome.usage,
+            &outcome.content,
+            deepseek::count_prompt_chars(&body),
+            outcome.duration_ms,
+        );
+        if let Err(e) = crate::db::ai_usage::insert_call_usage(&conn, None, &model, &[usage]) {
+            log::warn!("记录连接测试用量失败: {}", e);
+        }
+    }
     // 成功不返回任何文案：命令只承诺“测试通过”，提示语由前端按 i18n key 渲染
     // （settings.connection_success），避免后端硬编码语言与调用方无法预判返回语义。
     Ok(())

@@ -81,6 +81,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::record_usage,
         commands::get_usage_stats,
         commands::clear_usage_stats,
+        commands::get_ai_usage_stats,
         commands::save_agent_config,
         commands::get_agent_config,
         commands::get_agent_ws_width,

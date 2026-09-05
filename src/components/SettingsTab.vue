@@ -21,6 +21,7 @@ import { applyTheme } from '../composables/useTheme'
 import { usePreviewSelect } from '../composables/usePreviewSelect'
 import { useBilibiliLogin } from '../composables/useBilibiliLogin'
 import UpdateNotesModal from './UpdateNotesModal.vue'
+import AiUsageStatsModal from './AiUsageStatsModal.vue'
 
 const props = defineProps<{ settings: AppSettings }>()
 const emit = defineEmits<{
@@ -39,6 +40,7 @@ const youtubeApiKey = ref('')
 const bilibiliCookie = ref('')
 
 const testingDeepseek = ref(false)
+const showAiUsage = ref(false)
 const prevPollInterval = ref(props.settings.poll_interval_minutes)
 
 // ── Agent 分区（独立 Tab：后端全局单例配置，随「保存设置」统一提交）───────
@@ -620,6 +622,11 @@ async function handleImportBackup() {
           </div>
         </div>
         <div v-if="settingsTab === 'ai'" class="settings-form">
+
+          <div class="setting-row">
+            <button class="btn-secondary" @click="showAiUsage = true">{{ t('settings.ai_usage_stats') }}</button>
+            <span class="setting-hint">{{ t('settings.ai_usage_stats_hint') }}</span>
+          </div>
           <label class="setting-row setting-row-checkbox">
             <input type="checkbox" v-model="form.deepseek_enabled" />
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_enabled') || null">{{ t('settings.enable_ai') }}</span>
@@ -689,7 +696,9 @@ async function handleImportBackup() {
             </button>
             <span class="setting-hint">{{ t('settings.test_connection_hint') }}</span>
           </div>
+
           </template>
+
         </div>
         <div v-if="settingsTab === 'agent'" class="settings-form">
           <div class="setting-section-title">{{ t('agent.section_title') }}</div>
@@ -901,6 +910,9 @@ async function handleImportBackup() {
       :body="updateNotesBody"
       @close="showUpdateNotes = false"
     />
+
+    <!-- AI Token 用量统计弹窗：Teleport 到 body，脱离设置页窄栏布局（组件内部自绘） -->
+    <AiUsageStatsModal v-if="showAiUsage" @close="showAiUsage = false" />
   </section>
 </template>
 <style scoped>

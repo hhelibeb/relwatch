@@ -1,5 +1,6 @@
 use crate::db;
 use crate::db::usage::UsageStatRow;
+use crate::db::ai_usage::AiUsageStats;
 use crate::types::AppState;
 
 /// 命令体内层逻辑：开关关闭时静默丢弃，不做任何写入（抽为函数便于测试）。
@@ -40,6 +41,20 @@ fn record_usage_inner(conn: &rusqlite::Connection, events: &[(String, u32)]) -> 
 #[specta::specta]pub fn clear_usage_stats(state: tauri::State<AppState>) -> Result<(), String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     db::usage::clear_usage_stats(&conn)
+}
+
+/// 查询 AI（摘要/翻译/语言检测/连接测试）token 用量聚合：
+/// 一次返回逐日（热力图）、按监控源（表格）、按操作类型（饼图）三组。
+/// `source_id` 为 None 时统计全部源；`days` 为 None 时统计全部历史。
+#[tauri::command]
+
+#[specta::specta]pub fn get_ai_usage_stats(
+    state: tauri::State<AppState>,
+    source_id: Option<i64>,
+    days: Option<u32>,
+) -> Result<AiUsageStats, String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    db::ai_usage::get_ai_usage_stats(&conn, source_id, days)
 }
 
 #[cfg(test)]

@@ -194,6 +194,32 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
             PRIMARY KEY (key, day)
         );
 
+        -- AI（DeepSeek 兼容 API）token 用量：每次成功的 chat/completions 调用一行。
+        -- 覆盖摘要 / 翻译 / 语言检测 / 连接测试；source_id 为 NULL 表示无源调用
+        -- （连接测试），release_id 为 NULL 时同样可能（连接测试）。
+        -- 成本预留设计：cache_hit / cache_miss 分列（DeepSeek 缓存命中单价约
+        -- 为未命中的 1/10）+ model + day 已把金额核算的全部维度采齐，将来做
+        -- 费用展示由前端按单价表现算，历史数据无需迁移。
+        -- day 为本地日期（与 usage_stats 同口径，GROUP BY day 即日历聚合）。
+        CREATE TABLE IF NOT EXISTS ai_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id INTEGER,
+            source_id INTEGER,
+            action TEXT NOT NULL,
+            model TEXT,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+            estimated INTEGER NOT NULL DEFAULT 0,
+            duration_ms INTEGER NOT NULL DEFAULT 0,
+            day TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_day ON ai_usage(day);
+        CREATE INDEX IF NOT EXISTS idx_ai_usage_source ON ai_usage(source_id);
+
         CREATE TABLE IF NOT EXISTS agent_runs "
             .to_string()
             + AGENT_RUNS_COLUMNS
