@@ -179,6 +179,9 @@ pub struct AppSettings {
     /// 界面缩放百分比（80–150，100 = 默认），应用为 WebView 页面缩放（set_zoom）。
     pub font_scale: i64,
     pub show_source_type_icons: bool,
+    /// 是否显示 AI 重要度（大/中/小）徽标与筛选（默认关闭）：仅控制 UI 展示，
+    /// 不影响 ai_importance 的生成与「按重要度通知」阈值逻辑。
+    pub show_importance: bool,
     pub enable_usage_stats: bool,
     pub github_token_set: bool,
     pub youtube_api_key_set: bool,
@@ -213,6 +216,7 @@ mod tests {
             theme: "system".into(),
             font_scale: 100,
             show_source_type_icons: true,
+            show_importance: false,
             enable_usage_stats: true,
             github_token_set: true,
             youtube_api_key_set: true,
@@ -240,6 +244,7 @@ mod tests {
         assert!(obj.contains_key("poll_interval_minutes"));
         assert!(obj.contains_key("minimize_to_tray"));
         assert!(obj.contains_key("show_source_type_icons"));
+        assert!(obj.contains_key("show_importance"));
         assert_eq!(obj["proxy_mode"], "manual");
         assert_eq!(obj["deepseek_min_importance"], "中");
     }

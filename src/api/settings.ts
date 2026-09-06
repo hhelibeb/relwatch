@@ -46,6 +46,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   font_scale: 100,
   show_source_type_icons: true,
+  show_importance: false,
   enable_usage_stats: true,
   github_token_set: false,
   youtube_api_key_set: false,

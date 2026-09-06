@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import { mount } from '@vue/test-utils'
 import ReleaseDetailModal from '../components/ReleaseDetailModal.vue'
+import { ShowImportanceKey } from '../injection-keys'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import type { ReleaseInfo } from '../api/releases'
 
@@ -49,6 +50,30 @@ function mountModal(body: string | null = BODY_WITH_LINK_AND_IMAGE) {
     props: { release: makeRelease(body), position: 1, total: 1, hasPrev: false, hasNext: false },
   })
 }
+
+function mountModalWithRelease(release: ReleaseInfo, provide: Record<symbol, unknown> = {}) {
+  return mount(ReleaseDetailModal, {
+    props: { release, position: 1, total: 1, hasPrev: false, hasNext: false },
+    global: { provide },
+  })
+}
+
+describe('ReleaseDetailModal — 显示重要度开关', () => {
+  it('默认显示 AI 重要度徽标，开关关闭后隐藏', async () => {
+    const release = { ...makeRelease(null), ai_importance: '大' }
+
+    // modal 经 Teleport 渲染到 body，断言走 document.body
+    const on = mountModalWithRelease(release)
+    await nextTick()
+    expect(document.body.querySelectorAll('.release-importance-chip').length).toBe(1)
+    on.unmount()
+    expect(document.body.querySelector('.release-importance-chip')).toBeNull()
+
+    const off = mountModalWithRelease(release, { [ShowImportanceKey as symbol]: ref(false) })
+    await nextTick()
+    expect(document.body.querySelector('.release-importance-chip')).toBeNull()
+  })
+})
 
 function contextmenu(target: Element) {
   target.dispatchEvent(

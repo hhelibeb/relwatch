@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, shallowRef, watch } from 'vue'
+import { computed, inject, ref, shallowRef, watch } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { isReadStatus, isUnreadStatus, filterReleaseIndices, buildBodyIndex } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
@@ -11,6 +11,7 @@ import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
 import { releaseFlagged } from '../utils/releaseFlag'
 import { track } from '../composables/useUsageTracking'
+import { ShowImportanceKey } from '../injection-keys'
 
 type AggregatedListInstance = InstanceType<typeof ReleaseAggregatedList> & {
   expandAll: () => void
@@ -30,6 +31,11 @@ const emit = defineEmits<{
 
 const viewMode = ref<ViewMode>('simple')
 const importanceFilter = ref<ReleaseImportanceFilter>('all')
+// 「显示重要度」开关（App.vue provide）：关闭时不参与过滤，并清掉残留的重要度筛选
+const showImportance = inject(ShowImportanceKey, ref(true))
+watch(showImportance, (visible) => {
+  if (!visible) importanceFilter.value = 'all'
+})
 const sourceFilter = ref<ReleaseSourceFilter>('all')
 const flagFilter = ref<ReleaseFlagFilter>('all')
 const versionFilter = ref<ReleaseVersionFilter>('all')
@@ -49,7 +55,7 @@ const statusFilter = computed({
 })
 
 const hasActiveFilter = computed(() => {
-  return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || importanceFilter.value !== 'all' || sourceFilter.value !== 'all' || flagFilter.value !== 'all' || versionFilter.value !== 'all'
+  return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || (showImportance.value && importanceFilter.value !== 'all') || sourceFilter.value !== 'all' || flagFilter.value !== 'all' || versionFilter.value !== 'all'
 })
 
 const filteredReleases = computed(() => {
@@ -67,7 +73,7 @@ const filteredReleases = computed(() => {
     list = list.filter(release => isReadStatus(release.notification_status))
   }
 
-  if (importanceFilter.value !== 'all') {
+  if (showImportance.value && importanceFilter.value !== 'all') {
     list = list.filter(release => release.ai_importance === importanceFilter.value)
   }
 

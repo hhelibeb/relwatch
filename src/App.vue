@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type Component, type Ref } from 'vue'
-import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events, commands } from './bindings'
@@ -369,6 +369,8 @@ function dismissCurrentToast() {
 
 provide(ShowToastKey, showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
+// 「显示重要度」开关：仅控制版本卡片/详情/筛选的 UI 展示（设置页 AI 分组）
+provide(ShowImportanceKey, computed(() => settings.value.show_importance))
 // Agent 总开关：独立于 DeepSeek（本地 pi CLI 与在线 API 互不依赖）
 provide(AgentEnabledKey, computed(() => agentConfig.value?.enabled ?? false))
 provide(AgentWorkspaceKey, openAgentWorkspace)

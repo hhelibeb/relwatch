@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, inject } from 'vue'
 import { t } from '../i18n'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import { getSourceTypeDef, sourceTypeDefs } from '../api/source-registry'
 import { flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { isUnreadStatus } from '../utils'
+import { ShowImportanceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
 
@@ -41,13 +42,17 @@ const emit = defineEmits<{
 }>()
 
 // ========== 筛选下拉状态 ==========
-// 状态/漏斗/来源/视图共享一个 open 状态：hover 打开互斥，点击打开的不会被 hover 移出自动关闭
-const openFilter = ref<'status' | 'more' | 'source' | 'view' | null>(null)
+// 状态/漏斗/视图共享一个 open 状态：hover 打开互斥，点击打开的不会被 hover 移出自动关闭
+// （来源筛选只在漏斗面板中：低频维度，栏上重复入口已移除，激活态由 chips + 漏斗计数展示）
+const openFilter = ref<'status' | 'more' | 'view' | null>(null)
 const filterDropdown = useDropdown({
   openState: openFilter,
   closedKey: null,
   hoverOpen: true,
 })
+
+// 「显示重要度」开关（App.vue provide）：关闭时漏斗面板不含重要度分组、chips 不显示重要度
+const showImportance = inject(ShowImportanceKey, ref(true))
 
 const statusDisplayText = computed(() => {
   if (props.statusFilter === 'unread') return t('release.filter_unread')
@@ -131,7 +136,8 @@ const unreadCount = computed(() => props.releases.filter(r => isUnreadStatus(r.n
 const flaggedCount = computed(() => props.releases.filter(r => releaseFlagged(r)).length)
 const withCount = (label: string, n: number) => (n > 0 ? `${label} (${n})` : label)
 
-// ── 漏斗面板：五个分组，单选即选即关 ──
+// ── 漏斗面板分组，单选即选即关；重要度分组受「显示重要度」开关控制。
+// 栏上已有一级入口的维度（状态）排在面板末位，低频维度靠前 ──
 interface MoreGroup {
   key: string
   title: string
@@ -171,17 +177,6 @@ const moreGroups = computed<MoreGroup[]>(() => [
     select: (v) => selectImportanceFilter(v as ReleaseImportanceFilter),
   },
   {
-    key: 'status',
-    title: t('tab.status'),
-    current: props.statusFilter,
-    options: [
-      { value: 'all', label: t('release.filter_all') },
-      { value: 'unread', label: withCount(t('release.filter_unread'), unreadCount.value), emphasis: unreadCount.value > 0 },
-      { value: 'read', label: t('release.filter_read') },
-    ],
-    select: (v) => selectStatusFilter(v as ReleaseStatusFilter),
-  },
-  {
     key: 'flag',
     title: t('release.flag'),
     current: props.flagFilter,
@@ -193,15 +188,31 @@ const moreGroups = computed<MoreGroup[]>(() => [
     ],
     select: (v) => selectFlagFilter(v as ReleaseFlagFilter),
   },
+  {
+    key: 'status',
+    title: t('tab.status'),
+    current: props.statusFilter,
+    options: [
+      { value: 'all', label: t('release.filter_all') },
+      { value: 'unread', label: withCount(t('release.filter_unread'), unreadCount.value), emphasis: unreadCount.value > 0 },
+      { value: 'read', label: t('release.filter_read') },
+    ],
+    select: (v) => selectStatusFilter(v as ReleaseStatusFilter),
+  },
 ])
 
-// ── 漏斗面板双列：保持「状态→版本→分组→来源→重要度」语义顺序静态分列，
-// 左列（状态/版本/分组）与右列（来源/重要度）各自独立堆叠，避免单列过长必须滚动；
+// 「显示重要度」关闭时漏斗面板移除重要度分组
+const visibleGroups = computed<MoreGroup[]>(() =>
+  moreGroups.value.filter(group => showImportance.value || group.key !== 'importance'))
+
+// ── 漏斗面板双列：保持语义顺序，按 ceil(n/2) 动态分列（5 组=3+2，关闭重要度后 4 组=2+2），
+// 两列各自独立堆叠，避免单列过长必须滚动；
 // 列容器 role=presentation 对读屏穿透，menu 的可访问子元素仍为 group ──
-const moreGroupColumns = computed<MoreGroup[][]>(() => [
-  moreGroups.value.slice(0, 3),
-  moreGroups.value.slice(3),
-])
+const moreGroupColumns = computed<MoreGroup[][]>(() => {
+  const groups = visibleGroups.value
+  const half = Math.ceil(groups.length / 2)
+  return [groups.slice(0, half), groups.slice(half)]
+})
 
 // ── 激活筛选 chips：与漏斗计数共用，点击 chip 移除对应维度 ──
 interface ActiveChip {
@@ -237,7 +248,7 @@ const activeChips = computed<ActiveChip[]>(() => {
   if (props.sourceFilter !== 'all') {
     chips.push({ key: 'source', label: sourceDisplayText.value, iconHref: sourceDef.value?.icon, clear: () => emit('update:sourceFilter', 'all') })
   }
-  if (props.importanceFilter !== 'all') {
+  if (showImportance.value && props.importanceFilter !== 'all') {
     const dotMap: Record<string, string> = { 大: 'var(--danger)', 中: 'var(--warning)', 小: 'var(--success)' }
     chips.push({ key: 'importance', label: importanceDisplayText.value, dot: dotMap[props.importanceFilter], clear: () => emit('update:importanceFilter', 'all') })
   }
@@ -312,12 +323,7 @@ function clearAllFilters() {
         <button v-if="modelValue" type="button" class="input-clear-btn" :title="t('input.clear')" @click="emit('update:modelValue', '')">✕</button>
       </div>
       <div class="filter-group" @mouseleave="filterDropdown.hoverLeave()">
-        <div class="filter-field">
-          <button type="button" class="filter-trigger filter-flag-toggle" :class="{ active: flagToggleActive || typeof props.flagFilter === 'number' }" :aria-pressed="flagToggleActive" :title="t('release.flag')" @click="toggleFlagFilter">
-            <svg class="filter-flag-icon" :style="flagToggleColor ? { color: flagToggleColor } : undefined"><use href="/icons.svg#flag-tag-icon"/></svg>
-          </button>
-        </div>
-        <div class="filter-divider"></div>
+        <!-- 漏斗居首：全量筛选入口；旗标/状态为单一维度快捷筛选，排其后 -->
         <div class="filter-field" @mouseenter="filterDropdown.hoverEnter('more')">
           <button type="button" class="filter-trigger filter-more-trigger" :aria-expanded="openFilter === 'more'" aria-haspopup="menu" :title="t('release.filter_more')" @click="filterDropdown.toggle($event, 'more')" @keydown="filterDropdown.handleTriggerKeydown($event, 'more')">
             <svg class="filter-more-icon"><use href="/icons.svg#filter-icon"/></svg>
@@ -353,16 +359,10 @@ function clearAllFilters() {
           </div>
         </div>
         <div class="filter-divider"></div>
-        <div class="filter-field" @mouseenter="filterDropdown.hoverEnter('source')">
-          <button type="button" class="filter-trigger" :aria-expanded="openFilter === 'source'" aria-haspopup="menu" @click="filterDropdown.toggle($event, 'source')" @keydown="filterDropdown.handleTriggerKeydown($event, 'source')">
-            <span class="filter-label">{{ t('tab.source') }}</span>
-            <span class="filter-value" :style="{ color: props.sourceFilter !== 'all' ? 'var(--text)' : 'var(--text-muted)' }"><span v-if="sourceDef" class="filter-type-icon"><svg><use :href="sourceDef.icon"/></svg></span>{{ sourceDisplayText }}</span>
-            <svg class="filter-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
+        <div class="filter-field">
+          <button type="button" class="filter-trigger filter-flag-toggle" :class="{ active: flagToggleActive || typeof props.flagFilter === 'number' }" :aria-pressed="flagToggleActive" :title="t('release.flag')" @click="toggleFlagFilter">
+            <svg class="filter-flag-icon" :style="flagToggleColor ? { color: flagToggleColor } : undefined"><use href="/icons.svg#flag-tag-icon"/></svg>
           </button>
-          <div v-if="openFilter === 'source'" class="dropdown-panel filter-dropdown" role="menu" @mouseenter="filterDropdown.hoverEnter('source')" @mouseleave="filterDropdown.hoverLeave()" @keydown="filterDropdown.handleDropdownKeydown">
-            <button type="button" role="menuitem" :aria-selected="props.sourceFilter === 'all'" :class="{ selected: props.sourceFilter === 'all' }" @click="selectSourceFilter('all')">{{ t('release.filter_all') }}</button>
-            <button v-for="def in sourceTypeDefs" :key="def.type" type="button" role="menuitem" :aria-selected="props.sourceFilter === def.type" :class="{ selected: props.sourceFilter === def.type }" @click="selectSourceFilter(def.type)"><span class="filter-type-icon"><svg><use :href="def.icon"/></svg></span>{{ t(def.titleKey) }}</button>
-          </div>
         </div>
         <div class="filter-divider"></div>
         <div class="filter-field" @mouseenter="filterDropdown.hoverEnter('status')">

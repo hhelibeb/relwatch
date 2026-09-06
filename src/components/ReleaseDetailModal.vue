@@ -2,7 +2,7 @@
 import { ref, computed, watch, inject, nextTick, onMounted, onUnmounted } from 'vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
-import { ShowToastKey, AiEnabledKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey } from '../injection-keys'
 import { type ReleaseInfo, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
@@ -35,6 +35,7 @@ const emit = defineEmits<{
 
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
+const showImportance = inject(ShowImportanceKey, ref(true))
 const aiEnabled = computed(() => aiEnabledRef.value)
 
 // ========== 拖动 / 调整大小 ==========
@@ -337,7 +338,7 @@ async function applyFlag(flag: number) {
           <div class="release-detail-heading">
             <span v-if="showReleaseRepo" class="release-detail-repo">{{ release.owner }}/{{ release.repo }}</span>
             <span class="release-detail-tag">{{ release.tag_name }}</span>
-            <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+            <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
             <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
             <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
           </div>

@@ -306,6 +306,7 @@ async function handleSave() {
       theme: s.theme,
       font_scale: s.font_scale,
       show_source_type_icons: s.show_source_type_icons,
+      show_importance: s.show_importance,
       enable_usage_stats: s.enable_usage_stats,
       github_token_set: s.github_token_set,
       youtube_api_key_set: s.youtube_api_key_set,
@@ -377,7 +378,7 @@ const TAB_SETTING_KEYS: Record<'general' | 'accounts' | 'appearance' | 'ai', rea
   general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats'],
   accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'],
   appearance: ['language', 'theme', 'font_scale', 'minimize_to_tray', 'show_source_type_icons'],
-  ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'deepseek_translate_release'],
+  ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'show_importance', 'deepseek_translate_release'],
 }
 
 const dirtyFields = computed(() => {
@@ -726,6 +727,11 @@ async function handleImportBackup() {
               <option value="中">{{ t('settings.importance_medium_or_above') }}</option>
               <option value="大">{{ t('settings.importance_high_only') }}</option>
             </select>
+          </label>
+          <label class="setting-row setting-row-checkbox">
+            <input type="checkbox" v-model="form.show_importance" />
+            <span class="setting-label" :data-dirty="dirtyFields.has('show_importance') || null">{{ t('settings.show_importance') }}</span>
+            <span class="setting-hint">{{ t('settings.show_importance_hint') }}</span>
           </label>
 
           <div class="setting-row">

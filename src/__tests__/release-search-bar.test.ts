@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, shallowMount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
+import { ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
+import { ShowImportanceKey } from '../injection-keys'
 import { t } from '../i18n'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
@@ -11,7 +13,7 @@ import type { ReleaseInfo } from '../api/releases'
  * ReleaseSearchBar.vue 行为测试（真实 i18n 字典，不 mock）
  *
  * 组件为受控模式：状态由 props 传入、通过 emit 传出。
- * 按行为分组：搜索框 / 视图切换 / 筛选下拉 / 来源筛选 / 悬停 / 键盘导航 / 组合场景。
+ * 按行为分组：搜索框 / 视图切换 / 筛选下拉 / 漏斗面板（含来源）/ 悬停 / 键盘导航 / 组合场景。
  * 末尾附 ReleaseTab 集成（ReleaseSearchBar 实例化契约）。
  */
 function createWrapper(props: Record<string, unknown> = {}) {
@@ -124,9 +126,9 @@ describe('ReleaseSearchBar — 版本计数徽标', () => {
 // ============ 视图切换（折叠下拉） ============
 
 describe('ReleaseSearchBar — 视图切换（折叠下拉）', () => {
-  // 视图下拉是第 5 个筛选字段（分组/状态/漏斗/来源/视图）
+  // 视图下拉是第 4 个筛选字段（漏斗/旗标toggle/状态/视图）
   function openViewDropdown(wrapper: ReturnType<typeof createWrapper>) {
-    return wrapper.findAll('.filter-field')[4]
+    return wrapper.findAll('.filter-field')[3]
   }
 
   it('默认 simple 视图选项选中', async () => {
@@ -195,19 +197,19 @@ describe('ReleaseSearchBar — 状态筛选', () => {
     expect(wrapper.find('.filter-dropdown').exists()).toBe(false)
 
     const fields = wrapper.findAll('.filter-field')
-    await fields[3].find('.filter-trigger').trigger('click')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    await fields[2].find('.filter-trigger').trigger('click')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
 
-    await fields[3].find('.filter-trigger').trigger('click')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(false)
+    await fields[2].find('.filter-trigger').trigger('click')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(false)
   })
 
   it('选择状态选项后 emit update:statusFilter 并关闭', async () => {
     const wrapper = createWrapper()
 
     const fields = wrapper.findAll('.filter-field')
-    await fields[3].find('.filter-trigger').trigger('click')
-    const items = fields[3].findAll('.filter-dropdown button')
+    await fields[2].find('.filter-trigger').trigger('click')
+    const items = fields[2].findAll('.filter-dropdown button')
     await items[1].trigger('click') // "未读"
 
     expect(wrapper.emitted('update:statusFilter')?.[0]).toEqual(['unread'])
@@ -218,21 +220,21 @@ describe('ReleaseSearchBar — 状态筛选', () => {
     const wrapper = createWrapper({ statusFilter: 'unread' })
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].find('.filter-trigger').trigger('click')
-    const buttons = fields[3].findAll('.filter-dropdown button')
+    await fields[2].find('.filter-trigger').trigger('click')
+    const buttons = fields[2].findAll('.filter-dropdown button')
 
     await buttons[0].trigger('click')
 
     expect(wrapper.emitted('update:statusFilter')?.[0]).toEqual(['all'])
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(false)
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(false)
   })
 
   it('选择「已读」状态后 emit 并关闭下拉', async () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].find('.filter-trigger').trigger('click')
-    const buttons = fields[3].findAll('.filter-dropdown button')
+    await fields[2].find('.filter-trigger').trigger('click')
+    const buttons = fields[2].findAll('.filter-dropdown button')
 
     await buttons[2].trigger('click')
 
@@ -240,20 +242,20 @@ describe('ReleaseSearchBar — 状态筛选', () => {
   })
 
   it('状态下拉显示不同状态的文本（真实字典）', () => {
-    // 状态 field 在栏上第 4 位（分组toggle/漏斗/来源/状态/视图）
+    // 状态 field 在栏上第 3 位（漏斗/旗标toggle/状态/视图）
     const wrapperAll = createWrapper({ statusFilter: 'all' })
-    expect(wrapperAll.findAll('.filter-field')[3].find('.filter-value').text()).toContain(t('release.filter_all'))
+    expect(wrapperAll.findAll('.filter-field')[2].find('.filter-value').text()).toContain(t('release.filter_all'))
 
     const wrapperUnread = createWrapper({ statusFilter: 'unread' })
-    expect(wrapperUnread.findAll('.filter-field')[3].find('.filter-value').text()).toContain(t('release.filter_unread'))
+    expect(wrapperUnread.findAll('.filter-field')[2].find('.filter-value').text()).toContain(t('release.filter_unread'))
 
     const wrapperRead = createWrapper({ statusFilter: 'read' })
-    expect(wrapperRead.findAll('.filter-field')[3].find('.filter-value').text()).toContain(t('release.filter_read'))
+    expect(wrapperRead.findAll('.filter-field')[2].find('.filter-value').text()).toContain(t('release.filter_read'))
   })
 
   it('键盘 Enter 展开筛选', async () => {
     const wrapper = createWrapper()
-    const field = wrapper.findAll('.filter-field')[3]
+    const field = wrapper.findAll('.filter-field')[2]
 
     await field.find('.filter-trigger').trigger('keydown', { key: 'Enter' })
 
@@ -262,7 +264,7 @@ describe('ReleaseSearchBar — 状态筛选', () => {
 
   it('键盘 Escape 关闭筛选', async () => {
     const wrapper = createWrapper()
-    const field = wrapper.findAll('.filter-field')[3]
+    const field = wrapper.findAll('.filter-field')[2]
 
     await field.find('.filter-trigger').trigger('click')
     expect(field.find('.filter-dropdown').exists()).toBe(true)
@@ -273,50 +275,6 @@ describe('ReleaseSearchBar — 状态筛选', () => {
   })
 })
 
-// ============ 来源筛选 ============
-
-describe('ReleaseSearchBar — 来源筛选', () => {
-  // 来源下拉是第 4 个筛选字段（分组/状态/漏斗/来源/视图）
-  function sourceField(wrapper: ReturnType<typeof createWrapper>) {
-    return wrapper.findAll('.filter-field')[2]
-  }
-
-  it('来源下拉选项包含全部监控类型（真实字典文案）', async () => {
-    const wrapper = createWrapper()
-
-    const field = sourceField(wrapper)
-    await field.find('.filter-trigger').trigger('click')
-
-    const items = field.findAll('.filter-dropdown button')
-    expect(items.map(i => i.text())).toEqual([
-      t('release.filter_all'),
-      t('source.type_github'),
-      t('source.type_huggingface'),
-      t('source.type_youtube'),
-      t('source.type_bilibili'),
-    ])
-  })
-
-  it('选择 YouTube 选项 emit update:sourceFilter("youtube") 并关闭', async () => {
-    const wrapper = createWrapper()
-
-    const field = sourceField(wrapper)
-    await field.find('.filter-trigger').trigger('click')
-    await field.findAll('.filter-dropdown button')[3].trigger('click')
-
-    expect(wrapper.emitted('update:sourceFilter')?.[0]).toEqual(['youtube'])
-    expect(wrapper.find('.filter-dropdown').exists()).toBe(false)
-  })
-
-  it('选中来源时触发按钮显示类型标题与图标', async () => {
-    const wrapper = createWrapper({ sourceFilter: 'bilibili' })
-
-    const trigger = sourceField(wrapper).find('.filter-trigger')
-    expect(trigger.text()).toContain(t('source.type_bilibili'))
-    expect(trigger.find('svg use').attributes('href')).toBe('/icons.svg#bilibili-icon')
-  })
-})
-
 // ============ 悬停展开 ============
 
 describe('ReleaseSearchBar — 悬停展开筛选', () => {
@@ -324,18 +282,18 @@ describe('ReleaseSearchBar — 悬停展开筛选', () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].trigger('mouseenter')
+    await fields[2].trigger('mouseenter')
 
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
   })
 
   it('鼠标悬停在漏斗面板区域展开面板', async () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[1].trigger('mouseenter')
+    await fields[0].trigger('mouseenter')
 
-    expect(fields[1].find('.filter-dropdown').exists()).toBe(true)
+    expect(fields[0].find('.filter-dropdown').exists()).toBe(true)
   })
 
   it('鼠标离开筛选组后延迟关闭下拉', async () => {
@@ -343,20 +301,20 @@ describe('ReleaseSearchBar — 悬停展开筛选', () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].trigger('mouseenter')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    await fields[2].trigger('mouseenter')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
 
     // 离开整个筛选组
     wrapper.find('.filter-group').trigger('mouseleave')
 
     // 此时下拉还在（120ms 延迟）
-    expect(wrapper.findAll('.filter-field')[3].find('.filter-dropdown').exists()).toBe(true)
+    expect(wrapper.findAll('.filter-field')[2].find('.filter-dropdown').exists()).toBe(true)
 
     // 等待 120ms 后关闭
     vi.advanceTimersByTime(120)
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.findAll('.filter-field')[3].find('.filter-dropdown').exists()).toBe(false)
+    expect(wrapper.findAll('.filter-field')[2].find('.filter-dropdown').exists()).toBe(false)
   })
 
   it('鼠标从筛选区域移入下拉菜单时保持展开', async () => {
@@ -364,20 +322,20 @@ describe('ReleaseSearchBar — 悬停展开筛选', () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].trigger('mouseenter')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    await fields[2].trigger('mouseenter')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
 
     // 离开筛选区域（启动 120ms 定时器）
-    await fields[3].trigger('mouseleave')
+    await fields[2].trigger('mouseleave')
 
     // 在定时器触发前进入下拉菜单（清除定时器）
-    fields[3].find('.filter-dropdown').trigger('mouseenter')
+    fields[2].find('.filter-dropdown').trigger('mouseenter')
 
     // 即使等待超过 120ms，下拉仍然保持打开
     vi.advanceTimersByTime(150)
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.findAll('.filter-field')[3].find('.filter-dropdown').exists()).toBe(true)
+    expect(wrapper.findAll('.filter-field')[2].find('.filter-dropdown').exists()).toBe(true)
   })
 
   it('从状态下拉切换到漏斗面板：悬停另一个区域自动切换', async () => {
@@ -385,14 +343,14 @@ describe('ReleaseSearchBar — 悬停展开筛选', () => {
     const fields = wrapper.findAll('.filter-field')
 
     // 悬停状态区域
-    await fields[3].trigger('mouseenter')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
-    expect(fields[1].find('.filter-dropdown').exists()).toBe(false)
+    await fields[2].trigger('mouseenter')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
+    expect(fields[0].find('.filter-dropdown').exists()).toBe(false)
 
     // 悬停漏斗区域
-    await fields[1].trigger('mouseenter')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(false)
-    expect(fields[1].find('.filter-dropdown').exists()).toBe(true)
+    await fields[0].trigger('mouseenter')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(false)
+    expect(fields[0].find('.filter-dropdown').exists()).toBe(true)
   })
 })
 
@@ -404,8 +362,8 @@ describe('ReleaseSearchBar — 下拉菜单内键盘导航', () => {
     const fields = wrapper.findAll('.filter-field')
 
     // 打开状态下拉
-    await fields[3].find('.filter-trigger').trigger('click')
-    const buttons = fields[3].findAll('.filter-dropdown button')
+    await fields[2].find('.filter-trigger').trigger('click')
+    const buttons = fields[2].findAll('.filter-dropdown button')
 
     // jsdom 中 focus() 不改变 activeElement，用原生事件 + 手动 focus 测试
     ;(buttons[0].element as HTMLElement).focus()
@@ -421,8 +379,8 @@ describe('ReleaseSearchBar — 下拉菜单内键盘导航', () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].find('.filter-trigger').trigger('click')
-    const buttons = fields[3].findAll('.filter-dropdown button')
+    await fields[2].find('.filter-trigger').trigger('click')
+    const buttons = fields[2].findAll('.filter-dropdown button')
 
     ;(buttons[1].element as HTMLElement).focus()
     const focusSpy = vi.spyOn(buttons[0].element as HTMLElement, 'focus')
@@ -434,14 +392,14 @@ describe('ReleaseSearchBar — 下拉菜单内键盘导航', () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].find('.filter-trigger').trigger('click')
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    await fields[2].find('.filter-trigger').trigger('click')
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
 
-    const buttons = fields[3].findAll('.filter-dropdown button')
+    const buttons = fields[2].findAll('.filter-dropdown button')
     ;(buttons[0].element as HTMLElement).focus()
     await buttons[0].trigger('keydown', { key: 'Escape' })
 
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(false)
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(false)
   })
 })
 
@@ -452,27 +410,27 @@ describe('ReleaseSearchBar — 筛选触发器键盘操作', () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].find('.filter-trigger').trigger('keydown', { key: ' ' })
+    await fields[2].find('.filter-trigger').trigger('keydown', { key: ' ' })
 
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
   })
 
   it('按 ArrowDown 键打开状态筛选', async () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[3].find('.filter-trigger').trigger('keydown', { key: 'ArrowDown' })
+    await fields[2].find('.filter-trigger').trigger('keydown', { key: 'ArrowDown' })
 
-    expect(fields[3].find('.filter-dropdown').exists()).toBe(true)
+    expect(fields[2].find('.filter-dropdown').exists()).toBe(true)
   })
 
   it('按 Space 键打开漏斗面板', async () => {
     const wrapper = createWrapper()
     const fields = wrapper.findAll('.filter-field')
 
-    await fields[1].find('.filter-trigger').trigger('keydown', { key: ' ' })
+    await fields[0].find('.filter-trigger').trigger('keydown', { key: ' ' })
 
-    expect(fields[1].find('.filter-dropdown').exists()).toBe(true)
+    expect(fields[0].find('.filter-dropdown').exists()).toBe(true)
   })
 })
 
@@ -488,19 +446,19 @@ describe('ReleaseSearchBar — 组合筛选场景', () => {
 
     // 选择状态"未读"
     const fields = wrapper.findAll('.filter-field')
-    await fields[3].find('.filter-trigger').trigger('click')
-    await fields[3].findAll('.filter-dropdown button')[1].trigger('click')
+    await fields[2].find('.filter-trigger').trigger('click')
+    await fields[2].findAll('.filter-dropdown button')[1].trigger('click')
     expect(wrapper.emitted('update:statusFilter')?.[0]).toEqual(['unread'])
 
     // 选择重要度"大"（已收进漏斗面板）
-    const moreField = wrapper.findAll('.filter-field')[1]
+    const moreField = wrapper.findAll('.filter-field')[0]
     await moreField.find('.filter-trigger').trigger('click')
     const importanceBtn = moreField.findAll('.filter-more-panel button').find(b => b.text() === t('release.importance_high'))
     await importanceBtn!.trigger('click')
     expect(wrapper.emitted('update:importanceFilter')?.[0]).toEqual(['大'])
 
-    // 切换到日历视图（视图已折叠为下拉，位于第 5 个筛选字段）
-    const viewField = wrapper.findAll('.filter-field')[4]
+    // 切换到日历视图（视图已折叠为下拉，位于第 4 个筛选字段）
+    const viewField = wrapper.findAll('.filter-field')[3]
     await viewField.find('.filter-trigger').trigger('click')
     await viewField.findAll('.filter-dropdown button')[2].trigger('click')
     expect(wrapper.emitted('update:viewMode')?.[0]).toEqual(['calendar'])
@@ -772,10 +730,10 @@ describe('ReleaseTab — 保护性行为测试', () => {
   })
 })
 
-// ============ 分组 toggle / 漏斗面板 / 激活筛选 chips ============
+// ============ 标记 toggle / 漏斗面板 / 激活筛选 chips ============
 
-describe('ReleaseSearchBar — 分组 toggle', () => {
-  it('点击分组 toggle 依次 emit flagged / all', async () => {
+describe('ReleaseSearchBar — 标记 toggle', () => {
+  it('点击标记 toggle 依次 emit flagged / all', async () => {
     const wrapper = createWrapper()
     await wrapper.find('.filter-flag-toggle').trigger('click')
     expect(wrapper.emitted('update:flagFilter')?.[0]).toEqual(['flagged'])
@@ -785,7 +743,7 @@ describe('ReleaseSearchBar — 分组 toggle', () => {
     expect(wrapperOn.emitted('update:flagFilter')?.[0]).toEqual(['all'])
   })
 
-  it('选中具体颜色时 toggle 图标使用分组色（CSS var）', () => {
+  it('选中具体颜色时 toggle 图标使用旗标色（CSS var）', () => {
     const wrapper = createWrapper({ flagFilter: 1 })
     expect(wrapper.find('.filter-flag-icon').attributes('style')).toContain('var(--flag-1)')
   })
@@ -793,7 +751,7 @@ describe('ReleaseSearchBar — 分组 toggle', () => {
 
 describe('ReleaseSearchBar — 漏斗面板', () => {
   function moreField(wrapper: ReturnType<typeof createWrapper>) {
-    return wrapper.findAll('.filter-field')[1]
+    return wrapper.findAll('.filter-field')[0]
   }
 
   async function openMorePanel(wrapper: ReturnType<typeof createWrapper>) {
@@ -814,15 +772,15 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
     return group
   }
 
-  it('面板包含五个分组：来源/版本/重要/状态/分组', async () => {
+  it('面板包含五个分组：来源/版本/重要/标记/状态', async () => {
     const wrapper = createWrapper()
     const panel = await openMorePanel(wrapper)
 
     const titles = panel.findAll('.filter-group-title').map(el => el.text())
-    expect(titles).toEqual([t('tab.source'), t('release.bump'), t('tab.importance'), t('tab.status'), t('release.flag')])
+    expect(titles).toEqual([t('tab.source'), t('release.bump'), t('tab.importance'), t('release.flag'), t('tab.status')])
   })
 
-  it('「未读 / 已分组」选项追加数量标注，0 条不追加', async () => {
+  it('「未读 / 已标记」选项追加数量标注，0 条不追加', async () => {
     const releases = [
       createRelease({ id: 1, notification_status: 'pending', flag: 1 }),
       createRelease({ id: 2, notification_status: 'clicked', flag: 0 }),
@@ -838,7 +796,7 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
     expect(flagButtons[1].text()).toContain(`${t('release.flag_flagged')} (1)`)
   })
 
-  it('存在未读时「未读」选项加粗，无未读不加粗（分组不加粗）', async () => {
+  it('存在未读时「未读」选项加粗，无未读不加粗（标记不加粗）', async () => {
     const withUnread = createWrapper({
       releases: [
         createRelease({ id: 1, notification_status: 'pending', flag: 1 }),
@@ -847,7 +805,7 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
     })
     await openMorePanel(withUnread)
     expect(groupButtons(withUnread, t('tab.status'))[1].classes()).toContain('filter-option-emphasis')
-    // 分组组选项不加粗
+    // 标记选项不加粗
     expect(groupButtons(withUnread, t('release.flag'))[1].classes()).not.toContain('filter-option-emphasis')
 
     // 无未读：不加粗，计数标注也不追加
@@ -878,6 +836,31 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
     expect(active.emitted('update:sourceFilter')?.[0]).toEqual(['all'])
     expect(active.emitted('update:importanceFilter')?.[0]).toEqual(['all'])
     expect(moreField(active).find('.filter-more-panel').exists()).toBe(false)
+  })
+
+  it('来源组选项包含全部监控类型（真实字典文案）', async () => {
+    const wrapper = createWrapper()
+    await openMorePanel(wrapper)
+
+    const items = groupButtons(wrapper, t('tab.source'))
+    expect(items.map(i => i.text())).toEqual([
+      t('release.filter_all'),
+      t('source.type_github'),
+      t('source.type_huggingface'),
+      t('source.type_youtube'),
+      t('source.type_bilibili'),
+    ])
+  })
+
+  it('来源组选 YouTube emit update:sourceFilter("youtube") 并关闭', async () => {
+    const wrapper = createWrapper()
+    await openMorePanel(wrapper)
+
+    const items = groupButtons(wrapper, t('tab.source'))
+    await items[3].trigger('click')
+
+    expect(wrapper.emitted('update:sourceFilter')?.[0]).toEqual(['youtube'])
+    expect(moreField(wrapper).find('.filter-more-panel').exists()).toBe(false)
   })
 
   it('版本组选「大版本」emit update:versionFilter("major") 并关闭', async () => {
@@ -954,5 +937,42 @@ describe('ReleaseSearchBar — 激活筛选 chips', () => {
 
     await chips[2].trigger('click')
     expect(wrapper.emitted('update:flagFilter')?.[0]).toEqual(['all'])
+  })
+})
+
+describe('ReleaseSearchBar — 显示重要度开关', () => {
+  // App provide ShowImportanceKey=false（设置默认值）：漏斗面板不含重要度分组，chips 不显示重要度
+  function mountWithoutImportance(props: Record<string, unknown> = {}) {
+    return mount(ReleaseSearchBar, {
+      props: {
+        modelValue: '',
+        statusFilter: 'all',
+        importanceFilter: 'all',
+        sourceFilter: 'all',
+        viewMode: 'simple',
+        flagFilter: 'all',
+        versionFilter: 'all',
+        ...props,
+      },
+      global: { provide: { [ShowImportanceKey as symbol]: ref(false) } },
+    })
+  }
+
+  it('关闭时漏斗面板不含重要度分组（4 组）', async () => {
+    const wrapper = mountWithoutImportance()
+    const field = wrapper.findAll('.filter-field')[0]
+    await field.find('.filter-trigger').trigger('click')
+    const panel = field.find('.filter-more-panel')
+
+    const titles = panel.findAll('.filter-group-title').map(el => el.text())
+    expect(titles).toEqual([t('tab.source'), t('release.bump'), t('release.flag'), t('tab.status')])
+  })
+
+  it('关闭时激活的重要度筛选不显示 chip（其余 chip 不受影响）', () => {
+    const wrapper = mountWithoutImportance({ statusFilter: 'unread', importanceFilter: '大' })
+
+    const chips = wrapper.findAll('.filter-chip')
+    expect(chips).toHaveLength(1)
+    expect(chips[0].text()).toContain(t('release.filter_unread'))
   })
 })

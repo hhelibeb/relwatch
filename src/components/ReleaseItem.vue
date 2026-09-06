@@ -2,7 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
@@ -20,6 +20,7 @@ const props = defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
+const showImportance = inject(ShowImportanceKey, ref(true))
 const agentEnabledRef = inject(AgentEnabledKey, ref(false))
 const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
 // 工作区打开状态：拖拽落点存在时才启用卡片拖拽，否则恢复文本选择（拖动选字不被拖拽劫持）
@@ -125,6 +126,7 @@ const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number }
 
 function closeMenus() {
   contextMenu.value = null
+  flagMenu.value = null
   summaryContextMenu.value = null
   summaryTooltip.value = null
 }
@@ -173,21 +175,12 @@ const flagTitle = computed(() => {
 })
 
 const releaseMenuItems = computed<ContextMenuItem[]>(() => {
+  // 旗标颜色选择已移至旗标按钮的右键专属菜单（flagMenuItems），此处仅保留链接与通用操作
   const items: ContextMenuItem[] = [
     { id: 'openLink', label: t('context.open') },
     { id: 'copyLink', label: t('context.copy_link') },
-    { id: 'divider-flag', label: '', divider: true },
-    ...FLAG_MENU.map(f => ({
-      id: `flag-${f.value}`,
-      label: t(f.labelKey),
-      iconHref: '/icons.svg#flag-tag-icon',
-      color: flagColorByIndex(f.value) ?? undefined,
-      checked: props.release.flag === f.value,
-    })),
+    { id: 'divider-actions', label: '', divider: true },
   ]
-  if (flagged.value) {
-    items.push({ id: 'flag-clear', label: t('release.flag_clear') })
-  }
   const agentItem = sendToAgentItem()
   if (agentItem) items.push(agentItem)
   items.push({ id: 'deleteRelease', label: t('context.delete_release') })
@@ -245,10 +238,6 @@ async function handleReleaseMenuAction(actionId: string) {
     handleSendToAgent()
   } else if (actionId === 'deleteRelease') {
     handleDeleteRelease()
-  } else if (actionId === 'flag-clear') {
-    void applyFlag(0)
-  } else if (actionId.startsWith('flag-')) {
-    void applyFlag(Number(actionId.slice(5)))
   }
 }
 
@@ -264,7 +253,7 @@ async function applyFlag(flag: number) {
   }
 }
 
-/** 卡片旗标按钮：未标记 → 打默认旗标（红）；已标记（不论颜色）→ 清除。换色走右键菜单。 */
+/** 卡片旗标按钮：未标记 → 打默认旗标（红）；已标记（不论颜色）→ 清除。换色右键本按钮（旗标专属颜色菜单）。 */
 function toggleFlag() {
   void applyFlag(flagged.value ? 0 : DEFAULT_FLAG)
 }
@@ -296,6 +285,38 @@ function releaseContextMenu(e: MouseEvent, url: string) {
   closeAllContextMenus()
   const releaseId = props.release.id
   contextMenu.value = { x: e.clientX, y: e.clientY, url, releaseId }
+}
+
+// ========== 旗标按钮专属颜色菜单 ==========
+// 仅右键呼出（卡片常被划过，绝不做 hover 触发）；左键 = 打默认红/清除，见 toggleFlag。
+const flagMenu = ref<{ x: number; y: number } | null>(null)
+
+function openFlagMenu(e: MouseEvent) {
+  closeAllContextMenus()
+  flagMenu.value = { x: e.clientX, y: e.clientY }
+}
+
+/** 旗标按钮右键菜单：六色选择 + 清除（与筛选漏斗同一套色板与文案） */
+const flagMenuItems = computed<ContextMenuItem[]>(() => {
+  const items: ContextMenuItem[] = FLAG_MENU.map(f => ({
+    id: `flag-${f.value}`,
+    label: t(f.labelKey),
+    iconHref: '/icons.svg#flag-tag-icon',
+    color: flagColorByIndex(f.value) ?? undefined,
+    checked: props.release.flag === f.value,
+  }))
+  if (flagged.value) {
+    items.push({ id: 'flag-clear', label: t('release.flag_clear') })
+  }
+  return items
+})
+
+function handleFlagMenuAction(actionId: string) {
+  if (actionId === 'flag-clear') {
+    void applyFlag(0)
+  } else if (actionId.startsWith('flag-')) {
+    void applyFlag(Number(actionId.slice(5)))
+  }
 }
 
 async function handleCopyLink() {
@@ -490,18 +511,18 @@ const youtubeViewTitle = computed(() =>
 
 <template>
   <div class="release-item"
-    :class="[{ 'is-prerelease': release.prerelease }, releaseImportanceClass(release)]"
+    :class="[{ 'is-prerelease': release.prerelease }, showImportance ? releaseImportanceClass(release) : '']"
     :draggable="agentEnabled && agentPanelOpen"
     @dragstart="handleDragStart">
     <div class="release-header">
       <div class="release-heading">
         <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
         <span v-else-if="isYoutube" class="release-repo release-repo-yt" :title="youtubeChannelName">{{ youtubeChannelName }}</span>
-        <!-- 用户旗标（Outlook 式贴纸）贴在版本号前，颜色即语义 -->
-        <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
         <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
+        <!-- 用户旗标（Outlook 式贴纸）贴在版本号后：不打断「仓库名 + 版本号」的连贯语义，颜色即语义 -->
+        <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
         <!-- 版本固有属性（重要性/预发布）贴版本号；状态（圆点+文字）放在分隔符后自成一体，避免圆点被误读为重要性指示 -->
-        <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+        <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
         <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
         <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
       </div>
@@ -509,7 +530,7 @@ const youtubeViewTitle = computed(() =>
         <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
         <button class="btn-sm" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
         <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
-        <button class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" @click="toggleFlag">
+        <button class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" @click="toggleFlag" @contextmenu.prevent.stop="openFlagMenu">
           <svg><use href="/icons.svg#flag-tag-icon"/></svg>
         </button>
         <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
@@ -596,6 +617,7 @@ const youtubeViewTitle = computed(() =>
   </div>
 
   <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="releaseMenuItems" @action="handleReleaseMenuAction" @close="closeMenus" />
+  <ContextMenu v-if="flagMenu" :x="flagMenu.x" :y="flagMenu.y" :items="flagMenuItems" @action="handleFlagMenuAction" @close="closeMenus" />
   <ContextMenu v-if="summaryContextMenu" :x="summaryContextMenu.x" :y="summaryContextMenu.y" :items="summaryMenuItems" @action="handleSummaryMenuAction" @close="closeMenus" />
 
   <!-- 摘要悬浮提示 -->

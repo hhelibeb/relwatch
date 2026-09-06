@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
+import { ref } from 'vue'
 import { t } from '../i18n'
 import ReleaseItem from '../components/ReleaseItem.vue'
-import { ShowToastKey } from '../injection-keys'
+import { ShowToastKey, ShowImportanceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../api/releases', () => ({
@@ -66,12 +67,13 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
   }
 }
 
-function mountRelease(release: ReleaseInfo) {
+function mountRelease(release: ReleaseInfo, provideOverrides: Record<symbol, unknown> = {}) {
   return shallowMount(ReleaseItem, {
     props: { release },
     global: {
       provide: {
         [ShowToastKey as symbol]: vi.fn(),
+        ...provideOverrides,
       },
     },
   })
@@ -365,6 +367,15 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
     }))
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(false)
+  })
+
+  it('「显示重要度」关闭时不显示重要性标签，卡片也不带重要度配色 class', () => {
+    const wrapper = mountRelease(createRelease({ ai_summary: '修复bug', ai_importance: '大' }), {
+      [ShowImportanceKey as symbol]: ref(false),
+    })
+
+    expect(wrapper.find('.release-importance-chip').exists()).toBe(false)
+    expect(wrapper.find('.release-item').classes()).not.toContain('release-importance-high')
   })
 })
 

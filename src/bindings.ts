@@ -599,6 +599,11 @@ export type AppSettings = {
 	/**  界面缩放百分比（80–150，100 = 默认），应用为 WebView 页面缩放（set_zoom）。 */
 	font_scale: number,
 	show_source_type_icons: boolean,
+	/**
+	 *  是否显示 AI 重要度（大/中/小）徽标与筛选（默认关闭）：仅控制 UI 展示，
+	 *  不影响 ai_importance 的生成与「按重要度通知」阈值逻辑。
+	 */
+	show_importance: boolean,
 	enable_usage_stats: boolean,
 	github_token_set: boolean,
 	youtube_api_key_set: boolean,

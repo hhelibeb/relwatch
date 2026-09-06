@@ -444,13 +444,18 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
       t('context.open'),
       t('context.copy_link'),
       '',
+      t('context.delete_release'),
+    ])
+
+    // 旗标按钮右键专属菜单（zh-CN）：六色（未标记无「取消旗标」项）
+    await wrapper.find('.release-flag-action').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
       t('release.flag_red'),
       t('release.flag_orange'),
       t('release.flag_yellow'),
       t('release.flag_green'),
       t('release.flag_blue'),
       t('release.flag_purple'),
-      t('context.delete_release'),
     ])
 
     // 摘要右键菜单（zh-CN）：无 Agent 项
@@ -467,7 +472,12 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
 
     await wrapper.find('.release-link-action').trigger('contextmenu')
     expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
-      'Open', 'Copy Link', '', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Delete Version',
+      'Open', 'Copy Link', '', 'Delete Version',
+    ])
+
+    await wrapper.find('.release-flag-action').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple',
     ])
 
     await wrapper.find('.release-summary-text').trigger('contextmenu')
@@ -488,17 +498,11 @@ describe('ReleaseItem.vue — 发送到 Agent', () => {
       t('context.open'),
       t('context.copy_link'),
       '',
-      t('release.flag_red'),
-      t('release.flag_orange'),
-      t('release.flag_yellow'),
-      t('release.flag_green'),
-      t('release.flag_blue'),
-      t('release.flag_purple'),
       t('agent.send_to'),
       t('context.delete_release'),
     ])
 
-    await wrapper.findAll('.stub-menu-item')[9].trigger('click')
+    await wrapper.findAll('.stub-menu-item')[3].trigger('click')
     expect(lastOpenAgentWorkspace()).toHaveBeenCalledWith({ entities: [{ kind: 'release', id: 7 }] })
   })
 
@@ -818,42 +822,31 @@ describe('ReleaseItem.vue — 旗标操作', () => {
     expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.flag_failed')))
   })
 
-  it('右键菜单点击颜色项 → setReleaseFlag(id, n)', async () => {
+  it('右键旗标按钮弹出颜色菜单，点击颜色项 → setReleaseFlag(id, n)', async () => {
     vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
     const wrapper = mountWithMenus(createRelease({ id: 11 }))
 
-    await wrapper.find('.release-link-action').trigger('contextmenu')
-    // 菜单项顺序：openLink, copyLink, divider, flag-1..6, deleteRelease
-    await wrapper.findAll('.stub-menu-item')[5].trigger('click') // flag-3（绿）
+    await wrapper.find('.release-flag-action').trigger('contextmenu')
+    // 旗标菜单项顺序：flag-1..6（无 divider）
+    await wrapper.findAll('.stub-menu-item')[2].trigger('click') // flag-3（绿）
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(setReleaseFlag).toHaveBeenCalledWith(11, 3)
     expect(wrapper.emitted('update')).toBeTruthy()
   })
 
-  it('已标记时菜单追加「取消旗标」项，点击清除', async () => {
+  it('已标记时旗标菜单追加「取消旗标」项，点击清除', async () => {
     vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
     const wrapper = mountWithMenus(createRelease({ id: 11, flag: 5 }))
 
-    await wrapper.find('.release-link-action').trigger('contextmenu')
+    await wrapper.find('.release-flag-action').trigger('contextmenu')
     const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
     expect(labels).toContain(t('release.flag_clear'))
 
-    // 顺序：openLink, copyLink, divider, flag-1..6（索引 3-8）, flag-clear, deleteRelease
-    await wrapper.findAll('.stub-menu-item')[9].trigger('click')
+    // 顺序：flag-1..6（索引 0-5）, flag-clear（索引 6）
+    await wrapper.findAll('.stub-menu-item')[6].trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(setReleaseFlag).toHaveBeenCalledWith(11, 0)
-  })
-
-  it('divider 项点击不触发旗标写入（id 不落 flag- 前缀分支）', async () => {
-    const wrapper = mountWithMenus(createRelease({ id: 11 }))
-
-    await wrapper.find('.release-link-action').trigger('contextmenu')
-    // divider 的 id 为 divider-flag：解析不得把它当颜色编号发出 NaN
-    await wrapper.findAll('.stub-menu-item')[2].trigger('click')
-    await new Promise(resolve => setTimeout(resolve, 0))
-
-    expect(setReleaseFlag).not.toHaveBeenCalled()
   })
 })

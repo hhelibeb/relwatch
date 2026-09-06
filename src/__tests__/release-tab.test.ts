@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, type VueWrapper } from '@vue/test-utils'
-import { defineComponent, nextTick } from 'vue'
+import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
+import { ShowImportanceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
 
 // ── 子组件 stub（保留事件与关键 props，便于驱动交互） ────────────
@@ -10,7 +11,7 @@ const expandAll = vi.fn()
 
 const SearchBarStub = defineComponent({
   name: 'ReleaseSearchBarStub',
-  props: ['count', 'deepSearch', 'deepSearching'],
+  props: ['count', 'deepSearch', 'deepSearching', 'importanceFilter'],
   emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'update:deepSearch', 'update:flagFilter', 'update:versionFilter', 'searchEnter'],
   template: '<div class="toolbar-stub" />',
 })
@@ -606,5 +607,31 @@ describe('ReleaseTab 旗标与版本类型过滤', () => {
     const wrapper = mountFlagTab()
     await filterBy(wrapper, 'update:flagFilter', 'unflagged')
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(true)
+  })
+})
+
+// ── 显示重要度开关 ───────────────────────────────────────────────
+
+describe('ReleaseTab 显示重要度开关', () => {
+  it('关闭开关时清空已选的重要度筛选（watch 重置）', async () => {
+    const importanceVisible = ref(true)
+    const wrapper = mount(ReleaseTab, {
+      props: { releases },
+      global: {
+        stubs,
+        provide: { [ShowImportanceKey as symbol]: importanceVisible },
+      },
+    })
+    const bar = wrapper.findComponent({ name: 'ReleaseSearchBarStub' })
+    await bar.vm.$emit('update:importanceFilter', '大')
+    await nextTick()
+    expect(bar.props('importanceFilter')).toBe('大')
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(true)
+
+    importanceVisible.value = false
+    await nextTick()
+    // 开关关闭触发 watch 重置：筛选值回写 all，激活态消失
+    expect(bar.props('importanceFilter')).toBe('all')
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
   })
 })
