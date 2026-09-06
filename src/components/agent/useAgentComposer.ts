@@ -8,6 +8,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import type { Source } from '../../api/sources'
 import type { ReleaseInfo } from '../../api/releases'
 import { t } from '../../i18n'
+import { getSourceTypeDef } from '../../api/source-registry'
 import { skillShortName } from '../../utils'
 import type { AgentEntityRefSeed } from '../../injection-keys'
 import type { SessionSwitchMode } from './useAgentSessions'
@@ -218,18 +219,22 @@ export function useAgentComposer(deps: {
   const filteredReleasesCount = computed(() => filteredReleases.value.length)
   const entityMenuHasMatch = computed(() => filteredSourcesCount.value > 0 || filteredReleasesCount.value > 0)
 
-  /** 菜单项可读名（可读名优先，回退 ID）：
-   * - source：YouTube 等源的 description 存真实频道名；
-   * - release：频道/仓库名 + 版本/视频标题。 */
+  /** 菜单项可读名（可读名优先，回退 ID）：按源类型注册表分发——
+   * 视频源 description 存真实频道名/UP 主名；GitHub 等显示 owner/repo
+   * （其 description 是仓库描述文字，不能当名称用）。 */
   function sourceDisplayName(s: Source): string {
-    const name = s.description?.trim()
-    return name && name.length > 0 ? name : s.owner
+    const def = getSourceTypeDef(s.source_type)
+    return def?.displayName?.(s.owner, s.repo, s.description) ?? (s.repo ? `${s.owner}/${s.repo}` : s.owner)
   }
 
   function releaseDisplayName(r: ReleaseInfo): string {
     const title = r.release_name && r.release_name !== r.tag_name ? r.release_name : r.tag_name
-    const channel = r.source_description?.trim()
-    return `${channel && channel.length > 0 ? channel : `${r.owner}/${r.repo}`} · ${title}`
+    const def = getSourceTypeDef(r.source_type)
+    // 视频类源：owner 是 channel_id/UID 不可读，displayName 取 description 存的频道名/UP 主名
+    // （YouTube 兼容旧版前缀、B 站 UP 主名均由注册表实现）；其余源 owner/repo 即仓库名。
+    const name =
+      def?.displayName?.(r.owner, r.repo, r.source_description) ?? (r.repo ? `${r.owner}/${r.repo}` : r.owner)
+    return `${name} · ${title}`
   }
 
   function replaceTrigger(replacement: string) {

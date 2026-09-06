@@ -399,6 +399,81 @@ describe('AgentWorkspace 冒烟', () => {
     wrapper.unmount()
   })
 
+  it('GitHub 版本/源的可读名用 owner/repo，仓库描述不当名称显示', async () => {
+    // GitHub 源的 description 存的是仓库描述文字（后端检查成功后刷新），不是名称——
+    // 回归：chip 与 [[ 菜单曾把它当频道名用，显示成「仓库描述 · tag」
+    vi.mocked(listSources).mockResolvedValue([
+      {
+        id: 1,
+        source_type: 'github',
+        owner: 'tauri-apps',
+        repo: 'tauri',
+        poll_interval_minutes: 30,
+        enabled: true,
+        last_checked_at: null,
+        last_check_status: 'ok',
+        last_check_message: null,
+        consecutive_failures: 0,
+        last_new_count: 0,
+        muted: false,
+        created_at: '2025-01-01T00:00:00Z',
+        updated_at: '2025-01-01T00:00:00Z',
+        description: 'Build smaller, faster desktop apps',
+        config: null,
+      },
+    ])
+    vi.mocked(getReleases).mockResolvedValue([
+      {
+        id: 7,
+        source_id: 1,
+        source_type: 'github',
+        owner: 'tauri-apps',
+        repo: 'tauri',
+        tag_name: 'v2.0.0',
+        release_name: 'Tauri 2.0.0',
+        html_url: 'https://github.com/tauri-apps/tauri/releases/tag/v2.0.0',
+        published_at: '2026-08-15T04:16:52Z',
+        prerelease: false,
+        body: null,
+        detected_at: '2026-08-15T04:17:00Z',
+        notification_status: 'pending',
+        snooze_until: null,
+        ai_summary: null,
+        ai_importance: null,
+        body_translated: null,
+        extra_metadata: null,
+        source_description: 'Build smaller, faster desktop apps',
+        flag: 0,
+        version_bump: null,
+      },
+    ])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const ta = wrapper.find('.agent-ws-textarea')
+
+    // [[ 菜单：版本项显示 owner/repo · 版本名；源项显示 owner/repo；均不显示仓库描述
+    await ta.setValue('[[')
+    await flushPromises()
+    const menuText = wrapper.find('.agent-ws-menu').text()
+    expect(menuText).toContain('tauri-apps/tauri · Tauri 2.0.0')
+    expect(menuText).toContain('tauri-apps/tauri')
+    expect(menuText).not.toContain('Build smaller')
+    await ta.setValue('')
+
+    // 拖入版本实体 → chip 同样显示 owner/repo（版本名），不显示仓库描述
+    await wrapper.find('.agent-ws-main').trigger('drop', {
+      dataTransfer: {
+        getData: (fmt: string) =>
+          fmt === 'application/x-relwatch-entity' ? JSON.stringify({ kind: 'release', id: 7 }) : '',
+      },
+    })
+    await flushPromises()
+    const chipText = wrapper.find('.agent-ws-chip-attached .agent-ws-chip-text').text()
+    expect(chipText).toContain('tauri-apps/tauri · Tauri 2.0.0')
+    expect(chipText).not.toContain('Build smaller')
+    wrapper.unmount()
+  })
+
   it('拖到标题栏：切换新会话并预置实体引用', async () => {
     const showToast = vi.fn()
     // 预置一个历史会话：初始处于旧会话（非新会话状态）
