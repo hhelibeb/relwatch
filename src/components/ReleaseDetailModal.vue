@@ -35,7 +35,7 @@ const emit = defineEmits<{
 
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
-const showImportance = inject(ShowImportanceKey, ref(true))
+const showImportance = inject(ShowImportanceKey, ref(false))
 const aiEnabled = computed(() => aiEnabledRef.value)
 
 // ========== 拖动 / 调整大小 ==========

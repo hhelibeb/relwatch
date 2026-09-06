@@ -3,7 +3,7 @@ import { shallowMount, mount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, setLocale } from '../i18n'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
@@ -46,12 +46,13 @@ const ContextMenuStub = defineComponent({
     </div>`,
 })
 
-function mountRelease(release: ReleaseInfo) {
+function mountRelease(release: ReleaseInfo, provideOverrides: Record<symbol, unknown> = {}) {
   return shallowMount(ReleaseItem, {
     props: { release },
     global: {
       provide: {
         [ShowToastKey as symbol]: vi.fn(),
+        ...provideOverrides,
       },
     },
   })
@@ -272,19 +273,19 @@ describe('ReleaseItem.vue — contextMenuBus 集成', () => {
 
 describe('ReleaseItem.vue — 重要性样式', () => {
   it('ai_importance="大" → release-importance-high', () => {
-    const wrapper = mountRelease(createRelease({ ai_importance: '大' }))
+    const wrapper = mountRelease(createRelease({ ai_importance: '大' }), { [ShowImportanceKey as symbol]: ref(true) })
 
     expect(wrapper.find('.release-item').classes()).toContain('release-importance-high')
   })
 
   it('ai_importance="中" → release-importance-medium', () => {
-    const wrapper = mountRelease(createRelease({ ai_importance: '中' }))
+    const wrapper = mountRelease(createRelease({ ai_importance: '中' }), { [ShowImportanceKey as symbol]: ref(true) })
 
     expect(wrapper.find('.release-item').classes()).toContain('release-importance-medium')
   })
 
   it('ai_importance="小" → release-importance-low', () => {
-    const wrapper = mountRelease(createRelease({ ai_importance: '小' }))
+    const wrapper = mountRelease(createRelease({ ai_importance: '小' }), { [ShowImportanceKey as symbol]: ref(true) })
 
     expect(wrapper.find('.release-item').classes()).toContain('release-importance-low')
   })
@@ -833,6 +834,33 @@ describe('ReleaseItem.vue — 旗标操作', () => {
 
     expect(setReleaseFlag).toHaveBeenCalledWith(11, 3)
     expect(wrapper.emitted('update')).toBeTruthy()
+  })
+
+  it('键盘唤出旗标颜色菜单：ArrowDown / Shift+F10 / 应用键均可，选择后焦点交还按钮', async () => {
+    vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
+    const wrapper = mountWithMenus(createRelease({ id: 12, flag: 3 }))
+    const flagBtn = wrapper.find('.release-flag-action')
+
+    // ArrowDown 唤出：aria-expanded 同步，且含当前标记色的「取消标记」项
+    await flagBtn.trigger('keydown', { key: 'ArrowDown' })
+    expect(flagBtn.attributes('aria-expanded')).toBe('true')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toContain(t('release.flag_clear'))
+
+    // 键盘路径选「取消标记」→ 写 0；菜单关闭后焦点回到按钮
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
+    await wrapper.findAll('.stub-menu-item')[labels.indexOf(t('release.flag_clear'))].trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(setReleaseFlag).toHaveBeenCalledWith(12, 0)
+    expect(flagBtn.attributes('aria-expanded')).toBe('false')
+
+    // Shift+F10 与应用键（ContextMenu）同样可唤出；props.flag 未变（真实刷新靠 emit update），菜单仍含「取消标记」
+    await flagBtn.trigger('keydown', { key: 'F10', shiftKey: true })
+    expect(wrapper.findAll('.stub-menu-item')).toHaveLength(7) // 六色 + 取消标记
+
+    // 在键盘唤出的菜单里选色同样生效（第一项 = 红 1）
+    await wrapper.findAll('.stub-menu-item')[0].trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(setReleaseFlag).toHaveBeenCalledWith(12, 1)
   })
 
   it('已标记时旗标菜单追加「取消旗标」项，点击清除', async () => {

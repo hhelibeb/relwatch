@@ -7,7 +7,8 @@ export const ShowToastKey: InjectionKey<(msg: string) => void> = Symbol('showToa
 export const AiEnabledKey: InjectionKey<Ref<boolean>> = Symbol('aiEnabled')
 
 /** 是否显示 AI 重要度（大/中/小）徽标与筛选（设置页「显示重要度」），由 App.vue provide。
- *  仅控制 UI 展示；缺省（未 provide）时视为显示，由宿主决定隐藏。 */
+ *  仅控制 UI 展示，不影响 ai_importance 生成与「按重要度通知」阈值。
+ *  缺省（未 provide，如单组件挂载/测试）取 false，与设置项持久化默认一致。 */
 export const ShowImportanceKey: InjectionKey<Ref<boolean>> = Symbol('showImportance')
 
 /** Agent 总开关（设置页「AI → Agent」独立于 DeepSeek），由 App.vue provide。 */

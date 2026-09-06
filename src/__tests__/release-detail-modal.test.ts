@@ -63,7 +63,7 @@ describe('ReleaseDetailModal — 显示重要度开关', () => {
     const release = { ...makeRelease(null), ai_importance: '大' }
 
     // modal 经 Teleport 渲染到 body，断言走 document.body
-    const on = mountModalWithRelease(release)
+    const on = mountModalWithRelease(release, { [ShowImportanceKey as symbol]: ref(true) })
     await nextTick()
     expect(document.body.querySelectorAll('.release-importance-chip').length).toBe(1)
     on.unmount()

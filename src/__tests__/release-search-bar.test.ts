@@ -16,7 +16,10 @@ import type { ReleaseInfo } from '../api/releases'
  * 按行为分组：搜索框 / 视图切换 / 筛选下拉 / 漏斗面板（含来源）/ 悬停 / 键盘导航 / 组合场景。
  * 末尾附 ReleaseTab 集成（ReleaseSearchBar 实例化契约）。
  */
-function createWrapper(props: Record<string, unknown> = {}) {
+// 需要断言「显示重要度」行为的用例显式注入开关（组件缺省为关闭，见 ShowImportanceKey 注释）
+const withImportanceShown = { [ShowImportanceKey as symbol]: ref(true) }
+
+function createWrapper(props: Record<string, unknown> = {}, provideOverrides: Record<symbol, unknown> = {}) {
   return mount(ReleaseSearchBar, {
     props: {
       modelValue: '',
@@ -28,6 +31,7 @@ function createWrapper(props: Record<string, unknown> = {}) {
       versionFilter: 'all',
       ...props,
     },
+    global: { provide: provideOverrides },
   })
 }
 
@@ -438,7 +442,7 @@ describe('ReleaseSearchBar — 筛选触发器键盘操作', () => {
 
 describe('ReleaseSearchBar — 组合筛选场景', () => {
   it('同时使用搜索、状态筛选、重要度筛选并切换视图', async () => {
-    const wrapper = createWrapper()
+    const wrapper = createWrapper({}, withImportanceShown)
 
     // 输入搜索词
     await wrapper.find('input').setValue('vue')
@@ -481,10 +485,11 @@ async function setReleaseTabProps(wrapper: ReturnType<typeof createReleaseTabWra
   await wrapper.setProps(props as Parameters<typeof wrapper.setProps>[0])
 }
 
-function createReleaseTabWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTestProps> = {}) {
+function createReleaseTabWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTestProps> = {}, provideOverrides: Record<symbol, unknown> = {}) {
   return shallowMount(ReleaseTab, {
     props: { releases, ...props },
     global: {
+      provide: provideOverrides,
       stubs: {
         ReleaseSimpleList: false,
         ReleaseAggregatedList: false,
@@ -644,7 +649,7 @@ describe('ReleaseTab — 保护性行为测试', () => {
   })
 
   it('重要度过滤覆盖全部 / 大 / 中 / 小', async () => {
-    const wrapper = createReleaseTabWrapper(createProtectiveReleases())
+    const wrapper = createReleaseTabWrapper(createProtectiveReleases(), {}, withImportanceShown)
     const bar = wrapper.findComponent(ReleaseSearchBar)
 
     expect(wrapper.findAllComponents(ReleaseItem)).toHaveLength(4)
@@ -773,7 +778,7 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
   }
 
   it('面板包含五个分组：来源/版本/重要/标记/状态', async () => {
-    const wrapper = createWrapper()
+    const wrapper = createWrapper({}, withImportanceShown)
     const panel = await openMorePanel(wrapper)
 
     const titles = panel.findAll('.filter-group-title').map(el => el.text())
@@ -885,7 +890,7 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
   })
 
   it('重要度组选「大」emit update:importanceFilter("大") 并关闭', async () => {
-    const wrapper = createWrapper()
+    const wrapper = createWrapper({}, withImportanceShown)
     await openMorePanel(wrapper)
 
     const buttons = groupButtons(wrapper, t('tab.importance'))
@@ -904,7 +909,7 @@ describe('ReleaseSearchBar — 漏斗面板', () => {
   })
 
   it('漏斗触发按钮显示激活筛选计数徽标', () => {
-    const wrapper = createWrapper({ statusFilter: 'unread', importanceFilter: '大' })
+    const wrapper = createWrapper({ statusFilter: 'unread', importanceFilter: '大' }, withImportanceShown)
     expect(wrapper.find('.filter-more-count').text()).toBe('2')
 
     const clean = createWrapper()
@@ -925,7 +930,7 @@ describe('ReleaseSearchBar — 激活筛选 chips', () => {
       flagFilter: 1,
       sourceFilter: 'github',
       importanceFilter: '大',
-    })
+    }, withImportanceShown)
 
     const chips = wrapper.findAll('.filter-chip')
     expect(chips).toHaveLength(5)

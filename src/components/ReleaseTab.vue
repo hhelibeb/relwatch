@@ -32,7 +32,7 @@ const emit = defineEmits<{
 const viewMode = ref<ViewMode>('simple')
 const importanceFilter = ref<ReleaseImportanceFilter>('all')
 // 「显示重要度」开关（App.vue provide）：关闭时不参与过滤，并清掉残留的重要度筛选
-const showImportance = inject(ShowImportanceKey, ref(true))
+const showImportance = inject(ShowImportanceKey, ref(false))
 watch(showImportance, (visible) => {
   if (!visible) importanceFilter.value = 'all'
 })

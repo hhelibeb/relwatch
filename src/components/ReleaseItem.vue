@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
+import { ref, computed, inject, nextTick, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
@@ -20,7 +20,7 @@ const props = defineProps<{ release: ReleaseInfo }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
-const showImportance = inject(ShowImportanceKey, ref(true))
+const showImportance = inject(ShowImportanceKey, ref(false))
 const agentEnabledRef = inject(AgentEnabledKey, ref(false))
 const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
 // 工作区打开状态：拖拽落点存在时才启用卡片拖拽，否则恢复文本选择（拖动选字不被拖拽劫持）
@@ -125,6 +125,11 @@ const {
 const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number } | null>(null)
 
 function closeMenus() {
+  // 键盘唤出的旗标菜单关闭后焦点会落回 body，交还按钮以保住键盘位置
+  if (flagMenu.value && flagMenuKeyboardOpened) {
+    flagMenuKeyboardOpened = false
+    void nextTick(() => flagButtonRef.value?.focus())
+  }
   contextMenu.value = null
   flagMenu.value = null
   summaryContextMenu.value = null
@@ -288,12 +293,30 @@ function releaseContextMenu(e: MouseEvent, url: string) {
 }
 
 // ========== 旗标按钮专属颜色菜单 ==========
-// 仅右键呼出（卡片常被划过，绝不做 hover 触发）；左键 = 打默认红/清除，见 toggleFlag。
+// 呼出方式：右键，或聚焦按钮后按 ArrowDown / 应用键 / Shift+F10（触屏与纯键盘操作的等价入口）。
+// 绝不做 hover 触发（卡片常被划过）；左键 = 打默认红/清除，见 toggleFlag。
 const flagMenu = ref<{ x: number; y: number } | null>(null)
+const flagButtonRef = ref<HTMLButtonElement | null>(null)
+// 仅键盘唤出的菜单在关闭后把焦点交还按钮：鼠标选择或点击外部关闭时不抢焦点
+let flagMenuKeyboardOpened = false
+
+function openFlagMenuAt(x: number, y: number, byKeyboard = false) {
+  closeAllContextMenus()
+  flagMenuKeyboardOpened = byKeyboard
+  flagMenu.value = { x, y }
+}
 
 function openFlagMenu(e: MouseEvent) {
-  closeAllContextMenus()
-  flagMenu.value = { x: e.clientX, y: e.clientY }
+  openFlagMenuAt(e.clientX, e.clientY)
+}
+
+/** 键盘唤出：无鼠标坐标可用，锚到按钮左下角；展开后的方向键导航/Esc 由 ContextMenu 接管 */
+function handleFlagTriggerKeydown(e: KeyboardEvent) {
+  if (e.key !== 'ArrowDown' && e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return
+  e.preventDefault()
+  e.stopPropagation()
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  openFlagMenuAt(rect.left, rect.bottom, true)
 }
 
 /** 旗标按钮右键菜单：六色选择 + 清除（与筛选漏斗同一套色板与文案） */
@@ -530,7 +553,7 @@ const youtubeViewTitle = computed(() =>
         <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
         <button class="btn-sm" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
         <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
-        <button class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" @click="toggleFlag" @contextmenu.prevent.stop="openFlagMenu">
+        <button ref="flagButtonRef" class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" aria-haspopup="menu" :aria-expanded="flagMenu !== null" @click="toggleFlag" @contextmenu.prevent.stop="openFlagMenu" @keydown="handleFlagTriggerKeydown">
           <svg><use href="/icons.svg#flag-tag-icon"/></svg>
         </button>
         <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">

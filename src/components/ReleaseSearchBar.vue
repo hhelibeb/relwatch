@@ -18,7 +18,7 @@ const props = withDefaults(defineProps<{
   viewMode: ViewMode
   flagFilter: ReleaseFlagFilter
   versionFilter: ReleaseVersionFilter
-  /** 全量 releases（未过滤）：供「未读 / 已分组」选项追加数量标注 */
+  /** 全量 releases（未过滤）：供「未读 / 已标记」选项追加数量标注 */
   releases?: ReleaseInfo[]
   showSearch?: boolean
   count?: number
@@ -52,7 +52,7 @@ const filterDropdown = useDropdown({
 })
 
 // 「显示重要度」开关（App.vue provide）：关闭时漏斗面板不含重要度分组、chips 不显示重要度
-const showImportance = inject(ShowImportanceKey, ref(true))
+const showImportance = inject(ShowImportanceKey, ref(false))
 
 const statusDisplayText = computed(() => {
   if (props.statusFilter === 'unread') return t('release.filter_unread')
@@ -131,7 +131,7 @@ const versionDisplayText = computed(() => {
   }
 })
 
-// ── 选项计数标注：「未读 / 已分组」等高频选项在 label 后追加 (n)；0 条不追加 ──
+// ── 选项计数标注：「未读 / 已标记」等高频选项在 label 后追加 (n)；0 条不追加 ──
 const unreadCount = computed(() => props.releases.filter(r => isUnreadStatus(r.notification_status)).length)
 const flaggedCount = computed(() => props.releases.filter(r => releaseFlagged(r)).length)
 const withCount = (label: string, n: number) => (n > 0 ? `${label} (${n})` : label)

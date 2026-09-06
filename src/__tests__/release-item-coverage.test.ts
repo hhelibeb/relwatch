@@ -350,7 +350,7 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
     const wrapper = mountRelease(createRelease({
       ai_summary: '修复bug',
       ai_importance: '大',
-    }))
+    }), { [ShowImportanceKey as symbol]: ref(true) })
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(true)
     // 组件将中文枚举映射为 i18n key（mock 的 t 原样返回 key）
