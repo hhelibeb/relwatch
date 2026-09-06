@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-09-06
+
+### Added
+- 版本列表筛选与旗标标记：版本条目支持旗标收藏（六色旗标，右键唤出换色菜单，支持键盘唤出），Rust 侧旗标状态随库持久化；筛选栏支持按旗标与版本类型过滤，漏斗面板收敛来源分组与状态入口。
+- 「显示重要度」设置项（默认关闭）：关闭时隐藏卡片与详情的重要度徽标、配色及漏斗相关分组筛选；AI 摘要生成与「按重要度通知」不受影响。
+
+### Fixed
+- Agent 工作区引用可读名按源类型分发：GitHub 版本/源显示 owner/repo 而非仓库描述，视频源仍显示频道名/UP 主名。
+
+### Changed
+- README 文档更新：截图内联至版本浏览与 Agent 工作区小节，新增 Agent 使用示例图；版本浏览小节补充全文搜索与标记分组说明。
+
 ## [1.16.0] - 2026-09-05
 
 ### Added
@@ -394,7 +406,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.16.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.17.0...HEAD
+[1.17.0]: https://github.com/hhelibeb/relwatch/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/hhelibeb/relwatch/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/hhelibeb/relwatch/compare/v1.14.0...v1.15.0
 [1.14.0]: https://github.com/hhelibeb/relwatch/compare/v1.13.0...v1.14.0
