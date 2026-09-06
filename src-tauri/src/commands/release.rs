@@ -87,6 +87,32 @@ use serde_json::json;
 
 #[tauri::command]
 
+#[specta::specta]pub fn set_release_flag(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    release_id: i64,
+    flag: i64,
+) -> Result<(), String> {
+    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+
+    db::releases::set_release_flag(&conn, release_id, flag)?;
+
+    let rel = db::releases::get_release(&conn, release_id).ok().flatten();
+    match rel {
+        Some(r) => {
+            let (log_owner, log_repo, log_tag) = db::logs::release_log_ident(&r);
+            db::logs::write_log_key(&conn, "INFO", "release.flag_changed", &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": release_id, "flag": flag}).to_string())
+        }
+        None => db::logs::write_log_key(&conn, "INFO", "release.flag_changed_unknown", &json!({"id": release_id, "flag": flag}).to_string()),
+    }
+
+    let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
+
+    Ok(())
+}
+
+#[tauri::command]
+
 #[specta::specta]pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     poll::check_single_source(app, id).await
 }

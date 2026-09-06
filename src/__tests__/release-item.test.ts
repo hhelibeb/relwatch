@@ -12,6 +12,7 @@ vi.mock('../api/releases', () => ({
   setNotificationState: vi.fn(),
   deleteRelease: vi.fn(),
   translateRelease: vi.fn(),
+  setReleaseFlag: vi.fn(),
 }))
 
 vi.mock('../api/client', () => ({
@@ -30,7 +31,7 @@ vi.mock('../utils', async importOriginal => {
 })
 
 // contextMenuBus 为纯内存模块，用真实实现（互斥关闭是菜单行为的一部分）
-import { setNotificationState, deleteRelease } from '../api/releases'
+import { setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { closeAllContextMenus } from '../composables/contextMenuBus'
 
@@ -442,6 +443,13 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
     expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
       t('context.open'),
       t('context.copy_link'),
+      '',
+      t('release.flag_red'),
+      t('release.flag_orange'),
+      t('release.flag_yellow'),
+      t('release.flag_green'),
+      t('release.flag_blue'),
+      t('release.flag_purple'),
       t('context.delete_release'),
     ])
 
@@ -459,7 +467,7 @@ describe('ReleaseItem.vue — 右键菜单 i18n 响应式（P1 #6）', () => {
 
     await wrapper.find('.release-link-action').trigger('contextmenu')
     expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
-      'Open', 'Copy Link', 'Delete Version',
+      'Open', 'Copy Link', '', 'Red', 'Orange', 'Yellow', 'Green', 'Blue', 'Purple', 'Delete Version',
     ])
 
     await wrapper.find('.release-summary-text').trigger('contextmenu')
@@ -479,11 +487,18 @@ describe('ReleaseItem.vue — 发送到 Agent', () => {
     expect(labels).toEqual([
       t('context.open'),
       t('context.copy_link'),
+      '',
+      t('release.flag_red'),
+      t('release.flag_orange'),
+      t('release.flag_yellow'),
+      t('release.flag_green'),
+      t('release.flag_blue'),
+      t('release.flag_purple'),
       t('agent.send_to'),
       t('context.delete_release'),
     ])
 
-    await wrapper.findAll('.stub-menu-item')[2].trigger('click')
+    await wrapper.findAll('.stub-menu-item')[9].trigger('click')
     expect(lastOpenAgentWorkspace()).toHaveBeenCalledWith({ entities: [{ kind: 'release', id: 7 }] })
   })
 
@@ -704,8 +719,7 @@ describe('ReleaseItem.vue — 摘要截断测量（窗口缩放回归）', () =>
     Object.defineProperty(el, 'clientWidth', { configurable: true, value: w })
   }
 
-  it('窗口缩窄触发截断后，重复测量不会在两态间振荡（按钮闪现/盖字回归）', async () => {
-    let roCallback: (() => void) | null = null
+  it('窗口缩窄触发截断后，重复测量不会在两态间振荡（按钮闪现/盖字回归）', async () => {    let roCallback: (() => void) | null = null
     class FakeResizeObserver {
       constructor(cb: () => void) { roCallback = cb }
       observe() {}
@@ -759,5 +773,87 @@ describe('ReleaseItem.vue — 摘要截断测量（窗口缩放回归）', () =>
       vi.unstubAllGlobals()
       vi.restoreAllMocks()
     }
+  })
+})
+
+describe('ReleaseItem.vue — 旗标操作', () => {
+  it('未标记卡片不渲染旗标贴纸，已标记渲染', () => {
+    expect(mountRelease(createRelease({ flag: 0 })).find('.release-flag-chip').exists()).toBe(false)
+    expect(mountRelease(createRelease({ flag: 2 })).find('.release-flag-chip').exists()).toBe(true)
+  })
+
+  it('点击旗标按钮：未标记 → 落默认旗标（红 = 1）', async () => {
+    vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
+    const wrapper = mountRelease(createRelease({ id: 10, flag: 0 }))
+
+    await wrapper.find('.release-flag-action').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(setReleaseFlag).toHaveBeenCalledWith(10, 1)
+    expect(wrapper.emitted('update')).toBeTruthy()
+  })
+
+  it('点击旗标按钮：已标记（不论颜色）→ 清除（0）', async () => {
+    vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
+    const wrapper = mountRelease(createRelease({ id: 10, flag: 3 }))
+
+    await wrapper.find('.release-flag-action').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(setReleaseFlag).toHaveBeenCalledWith(10, 0)
+  })
+
+  it('写库失败时 toast 提示（携带后端错误信息，err.* 已翻译）', async () => {
+    const toast = vi.fn()
+    vi.mocked(setReleaseFlag).mockRejectedValue(new Error('err.release_flag_invalid|9'))
+
+    const wrapper = shallowMount(ReleaseItem, {
+      props: { release: createRelease({ id: 10, flag: 0 }) },
+      global: { provide: { [ShowToastKey as symbol]: toast } },
+    })
+
+    await wrapper.find('.release-flag-action').trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.flag_failed')))
+  })
+
+  it('右键菜单点击颜色项 → setReleaseFlag(id, n)', async () => {
+    vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
+    const wrapper = mountWithMenus(createRelease({ id: 11 }))
+
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    // 菜单项顺序：openLink, copyLink, divider, flag-1..6, deleteRelease
+    await wrapper.findAll('.stub-menu-item')[5].trigger('click') // flag-3（绿）
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(setReleaseFlag).toHaveBeenCalledWith(11, 3)
+    expect(wrapper.emitted('update')).toBeTruthy()
+  })
+
+  it('已标记时菜单追加「取消旗标」项，点击清除', async () => {
+    vi.mocked(setReleaseFlag).mockResolvedValue(undefined)
+    const wrapper = mountWithMenus(createRelease({ id: 11, flag: 5 }))
+
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    const labels = wrapper.findAll('.stub-menu-item').map(i => i.text())
+    expect(labels).toContain(t('release.flag_clear'))
+
+    // 顺序：openLink, copyLink, divider, flag-1..6（索引 3-8）, flag-clear, deleteRelease
+    await wrapper.findAll('.stub-menu-item')[9].trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(setReleaseFlag).toHaveBeenCalledWith(11, 0)
+  })
+
+  it('divider 项点击不触发旗标写入（id 不落 flag- 前缀分支）', async () => {
+    const wrapper = mountWithMenus(createRelease({ id: 11 }))
+
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    // divider 的 id 为 divider-flag：解析不得把它当颜色编号发出 NaN
+    await wrapper.findAll('.stub-menu-item')[2].trigger('click')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(setReleaseFlag).not.toHaveBeenCalled()
   })
 })

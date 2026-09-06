@@ -59,6 +59,8 @@ const RELEASES: ReleaseInfo[] = [
     body_translated: null,
     extra_metadata: null,
     source_description: '宁静ASMR频道',
+    flag: 0,
+    version_bump: null,
   },
 ]
 

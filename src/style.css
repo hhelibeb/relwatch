@@ -72,6 +72,15 @@
   --shadow-md: 0 4px 16px -4px rgba(23, 23, 26, 0.12);
   --shadow-lg: 0 12px 32px -8px rgba(23, 23, 26, 0.18);
 
+  /* 旗标色板（1-6：红/橙/黄/绿/蓝/紫）：颜色不带语义，具体含义由用户自行赋予；
+     图标为淡填充 + 描边（icons.svg#flag-tag-icon），取中明度保证描边可辨 */
+  --flag-1: #d13438;
+  --flag-2: #e8710a;
+  --flag-3: #b58a00;
+  --flag-4: #107c10;
+  --flag-5: #0f6cbd;
+  --flag-6: #8661c5;
+
   /* 其他 */
   --focus-ring: 0 0 0 3px rgba(62, 99, 221, 0.20);
   --accent-prerelease: #71717a;
@@ -132,6 +141,14 @@
   --shadow-sm: none;
   --shadow-md: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
   --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+
+  /* 暗色下用亮一档的同色相，保证描边与填充在深底上可辨 */
+  --flag-1: #e56d68;
+  --flag-2: #f2921b;
+  --flag-3: #e0b45c;
+  --flag-4: #4cc38a;
+  --flag-5: #6ba4e8;
+  --flag-6: #a88fe0;
 
   --focus-ring: 0 0 0 3px rgba(154, 174, 242, 0.28);
   --accent-prerelease: #9d9da6;
@@ -621,6 +638,28 @@ html {
 .release-agent-btn.open .release-agent-btn-arrow {
   color: var(--primary, #2e6fd0);
 }
+/* 版本页搜索/筛选区 sticky 容器：含筛选行与激活筛选 chips 行。
+   LogTab 仍直接用 .log-search-row 自身 sticky，互不影响。 */
+.log-search-sticky {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  margin-bottom: 12px;
+  background: var(--bg);
+  transition: top 0.15s ease;
+}
+
+/* ReleaseSearchBar 内的行不再自身 sticky（由 wrapper 统一承担） */
+.log-search-sticky .log-search-row {
+  position: static;
+  margin-bottom: 0;
+}
+
+/* 滚动后 sticky 元素贴顶 */
+.app-main.is-scrolled .log-search-sticky {
+  top: calc(-1 * var(--app-padding-y, 16px));
+}
+
 .log-search-row {
   position: sticky;
   top: 0;

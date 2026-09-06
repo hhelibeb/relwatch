@@ -23,6 +23,11 @@ export async function deleteRelease(releaseId: number): Promise<void> {
   await invokeI18nFn(() => commands.deleteRelease(releaseId))
 }
 
+/** 设置旗标：0 = 清除，1-6 = 预设颜色。 */
+export async function setReleaseFlag(releaseId: number, flag: number): Promise<void> {
+  await invokeI18nFn(() => commands.setReleaseFlag(releaseId, flag))
+}
+
 export async function translateRelease(releaseId: number): Promise<void> {
   await invokeI18nFn(() => commands.translateRelease(releaseId))
 }

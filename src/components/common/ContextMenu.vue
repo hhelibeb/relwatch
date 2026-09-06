@@ -5,6 +5,14 @@ import { registerOverlayActive } from '../../composables/contextMenuBus'
 export interface ContextMenuItem {
   id: string
   label: string
+  /** 前缀图标 href（如 '/icons.svg#flag-tag-icon'），由调用方指定，通用组件不耦合业务图标 */
+  iconHref?: string
+  /** 前缀图标颜色（配合 iconHref，经 currentColor 注入） */
+  color?: string
+  /** 右侧选中 ✓（旗标当前色等单选语义） */
+  checked?: boolean
+  /** 渲染为分隔线（label/color 被忽略） */
+  divider?: boolean
 }
 
 const props = defineProps<{
@@ -85,9 +93,14 @@ function handleKeydown(e: KeyboardEvent) {
 <template>
   <div ref="menuRef" class="context-menu" role="menu" tabindex="-1" :style="{ left: adjustedX + 'px', top: adjustedY + 'px' }" @click.stop @keydown="handleKeydown">
     <template v-if="items">
-      <button v-for="item in items" :key="item.id" role="menuitem" tabindex="0" @click="$emit('action', item.id)">
-        {{ item.label }}
-      </button>
+      <template v-for="item in items" :key="item.id">
+        <div v-if="item.divider" class="context-menu-divider" role="separator"></div>
+        <button v-else role="menuitem" tabindex="0" @click="$emit('action', item.id)">
+          <span v-if="item.iconHref" class="context-menu-icon" :style="item.color ? { color: item.color } : undefined"><svg><use :href="item.iconHref"/></svg></span>
+          <span class="context-menu-label">{{ item.label }}</span>
+          <span v-if="item.checked" class="context-menu-check">✓</span>
+        </button>
+      </template>
     </template>
   </div>
 </template>
@@ -105,6 +118,9 @@ function handleKeydown(e: KeyboardEvent) {
   min-width: 120px;
 }
 .context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   padding: 6px 12px;
   border: none;
   background: transparent;
@@ -116,5 +132,24 @@ function handleKeydown(e: KeyboardEvent) {
 }
 .context-menu button:hover {
   background: var(--bg-subtle);
+}
+.context-menu-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.context-menu-icon svg {
+  width: 12px;
+  height: 12px;
+}
+.context-menu-check {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--primary);
+}
+.context-menu-divider {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--border);
 }
 </style>

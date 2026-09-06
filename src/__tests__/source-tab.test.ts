@@ -400,7 +400,7 @@ describe('SourceTab — 检查单个 Source 更新', () => {
           tag_name: 'v3.3.0', release_name: '3.3.0', html_url: 'https://github.com/vuejs/core/releases/tag/v3.3.0',
           published_at: '2025-06-01T00:00:00Z', prerelease: false, body: null,
           detected_at: '2025-06-01T00:00:00Z', notification_status: 'pending',
-          snooze_until: null, ai_summary: null, ai_importance: null, body_translated: null, extra_metadata: null, source_description: null },
+          snooze_until: null, ai_summary: null, ai_importance: null, body_translated: null, extra_metadata: null, source_description: null, flag: 0, version_bump: null },
       ],
     })
     const source = createSource({ id: 11 })

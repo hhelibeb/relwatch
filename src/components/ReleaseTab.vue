@@ -8,7 +8,8 @@ import ReleaseDateDetail from './ReleaseDateDetail.vue'
 import ReleaseDetailModal from './ReleaseDetailModal.vue'
 import ReleaseSearchBar from './ReleaseSearchBar.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
-import type { ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ViewMode } from './releaseTypes'
+import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
+import { releaseFlagged } from '../utils/releaseFlag'
 import { track } from '../composables/useUsageTracking'
 
 type AggregatedListInstance = InstanceType<typeof ReleaseAggregatedList> & {
@@ -30,6 +31,8 @@ const emit = defineEmits<{
 const viewMode = ref<ViewMode>('simple')
 const importanceFilter = ref<ReleaseImportanceFilter>('all')
 const sourceFilter = ref<ReleaseSourceFilter>('all')
+const flagFilter = ref<ReleaseFlagFilter>('all')
+const versionFilter = ref<ReleaseVersionFilter>('all')
 const selectedDate = ref<string | null>(null)
 const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth() + 1)
@@ -46,7 +49,7 @@ const statusFilter = computed({
 })
 
 const hasActiveFilter = computed(() => {
-  return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || importanceFilter.value !== 'all' || sourceFilter.value !== 'all'
+  return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || importanceFilter.value !== 'all' || sourceFilter.value !== 'all' || flagFilter.value !== 'all' || versionFilter.value !== 'all'
 })
 
 const filteredReleases = computed(() => {
@@ -70,6 +73,22 @@ const filteredReleases = computed(() => {
 
   if (sourceFilter.value !== 'all') {
     list = list.filter(release => release.source_type === sourceFilter.value)
+  }
+
+  if (flagFilter.value === 'flagged') {
+    list = list.filter(releaseFlagged)
+  } else if (flagFilter.value === 'unflagged') {
+    list = list.filter(release => !releaseFlagged(release))
+  } else if (flagFilter.value !== 'all') {
+    list = list.filter(release => release.flag === flagFilter.value)
+  }
+
+  if (versionFilter.value !== 'all') {
+    if (versionFilter.value === 'prerelease') {
+      list = list.filter(release => release.prerelease)
+    } else {
+      list = list.filter(release => release.version_bump === versionFilter.value)
+    }
   }
 
   return list
@@ -203,6 +222,9 @@ function navigateReleaseDetail(delta: number) {
       v-model:importance-filter="importanceFilter"
       v-model:source-filter="sourceFilter"
       v-model:view-mode="viewMode"
+      v-model:flag-filter="flagFilter"
+      v-model:version-filter="versionFilter"
+      :releases="releases"
       :count="filteredReleases.length"
       :deep-search="deepSearch"
       :deep-searching="deepSearching"

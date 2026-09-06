@@ -11,7 +11,7 @@ const expandAll = vi.fn()
 const SearchBarStub = defineComponent({
   name: 'ReleaseSearchBarStub',
   props: ['count', 'deepSearch', 'deepSearching'],
-  emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'update:deepSearch', 'searchEnter'],
+  emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'update:deepSearch', 'update:flagFilter', 'update:versionFilter', 'searchEnter'],
   template: '<div class="toolbar-stub" />',
 })
 
@@ -83,6 +83,8 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     body_translated: null,
     extra_metadata: null,
     source_description: null,
+    flag: 0,
+    version_bump: null,
     ...overrides,
   }
 }
@@ -536,5 +538,73 @@ describe('ReleaseTab 详情弹窗', () => {
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('searchEnter')
     await nextTick()
     expect(expandAll).not.toHaveBeenCalled()
+  })
+})
+
+// ── 旗标与版本类型过滤（flagFilter / versionFilter）──────────────
+
+describe('ReleaseTab 旗标与版本类型过滤', () => {
+  const flagReleases = [
+    createRelease({ id: 1, flag: 1, version_bump: 'major' }),
+    createRelease({ id: 2, flag: 3, version_bump: 'minor' }),
+    createRelease({ id: 3, flag: 0, version_bump: 'patch' }),
+    createRelease({ id: 4, flag: 0, version_bump: null, prerelease: true }),
+  ]
+
+  function mountFlagTab() {
+    return mount(ReleaseTab, { props: { releases: flagReleases }, global: { stubs } })
+  }
+
+  async function filterBy(wrapper: VueWrapper, event: string, value: unknown): Promise<number[]> {
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit(event, value)
+    await nextTick()
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    return list.props('releases').map((r: ReleaseInfo) => r.id)
+  }
+
+  it('flagFilter=flagged 只保留已标记（1-6）', async () => {
+    const wrapper = mountFlagTab()
+    expect(await filterBy(wrapper, 'update:flagFilter', 'flagged')).toEqual([1, 2])
+  })
+
+  it('flagFilter=unflagged 只保留未标记', async () => {
+    const wrapper = mountFlagTab()
+    expect(await filterBy(wrapper, 'update:flagFilter', 'unflagged')).toEqual([3, 4])
+  })
+
+  it('flagFilter=具体颜色只保留该颜色', async () => {
+    const wrapper = mountFlagTab()
+    expect(await filterBy(wrapper, 'update:flagFilter', 3)).toEqual([2])
+    expect(await filterBy(wrapper, 'update:flagFilter', 1)).toEqual([1])
+  })
+
+  it('flagFilter=all 恢复全量', async () => {
+    const wrapper = mountFlagTab()
+    await filterBy(wrapper, 'update:flagFilter', 'flagged')
+    expect(await filterBy(wrapper, 'update:flagFilter', 'all')).toEqual([1, 2, 3, 4])
+  })
+
+  it('versionFilter 按 version_bump 过滤 major/minor/patch', async () => {
+    const wrapper = mountFlagTab()
+    expect(await filterBy(wrapper, 'update:versionFilter', 'major')).toEqual([1])
+    expect(await filterBy(wrapper, 'update:versionFilter', 'minor')).toEqual([2])
+    expect(await filterBy(wrapper, 'update:versionFilter', 'patch')).toEqual([3])
+  })
+
+  it('versionFilter=prerelease 按 prerelease 标记过滤（不看 version_bump）', async () => {
+    const wrapper = mountFlagTab()
+    expect(await filterBy(wrapper, 'update:versionFilter', 'prerelease')).toEqual([4])
+  })
+
+  it('旗标与版本类型叠加过滤', async () => {
+    const wrapper = mountFlagTab()
+    await filterBy(wrapper, 'update:flagFilter', 'flagged')
+    expect(await filterBy(wrapper, 'update:versionFilter', 'major')).toEqual([1])
+  })
+
+  it('旗标筛选激活时 isFiltering 为 true', async () => {
+    const wrapper = mountFlagTab()
+    await filterBy(wrapper, 'update:flagFilter', 'unflagged')
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(true)
   })
 })

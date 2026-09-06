@@ -3,7 +3,7 @@ import { ref, computed, watch, inject, nextTick, onMounted, onUnmounted } from '
 import MarkdownContent from './common/MarkdownContent.vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { ShowToastKey, AiEnabledKey } from '../injection-keys'
-import { type ReleaseInfo } from '../api/releases'
+import { type ReleaseInfo, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus, registerOverlayActive } from '../composables/contextMenuBus'
@@ -12,6 +12,7 @@ import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
+import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX, FLAG_COLOR_LABEL_KEYS } from '../utils/releaseFlag'
 import { fromMediaUrl } from '../utils/imageProxy'
 import type { ReleaseContentMode } from './releaseTypes'
 import { getSourceTypeDef } from '../api/source-registry'
@@ -292,6 +293,40 @@ onUnmounted(() => {
 
 // HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）
 const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_type)?.showRepoInDetail !== false)
+
+// ========== 旗标（与卡片 ReleaseItem 同一份数据与语义） ==========
+const flagged = computed(() => releaseFlagged(props.release))
+const flagColor = computed(() => releaseFlagColor(props.release))
+const flagTitle = computed(() => {
+  const flag = props.release.flag
+  return flag >= 1 && flag <= FLAG_MAX ? t(FLAG_COLOR_LABEL_KEYS[flag - 1]) : t('release.flag')
+})
+const flagPopoverOpen = ref(false)
+
+function handleFlagGlobalClick() {
+  flagPopoverOpen.value = false
+}
+
+watch(flagPopoverOpen, (open) => {
+  if (open) {
+    document.addEventListener('click', handleFlagGlobalClick)
+  } else {
+    document.removeEventListener('click', handleFlagGlobalClick)
+  }
+})
+onUnmounted(() => document.removeEventListener('click', handleFlagGlobalClick))
+
+/** 弹窗内旗标色板选择：0 = 清除。 */
+async function applyFlag(flag: number) {
+  flagPopoverOpen.value = false
+  track('release.flag')
+  try {
+    await setReleaseFlag(props.release.id, flag)
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('release.flag_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
 </script>
 
 <template>
@@ -305,6 +340,28 @@ const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_typ
             <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
             <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
             <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
+          </div>
+          <div class="release-detail-flag-wrap">
+            <button class="release-detail-close release-detail-flag-btn" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :title="flagTitle" @pointerdown.stop @click.stop="flagPopoverOpen = !flagPopoverOpen">
+              <svg viewBox="0 0 16 16"><use href="/icons.svg#flag-tag-icon"/></svg>
+            </button>
+            <div v-if="flagPopoverOpen" class="dropdown-panel filter-dropdown flag-popover" @click.stop @pointerdown.stop>
+              <button
+                v-for="(labelKey, i) in FLAG_COLOR_LABEL_KEYS"
+                :key="labelKey"
+                type="button"
+                :class="{ selected: props.release.flag === i + 1 }"
+                @click="applyFlag(i + 1)"
+              >
+                <span class="flag-popover-icon" :style="{ color: flagColorByIndex(i + 1) ?? undefined }"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
+                {{ t(labelKey) }}
+                <span v-if="props.release.flag === i + 1" class="flag-popover-check">✓</span>
+              </button>
+              <template v-if="flagged">
+                <div class="flag-popover-divider"></div>
+                <button type="button" @click="applyFlag(0)">{{ t('release.flag_clear') }}</button>
+              </template>
+            </div>
           </div>
           <button class="release-detail-close" :title="t('release.detail_close')" @click="handleClose">
             <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
@@ -535,6 +592,78 @@ const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_typ
 .release-detail-close:hover {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+/* 旗标：header 按钮（复用 close 底座样式）+ 色板弹层 */
+.release-detail-flag-wrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+
+.release-detail-flag-btn svg {
+  color: var(--text-muted);
+}
+
+/* 已标记时图标用按钮的 color（style 内联了旗标色） */
+.release-detail-flag-btn.flagged svg {
+  color: inherit;
+}
+
+.flag-popover {
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 150px;
+  padding: 4px;
+}
+
+.flag-popover button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 4px;
+}
+
+.flag-popover button:hover {
+  background: var(--bg-subtle);
+}
+
+.flag-popover button.selected {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.flag-popover-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.flag-popover-icon svg {
+  width: 12px;
+  height: 12px;
+}
+
+.flag-popover-check {
+  margin-left: auto;
+  padding-left: 12px;
+  color: var(--primary);
+}
+
+.flag-popover-divider {
+  height: 1px;
+  margin: 3px 6px;
+  background: var(--border);
 }
 
 .release-detail-close svg {

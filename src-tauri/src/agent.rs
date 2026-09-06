@@ -376,6 +376,19 @@ fn truncate_release_body(body: &str) -> String {
     format!("{}…\n[正文过长已截断，剩余内容省略]", head)
 }
 
+/// flag 编号 → 颜色名（与前端色板 1-6 一一对应；语义由用户自赋，此处只报颜色）。
+fn flag_color_name(flag: i64) -> &'static str {
+    match flag {
+        1 => "红",
+        2 => "橙",
+        3 => "黄",
+        4 => "绿",
+        5 => "蓝",
+        6 => "紫",
+        _ => "未知",
+    }
+}
+
 /// 版本实体 → 上下文文本（含 AI 摘要与正文全文，按源类型标注正文语义）。
 /// 正文与摘要均属外部数据，由 build_prompt 统一包裹进不可信数据区。
 pub fn render_release_entity(release: &ReleaseInfo) -> String {
@@ -385,6 +398,18 @@ pub fn render_release_entity(release: &ReleaseInfo) -> String {
         release.source_type, release.owner, release.repo
     ));
     out.push_str(&format!("- 版本标识: {}\n", release.tag_name));
+    if let Some(bump) = &release.version_bump {
+        out.push_str(&format!(
+            "- 版本类型: {}（相对同源上一版本的 semver 变化）\n",
+            bump
+        ));
+    }
+    if release.flag > 0 {
+        out.push_str(&format!(
+            "- 用户分组: {}色（颜色语义由用户自行赋予）\n",
+            flag_color_name(release.flag)
+        ));
+    }
     if !release.release_name.is_empty() {
         out.push_str(&format!("- 版本名称: {}\n", release.release_name));
     }
@@ -1492,12 +1517,44 @@ mod tests {
             body_translated: None,
             extra_metadata: None,
             source_description: None,
+            flag: 0,
+            version_bump: None,
         };
         let text = render_release_entity(&release);
         assert!(text.contains("github | vuejs/core"));
         assert!(text.contains("v1.0.0"));
         assert!(text.contains("release body"));
         assert!(text.contains("AI 摘要: 摘要"));
+    }
+
+    #[test]
+    fn render_release_entity_renders_flag_and_version_bump() {
+        let release = ReleaseInfo {
+            id: 1,
+            source_id: 1,
+            source_type: "github".into(),
+            owner: "vuejs".into(),
+            repo: "core".into(),
+            tag_name: "v2.0.0".into(),
+            release_name: "v2.0.0".into(),
+            html_url: "https://github.com/vuejs/core/releases/tag/v2.0.0".into(),
+            published_at: "2025-01-01T00:00:00Z".into(),
+            prerelease: false,
+            body: None,
+            detected_at: "2025-01-02T00:00:00Z".into(),
+            notification_status: "unread".into(),
+            snooze_until: None,
+            ai_summary: None,
+            ai_importance: None,
+            body_translated: None,
+            extra_metadata: None,
+            source_description: None,
+            flag: 5,
+            version_bump: Some("minor".into()),
+        };
+        let text = render_release_entity(&release);
+        assert!(text.contains("版本类型: minor"));
+        assert!(text.contains("用户分组: 蓝色"));
     }
 
     #[test]
@@ -1522,6 +1579,8 @@ mod tests {
             body_translated: None,
             extra_metadata: None,
             source_description: None,
+            flag: 0,
+            version_bump: None,
         };
         let text = render_release_entity(&release);
         assert!(text.contains("--- 视频简介 ---"));
@@ -1553,6 +1612,8 @@ mod tests {
             body_translated: None,
             extra_metadata: None,
             source_description: None,
+            flag: 0,
+            version_bump: None,
         };
         let text = render_release_entity(&release);
         assert!(text.contains("[正文过长已截断"));

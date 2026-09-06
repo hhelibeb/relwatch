@@ -13,6 +13,7 @@ export const commands = {
 	listSources: () => __TAURI_INVOKE<Source[]>("list_sources"),
 	getReleases: () => __TAURI_INVOKE<ReleaseInfo[]>("get_releases"),
 	setNotificationState: (releaseId: number, status: string, snoozeMinutes: number | null) => __TAURI_INVOKE<null>("set_notification_state", { releaseId, status, snoozeMinutes }),
+	setReleaseFlag: (releaseId: number, flag: number) => __TAURI_INVOKE<null>("set_release_flag", { releaseId, flag }),
 	deleteRelease: (releaseId: number) => __TAURI_INVOKE<null>("delete_release", { releaseId }),
 	/**
 	 *  对单条 release 触发 AI 全文翻译。
@@ -669,6 +670,13 @@ export type ReleaseInfo = {
 	extra_metadata: string | null,
 	/**  所属源的描述（YouTube 源存频道名），前端用于展示可读名称。 */
 	source_description: string | null,
+	/**  用户旗标：0 = 未标记，1-6 = 预设颜色（红/橙/黄/绿/蓝/紫），语义由用户自行赋予。 */
+	flag: number,
+	/**
+	 *  相对同 source 上一版本（按 published_at）的 semver 变化类型：major/minor/patch。
+	 *  无 semver tag 的源（YouTube/B 站等）或无法比较（相等/回落）时为 NULL。
+	 */
+	version_bump: string | null,
 };
 
 /**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id。 */

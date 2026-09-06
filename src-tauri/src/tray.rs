@@ -177,6 +177,8 @@ mod tests {
             body_translated: None,
             extra_metadata: None,
             source_description: None,
+            flag: 0,
+            version_bump: None,
         }
     }
 

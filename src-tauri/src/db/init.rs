@@ -419,7 +419,60 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         rebuild_agent_runs(conn)?;
     }
 
+    // ── Migration 17: releases.flag（用户旗标）+ releases.version_bump（semver 变化类型）──
+    // flag：0 = 未标记，1-6 = 预设颜色（红/橙/黄/绿/蓝/紫），语义由用户自行赋予。
+    // version_bump：相对同 source 上一版本（按 published_at）的 semver 变化类型
+    // （major/minor/patch），新增列时对存量数据逐 source 回填（量级 = 全部 release
+    // 行数，启动一次性成本）；此后由 insert_release 在入库事务内增量重算。
+    if !table_has_column(conn, "releases", "flag") {
+        conn.execute_batch(
+            "ALTER TABLE releases ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE releases ADD COLUMN version_bump TEXT;",
+        )?;
+        match backfill_version_bumps(conn) {
+            Ok(n) if n > 0 => {
+                log::info!("已回填 {} 个源的 version_bump", n);
+                // 结果落到 logs 表（日志页可见），避免「筛选结果偏少却无从查因」
+                super::logs::write_log_key(
+                    conn,
+                    "INFO",
+                    "migration.version_bump_backfilled",
+                    &serde_json::json!({ "count": n }).to_string(),
+                );
+            }
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("回填 version_bump 失败: {}", e);
+                super::logs::write_log_key(
+                    conn,
+                    "ERROR",
+                    "migration.version_bump_backfill_failed",
+                    &serde_json::json!({ "error": &e }).to_string(),
+                );
+            }
+        }
+    }
+
     Ok(())
+}
+
+/// 对所有 source 重算 version_bump（Migration 17 存量数据一次性回填）。
+/// 失败不中断迁移（与 Migration 8 的 rendered_message 回填同策略）：flag 列已就位，
+/// version_bump 缺失只影响版本类型筛选的完整性，由日志暴露问题。
+fn backfill_version_bumps(conn: &Connection) -> std::result::Result<usize, String> {
+    let ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM sources").map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+    for id in &ids {
+        super::releases::recompute_version_bumps(conn, *id)?;
+    }
+    Ok(ids.len())
 }
 
 /// agent_runs 是否需要重建（缺 `files` 列，或 status CHECK 未含 `unknown`）。
@@ -584,6 +637,9 @@ mod tests {
         assert!(!has_column(&conn, "agent_runs", "binding_id"));
         // Migration 16: agent_runs.files（本地文件附件）+ status 支持 'unknown'
         assert!(has_column(&conn, "agent_runs", "files"));
+        // Migration 17: releases.flag（用户旗标）+ releases.version_bump（semver 变化类型）
+        assert!(has_column(&conn, "releases", "flag"));
+        assert!(has_column(&conn, "releases", "version_bump"));
         let ddl: String = conn
             .query_row(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'",

@@ -3,11 +3,12 @@ import { ref, computed, inject, onMounted, onUnmounted } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
+import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
+import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
 import { mediaUrlOrEmpty } from '../utils/imageProxy'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
@@ -152,11 +153,41 @@ const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   return items
 })
 
+// 旗标颜色菜单（1-6 与后端 releases.flag 编号一一对应，颜色语义由用户自行赋予）
+const FLAG_MENU: { value: number; labelKey: string }[] = [
+  { value: 1, labelKey: 'release.flag_red' },
+  { value: 2, labelKey: 'release.flag_orange' },
+  { value: 3, labelKey: 'release.flag_yellow' },
+  { value: 4, labelKey: 'release.flag_green' },
+  { value: 5, labelKey: 'release.flag_blue' },
+  { value: 6, labelKey: 'release.flag_purple' },
+]
+/** 旗标按钮/右键「快速标记」落下的默认颜色（红）。 */
+const DEFAULT_FLAG = 1
+
+const flagged = computed(() => releaseFlagged(props.release))
+const flagColor = computed(() => releaseFlagColor(props.release))
+const flagTitle = computed(() => {
+  const flag = props.release.flag
+  return flag >= 1 && flag <= FLAG_MAX ? t(FLAG_MENU[flag - 1].labelKey) : t('release.flag')
+})
+
 const releaseMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = [
     { id: 'openLink', label: t('context.open') },
     { id: 'copyLink', label: t('context.copy_link') },
+    { id: 'divider-flag', label: '', divider: true },
+    ...FLAG_MENU.map(f => ({
+      id: `flag-${f.value}`,
+      label: t(f.labelKey),
+      iconHref: '/icons.svg#flag-tag-icon',
+      color: flagColorByIndex(f.value) ?? undefined,
+      checked: props.release.flag === f.value,
+    })),
   ]
+  if (flagged.value) {
+    items.push({ id: 'flag-clear', label: t('release.flag_clear') })
+  }
   const agentItem = sendToAgentItem()
   if (agentItem) items.push(agentItem)
   items.push({ id: 'deleteRelease', label: t('context.delete_release') })
@@ -214,7 +245,28 @@ async function handleReleaseMenuAction(actionId: string) {
     handleSendToAgent()
   } else if (actionId === 'deleteRelease') {
     handleDeleteRelease()
+  } else if (actionId === 'flag-clear') {
+    void applyFlag(0)
+  } else if (actionId.startsWith('flag-')) {
+    void applyFlag(Number(actionId.slice(5)))
   }
+}
+
+// ---- 旗标：0 = 清除，1-6 = 颜色；写库成功后整卡刷新 ----
+async function applyFlag(flag: number) {
+  closeMenus()
+  track('release.flag')
+  try {
+    await setReleaseFlag(props.release.id, flag)
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('release.flag_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+/** 卡片旗标按钮：未标记 → 打默认旗标（红）；已标记（不论颜色）→ 清除。换色走右键菜单。 */
+function toggleFlag() {
+  void applyFlag(flagged.value ? 0 : DEFAULT_FLAG)
 }
 
 // ---- “发送到 Agent”：唤起工作区并预置当前版本引用 ----
@@ -445,6 +497,8 @@ const youtubeViewTitle = computed(() =>
       <div class="release-heading">
         <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
         <span v-else-if="isYoutube" class="release-repo release-repo-yt" :title="youtubeChannelName">{{ youtubeChannelName }}</span>
+        <!-- 用户旗标（Outlook 式贴纸）贴在版本号前，颜色即语义 -->
+        <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
         <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
         <!-- 版本固有属性（重要性/预发布）贴版本号；状态（圆点+文字）放在分隔符后自成一体，避免圆点被误读为重要性指示 -->
         <span v-if="releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
@@ -455,6 +509,9 @@ const youtubeViewTitle = computed(() =>
         <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
         <button class="btn-sm" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
         <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
+        <button class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" @click="toggleFlag">
+          <svg><use href="/icons.svg#flag-tag-icon"/></svg>
+        </button>
         <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
           <svg><use href="/icons.svg#link-icon"/></svg>
         </button>
@@ -894,6 +951,29 @@ const youtubeViewTitle = computed(() =>
   height: 28px;
   margin: 0;
   border-radius: 6px;
+}
+
+/* 用户旗标：卡片行内贴纸（已标记时常驻）与右上按钮；颜色经 currentColor 注入 */
+.release-flag-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.release-flag-chip svg {
+  width: 13px;
+  height: 13px;
+}
+
+.release-flag-action svg {
+  width: 16px;
+  height: 16px;
+  color: var(--text-muted);
+}
+
+/* 已标记时图标用按钮的 color（style 内联了旗标色） */
+.release-flag-action.flagged svg {
+  color: inherit;
 }
 
 .release-link-action svg {

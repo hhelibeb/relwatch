@@ -365,6 +365,8 @@ describe('AgentWorkspace 冒烟', () => {
         body_translated: null,
         extra_metadata: null,
         source_description: '宁静ASMR频道',
+        flag: 0,
+        version_bump: null,
       },
     ])
     const wrapper = mount(AgentWorkspace, {
@@ -804,6 +806,8 @@ describe('AgentWorkspace 冒烟', () => {
         body_translated: null,
         extra_metadata: null,
         source_description: null,
+        flag: 0,
+        version_bump: null,
       },
     ])
     localStorage.setItem(

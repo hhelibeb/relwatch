@@ -26,6 +26,11 @@ pub struct ReleaseInfo {
     pub extra_metadata: Option<String>,
     /// 所属源的描述（YouTube 源存频道名），前端用于展示可读名称。
     pub source_description: Option<String>,
+    /// 用户旗标：0 = 未标记，1-6 = 预设颜色（红/橙/黄/绿/蓝/紫），语义由用户自行赋予。
+    pub flag: i64,
+    /// 相对同 source 上一版本（按 published_at）的 semver 变化类型：major/minor/patch。
+    /// 无 semver tag 的源（YouTube/B 站等）或无法比较（相等/回落）时为 NULL。
+    pub version_bump: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -70,10 +75,131 @@ pub fn insert_release(
             params![release_id, now],
         )
         .map_err(|e| e.to_string())?;
+
+        // version_bump：在插入事务内重算本 source 全链（而非只算本条）。
+        // 历史模式（save_entries_generic 按 published 降序逐条进库）下先插新版本、
+        // 后补旧版本，只比较「库里已有的上一条」会拿到错误基线。
+        recompute_version_bumps(&tx, source_id)?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;
     Ok(release_id)
+}
+
+/// 从 tag 中提取至少两段的数字序列组成 semver 三元组（缺段补 0）。
+///
+/// 例：`v1.16.0` → (1,16,0)；`release-1.2.3-beta.1` → (1,2,3)；`1.16` → (1,16,0)；
+/// 无数字段或仅单段数字（视频 id、B 站 BV 号、commit hash）→ None。
+/// 要求至少两段是刻意收紧：单段数字会让 "BV11xxx"/"BV12xxx" 这类编号被误读成版本。
+/// 刻意不引 regex 依赖；只取前三段，四段以上 tag（如 1.2.3.4）取 1.2.3。
+fn parse_semver(tag: &str) -> Option<(u64, u64, u64)> {
+    let bytes = tag.as_bytes();
+    let mut segs: Vec<u64> = Vec::with_capacity(3);
+    let mut i = 0;
+    while i < bytes.len() && segs.len() < 3 {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            // 段内位数过多视为非版本号（防御 u64 溢出与哈希类长数字串）
+            if i - start > 10 {
+                return None;
+            }
+            segs.push(tag[start..i].parse().ok()?);
+            // 下一段仅当「. + 数字」时继续（"1.2.3-beta.1" 在 -beta 处自然截断）
+            if segs.len() < 3
+                && i + 1 < bytes.len()
+                && bytes[i] == b'.'
+                && bytes[i + 1].is_ascii_digit()
+            {
+                i += 1;
+            } else {
+                break;
+            }
+        } else {
+            i += 1;
+        }
+    }
+    if segs.len() < 2 {
+        return None;
+    }
+    while segs.len() < 3 {
+        segs.push(0);
+    }
+    Some((segs[0], segs[1], segs[2]))
+}
+
+/// 前一版本 → 当前版本的 semver 变化类型；相等或版本回落返回 None（不算任何变化）。
+fn bump_between(prev: (u64, u64, u64), cur: (u64, u64, u64)) -> Option<&'static str> {
+    if cur.0 > prev.0 {
+        Some("major")
+    } else if cur.0 == prev.0 && cur.1 > prev.1 {
+        Some("minor")
+    } else if cur.0 == prev.0 && cur.1 == prev.1 && cur.2 > prev.2 {
+        Some("patch")
+    } else {
+        None
+    }
+}
+
+/// 重算指定 source 全部 release 的 version_bump（只写值发生变化的行：
+/// 增量插入时链上其余行新旧值相同，跳过写入，让「插入一条 → 全链重算」的
+/// 热路径通常只产生一次真实 UPDATE）。
+///
+/// 规则：按 published_at 升序（同刻按 id），与**前一个能解析出 semver 的 tag** 比较：
+/// 主段变大 → major，次段 → minor，补丁段 → patch；tag 无 semver（视频/B 站等）不参与
+/// 比较也不写值。无 semver 的 source 全链为 NULL，代价仅一次 SELECT。
+pub fn recompute_version_bumps(conn: &Connection, source_id: i64) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, tag_name, version_bump FROM releases
+             WHERE source_id = ?1
+             ORDER BY published_at ASC, id ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(i64, String, Option<String>)> = stmt
+        .query_map(params![source_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    drop(stmt);
+
+    let mut prev: Option<(u64, u64, u64)> = None;
+    for (id, tag, existing) in rows {
+        let cur = parse_semver(&tag);
+        let bump = match (prev, cur) {
+            (Some(p), Some(c)) => bump_between(p, c),
+            _ => None,
+        };
+        if existing.as_deref() != bump {
+            conn.execute(
+                "UPDATE releases SET version_bump = ?1 WHERE id = ?2",
+                params![bump, id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // 仅能解析出 semver 的条目才推进比较基线
+        if cur.is_some() {
+            prev = cur;
+        }
+    }
+    Ok(())
+}
+
+/// 设置 release 的用户旗标：0 = 清除，1-6 = 预设颜色。
+pub fn set_release_flag(conn: &Connection, release_id: i64, flag: i64) -> Result<(), String> {
+    if !(0..=6).contains(&flag) {
+        return Err(format!("err.release_flag_invalid|{}", flag));
+    }
+    conn.execute(
+        "UPDATE releases SET flag = ?1 WHERE id = ?2",
+        params![flag, release_id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// 根据排除集合动态构建 `NOT IN (...)` 条件子句与参数。
@@ -332,7 +458,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
                     r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
-                s.description
+                s.description, r.flag, r.version_bump
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -362,6 +488,8 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
                 body_translated: row.get(16)?,
                 extra_metadata: row.get(17)?,
                 source_description: row.get(18)?,
+                flag: row.get(19)?,
+                version_bump: row.get(20)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -381,7 +509,7 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                     r.prerelease, r.body, r.detected_at,
                     COALESCE(ns.status, 'pending'), ns.snooze_until,
                     r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
-                s.description
+                s.description, r.flag, r.version_bump
              FROM releases r
              JOIN sources s ON r.source_id = s.id
              LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -417,6 +545,8 @@ pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, St
                 body_translated: row.get(16)?,
                 extra_metadata: row.get(17)?,
                 source_description: row.get(18)?,
+                flag: row.get(19)?,
+                version_bump: row.get(20)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -465,7 +595,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 r.prerelease, r.body, r.detected_at,
                 COALESCE(ns.status, 'pending'), ns.snooze_until,
                 r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
-                s.description
+                s.description, r.flag, r.version_bump
          FROM releases r
          JOIN sources s ON r.source_id = s.id
          LEFT JOIN notification_state ns ON r.id = ns.release_id
@@ -498,6 +628,8 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
                 body_translated: row.get(16)?,
                 extra_metadata: row.get(17)?,
                 source_description: row.get(18)?,
+                flag: row.get(19)?,
+                version_bump: row.get(20)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1054,5 +1186,92 @@ mod tests {
         let (gh_id, _) = seed_gh_and_yt_releases(&conn);
         let ids = ai_ineligible_release_ids(&conn, &[gh_id], &["youtube"]).unwrap();
         assert!(ids.is_empty(), "github 源不应被标记为排除类型");
+    }
+
+    // ── version_bump：semver 解析与变化类型 ──
+
+    #[test]
+    fn test_parse_semver_extracts_three_segments() {
+        assert_eq!(parse_semver("v1.16.0"), Some((1, 16, 0)));
+        assert_eq!(parse_semver("1.2.3"), Some((1, 2, 3)));
+        assert_eq!(parse_semver("release-1.2.3-beta.1"), Some((1, 2, 3)));
+        // 两段补 0；四段取前三段
+        assert_eq!(parse_semver("v1.16"), Some((1, 16, 0)));
+        assert_eq!(parse_semver("1.2.3.4"), Some((1, 2, 3)));
+    }
+
+    #[test]
+    fn test_parse_semver_rejects_non_versions() {
+        // 单段数字（视频 id / BV 号 / build 号）不算版本
+        assert_eq!(parse_semver("BV11a2c3d4e5f"), None);
+        assert_eq!(parse_semver("dQw4w9WgXcQ"), None);
+        assert_eq!(parse_semver("build123"), None);
+        assert_eq!(parse_semver(""), None);
+    }
+
+    #[test]
+    fn test_bump_between_major_minor_patch() {
+        assert_eq!(bump_between((1, 15, 9), (2, 0, 0)), Some("major"));
+        assert_eq!(bump_between((1, 15, 9), (1, 16, 0)), Some("minor"));
+        assert_eq!(bump_between((1, 16, 0), (1, 16, 1)), Some("patch"));
+        // 相等或回落不算变化
+        assert_eq!(bump_between((1, 16, 0), (1, 16, 0)), None);
+        assert_eq!(bump_between((2, 0, 0), (1, 99, 99)), None);
+    }
+
+    #[test]
+    fn test_insert_release_computes_version_bump_chain() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        // 乱序插入（先新后旧，等价 save_entries_generic 历史模式的进库顺序）
+        insert_release(&conn, sid, "v1.2.1", "R3", "https://x", "2024-01-03T00:00:00Z", false, None).unwrap();
+        insert_release(&conn, sid, "v1.2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, None).unwrap();
+        insert_release(&conn, sid, "v1.0.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+
+        let releases = get_releases_with_state(&conn).unwrap();
+        let bump_of = |tag: &str| {
+            releases
+                .iter()
+                .find(|r| r.tag_name == tag)
+                .and_then(|r| r.version_bump.clone())
+        };
+        // 最早版本无基线 → NULL；v1.2.0 相对 v1.0.0 是 minor；v1.2.1 相对 v1.2.0 是 patch
+        assert_eq!(bump_of("v1.0.0"), None);
+        assert_eq!(bump_of("v1.2.0").as_deref(), Some("minor"));
+        assert_eq!(bump_of("v1.2.1").as_deref(), Some("patch"));
+    }
+
+    #[test]
+    fn test_version_bump_null_for_non_semver_source() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
+        insert_release(&conn, sid, "BV11a2c3d4e5f", "V1", "https://b", "2024-01-01T00:00:00Z", false, None).unwrap();
+        insert_release(&conn, sid, "BV12a2c3d4e5f", "V2", "https://b", "2024-01-02T00:00:00Z", false, None).unwrap();
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert!(
+            releases.iter().all(|r| r.version_bump.is_none()),
+            "非 semver tag（BV 号）不应产生 version_bump"
+        );
+    }
+
+    #[test]
+    fn test_set_release_flag_stores_and_validates() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0.0", "R", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases[0].flag, 0, "默认未标记");
+
+        set_release_flag(&conn, rid, 3).unwrap();
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases[0].flag, 3);
+
+        set_release_flag(&conn, rid, 0).unwrap();
+        let releases = get_releases_with_state(&conn).unwrap();
+        assert_eq!(releases[0].flag, 0);
+
+        assert!(set_release_flag(&conn, rid, 7).is_err(), "越界旗标应报错");
+        assert!(set_release_flag(&conn, rid, -1).is_err(), "负数旗标应报错");
     }
 }

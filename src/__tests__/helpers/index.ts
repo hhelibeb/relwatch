@@ -31,6 +31,8 @@ export function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo
     body_translated: null,
     extra_metadata: null,
     source_description: null,
+    flag: 0,
+    version_bump: null,
     ...overrides,
   }
 }

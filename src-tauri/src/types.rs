@@ -266,6 +266,8 @@ mod tests {
             body_translated: None,
             extra_metadata: None,
             source_description: None,
+            flag: 0,
+            version_bump: None,
         };
         let value = serde_json::to_value(PollResult {
             new_releases: vec![release],

@@ -58,6 +58,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::list_sources,
         commands::get_releases,
         commands::set_notification_state,
+        commands::set_release_flag,
         commands::delete_release,
         commands::translate_release,
         commands::clear_logs,

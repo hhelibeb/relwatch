@@ -96,6 +96,14 @@
     <polyline points="11 5 8 2 5 5" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
     <line x1="8" y1="2" x2="8" y2="10" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
   </symbol>
+  <symbol id="flag-tag-icon" viewBox="0 0 16 16">
+    <!-- Outlook 式分类贴纸：圆角菱形淡填充 + 右上穿绳孔，颜色随 currentColor -->
+    <rect x="3.4" y="3.4" width="9.2" height="9.2" rx="2.5" transform="rotate(45 8 8)" fill="currentColor" fill-opacity="0.16" stroke="currentColor" stroke-width="1.3"/>
+    <circle cx="11.05" cy="4.95" r="1.05" fill="none" stroke="currentColor" stroke-width="1.1"/>
+  </symbol>
+  <symbol id="filter-icon" viewBox="0 0 16 16">
+    <path fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" d="M2 3.5h12l-4.6 5.4v3.6L6.6 14V8.9L2 3.5Z"/>
+  </symbol>
   <symbol id="chevron-down-icon" viewBox="0 0 16 16">
     <polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
   </symbol>
