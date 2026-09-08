@@ -15,7 +15,7 @@ description: 完整版本发布流程，覆盖版本号更新、本地验证、�
 Step 1  →  确认当前状态
 Step 2  →  审查本次 Release 的 commits（提前到 tag 前）
 Step 3  →  确定新版本号并更新版本文件
-Step 4  →  更新 CHANGELOG.md（唯一数据源）
+Step 4  →  更新 CHANGELOG.md（唯一数据源，写入后需用户确认）
 Step 5  →  本地完整验证
 Step 6  →  提交 release bump
 Step 7  →  tag 前最终确认
@@ -149,6 +149,10 @@ npm install --package-lock-only
 3. 在文件底部修改版本链接：
    - `[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v<新版本>...HEAD`
    - 添加新行 `[<新版本>]: https://github.com/hhelibeb/relwatch/compare/v<旧版本>...v<新版本>`
+
+### 4.3 等待用户确认
+
+将拟写入的版本条目内容展示给用户，**用户确认后**才能进入 Step 6 提交；用户提出修改意见时，先调整 CHANGELOG 再重新确认。
 
 ---
 
