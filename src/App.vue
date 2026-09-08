@@ -196,6 +196,10 @@ async function loadAgentConfig() {
 const countdown = ref('')
 const releaseSearch = ref('')
 const releaseStatusFilter = ref<'all' | 'unread' | 'read'>('all')
+// ── 通知定位（focus-release）下钻：App 只保存目标与递增 token，
+//    由 ReleaseTab 在每次“筛选/搜索/视图/数据就绪”后响应最新 token 执行定位。──
+const focusTarget = ref<number | null>(null)
+const focusReleaseToken = ref(0)
 const polling = ref(false)
 const sourceChecking = ref(false)
 let countdownTimer: ReturnType<typeof setInterval> | null = null
@@ -547,23 +551,29 @@ function openSourceReleases(query: string) {
   activeTab.value = 'releases'
 }
 
-/** 点击通知主体：切到版本列表并回填搜索词过滤出该 release。
- *  同仓库存在多条 release 时不能精确到唯一条（搜索过滤方案固有，用户已接受此取舍）。 */
+/** 点击通知主体：切到版本列表并定位到该条 release。
+ *  与旧「回填 owner/repo 搜索词」方案相比，当前实现把「重置筛选 + 定位滚动」下沉到
+ *  ReleaseTab（持有 source/importance/flag/version 等筛选与视图模式的内部状态），
+ *  App.vue 只负责通知目标（事件入口）：
+ *  下发 focusTarget（目标 id）+ 递增 focusReleaseToken，并监听 focus-consumed/
+ *  focus-not-found 反馈——目标缺失 / 列表视图下找不到时以 Toast 提示。
+ *  同仓库存在多条 release 时能唯一定位到被点击的那一条（评审 P1-1 修复）。 */
 function focusReleaseById(id: number) {
-  const release = releases.value.find(r => r.id === id)
-  if (!release) {
-    // release 尚未加载（冷启动竞态）或已被删除：仅切 tab，不做过滤
-    activeTab.value = 'releases'
-    return
-  }
-  // 视频源无 repo 语义，退化为按频道名（source_description）过滤；
-  // releaseMatchesSearch 会匹配 source_description，故能命中
-  const query = release.repo
-    ? `${release.owner}/${release.repo}`
-    : (release.source_description ?? release.owner)
-  releaseSearch.value = query
-  releaseStatusFilter.value = 'all'
+  focusTarget.value = id
+  focusReleaseToken.value++
   activeTab.value = 'releases'
+}
+
+function handleFocusConsumed() {
+  // ReleaseTab 只对最新一次目标上报 consumed，可直接清空
+  focusTarget.value = null
+}
+
+function handleFocusNotFound() {
+  if (focusTarget.value === null) return
+  // ReleaseTab 确认目标在已加载数据中不存在（被删除等）：提示用户，避免静默失败
+  focusTarget.value = null
+  showToast(t('release.focus_missing'))
 }
 
 function openSourceUnreadReleases(query: string) {
@@ -744,7 +754,7 @@ onUnmounted(() => {
         @check-busy="sourceChecking = $event"
         @open-releases="openSourceReleases"
         @open-unread-releases="openSourceUnreadReleases" />
-      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
+      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
       <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
       <SettingsTab v-show="activeTab === 'settings'" :settings="settings"
         @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"

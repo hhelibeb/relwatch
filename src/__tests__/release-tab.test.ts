@@ -635,3 +635,110 @@ describe('ReleaseTab 显示重要度开关', () => {
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
   })
 })
+
+// ── 通知定位消费（P1-1）─────────────────────────────────────────
+
+describe('ReleaseTab 通知定位（focusTarget）', () => {
+  it('focusTarget + token 变化时重置全部筛选并切 simple 视图，调用 SimpleList 定位', async () => {
+    const focusReleaseId = vi.fn().mockReturnValue(true)
+    const wrapper = mountTab({})
+    // 模拟 SimpleList stub 暴露 focusReleaseId（真实组件 defineExpose）
+    const simple = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    ;(simple.vm as unknown as { focusReleaseId: typeof focusReleaseId }).focusReleaseId = focusReleaseId
+
+    await wrapper.setProps({ focusTarget: 2, focusToken: 1 } as Parameters<typeof wrapper.setProps>[0])
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+
+    expect(focusReleaseId).toHaveBeenCalledWith(2)
+    // 重置：isFiltering 应为 false（所有筛选复位）
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
+    // 目标存在则上报 focus-consumed
+    expect(wrapper.emitted('focus-consumed')).toBeTruthy()
+  })
+
+  it('目标不在数据中（已删除）且数据非空时上报 focus-not-found', async () => {
+    const wrapper = mountTab({})
+    await wrapper.setProps({ focusTarget: 999, focusToken: 1 } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+
+    expect(wrapper.emitted('focus-not-found')).toBeTruthy()
+    expect(wrapper.emitted('focus-consumed')).toBeFalsy()
+  })
+
+  it('SimpleList 首次定位失败但重试成功时上报 focus-consumed', async () => {
+    let calls = 0
+    const wrapper = mountTab({})
+    const simple = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    ;(simple.vm as unknown as { focusReleaseId: () => boolean }).focusReleaseId = () => {
+      calls += 1
+      return calls > 1 // 首次未挂载 → false，重试时已就绪 → true
+    }
+
+    await wrapper.setProps({ focusTarget: 1, focusToken: 1 } as Parameters<typeof wrapper.setProps>[0])
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+
+    expect(calls).toBe(2)
+    expect(wrapper.emitted('focus-consumed')).toBeTruthy()
+    expect(wrapper.emitted('focus-not-found')).toBeFalsy()
+  })
+
+  it('SimpleList 重试后仍定位失败时上报 focus-not-found（不留静默失败）', async () => {
+    const wrapper = mountTab({})
+    const simple = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    ;(simple.vm as unknown as { focusReleaseId: () => boolean }).focusReleaseId = () => false
+
+    await wrapper.setProps({ focusTarget: 1, focusToken: 1 } as Parameters<typeof wrapper.setProps>[0])
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+
+    // 目标确实在数据里，但列表定位不到：必须给出反馈（Toast 由 App 渲染），且只上报一次
+    expect(wrapper.emitted('focus-consumed')).toBeFalsy()
+    expect(wrapper.emitted('focus-not-found')).toHaveLength(1)
+
+    // 同 token 的后续数据刷新不应重复上报
+    await wrapper.setProps({ releases: [...releases] } as Parameters<typeof wrapper.setProps>[0])
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+    expect(wrapper.emitted('focus-not-found')).toHaveLength(1)
+  })
+
+  it('releases 数据后续到达（冷启动竞态）后自动消费', async () => {
+    const focusReleaseId = vi.fn().mockReturnValue(true)
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: [], focusTarget: 5, focusToken: 1 },
+      global: { stubs },
+    })
+    // 初始数据为空：不消费也不报 not-found
+    await nextTick()
+    expect(wrapper.emitted('focus-not-found')).toBeFalsy()
+
+    // 数据到达后 watch(releases) 触发消费
+    await wrapper.setProps({ releases: [...releases, createRelease({ id: 5, owner: 'x', repo: 'y' })] } as Parameters<typeof wrapper.setProps>[0])
+    const simple = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    ;(simple.vm as unknown as { focusReleaseId: typeof focusReleaseId }).focusReleaseId = focusReleaseId
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+
+    expect(focusReleaseId).toHaveBeenCalledWith(5)
+    expect(wrapper.emitted('focus-consumed')).toBeTruthy()
+  })
+
+  it('同一 token 重复数据变化不会重复消费', async () => {
+    const focusReleaseId = vi.fn().mockReturnValue(true)
+    const wrapper = mountTab({})
+    const simple = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    ;(simple.vm as unknown as { focusReleaseId: typeof focusReleaseId }).focusReleaseId = focusReleaseId
+
+    await wrapper.setProps({ focusTarget: 1, focusToken: 1 } as Parameters<typeof wrapper.setProps>[0])
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+    // 再次数据刷新（同 token）不应再次定位
+    await wrapper.setProps({ releases: [...releases] } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+
+    expect(focusReleaseId).toHaveBeenCalledTimes(1)
+    expect(wrapper.emitted('focus-consumed')).toHaveLength(1)
+  })
+})

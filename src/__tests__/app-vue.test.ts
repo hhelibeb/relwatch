@@ -4,7 +4,6 @@ import { defineComponent } from 'vue'
 import fs from 'node:fs'
 import path from 'node:path'
 import { t, setLocale } from '../i18n'
-import { releaseMatchesSearch } from '../utils'
 import { defaultSettings } from './helpers'
 
 // ========== Tauri 边界 Mocks（应用内模块一律走真实实现） ==========
@@ -93,10 +92,10 @@ const SourceTabStub = defineComponent({
 
 const ReleaseTabStub = defineComponent({
   name: 'ReleaseTab',
-  props: ['search', 'statusFilter'],
-  emits: ['update'],
+  props: ['search', 'statusFilter', 'focusTarget', 'focusToken'],
+  emits: ['update', 'focus-consumed', 'focus-not-found'],
   template:
-    '<div class="stub-releasetab"><span class="stub-search">{{ search }}</span><span class="stub-status">{{ statusFilter }}</span></div>',
+    '<div class="stub-releasetab"><span class="stub-search">{{ search }}</span><span class="stub-status">{{ statusFilter }}</span><span class="stub-focus-target">{{ focusTarget }}</span><span class="stub-focus-token">{{ focusToken }}</span></div>',
 })
 
 const LogTabStub = defineComponent({
@@ -706,7 +705,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
     return wrapper.findAll('nav.tabs button')[1].classes().includes('active')
   }
 
-  it('focus-release 事件 → 切到版本列表并回填 owner/repo 搜索词', async () => {
+  it('focus-release 事件 → 切到版本列表并下发 focusTarget（按 id 精确定位）', async () => {
     vi.mocked(getReleases).mockResolvedValue([
       { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
     ])
@@ -715,11 +714,13 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
     await emitFocusRelease(wrapper, 7)
 
     expect(activeTabIsReleases(wrapper)).toBe(true)
-    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('tauri-apps/tauri')
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(7)
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusToken')).toBe(1)
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('')
     expect(wrapper.findComponent(ReleaseTabStub).props('statusFilter')).toBe('all')
   })
 
-  it('同仓库多条 release 时过滤出多条（搜索过滤方案的已知取舍）', async () => {
+  it('同仓库多条 release 时下发 focusTarget（由 ReleaseTab 按 id 唯一定位，不再搜索词回填）', async () => {
     const releases = [
       { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2', release_name: 'R2', body: null, source_description: null },
       { id: 8, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v1', release_name: 'R1', body: null, source_description: null },
@@ -729,14 +730,12 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
     const wrapper = await mountRealApp()
 
     await emitFocusRelease(wrapper, 7)
-    const query = wrapper.findComponent(ReleaseTabStub).props('search') as string
-
-    // 用真实过滤函数验证：命中该仓库的全部 release，而非被点击的那一条
-    const matched = releases.filter(r => releaseMatchesSearch(r, query))
-    expect(matched.map(r => r.id)).toEqual([7, 8])
+    // 搜索词不再被回填，改由 ReleaseTab 直接按目标 id 定位
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('')
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(7)
   })
 
-  it('release id 不存在时仅切 tab，不改搜索词且不报错', async () => {
+  it('release id 不存在时仍切到版本列表（定位与否由 ReleaseTab 依据数据判定）', async () => {
     vi.mocked(getReleases).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'a', repo: 'b', tag_name: 'v1' } as never,
     ])
@@ -745,10 +744,11 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
     await emitFocusRelease(wrapper, 999)
 
     expect(activeTabIsReleases(wrapper)).toBe(true)
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(999)
     expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('')
   })
 
-  it('视频源（repo 为空）退化为按频道名 source_description 过滤', async () => {
+  it('视频源（repo 为空）定位：不做频道名搜索词回填，直接下发 focusTarget', async () => {
     vi.mocked(getReleases).mockResolvedValue([
       { id: 3, source_type: 'youtube', owner: 'UCabc', repo: '', tag_name: '', source_description: '某频道' } as never,
     ])
@@ -757,10 +757,11 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
     await emitFocusRelease(wrapper, 3)
 
     expect(activeTabIsReleases(wrapper)).toBe(true)
-    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('某频道')
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(3)
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('')
   })
 
-  it('视频源且无 source_description 时回退为 owner', async () => {
+  it('视频源且无 source_description 时也直接下发 focusTarget', async () => {
     vi.mocked(getReleases).mockResolvedValue([
       { id: 4, source_type: 'bilibili', owner: '12345', repo: '', tag_name: '', source_description: null } as never,
     ])
@@ -768,7 +769,56 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
 
     await emitFocusRelease(wrapper, 4)
 
-    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('12345')
+    expect(activeTabIsReleases(wrapper)).toBe(true)
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(4)
+    expect(wrapper.findComponent(ReleaseTabStub).props('search')).toBe('')
+  })
+
+  it('连续两次 focus-release 时 token 递增（ReleaseTab 依 token 消费最新目标）', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
+      { id: 9, source_type: 'github', owner: 'vuejs', repo: 'core', tag_name: 'v3' } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 7)
+    const token1 = wrapper.findComponent(ReleaseTabStub).props('focusToken') as number
+    await emitFocusRelease(wrapper, 9)
+    const token2 = wrapper.findComponent(ReleaseTabStub).props('focusToken') as number
+
+    expect(token2).toBe(token1 + 1)
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(9)
+  })
+
+  it('focus-consumed 事件到达时清空 focusTarget', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 7)
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBe(7)
+
+    const tab = wrapper.findComponent(ReleaseTabStub)
+    ;(tab.vm as unknown as { $emit: (e: string) => void }).$emit('focus-consumed')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBeNull()
+  })
+
+  it('focus-not-found 事件到达时给 Toast 提示并清空目标', async () => {
+    vi.mocked(getReleases).mockResolvedValue([
+      { id: 1, source_type: 'github', owner: 'a', repo: 'b', tag_name: 'v1' } as never,
+    ])
+    const wrapper = await mountRealApp()
+
+    await emitFocusRelease(wrapper, 999)
+    const tab = wrapper.findComponent(ReleaseTabStub)
+    ;(tab.vm as unknown as { $emit: (e: string) => void }).$emit('focus-not-found')
+    await wrapper.vm.$nextTick()
+
+    expect(activeTabIsReleases(wrapper)).toBe(true)
+    expect(wrapper.findComponent(ReleaseTabStub).props('focusTarget')).toBeNull()
+    expect(wrapper.find('.toast').exists()).toBe(true)
   })
 })
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
 import ReleaseItem from './ReleaseItem.vue'
@@ -21,6 +21,42 @@ const sortedReleases = computed(() => {
     (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime()
   )
 })
+
+// VirtualList 是泛型组件，InstanceType 不可用；这里只需要它的 scrollToIndex 能力
+interface VirtualListHandle {
+  scrollToIndex: (index: number) => void
+}
+const virtualList = ref<VirtualListHandle | null>(null)
+// 通知定位高亮：目标 id 短暂高亮后自动清除（由 VirtualList 滚到可视区后设置）
+const highlightId = ref<number | null>(null)
+let highlightTimer: ReturnType<typeof setTimeout> | null = null
+
+// 卸载时清掉挂起的高亮定时器，避免对已卸载实例继续写状态
+onUnmounted(() => {
+  if (highlightTimer) clearTimeout(highlightTimer)
+  highlightTimer = null
+})
+
+/** 定位到指定 release：滚动使其可见并短暂高亮。返回是否找到。 */
+function focusReleaseId(id: number): boolean {
+  const index = sortedReleases.value.findIndex(r => r.id === id)
+  if (index < 0) return false
+  // 先滚动到目标（虚拟列表会确保对应行渲染），滚动完成后再置高亮并等待元素挂载
+  virtualList.value?.scrollToIndex(index)
+  const clearTimer = () => {
+    if (highlightTimer) clearTimeout(highlightTimer)
+    highlightTimer = null
+  }
+  clearTimer()
+  highlightId.value = id
+  highlightTimer = setTimeout(() => {
+    highlightId.value = null
+    highlightTimer = null
+  }, 2600)
+  return true
+}
+
+defineExpose({ focusReleaseId })
 </script>
 
 <template>
@@ -42,12 +78,14 @@ const sortedReleases = computed(() => {
     </div>
     <VirtualList
       v-else
+      ref="virtualList"
       :items="sortedReleases"
       :item-key="release => release.id"
     >
       <template #default="{ item }">
         <ReleaseItem
           :release="item"
+          :highlighted="highlightId === item.id"
           @update="emit('update')"
           @open-detail="(release) => emit('open-detail', release, sortedReleases)"
         />

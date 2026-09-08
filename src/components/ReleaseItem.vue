@@ -16,7 +16,7 @@ import { useLineClamp } from '../composables/useLineClamp'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 
-const props = defineProps<{ release: ReleaseInfo }>()
+const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
@@ -534,7 +534,7 @@ const youtubeViewTitle = computed(() =>
 
 <template>
   <div class="release-item"
-    :class="[{ 'is-prerelease': release.prerelease }, showImportance ? releaseImportanceClass(release) : '']"
+    :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted }, showImportance ? releaseImportanceClass(release) : '']"
     :draggable="agentEnabled && agentPanelOpen"
     @dragstart="handleDragStart">
     <div class="release-header">
@@ -674,6 +674,18 @@ const youtubeViewTitle = computed(() =>
 
 .release-item:hover {
   border-color: var(--border-strong);
+}
+
+/* 通知定位高亮：短暂呼吸动画后停留在强调边框，不抢焦点、不影响布局 */
+.release-item.release-highlight {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
+  animation: release-focus-pulse 1.2s ease-out 2;
+}
+
+@keyframes release-focus-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent); }
+  50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 45%, transparent); }
 }
 
 .release-header {

@@ -19,6 +19,9 @@ const props = withDefaults(defineProps<{
   virtualizeThreshold: 100,
 })
 
+/** 定位时的额外留白：目标行与顶部 sticky 栏之间留一点呼吸空间（px）。 */
+const EDGE_PADDING = 12
+
 const containerEl = ref<HTMLElement | null>(null)
 const scrollTop = ref(0)
 const viewport = ref(0)
@@ -148,6 +151,91 @@ function teardownScroll() {
   roSelf?.disconnect()
   roSelf = null
 }
+
+/** 滚动容器内吸附在顶部的元素（sticky 搜索/筛选栏）在视口顶部占住的高度。
+ *  定位目标行时必须为它们留位，否则行顶部会被 sticky 元素遮住。
+ *  `top` 可能为负（滚动后收起，如 `top: -16px`），此时实际遮挡 = 高度 + top。 */
+function measureStickyTop(parent: HTMLElement): number {
+  let inset = 0
+  for (const el of parent.querySelectorAll<HTMLElement>('*')) {
+    const cs = window.getComputedStyle(el)
+    if (cs.position !== 'sticky' || cs.display === 'none') continue
+    const top = Number.parseFloat(cs.top)
+    const occupy = el.offsetHeight + (Number.isFinite(top) ? top : 0)
+    if (occupy > inset) inset = occupy
+  }
+  return inset
+}
+
+/** 滚动使指定下标行可见（供“通知定位”等外部按索引定位）。
+ *  虚拟化场景：目标行已挂载则直接精确校正；未挂载则先按估算把它滚进渲染窗口，
+ *  等一帧行渲染后再精确校正（行高可能变化）。非虚拟化直接 `scrollIntoView`。
+ *  两种场景都为顶部 sticky 元素预留空间，避免目标行被搜索/筛选栏遮住。 */
+function scrollToIndex(index: number) {
+  if (index < 0 || index >= props.items.length) return
+  if (!virtualizing.value) {
+    const items = containerEl.value?.querySelectorAll<HTMLElement>('.virtual-item, .virtual-list-plain > *')
+    const el = items?.[index]
+    if (!el) return
+    // 原生 scrollIntoView 不感知 sticky 遮挡：用 scroll-margin-top 显式留出顶部安全区。
+    // 非虚拟化时未建立滚动监听，这里临时查找一次滚动容器（纯函数，无副作用）。
+    const parent = scrollParent ?? (containerEl.value ? findScrollParent(containerEl.value) : null)
+    const inset = parent ? measureStickyTop(parent) : 0
+    if (inset > 0) el.style.scrollMarginTop = `${inset + EDGE_PADDING}px`
+    el.scrollIntoView({ block: 'nearest' })
+    return
+  }
+  const parent = scrollParent
+  const root = containerEl.value
+  if (!parent || !root) return
+  const targetKey = keyOf(props.items[index], index)
+  const inset = measureStickyTop(parent)
+  const findRowEl = () => {
+    const cur = containerEl.value
+    if (!cur) return null
+    for (const el of cur.querySelectorAll<HTMLElement>('.virtual-item')) {
+      if (el.dataset.vkey === targetKey) return el
+    }
+    return null
+  }
+  /** 精确校正：把行顶部对齐到「sticky 安全区之下」，并在剩余可用区内居中
+   *  （行高于可用区时贴安全区顶部，保证至少顶部完整可见）。
+   *  增量按“行相对滚动容器视口的 y”计算——不能用“行相对列表容器的偏移”，
+   *  两者相差列表容器顶部在视口中的位置，会导致越往后的行滚得越过头。 */
+  const alignRow = (): boolean => {
+    const el = findRowEl()
+    if (!el) return false
+    const free = Math.max(0, parent.clientHeight - inset)
+    const pad = el.offsetHeight > free ? 0 : Math.max(0, (free - el.offsetHeight) / 2)
+    const currentY = el.getBoundingClientRect().top - parent.getBoundingClientRect().top
+    // 夹住下界：顶部目标行可能在无滚动空间时算出负值（浏览器也会夹，但显式更明确）
+    parent.scrollTop = Math.max(0, parent.scrollTop + currentY - inset - pad)
+    return true
+  }
+  // 已挂载（可能在视口外）：直接校正
+  if (alignRow()) return
+  // 未挂载：先按估算把它滚进渲染窗口，再等帧校正。
+  // 列表容器顶部在“滚动内容坐标”中的位置 = 视口偏移 + 当前 scrollTop。
+  const containerInContent =
+    root.getBoundingClientRect().top - parent.getBoundingClientRect().top + parent.scrollTop
+  const coarse = (off: number) => {
+    parent.scrollTop = Math.max(0, containerInContent + off - inset - EDGE_PADDING)
+  }
+  coarse(measured.value.offsets[index] ?? 0)
+  // 行高在渲染过程中逐步被测出，估算值随之收敛：每帧重试校正，失败则按最新
+  // 测量值重新粗定位，直到命中或达到帧数上限（避免无限 rAF）。
+  let tries = 0
+  const step = () => {
+    // 组件已卸载/列表已重建：停止重试（scrollParent 在 teardown 时置空）
+    if (!containerEl.value || parent !== scrollParent) return
+    if (alignRow()) return
+    coarse(measured.value.offsets[index] ?? 0)
+    if (++tries < 4) requestAnimationFrame(step)
+  }
+  requestAnimationFrame(step)
+}
+
+defineExpose({ scrollToIndex })
 
 watch(virtualizing, (v) => {
   if (v) setupScroll()

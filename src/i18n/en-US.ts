@@ -217,6 +217,7 @@ export default {
   'release.deep_search': 'Deep',
   'release.deep_search_hint': 'Search GitHub/HuggingFace release body and translation',
   'release.empty': 'No releases yet. Add a source and click "Check Now".',
+  'release.focus_missing': 'Could not locate this release (it may have been deleted)',
   'release.prerelease': 'Prerelease',
   'release.published_at': 'Published: {0}',
   'release.open_link': 'Open link',
