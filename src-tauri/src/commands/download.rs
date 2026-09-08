@@ -9,8 +9,8 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
 /// 前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 /// 返回 `Vec<u8>`，IPC 序列化为 number[]。
 ///
-/// SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——禁自动重定向、手动
-/// 跟随（最多 10 跳）且每跳重新执行 `ensure_public_url`（含云元数据私网拦截）。
+/// SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
+/// （防 DNS 重绑定）、禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
 #[tauri::command]
 
 #[specta::specta]pub async fn fetch_url_bytes(
@@ -26,12 +26,14 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
         });
         // conn 随作用域结束归还连接池，网络请求期间不占用
     }
-    let client = http::build_http_client(http::HttpClientConfig {
-        proxy_url: &proxy_url,
-        proxy_mode: &proxy_mode,
-        // 禁自动重定向：跳转目标必须逐跳重新校验（SSRF 防护）
-        follow_redirects: false,
-        ..Default::default()
-    })?;
-    http::fetch_public_bytes(&client, &url, MAX_DOWNLOAD_BYTES).await
+    http::fetch_public_bytes(
+        &http::HttpClientConfig {
+            proxy_url: &proxy_url,
+            proxy_mode: &proxy_mode,
+            ..Default::default()
+        },
+        &url,
+        MAX_DOWNLOAD_BYTES,
+    )
+    .await
 }

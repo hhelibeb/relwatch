@@ -88,8 +88,8 @@ export const commands = {
 	 *  前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 	 *  返回 `Vec<u8>`，IPC 序列化为 number[]。
 	 * 
-	 *  SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——禁自动重定向、手动
-	 *  跟随（最多 10 跳）且每跳重新执行 `ensure_public_url`（含云元数据私网拦截）。
+	 *  SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
+	 *  （防 DNS 重绑定）、禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
 	 */
 	fetchUrlBytes: (url: string) => __TAURI_INVOKE<number[]>("fetch_url_bytes", { url }),
 	/**

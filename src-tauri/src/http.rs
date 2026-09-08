@@ -38,6 +38,22 @@ impl<'a> Default for HttpClientConfig<'a> {
 /// default header；调用方必须在每个需要鉴权的请求上通过 `bearer_auth` 单独设置，
 /// 避免共享 client 时 token 被发给无关域名。
 pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, String> {
+    build_http_client_with_dns(config, &[])
+}
+
+/// `build_http_client` + DNS 固定（`ClientBuilder::resolve_to_addrs`）。
+///
+/// SSRF 场景（下载任意 URL / media 网关）使用：先把目标域名解析并校验为公网 IP，
+/// 再把“校验通过的那组 IP”固定给 client。这样后续请求**不会再次发起 DNS 解析**，
+/// 堵住「校验时解析 A、请求时重新解析成 B」的 DNS 重绑定（TOCTOU）绕过。
+///
+/// `overrides`: `(域名, 已校验公网的 IP 列表)`。固定后 reqwest 只连这些 IP；
+/// 连接端口不受 override 影响——此处统一填端口 0，reqwest 实际连接的端口
+/// 始终由目标 URL 决定（含显式非默认端口，如 `http://host:8080`）。
+fn build_http_client_with_dns(
+    config: HttpClientConfig,
+    overrides: &[(&str, &[std::net::IpAddr])],
+) -> Result<reqwest::Client, String> {
     let mut headers = reqwest::header::HeaderMap::new();
     if config.set_default_auth {
         if let Some(token) = config.bearer_token {
@@ -66,6 +82,13 @@ pub fn build_http_client(config: HttpClientConfig) -> Result<reqwest::Client, St
         // 无 headers 时不调用 default_headers（仅 user_agent）
     } else {
         builder = builder.default_headers(headers);
+    }
+    for (domain, ips) in overrides {
+        let addrs: Vec<std::net::SocketAddr> = ips
+            .iter()
+            .map(|ip| std::net::SocketAddr::new(*ip, 0))
+            .collect();
+        builder = builder.resolve_to_addrs(domain, &addrs);
     }
     // 三态语义唯一来源（见 net::ProxyPolicy）：none/custom+空 → 直连，
     // custom → 显式代理，system/未知 → 由 reqwest 追加系统代理。
@@ -357,11 +380,18 @@ pub fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
 
 /// 校验 URL 目标为公网地址，拒绝私网/回环/链路本地/保留地址（SSRF 防护）。
 ///
-/// - host 为 IP 字面量：直接 `is_private_or_reserved` 判定；
+/// 返回「目标域名 + 已通过公网校验的全部 IP」，供调用方把 IP 固定给 reqwest client
+/// （`resolve_to_addrs`），使**实际连接使用的 IP 与校验通过的 IP 是同一组**——
+/// 堵住「校验时 DNS 解析一次、请求时 reqwest 再解析一次」的 DNS 重绑定（TOCTOU）绕过。
+///
+/// - host 为 IP 字面量：直接 `is_private_or_reserved` 判定，合法时返回该 IP；
 /// - host 为域名：DNS 解析**全部**地址，任一落在私网即拒绝（fail-closed）；
-/// - DNS 解析失败（故障/无网络）：**放行**（fail-open），交由后续请求自然失败，
-///   避免 DNS 瞬时抖动误伤正常下载。
-pub async fn ensure_public_url(url: &str) -> Result<(), String> {
+/// - DNS 解析失败（故障/NXDOMAIN/无网络）：**拒绝**（fail-closed）——此前 fail-open
+///   放行会绕过 IPv6 zone-id 等无法解析的私网形式，且解析失败时请求本身也无法成功，
+///   放行没有实际收益，反而留下 SSRF 绕过面。
+///
+/// 错误统一为 `err.*` 格式（i18n 由调用方负责）。
+pub async fn resolve_public_host(url: &str) -> Result<(String, Vec<std::net::IpAddr>), String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "err.invalid_url".to_string())?;
     // 仅允许 http/https
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -381,28 +411,47 @@ pub async fn ensure_public_url(url: &str) -> Result<(), String> {
         return if is_private_or_reserved(ip) {
             Err("err.private_url_blocked".to_string())
         } else {
-            Ok(())
+            Ok((host, vec![ip]))
         };
     }
     // 域名：解析全部地址，任一私网即拒绝（fail-closed）。
-    // 解析失败（无网络/NXDOMAIN/域名带 zone-id 等）同样拒绝（fail-closed）：
-    // 此前 fail-open 放行会绕过 IPv6 zone-id 等无法解析的私网形式，且解析失败时
-    // 请求本身也无法成功，放行没有实际收益，反而留下 SSRF 绕过面。
     // tokio 的 lookup_host 对纯字符串只接受 IP:port 字面量，域名需传 (host, port)
     // 元组（owned String + u16，无借用）；port 不影响解析结果。
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let lookup = tokio::net::lookup_host((host, port)).await;
-    match lookup {
-        Ok(addrs) => {
-            for addr in addrs {
-                if is_private_or_reserved(addr.ip()) {
-                    return Err("err.private_url_blocked".to_string());
-                }
-            }
-            Ok(())
+    let addrs = tokio::net::lookup_host((host.clone(), port))
+        .await
+        .map_err(|e| format!("err.dns_resolve_failed|{}", e))?;
+    let verified = collect_public_ips(addrs.map(|a| a.ip()))?;
+    Ok((host, verified))
+}
+
+/// 把一组 DNS 解析结果收敛为「已通过公网校验的 IP 列表」（fail-closed）：
+/// - 任一地址落在私网/保留段 → 整批拒绝，不看其余地址；
+/// - 解析成功但一个地址都没返回 → 同样拒绝（否则会把空列表固定给 client，
+///   语义上等于"校验通过"，与 fail-closed 自述不符）。
+fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
+    addrs: I,
+) -> Result<Vec<std::net::IpAddr>, String> {
+    let mut verified = Vec::new();
+    for ip in addrs {
+        if is_private_or_reserved(ip) {
+            return Err("err.private_url_blocked".to_string());
         }
-        Err(e) => Err(format!("err.dns_resolve_failed|{}", e)),
+        if !verified.contains(&ip) {
+            verified.push(ip);
+        }
     }
+    if verified.is_empty() {
+        return Err("err.dns_resolve_failed|no addresses".to_string());
+    }
+    Ok(verified)
+}
+
+/// 便捷版：仅校验，不返回 IP（无 DNS 固定需求的调用方用，语义同旧 `ensure_public_url`）。
+/// 当前仅测试直接使用，生产路径统一走 `resolve_public_host`（带 DNS 固定）。
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn ensure_public_url(url: &str) -> Result<(), String> {
+    resolve_public_host(url).await.map(|_| ())
 }
 
 /// 下载 URL 的原始字节（剪贴板图片等场景），限制最大 `max_bytes` 防止异常响应撑爆内存。
@@ -448,26 +497,43 @@ pub async fn download_bytes(
 /// 带 SSRF 逐跳校验的公开资源下载核心：供「下载任意 URL」与 media:// 协议共用。
 ///
 /// - 要求 URL 为 http/https；
-/// - 手动跟随重定向（最多 10 跳），**每一跳重新执行 `ensure_public_url`**——禁自动
-///   重定向是因为 reqwest 自动跟随不会对跳转目标重新校验，恶意服务器可用 302 把
-///   请求导向内网（如 169.254.169.254 云元数据）；
+/// - 手动跟随重定向（最多 10 跳），**每一跳先 `resolve_public_host` 解析并校验为
+///   公网 IP，再以 `resolve_to_addrs` 把该组 IP 固定到本次请求的 client**——这样
+///   实际连接的 IP 与校验通过的 IP 完全一致，堵住 DNS 重绑定（TOCTOU）绕过（评审 P1-2）；
+///   禁自动重定向是因为 reqwest 自动跟随不会对跳转目标重新校验，恶意服务器可用 302
+///   把请求导向内网（如 169.254.169.254 云元数据）；
 /// - 响应体不得超过 `max_bytes`。
 ///
-/// 代理语义不在本函数内：调用方用已按 ProxyPolicy 构建好的 client 传入。
-/// `client` 应禁自动重定向（`redirect::Policy::none`），本函数按 Location 手动跟随。
+/// 代理语义：`config` 携带 proxy_url/proxy_mode（`HttpClientConfig` 复用），每次请求
+/// 都按此重新构建 client 并附加 DNS 固定；`follow_redirects` 固定为 false。
+///
+/// # 为什么不在外部传入已建好的 client
+///
+/// 旧实现接收调用方构建好的 `&reqwest::Client`，但该 client 已固定 DNS 解析器，无法再
+/// 附加 `resolve_to_addrs`，只能依赖“校验后让 reqwest 再解析一次” —— 这正是 TOCTOU 的
+/// 根因。改为接收配置、内部重建，代价是每次下载重建一次 client（连接池/句柄开销可忽略，
+/// 与 media 网关既有的“每请求重建”行为一致）。
 pub async fn fetch_public_bytes(
-    client: &reqwest::Client,
+    config: &HttpClientConfig<'_>,
     url: &str,
     max_bytes: usize,
 ) -> Result<Vec<u8>, String> {
-    let (bytes, _content_type) = fetch_public_with_headers(client, url, max_bytes).await?;
+    let (bytes, _content_type) = fetch_public_with_headers(config, url, max_bytes).await?;
     Ok(bytes)
 }
 
 /// `fetch_public_bytes` 的带 Content-Type 版本。media:// 需要把远端响应的
 /// Content-Type 原样透传给 Chromium，否则某些 `<img>` 场景可能被误判。
+///
+/// # custom 代理模式的边界（威胁模型）
+///
+/// 当 `proxy_mode=custom` 时，实际 DNS 解析发生在**代理端**：reqwest 把请求交给代理，
+/// 代理再解析目标域名——本函数的 `resolve_to_addrs` 固定对代理转发不生效，恶意代理可以
+/// 在转发时把目标解析到内网。这意味着 DNS 重绑定防护仅在直连（`none`/`system`）下
+/// 完整成立；custom 代理下本函数仍做逐跳公网校验（fail-closed），但**无法约束代理内部
+/// 的二次解析**。该限制是代理架构固有（代理本身是可信出口），已在评审中记为残余面。
 pub async fn fetch_public_with_headers(
-    client: &reqwest::Client,
+    config: &HttpClientConfig<'_>,
     url: &str,
     max_bytes: usize,
 ) -> Result<(Vec<u8>, Option<String>), String> {
@@ -476,7 +542,22 @@ pub async fn fetch_public_with_headers(
     }
     let mut current = url.to_string();
     for _ in 0..10 {
-        ensure_public_url(&current).await?;
+        // 解析 + 公网校验，拿到校验通过的 IP 列表（fail-closed）
+        let (host, ips) = resolve_public_host(&current).await?;
+        // 为本次请求构建带 DNS 固定的 client：reqwest 将直连校验过的 IP，不再二次解析。
+        // 注意域名请求的 Host/SNI 仍为原始域名，证书校验不受影响。
+        let client = build_http_client_with_dns(
+            HttpClientConfig {
+                proxy_url: config.proxy_url,
+                proxy_mode: config.proxy_mode,
+                bearer_token: config.bearer_token,
+                timeout_secs: config.timeout_secs,
+                content_type_json: false,
+                set_default_auth: false,
+                follow_redirects: false,
+            },
+            &[(&host, &ips)],
+        )?;
         let resp = client
             .get(&current)
             .send()
@@ -796,6 +877,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_resolve_public_host_ip_literal_returns_pinned_ip() {
+        // IP 字面量：直接放行，返回的固定 IP 就是该字面量（无需再解析）
+        let (host, ips) = resolve_public_host("https://8.8.8.8/x").await.unwrap();
+        assert_eq!(host, "8.8.8.8");
+        assert_eq!(ips, vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_public_host_rejects_private_ip_literal() {
+        let err = resolve_public_host("http://127.0.0.1:8080/x").await.unwrap_err();
+        assert!(err.contains("err.private_url_blocked"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_public_host_dns_failure_fails_closed() {
+        // .invalid 保留域名解析必失败：fail-closed（不返回空 IP 列表）
+        let err = resolve_public_host("https://ssrf-test.invalid/x").await.unwrap_err();
+        assert!(err.contains("err.dns_resolve_failed"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_public_host_rejects_invalid() {
+        for url in ["not-a-url", "ftp://example.com/x", "file:///etc/passwd"] {
+            assert!(
+                resolve_public_host(url).await.is_err(),
+                "{} 应拒绝",
+                url
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_resolve_public_host_ipv6_literal() {
+        // IPv6 字面量同样返回去重后的固定 IP（公网）
+        let (host, ips) = resolve_public_host("https://[2606:4700::1111]/x").await.unwrap();
+        assert_eq!(host, "2606:4700::1111");
+        assert_eq!(ips, vec!["2606:4700::1111".parse::<std::net::IpAddr>().unwrap()]);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_public_host_rejects_private_ipv6_literal() {
+        let err = resolve_public_host("https://[::1]:443/x").await.unwrap_err();
+        assert!(err.contains("err.private_url_blocked"), "{}", err);
+    }
+
+    #[tokio::test]
     async fn test_ensure_public_url_blocks_private() {
         let blocked = [
             "http://127.0.0.1:8080/x",
@@ -848,5 +975,70 @@ mod tests {
         for url in invalid {
             assert!(ensure_public_url(url).await.is_err(), "{} 应拒绝", url);
         }
+    }
+
+    #[test]
+    fn test_collect_public_ips_rejects_empty() {
+        // 解析「成功但零地址」不能当成校验通过：否则会把空列表固定给 client，
+        // 语义上等于放行（与 fail-closed 自述不符）
+        let err = collect_public_ips(Vec::new()).unwrap_err();
+        assert!(err.contains("err.dns_resolve_failed"), "{}", err);
+    }
+
+    #[test]
+    fn test_collect_public_ips_rejects_private_among_public() {
+        // 任一私网即整批拒绝：不允许「挑出公网地址继续用」
+        let ips: Vec<std::net::IpAddr> = vec![
+            "93.184.216.34".parse().unwrap(),
+            "127.0.0.1".parse().unwrap(),
+            "8.8.8.8".parse().unwrap(),
+        ];
+        let err = collect_public_ips(ips).unwrap_err();
+        assert!(err.contains("err.private_url_blocked"), "{}", err);
+    }
+
+    #[tokio::test]
+    async fn test_dns_override_pins_request_to_verified_ip() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // 本地起一个极简 HTTP 服务，把一个域名固定到 127.0.0.1。
+        // 若 `resolve_to_addrs` 未生效，`pinned.invalid` 会走真实 DNS 直接失败——
+        // 因此「请求成功」即证明实际连接用的是被固定的 IP，没有发生二次解析。
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 1024];
+            while !acc.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                acc.extend_from_slice(&buf[..n]);
+            }
+            let resp = b"HTTP/1.1 200 OK\r\ncontent-length: 6\r\n\r\npinned";
+            sock.write_all(resp).await.unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        let pinned: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let pinned_addrs: [std::net::IpAddr; 1] = [pinned];
+        let overrides: [(&str, &[std::net::IpAddr]); 1] = [("pinned.invalid", &pinned_addrs)];
+        let client = build_http_client_with_dns(
+            HttpClientConfig {
+                timeout_secs: 5,
+                follow_redirects: false,
+                ..Default::default()
+            },
+            &overrides,
+        )
+        .unwrap();
+        let resp = client
+            .get(format!("http://pinned.invalid:{}/x", port))
+            .send()
+            .await
+            .expect("请求应命中被固定的 127.0.0.1，而不是重新解析 DNS");
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.text().await.unwrap(), "pinned");
     }
 }

@@ -21,7 +21,8 @@
 //!
 //! ## 安全
 //!
-//! - 仅转发公网可访问的 http(s)（`ensure_public_url` 逐跳校验，防 SSRF）；
+//! - 仅转发公网可访问的 http(s)（每跳 `resolve_public_host` 解析校验为公网 IP 并
+//!   固定给 client（防 DNS 重绑定），详见 `fetch_public_with_headers`）；
 //! - 磁盘缓存 key 是 URL 的 SHA-256，不信任外部输入做文件名；
 //! - 单文件 25MB 上限（与 commands/download.rs 对齐），防异常响应撑爆内存/磁盘；
 //! - 非 http(s) 直接 400；请求失败 502；缓存/下载错误不暴露内部细节。
@@ -234,50 +235,49 @@ fn hex_val(b: u8) -> Option<u8> {
 
 // ── 服务入口 ──
 
-/// 从 AppHandle 读代理设置，构建「已按 ProxyPolicy 配置」的下载 client。
-fn build_proxied_client(app: &AppHandle) -> Result<reqwest::Client, String> {
-    let (proxy_url, proxy_mode) = {
-        let conn = app
-            .state::<AppState>()
-            .db
-            .get()
-            .map_err(|e| format!("err.db_connect|{}", e))?;
-        let pu = get_setting(&conn, KEY_PROXY_URL)
-            .map_err(|e| e.to_string())?
-            .unwrap_or_default();
-        let pm = get_setting(&conn, KEY_PROXY_MODE)
-            .map_err(|e| e.to_string())?
-            .unwrap_or_else(|| {
-                if pu.is_empty() {
-                    "none".to_string()
-                } else {
-                    "custom".to_string()
-                }
-            });
-        (pu, pm)
-    };
-    http::build_http_client(http::HttpClientConfig {
-        proxy_url: &proxy_url,
-        proxy_mode: &proxy_mode,
-        // 禁自动重定向：逐跳 SSRF 校验必须手动跟随
-        follow_redirects: false,
-        ..Default::default()
-    })
-}
-
 /// 解码 + 命中缓存/回源下载。返回 (bytes, content_type)。
 async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String), String> {
     let url = decode_media_path(path.trim_start_matches('/'))?;
     if let Some(hit) = read_cached(&url)? {
         return Ok(hit);
     }
-    let client = build_proxied_client(app)?;
+    // 读代理设置并交给下载核心：核心会解析+校验目标为公网并固定 IP（防 DNS 重绑定）。
+    let (proxy_url, proxy_mode) = read_proxy_settings(app)?;
+    let config = http::HttpClientConfig {
+        proxy_url: &proxy_url,
+        proxy_mode: &proxy_mode,
+        // 禁自动重定向：逐跳 SSRF 校验必须手动跟随（核心内固定）
+        follow_redirects: false,
+        ..Default::default()
+    };
     let (bytes, content_type) =
-        http::fetch_public_with_headers(&client, &url, MAX_MEDIA_BYTES).await?;
+        http::fetch_public_with_headers(&config, &url, MAX_MEDIA_BYTES).await?;
     let content_type = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
     write_cache(&url, &bytes, &content_type);
     evict_if_needed();
     Ok((bytes, content_type))
+}
+
+/// 读取代理设置（mode 为空时按 url 推断 custom/none，与其它入口一致）。
+fn read_proxy_settings(app: &AppHandle) -> Result<(String, String), String> {
+    let conn = app
+        .state::<AppState>()
+        .db
+        .get()
+        .map_err(|e| format!("err.db_connect|{}", e))?;
+    let pu = get_setting(&conn, KEY_PROXY_URL)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let pm = get_setting(&conn, KEY_PROXY_MODE)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| {
+            if pu.is_empty() {
+                "none".to_string()
+            } else {
+                "custom".to_string()
+            }
+        });
+    Ok((pu, pm))
 }
 
 /// 处理一次 media 请求：组装 http 响应（成功 200 / 参数错 400 / 下载失败 502）。
