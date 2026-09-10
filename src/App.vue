@@ -6,6 +6,7 @@ import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events, commands } from './bindings'
 import { type Source, listSources, sourceRepoKey, syncSourceCapabilities } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
+import { copyTextToClipboard } from './api/client'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
 import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
@@ -288,7 +289,13 @@ function closeAllMenus() {
 
 async function handleCopySelection() {
   const text = window.getSelection()?.toString().trim()
-  if (text) { try { await navigator.clipboard.writeText(text) } catch { /* ignore */ } }
+  if (text) {
+    try {
+      await copyTextToClipboard(text)
+    } catch (e: unknown) {
+      showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    }
+  }
   closeAllMenus()
 }
 

@@ -14,6 +14,7 @@ vi.mock('../api/releases', () => ({
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
+  copyTextToClipboard: vi.fn(),
 }))
 
 // 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
@@ -33,12 +34,11 @@ vi.mock('../composables/contextMenuBus', () => ({
 }))
 
 import { setNotificationState, deleteRelease } from '../api/releases'
-import { openReleaseUrl } from '../api/client'
+import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { closeAllContextMenus } from '../composables/contextMenuBus'
 
-// Mock clipboard
-const mockClipboard = { writeText: vi.fn().mockResolvedValue(undefined) }
-Object.assign(navigator, { clipboard: mockClipboard })
+// 剪贴板写入统一走 Rust 路径（src/api/client.ts 的 copyTextToClipboard）
+const copyTextToClipboardMock = vi.mocked(copyTextToClipboard)
 
 function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
   return {
@@ -126,7 +126,7 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
     const ctxMenu = wrapper.findComponent({ name: 'ContextMenu' })
     await ctxMenu.vm.$emit('action', 'copyLink')
 
-    expect(mockClipboard.writeText).toHaveBeenCalledWith('https://example.com/release')
+    expect(copyTextToClipboardMock).toHaveBeenCalledWith('https://example.com/release')
   })
 
   it('右键菜单选择"删除版本" → 调用 deleteRelease 并 emit update', async () => {
@@ -195,7 +195,7 @@ describe('ReleaseItem.vue — 右键菜单: 摘要复制', () => {
     const ctxMenu = wrapper.findComponent({ name: 'ContextMenu' })
     await ctxMenu.vm.$emit('action', 'copyContent')
 
-    expect(mockClipboard.writeText).toHaveBeenCalledWith('这是一个修复摘要')
+    expect(copyTextToClipboardMock).toHaveBeenCalledWith('这是一个修复摘要')
   })
 
   it('无摘要时右键不触发菜单', async () => {

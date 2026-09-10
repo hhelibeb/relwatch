@@ -4,7 +4,7 @@ import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
-import { openReleaseUrl } from '../api/client'
+import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
@@ -201,7 +201,11 @@ function handleSummaryContextMenu(e: MouseEvent, text: string | null) {
 async function handleCopySummary() {
   if (!summaryContextMenu.value?.text) return
   track('release.copy')
-  try { await navigator.clipboard.writeText(summaryContextMenu.value.text) } catch { /* ignore */ }
+  try {
+    await copyTextToClipboard(summaryContextMenu.value.text)
+  } catch (e: unknown) {
+    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+  }
   summaryContextMenu.value = null
 }
 
@@ -344,7 +348,11 @@ function handleFlagMenuAction(actionId: string) {
 
 async function handleCopyLink() {
   track('release.copy')
-  try { await navigator.clipboard.writeText(contextMenu.value!.url) } catch { /* ignore */ }
+  try {
+    await copyTextToClipboard(contextMenu.value!.url)
+  } catch (e: unknown) {
+    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+  }
   closeMenus()
 }
 

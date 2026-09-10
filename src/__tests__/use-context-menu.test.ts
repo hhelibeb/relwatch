@@ -2,13 +2,16 @@ import { describe, expect, it, vi, afterEach } from 'vitest'
 import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { useContextMenu } from '../composables/useContextMenu'
-import { openReleaseUrl } from '../api/client'
+import { openReleaseUrl, copyTextToClipboard } from '../api/client'
+import { ShowToastKey } from '../injection-keys'
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
+  copyTextToClipboard: vi.fn(),
 }))
 
 const openReleaseUrlMock = vi.mocked(openReleaseUrl)
+const copyTextToClipboardMock = vi.mocked(copyTextToClipboard)
 
 const ContextMenuHarness = defineComponent({
   setup() {
@@ -76,6 +79,36 @@ describe('useContextMenu — 通用关闭行为', () => {
 
     expect(openReleaseUrlMock).toHaveBeenCalledWith('https://example.com/release')
     expect(wrapper.find('.menu').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('复制链接动作统一走 copyTextToClipboard，成功后关闭菜单', async () => {
+    copyTextToClipboardMock.mockResolvedValue(undefined)
+    const wrapper = mount(ContextMenuHarness)
+
+    await wrapper.get('.target').trigger('contextmenu')
+    await wrapper.get('.copy').trigger('click')
+    await nextTick()
+
+    expect(copyTextToClipboardMock).toHaveBeenCalledWith('https://example.com/release')
+    expect(wrapper.find('.menu').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('复制链接失败时通过 Toast 给出反馈（不再静默失败）', async () => {
+    copyTextToClipboardMock.mockRejectedValueOnce(new Error('boom'))
+    const showToast = vi.fn()
+    const wrapper = mount(ContextMenuHarness, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+
+    await wrapper.get('.target').trigger('contextmenu')
+    await wrapper.get('.copy').trigger('click')
+    await nextTick()
+    await nextTick()
+
+    expect(showToast).toHaveBeenCalledTimes(1)
+    expect(String(showToast.mock.calls[0][0])).toContain('boom')
     wrapper.unmount()
   })
 })

@@ -14,6 +14,7 @@ import {
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
 import { getReleases, type ReleaseInfo } from '../api/releases'
+import { copyTextToClipboard } from '../api/client'
 import { t } from '../i18n'
 import { useAgentUsage } from './agent/useAgentUsage'
 import { useAgentRpc } from './agent/useAgentRpc'
@@ -375,7 +376,7 @@ async function handleCopySessionCommand(run: AgentRunSummary) {
   if (!run.session_path) return
   try {
     const cmd = await getAgentSessionCommand(run.id)
-    await navigator.clipboard.writeText(cmd)
+    await copyTextToClipboard(cmd)
     showToast(t('agent.command_copied'))
   } catch (e) {
     showToast(String(e))

@@ -1038,9 +1038,8 @@ describe('App.vue — 主内容滚动状态', () => {
 })
 
 describe('App.vue — 右键菜单（document 事件入口）', () => {
-  it('选中文本后右键 → 复制菜单，点击复制写入剪贴板', async () => {
-    const mockClipboard = { writeText: vi.fn().mockResolvedValue(undefined) }
-    Object.assign(navigator, { clipboard: mockClipboard })
+  it('选中文本后右键 → 复制菜单，点击复制走 Rust 剪贴板命令', async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined)
     vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => '选中的文本' } as unknown as Selection)
 
     const wrapper = await mountRealApp()
@@ -1052,7 +1051,8 @@ describe('App.vue — 右键菜单（document 事件入口）', () => {
     await wrapper.find('.stub-menu-item').trigger('click')
     await flushPromises()
 
-    expect(mockClipboard.writeText).toHaveBeenCalledWith('选中的文本')
+    // 不再走 navigator.clipboard（右键菜单场景不可靠），统一由 Rust 端写入
+    expect(invoke).toHaveBeenCalledWith('set_clipboard_text', { text: '选中的文本' })
   })
 
   it('无选中文本时右键不显示复制菜单', async () => {
