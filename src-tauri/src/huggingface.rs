@@ -289,6 +289,23 @@ pub fn insert_new_models(
     parsed.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let mut inserted = Vec::new();
+    let inserted_any = std::cell::Cell::new(false);
+    // 循环任意出口统一收尾：本轮确有新插入时对该 source 全链重算一次 version_bump
+    // （原实现由 insert_release 内部逐条重算，历史模式首拉 N 条退化为 O(N²)；
+    // 此处改为批量结束一次，最终态等价）。version_bump 只依赖 tag/published_at，
+    // 在阶段 1（README 回填前）即可重算，无需等 finalize_models。
+    // 失败仅记日志不回滚插入：派生列留 NULL，下次批量保存会补算（有意取舍，同 save.rs）。
+    let finalize = || {
+        if inserted_any.get() {
+            if let Err(e) = releases::recompute_version_bumps(conn, source_id) {
+                log::error!(
+                    "recompute_version_bumps failed (source_id={}): {}",
+                    source_id,
+                    e
+                );
+            }
+        }
+    };
     for model in &parsed {
         if model.created_at.is_empty() {
             continue;
@@ -307,12 +324,14 @@ pub fn insert_new_models(
             None,
         ) {
             if id > 0 {
+                inserted_any.set(true);
                 inserted.push(NewModel {
                     id,
                     tag: tag.clone(),
                     metadata,
                 });
                 if inserted.len() >= max_count {
+                    finalize();
                     return inserted;
                 }
                 continue;
@@ -320,10 +339,12 @@ pub fn insert_new_models(
         }
         // 已入库且普通模式（max_count=1）时，说明不是新模型，停止
         if max_count == 1 {
+            finalize();
             return vec![];
         }
         // 历史模式：已存在的跳过，继续找更新的新模型
     }
+    finalize();
     inserted
 }
 

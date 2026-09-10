@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, ref, shallowRef, watch } from 'vue'
+import { computed, inject, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { isReadStatus, isUnreadStatus, filterReleaseIndices, buildBodyIndex } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
@@ -200,12 +200,17 @@ watch(deepSearch, (on) => {
 })
 // releases 引用变化时旧索引失效（轮询完成 / 标记已读等都会整体替换 releases.value）。
 // 若此时处于深度搜索态，必须就地重建：否则 deepSearch 仍为 true、按钮仍高亮，
-// 过滤却只剩 Tier1，body 命中结果静默消失。重建成本同 runDeepSearch（约 100ms 量级），
-// 且只在深度搜索会话内发生，可接受。
+// 过滤却只剩 Tier1，body 命中结果静默消失。
+//
+// 重建成本同 runDeepSearch（约 100ms 量级），且只在深度搜索会话内发生。原实现为
+// 同步 buildBodyIndex（见评审）：几十 MB 文本 toLowerCase + map 直接卡主线程，且
+// 与 runDeepSearch 的「先让帧、loading 态、竞态防护」语义不一致。改为统一走
+// scheduleBodyIndexRebuild（单飞 + rAF 帧合并）：同一帧内多次替换合并为一次重建，
+// 重建让出一帧避免阻塞渲染，期间 deepSearching 置位让 UI 呈现 loading。
 watch(() => props.releases, () => {
   bodyIndex.value = null
   if (deepSearch.value && releaseSearch.value.trim()) {
-    bodyIndex.value = buildBodyIndex(props.releases)
+    scheduleBodyIndexRebuild()
   }
 })
 // 搜索词被清空时自动退出深度搜索态并释放索引
@@ -216,18 +221,49 @@ watch(releaseSearch, (q) => {
   }
 })
 
+// ── 深度搜索索引重建（统一入口）──
+// 触发点：用户开启深度搜索（runDeepSearch）、深度搜索态下数据整体替换（上方 watch）。
+// 单飞 + rAF 帧合并：
+// - 同一渲染帧内多次请求只排一次 rAF，重建时取最新 props.releases，避免 N 次全量 build；
+// - 重建在下一帧执行（先让当前帧渲染 loading / 新列表），不阻塞主线程渲染；
+// - 重建前复核条件（仍深度搜索 + 搜索词非空）。用**最新** props.releases 构建是刻意的：
+//   即使等待期间数据又变，也直接以最新数据建索引，而不是丢弃重建（丢弃会让索引
+//   永久停留 null，深度搜索静默失效）；数据再变会再次触发 watch 重新排队，天然收敛。
+//
+// 已知取舍：watch 触发时先把 bodyIndex 置 null（旧索引下标与新数组错位，必须清），
+// 再异步重建。这会在下一帧前产生一个短暂窗口：深度搜索只剩 Tier1 过滤，命中结果
+// 先变少再恢复（可感知为一次闪烁）。这是不阻塞主线程的代价，且清空是唯一安全选择
+// （保留旧索引会因下标错位产生错误结果），故有意保留。
+let bodyIndexRebuildRaf = 0
+function scheduleBodyIndexRebuild() {
+  if (bodyIndexRebuildRaf !== 0) return // 单飞：已在排队
+  deepSearching.value = true
+  bodyIndexRebuildRaf = requestAnimationFrame(() => {
+    bodyIndexRebuildRaf = 0
+    // 竞态防护：等待期间已关闭深度搜索 / 清空搜索词 / 已退出，丢弃本次重建
+    if (!deepSearch.value || !releaseSearch.value.trim()) {
+      deepSearching.value = false
+      bodyIndex.value = null
+      return
+    }
+    bodyIndex.value = buildBodyIndex(props.releases)
+    deepSearching.value = false
+  })
+}
+
+// 组件卸载（切 tab / 路由离开）时取消排队中的重建：回调闭包持有 props.releases
+// 引用（几十 MB 文本），若不取消会在卸载后继续白跑一次 buildBodyIndex 并拖慢回收。
+onUnmounted(() => {
+  if (bodyIndexRebuildRaf !== 0) {
+    cancelAnimationFrame(bodyIndexRebuildRaf)
+    bodyIndexRebuildRaf = 0
+  }
+})
+
 async function runDeepSearch() {
   if (!releaseSearch.value.trim()) return
-  deepSearching.value = true
-  // 让出一帧，保证 loading 态能渲染出来（20× 下构建约 100ms）
-  await new Promise(r => requestAnimationFrame(() => r(null)))
-  // 竞态防护：等待期间用户已关闭深度搜索（或清空搜索词），丢弃本次构建
-  if (!deepSearch.value || !releaseSearch.value.trim()) {
-    deepSearching.value = false
-    return
-  }
-  bodyIndex.value = buildBodyIndex(props.releases)
-  deepSearching.value = false
+  // 深度搜索态由 onDeepSearchToggle / enableDeepSearch 先行置位；此处仅触发重建
+  scheduleBodyIndexRebuild()
 }
 
 function onDeepSearchToggle(on: boolean) {

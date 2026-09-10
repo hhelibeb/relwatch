@@ -75,11 +75,9 @@ pub fn insert_release(
             params![release_id, now],
         )
         .map_err(|e| e.to_string())?;
-
-        // version_bump：在插入事务内重算本 source 全链（而非只算本条）。
-        // 历史模式（save_entries_generic 按 published 降序逐条进库）下先插新版本、
-        // 后补旧版本，只比较「库里已有的上一条」会拿到错误基线。
-        recompute_version_bumps(&tx, source_id)?;
+        // version_bump 不在单条插入事务内逐条全链重算（原实现）：
+        // 单条插入就拉全链 SELECT + 逐行 UPDATE，历史模式批量插入退化为 O(N²)。
+        // 改由批量保存循环（save_entries_generic / insert_new_models）结束后统一重算一次。
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -144,8 +142,15 @@ fn bump_between(prev: (u64, u64, u64), cur: (u64, u64, u64)) -> Option<&'static 
 }
 
 /// 重算指定 source 全部 release 的 version_bump（只写值发生变化的行：
-/// 增量插入时链上其余行新旧值相同，跳过写入，让「插入一条 → 全链重算」的
-/// 热路径通常只产生一次真实 UPDATE）。
+/// 增量插入时链上其余行新旧值相同，跳过写入，让「批量插入 → 一次全链重算」的
+/// 热路径只产生少量真实 UPDATE）。
+///
+/// **调用方契约**：insert_release 不再自动触发本函数（避免逐条全链重算 O(N²)）；
+/// 由批量保存入口负责在循环收尾时统一调用一次：
+/// - `db::save::save_entries_generic`（github/youtube/bilibili 共用）
+/// - `huggingface::insert_new_models`
+///
+/// 直接调用 insert_release 的代码（如测试/工具）若需 version_bump 正确，须自行收尾重算。
 ///
 /// 规则：按 published_at 升序（同刻按 id），与**前一个能解析出 semver 的 tag** 比较：
 /// 主段变大 → major，次段 → minor，补丁段 → patch；tag 无 semver（视频/B 站等）不参与
@@ -1223,10 +1228,15 @@ mod tests {
     fn test_insert_release_computes_version_bump_chain() {
         let conn = init_memory_db().unwrap();
         let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
-        // 乱序插入（先新后旧，等价 save_entries_generic 历史模式的进库顺序）
+        // 乱序插入（先新后旧，等价 save_entries_generic 历史模式的进库顺序）。
+        // 注意：insert_release 不再自动维护 version_bump（评审优化：逐条全链重算
+        // 退化为 O(N²)），改由批量保存入口（save_entries_generic / insert_new_models）
+        // 在循环收尾时统一 recompute 一次。此测试模拟该收尾语义：插入完成后调用一次
+        // recompute_version_bumps，验证全链推导结果。
         insert_release(&conn, sid, "v1.2.1", "R3", "https://x", "2024-01-03T00:00:00Z", false, None).unwrap();
         insert_release(&conn, sid, "v1.2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, None).unwrap();
         insert_release(&conn, sid, "v1.0.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+        recompute_version_bumps(&conn, sid).unwrap(); // 批量收尾（save 循环退出后统一重算）
 
         let releases = get_releases_with_state(&conn).unwrap();
         let bump_of = |tag: &str| {

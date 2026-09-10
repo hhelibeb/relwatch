@@ -5,6 +5,21 @@ import ReleaseTab from '../components/ReleaseTab.vue'
 import { ShowImportanceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
 
+// 统计 buildBodyIndex 真实调用次数（转发原实现，不改行为）：
+// 锁住「深度搜索索引单飞重建」——同帧多次整体替换应只重建一次，
+// 防止将来有人删掉 `if (bodyIndexRebuildRaf !== 0) return` 而测试仍绿。
+const buildBodyIndexSpy = vi.hoisted(() => ({ calls: 0 }))
+vi.mock('../utils', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../utils')>()
+  return {
+    ...actual,
+    buildBodyIndex: (releases: Parameters<typeof actual.buildBodyIndex>[0]) => {
+      buildBodyIndexSpy.calls++
+      return actual.buildBodyIndex(releases)
+    },
+  }
+})
+
 // ── 子组件 stub（保留事件与关键 props，便于驱动交互） ────────────
 
 const expandAll = vi.fn()
@@ -111,6 +126,7 @@ function setSystemTime(iso: string) {
 afterEach(() => {
   vi.useRealTimers()
   vi.clearAllMocks()
+  buildBodyIndexSpy.calls = 0
 })
 
 // ── 视图渲染与过滤 ───────────────────────────────────────────────
@@ -253,6 +269,7 @@ describe('ReleaseTab 深度搜索', () => {
     // 模拟 App.vue loadReleases()：整体替换数组引用（轮询完成 / release-state-changed 后重拉）
     const refreshed = withBody.map(r => ({ ...r }))
     await wrapper.setProps({ releases: refreshed } as Parameters<typeof wrapper.setProps>[0])
+    await flushRaf() // 重建已改为 rAF 单飞（scheduleBodyIndexRebuild）：需让一帧完成异步重建
     await nextTick()
 
     const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
@@ -322,6 +339,69 @@ describe('ReleaseTab 深度搜索', () => {
     expect(list.props('hasSearchQuery')).toBe(false)
     expect(list.props('deepSearch')).toBe(false)
     expect(list.props('releases')).toHaveLength(3)
+  })
+
+  it('深度搜索态下同帧多次整体替换合并为一次重建（取最新数据）', async () => {
+    const withBody = [
+      ...releases,
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+    ]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: withBody, search: 'Major release' },
+      global: { stubs },
+    })
+    await nextTick()
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
+    await flushRaf()
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('releases').map((r: ReleaseInfo) => r.id)).toEqual([4])
+
+    // 同一渲染帧内连续两次整体替换（如轮询 + 标记已读先后各触发一次 loadReleases）：
+    // 单飞 rAF 应把两次合并为一次重建，且最终以最后一次数据为准。
+    // 第一次：body 命中词被改成无关词（id 4 不应再命中）
+    const first = withBody.map((r, i) => ({ ...r, body: i === 3 ? 'unrelated text here' : r.body }))
+    await wrapper.setProps({ releases: first } as Parameters<typeof wrapper.setProps>[0])
+    // 第二次（rAF 尚未执行，仍在同一帧）：恢复命中词并新增另一条命中 release
+    const second = [
+      ...first.slice(0, 3),
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+      createRelease({ id: 5, owner: 'tauri-apps', repo: 'tauri', body: 'another Major release note' }),
+    ]
+    await wrapper.setProps({ releases: second } as Parameters<typeof wrapper.setProps>[0])
+    await flushRaf()
+    await nextTick()
+
+    // 只应做一次重建，且命中使用的是第二次（最新）数据：id 4 与 5 均命中
+    const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
+    expect(list.props('releases').map((r: ReleaseInfo) => r.id).sort((a: number, b: number) => a - b)).toEqual([4, 5])
+    // 单飞锁定：开启时 1 次 + 同帧两次替换合并为 1 次 = 共 2 次（若删了单飞保护会变成 3 次）
+    expect(buildBodyIndexSpy.calls).toBe(2)
+  })
+
+  it('深度搜索态下数据刷新后在重建前卸载组件 → 取消排队重建', async () => {
+    const withBody = [
+      ...releases,
+      createRelease({ id: 4, owner: 'tauri-apps', repo: 'tauri', body: 'Major release with new features' }),
+    ]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: withBody, search: 'Major release' },
+      global: { stubs },
+    })
+    await nextTick()
+    await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
+    await flushRaf()
+    await nextTick()
+    const afterOpen = buildBodyIndexSpy.calls
+
+    // 触发数据刷新 → watch 排队一次 rAF 重建（尚未执行）
+    await wrapper.setProps({ releases: withBody.map(r => ({ ...r })) } as Parameters<typeof wrapper.setProps>[0])
+    // 重建回调执行前卸载组件（切 tab / 路由离开）
+    wrapper.unmount()
+    await flushRaf() // 若 onUnmounted 未取消 rAF，这里会多跑一次 buildBodyIndex
+    await nextTick()
+
+    // 卸载后不应再重建：调用次数仍停留在开启深度搜索那次
+    expect(buildBodyIndexSpy.calls).toBe(afterOpen)
   })
 })
 

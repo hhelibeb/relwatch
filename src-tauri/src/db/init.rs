@@ -31,15 +31,22 @@ pub fn init_memory_pool(
         "file:relwatch_test_{}?mode=memory&cache=shared",
         NEXT_ID.fetch_add(1, Ordering::Relaxed)
     );
-    let manager = r2d2_sqlite::SqliteConnectionManager::file(&name);
+    // 与生产池同策略：PRAGMA 在 with_init 里对**每条新建连接**执行。
+    // 若只对 pool.get() 返回的单条连接手动执行，r2d2 预建的其余 idle 连接
+    // （默认 min_idle = max_size，build() 时已建齐）仍无 busy_timeout，
+    // 多连接并发写时照旧立即 BUSY（防测试 flaky 的目的落空）。
+    let manager = r2d2_sqlite::SqliteConnectionManager::file(&name).with_init(|conn| {
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             PRAGMA busy_timeout=5000;",
+        )
+    });
     let pool = r2d2::Pool::builder()
         .max_size(2)
         .build(manager)
         .map_err(|e| e.to_string())?;
     {
         let conn = pool.get().map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA foreign_keys=ON;")
-            .map_err(|e| e.to_string())?;
         apply_schema(&conn).map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
     }
@@ -51,12 +58,16 @@ pub fn init_pool(
     let dir = app_data_dir();
     std::fs::create_dir_all(&dir).expect("Failed to create app data dir");
 
+    // WAL 只允许单写者：轮询的 spawn_blocking（≤10 源并发）× UI 写等会从不同连接
+    // 并发写，写锁冲突默认（busy_timeout=0）立即返回 SQLITE_BUSY。统一设 5s 等待
+    // 窗口：冲突时等待而非失败，避免偶发 "database is locked" 引发健康状态漏记/操作报错。
     let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path())
         .with_init(|conn| {
             conn.execute_batch(
                 "PRAGMA journal_mode=WAL;
                  PRAGMA wal_autocheckpoint=1000;
-                 PRAGMA foreign_keys=ON;",
+                 PRAGMA foreign_keys=ON;
+                 PRAGMA busy_timeout=5000;",
             )
         });
 
