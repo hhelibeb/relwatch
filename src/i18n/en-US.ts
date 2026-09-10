@@ -128,8 +128,6 @@ export default {
   'settings.bilibili_login_window_failed': 'Failed to open login window: ',
   'settings.bilibili_cookie_clear': 'Clear',
   'settings.bilibili_cookie_cleared': 'Bilibili cookie cleared, anonymous mode will be used',
-  'settings.hf_token': 'HuggingFace Token (optional, higher rate limits)',
-  'settings.hf_token_desc': 'Leave empty for public models, set for higher API quotas',
   'settings.poll_interval': 'Poll interval (minutes)',
   'settings.auto_start': 'Auto start on boot',
   'settings.proxy_mode': 'Proxy Mode',

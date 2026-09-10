@@ -447,53 +447,6 @@ fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
     Ok(verified)
 }
 
-/// 便捷版：仅校验，不返回 IP（无 DNS 固定需求的调用方用，语义同旧 `ensure_public_url`）。
-/// 当前仅测试直接使用，生产路径统一走 `resolve_public_host`（带 DNS 固定）。
-#[cfg_attr(not(test), allow(dead_code))]
-pub async fn ensure_public_url(url: &str) -> Result<(), String> {
-    resolve_public_host(url).await.map(|_| ())
-}
-
-/// 下载 URL 的原始字节（剪贴板图片等场景），限制最大 `max_bytes` 防止异常响应撑爆内存。
-/// scheme 校验由调用方负责；错误统一为 `err.*` i18n 格式。
-///
-/// 注意：`fetch_url_bytes`（commands/download.rs）与 media 网关共用
-/// `fetch_public_bytes`（带 SSRF 逐跳校验）；本函数保留为通用下载原语
-/// （wiremock 测试覆盖响应处理逻辑），跟随 reqwest 默认重定向，仅适用于
-/// 调用方已自行校验目标的场景。
-#[cfg_attr(not(test), allow(dead_code))]
-pub async fn download_bytes(
-    client: &reqwest::Client,
-    url: &str,
-    max_bytes: usize,
-) -> Result<Vec<u8>, String> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("err.request_failed|{}", e))?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(format!("err.download_failed|HTTP {}", status.as_u16()));
-    }
-    if let Some(len) = resp.content_length() {
-        if len as usize > max_bytes {
-            return Err(format!("err.download_failed|file too large ({} bytes)", len));
-        }
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("err.request_failed|{}", e))?;
-    if bytes.len() > max_bytes {
-        return Err(format!(
-            "err.download_failed|file too large ({} bytes)",
-            bytes.len()
-        ));
-    }
-    Ok(bytes.to_vec())
-}
-
 /// 带 SSRF 逐跳校验的公开资源下载核心：供「下载任意 URL」与 media:// 协议共用。
 ///
 /// - 要求 URL 为 http/https；
@@ -579,38 +532,70 @@ pub async fn fetch_public_with_headers(
             }
             continue;
         }
-        let status = resp.status();
-        if !status.is_success() {
-            return Err(format!("err.download_failed|HTTP {}", status.as_u16()));
-        }
-        if let Some(len) = resp.content_length() {
-            if len as usize > max_bytes {
-                return Err(format!("err.download_failed|file too large ({} bytes)", len));
-            }
-        }
-        let content_type = resp
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| format!("err.request_failed|{}", e))?;
-        if bytes.len() > max_bytes {
-            return Err(format!(
-                "err.download_failed|file too large ({} bytes)",
-                bytes.len()
-            ));
-        }
-        return Ok((bytes.to_vec(), content_type));
+        return read_limited_body(resp, max_bytes).await;
     }
     Err("err.download_failed|too many redirects".to_string())
+}
+
+/// 已校验响应的读取与限流：状态码非 2xx 拒绝、`Content-Length` 与实际字节数
+/// 双重上限校验（后者防服务端谎报/分块传输绕过），并回传 `Content-Type`
+/// （media 网关需原样透传给 Chromium）。
+///
+/// 抽成独立函数是为了让生产路径（`fetch_public_with_headers`）与单元测试
+/// 共用**同一份**实现——此前测试用副本函数，生产改错测试依然全绿。
+async fn read_limited_body(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<(Vec<u8>, Option<String>), String> {
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(format!("err.download_failed|HTTP {}", status.as_u16()));
+    }
+    if let Some(len) = resp.content_length() {
+        if len as usize > max_bytes {
+            return Err(format!("err.download_failed|file too large ({} bytes)", len));
+        }
+    }
+    let content_type = resp
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("err.request_failed|{}", e))?;
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "err.download_failed|file too large ({} bytes)",
+            bytes.len()
+        ));
+    }
+    Ok((bytes.to_vec(), content_type))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── 测试专用薄辅助 ──────────────────────────────────────────
+    // 生产路径统一走 `fetch_public_bytes` / `fetch_public_with_headers`（带 SSRF
+    // 逐跳校验 + DNS 固定）。这里仅保留一个请求发送辅助：响应处理
+    // （`read_limited_body`）是**生产与测试共用**的同一份实现，不再复制副本。
+
+    /// 向 wiremock 发请求后交给生产共用的 `read_limited_body` 处理响应。
+    async fn download_bytes(
+        client: &reqwest::Client,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, String> {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("err.request_failed|{}", e))?;
+        read_limited_body(resp, max_bytes).await.map(|(b, _ct)| b)
+    }
 
     #[test]
     fn test_parse_next_link_found() {
@@ -720,6 +705,33 @@ mod tests {
         let url = format!("{}/big.bin", mock.uri());
         let err = download_bytes(&client, &url, 1024).await.unwrap_err();
         assert!(err.contains("too large"), "应报大小超限: {}", err);
+    }
+
+    /// `read_limited_body` 的两道上限校验之一：响应**未声明** `content-length`
+    /// （分块传输等）时必须靠实际读到的字节数拦下。上面 `test_download_bytes_too_large`
+    /// 走的是头部声明分支（wiremock 自动带 content-length），本用例覆盖另一分支。
+    #[tokio::test]
+    async fn test_read_limited_body_enforces_actual_size_when_unchunked_unknown() {
+        let mock = MockServer::start().await;
+        // 分块传输：不携带 content-length，只能读取后按实际大小判定
+        Mock::given(method("GET"))
+            .and(path("/chunked.bin"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("transfer-encoding", "chunked")
+                    .set_body_bytes(vec![0u8; 2048]),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/chunked.bin", mock.uri());
+        let err = download_bytes(&client, &url, 1024).await.unwrap_err();
+        assert!(
+            err.starts_with("err.download_failed|") && err.contains("too large"),
+            "无 content-length 时也应按实际字节数拦下: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -886,8 +898,26 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_public_host_rejects_private_ip_literal() {
-        let err = resolve_public_host("http://127.0.0.1:8080/x").await.unwrap_err();
-        assert!(err.contains("err.private_url_blocked"), "{}", err);
+        // 私网/回环/链路本地/保留地址逐一拦截（含 IPv4-mapped IPv6 绕过形式）。
+        // 这里以列表形式集中断言，避免与单例测试重复。
+        let blocked = [
+            "http://127.0.0.1:8080/x",
+            "http://10.0.0.5/x",
+            "http://192.168.1.1/x",
+            "https://169.254.169.254/latest/meta-data",
+            "https://[::1]:443/x",
+            "https://[::ffff:192.168.1.1]/x",
+            "http://localhost:8080/x",
+        ];
+        for url in blocked {
+            let err = resolve_public_host(url).await.unwrap_err();
+            assert!(
+                err.contains("err.private_url_blocked"),
+                "{} 错误码不正确: {}",
+                url,
+                err
+            );
+        }
     }
 
     #[tokio::test]
@@ -920,61 +950,6 @@ mod tests {
     async fn test_resolve_public_host_rejects_private_ipv6_literal() {
         let err = resolve_public_host("https://[::1]:443/x").await.unwrap_err();
         assert!(err.contains("err.private_url_blocked"), "{}", err);
-    }
-
-    #[tokio::test]
-    async fn test_ensure_public_url_blocks_private() {
-        let blocked = [
-            "http://127.0.0.1:8080/x",
-            "http://10.0.0.5/x",
-            "http://192.168.1.1/x",
-            "https://169.254.169.254/latest/meta-data",
-            "https://[::1]:443/x",
-            "https://[::ffff:192.168.1.1]/x",
-            "http://localhost:8080/x",
-        ];
-        for url in blocked {
-            match ensure_public_url(url).await {
-                Err(e) => assert!(
-                    e.contains("err.private_url_blocked"),
-                    "{} 错误码不正确: {}",
-                    url,
-                    e
-                ),
-                Ok(()) => panic!("{} 应被拒绝", url),
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_ensure_public_url_allows_public() {
-        // IP 字面量不依赖 DNS，稳定放行；域名路径见下方 fail-closed 测试
-        let allowed = [
-            "https://8.8.8.8/x",
-            "https://104.16.1.1/x",
-        ];
-        for url in allowed {
-            assert!(ensure_public_url(url).await.is_ok(), "{} 应放行", url);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_ensure_public_url_fails_closed_on_dns_failure() {
-        // RFC 2606 保留域名 .invalid 解析必失败：fail-closed 应返回错误而不是放行
-        let err = ensure_public_url("https://ssrf-test.invalid/x").await.unwrap_err();
-        assert!(
-            err.contains("err.dns_resolve_failed"),
-            "DNS 解析失败应 fail-closed 拒绝: {}",
-            err
-        );
-    }
-
-    #[tokio::test]
-    async fn test_ensure_public_url_rejects_invalid() {
-        let invalid = ["not-a-url", "ftp://example.com/x", "file:///etc/passwd"];
-        for url in invalid {
-            assert!(ensure_public_url(url).await.is_err(), "{} 应拒绝", url);
-        }
     }
 
     #[test]

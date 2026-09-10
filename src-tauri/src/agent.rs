@@ -578,60 +578,6 @@ pub fn kill_process_tree(pid: u32) {
     }
 }
 
-/// 优雅终止（「停止」优先路径）：先温和信号让 pi 走自身清理
-/// （kill 它 spawn 的 bash 等子进程 + 关闭 runtime），短等待后仍存活才强杀。
-/// 这是异步版本（供 tauri command 使用，避免阻塞 runtime 线程）。
-pub async fn graceful_kill_process_tree(pid: u32) {
-    // 第一步：温和终止
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        // 无 /F：发送关闭请求（node 收到 CTRL_CLOSE 类事件走清理 handler）
-        let _ = std::process::Command::new("taskkill")
-            .args(["/T", "/PID", &pid.to_string()])
-            .creation_flags(CREATE_NO_WINDOW)
-            .output();
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = std::process::Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
-            .output();
-    }
-    // 第二步：给 pi 清理时间（Unix 上 SIGTERM 会触发 pi 的清理 handler；
-    // Windows 上 taskkill 温和信号对 node 无效，短等后直接强杀兜底）
-    let grace = if cfg!(windows) { 500 } else { 1500 };
-    tokio::time::sleep(std::time::Duration::from_millis(grace)).await;
-    // 第三步：仍存活才强杀兜底
-    if process_alive(pid) {
-        kill_process_tree(pid);
-    }
-}
-
-/// 进程是否存活（tasklist 有匹配进程退出码 0，无匹配 1——不受输出本地化影响）。
-fn process_alive(pid: u32) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {}", pid), "/NH"])
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-}
-
 // ---- 调度器 ----
 
 /// 调度依赖注入集合（测试可替换 executor / emitter）。

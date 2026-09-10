@@ -128,8 +128,6 @@ export default {
   'settings.bilibili_login_window_failed': '打开登录窗口失败: ',
   'settings.bilibili_cookie_clear': '清除',
   'settings.bilibili_cookie_cleared': '已清除 B 站 Cookie，将使用匿名模式',
-  'settings.hf_token': 'HuggingFace Token（可选，提升限流）',
-  'settings.hf_token_desc': '留空可正常读取公开模型，设置后可获得更高 API 配额',
   'settings.poll_interval': '全局轮询间隔（分钟）',
   'settings.auto_start': '开机自启动',
   'settings.proxy_mode': '代理模式',
