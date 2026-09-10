@@ -203,7 +203,7 @@ watch(deepSearch, (on) => {
 // 过滤却只剩 Tier1，body 命中结果静默消失。
 //
 // 重建成本同 runDeepSearch（约 100ms 量级），且只在深度搜索会话内发生。原实现为
-// 同步 buildBodyIndex（见评审）：几十 MB 文本 toLowerCase + map 直接卡主线程，且
+// 同步 buildBodyIndex：几十 MB 文本 toLowerCase + map 直接卡主线程，且
 // 与 runDeepSearch 的「先让帧、loading 态、竞态防护」语义不一致。改为统一走
 // scheduleBodyIndexRebuild（单飞 + rAF 帧合并）：同一帧内多次替换合并为一次重建，
 // 重建让出一帧避免阻塞渲染，期间 deepSearching 置位让 UI 呈现 loading。

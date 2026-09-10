@@ -294,7 +294,8 @@ pub fn insert_new_models(
     // （原实现由 insert_release 内部逐条重算，历史模式首拉 N 条退化为 O(N²)；
     // 此处改为批量结束一次，最终态等价）。version_bump 只依赖 tag/published_at，
     // 在阶段 1（README 回填前）即可重算，无需等 finalize_models。
-    // 失败仅记日志不回滚插入：派生列留 NULL，下次批量保存会补算（有意取舍，同 save.rs）。
+    // 失败仅记日志不回滚插入：派生列留 NULL，待该 source 下次有新插入时由收尾重算
+    // 覆写（全去重命中的轮次不补，边界与取舍见 db/save.rs 同处注释）。
     let finalize = || {
         if inserted_any.get() {
             if let Err(e) = releases::recompute_version_bumps(conn, source_id) {

@@ -48,9 +48,15 @@ pub fn save_entries_generic(
     let finalize = || {
         if inserted_any.get() {
             // 重算失败仅记日志、不回滚已提交的插入：version_bump 是派生列（可重算），
-            // 留 NULL 不影响 release 本身；下次任一批量保存会再次全链重算补上。
-            // 相比旧实现（recompute 在 insert_release 事务内，失败连带回滚整条 release），
-            // 此处失败不会丢数据，属有意取舍。
+            // 留 NULL 不影响 release 本身。相比旧实现（recompute 在 insert_release 事务内，
+            // 失败连带回滚整条 release），此处失败不会丢数据，属有意取舍。
+            //
+            // 「补算」的边界（勿高估自愈）：本收尾由 inserted_any 门控，只有该 source
+            // 本轮**确有新插入**才重算，全去重命中的轮次不补。因此重算失败、或
+            // 「插入已提交、重算前崩溃」留下的 NULL，会保留到该 source 下次出现新版本
+            // （届时全链重算覆盖该源全部行），期间版本类型筛选（major/minor/patch）
+            // 会漏掉这些行。更强的自愈需启动期对 version_bump IS NULL 的行一次性重算
+            // （当前未做）。
             if let Err(e) = releases::recompute_version_bumps(conn, source_id) {
                 log::error!(
                     "recompute_version_bumps failed (source_id={}): {}",

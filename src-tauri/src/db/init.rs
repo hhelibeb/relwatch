@@ -434,7 +434,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // flag：0 = 未标记，1-6 = 预设颜色（红/橙/黄/绿/蓝/紫），语义由用户自行赋予。
     // version_bump：相对同 source 上一版本（按 published_at）的 semver 变化类型
     // （major/minor/patch），新增列时对存量数据逐 source 回填（量级 = 全部 release
-    // 行数，启动一次性成本）；此后由 insert_release 在入库事务内增量重算。
+    // 行数，启动一次性成本）；此后由批量保存入口（db::save::save_entries_generic /
+    // huggingface::insert_new_models）在该 source 本轮有新插入时统一重算一次。
+    // 注意 insert_release 单条插入**不再**触发重算（避免历史模式批量插入退化为
+    // O(N²)），调用方契约见 releases::recompute_version_bumps。
     if !table_has_column(conn, "releases", "flag") {
         conn.execute_batch(
             "ALTER TABLE releases ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;

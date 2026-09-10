@@ -13,8 +13,10 @@
 //!    explicitly enabled），因此插件实际只被授权读文本，写命令本就没有放行。
 //!
 //! 附带代价（可接受，但应知晓）：插件桌面端自身也是 arboard 的封装（其 `init()` 中
-//! `arboard::Clipboard::new()`），所以依赖树里编译了两份 arboard 及 clipboard-win /
-//! wl-clipboard-rs。
+//! `arboard::Clipboard::new()`），因此同一条写路径存在**两份实现**，两份都在各自维护
+//! open→set→close；将来修写路径相关的 bug 要改两处。
+//! 依赖层面二者共用同一份 arboard（Cargo.lock 中只有一个 arboard 条目，
+//! clipboard-win / wl-clipboard-rs 均为 arboard 自身的平台依赖），并未重复编译。
 
 use std::borrow::Cow;
 

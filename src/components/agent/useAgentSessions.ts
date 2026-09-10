@@ -103,7 +103,7 @@ export function useAgentSessions(deps: {
   const sessions = ref<SessionMeta[]>(loadSessions())
   // 「新建即登记」：无历史会话时立即登记一个草稿会话（标题「新会话」）——
   // 任何时刻 activeKey 都对应索引中的一项，未提交的会话不因重启/关面板丢失。
-  // （此前「点新会话→拖实体→写半句话→关闭」的 key 永久丢失，见评审 1.2）
+  // （此前「点新会话→拖实体→写半句话→关闭」的 key 永久丢失）
   if (sessions.value.length === 0) {
     sessions.value = [{ key: newSessionKey(), title: t('agent.session_new'), updatedAt: Date.now(), draft: true }]
   }
