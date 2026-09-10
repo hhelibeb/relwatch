@@ -1055,6 +1055,24 @@ describe('App.vue — 右键菜单（document 事件入口）', () => {
     expect(invoke).toHaveBeenCalledWith('set_clipboard_text', { text: '选中的文本' })
   })
 
+  it('复制失败时提示 release.copy_failed（不再静默失败）', async () => {
+    // 不用 mockRejectedValueOnce：mountRealApp 期间可能有其他 invoke 调用抢先消费掉
+    // 队列里的 Once 实现，导致点击复制时反而走了成功路径。持续 reject，用例末尾恢复。
+    vi.mocked(invoke).mockRejectedValue(new Error('clipboard busy'))
+    vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => '选中的文本' } as unknown as Selection)
+
+    const wrapper = await mountRealApp()
+
+    document.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 50, clientY: 60 }))
+    await wrapper.vm.$nextTick()
+    await wrapper.find('.stub-menu-item').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.toast').text()).toContain(t('release.copy_failed'))
+    // 恢复默认成功实现（afterEach 只清调用记录，不重置实现）
+    vi.mocked(invoke).mockResolvedValue(undefined)
+  })
+
   it('无选中文本时右键不显示复制菜单', async () => {
     vi.spyOn(window, 'getSelection').mockReturnValue({ toString: () => '' } as unknown as Selection)
     const wrapper = await mountRealApp()

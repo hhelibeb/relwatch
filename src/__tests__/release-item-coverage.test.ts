@@ -129,6 +129,23 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
     expect(copyTextToClipboardMock).toHaveBeenCalledWith('https://example.com/release')
   })
 
+  it('右键菜单选择"复制链接"失败时显示错误 Toast（不再静默失败）', async () => {
+    const toast = vi.fn()
+    copyTextToClipboardMock.mockRejectedValueOnce(new Error('clipboard busy'))
+    const wrapper = mountRelease(createRelease({ html_url: 'https://example.com/release' }), {
+      [ShowToastKey as symbol]: toast,
+    })
+
+    await wrapper.find('.release-link-action').trigger('contextmenu', { clientX: 100, clientY: 200 })
+
+    const ctxMenu = wrapper.findComponent({ name: 'ContextMenu' })
+    await ctxMenu.vm.$emit('action', 'copyLink')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.copy_failed')))
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('clipboard busy'))
+  })
+
   it('右键菜单选择"删除版本" → 调用 deleteRelease 并 emit update', async () => {
     vi.mocked(deleteRelease).mockResolvedValue(undefined)
     const wrapper = mountRelease(createRelease({ id: 99 }))
@@ -196,6 +213,23 @@ describe('ReleaseItem.vue — 右键菜单: 摘要复制', () => {
     await ctxMenu.vm.$emit('action', 'copyContent')
 
     expect(copyTextToClipboardMock).toHaveBeenCalledWith('这是一个修复摘要')
+  })
+
+  it('摘要复制失败时显示错误 Toast（不再静默失败）', async () => {
+    const toast = vi.fn()
+    copyTextToClipboardMock.mockRejectedValueOnce(new Error('clipboard busy'))
+    const wrapper = mountRelease(createRelease({ ai_summary: '这是一个修复摘要' }), {
+      [ShowToastKey as symbol]: toast,
+    })
+
+    await wrapper.find('.release-summary-text').trigger('contextmenu', { clientX: 150, clientY: 250 })
+
+    const ctxMenu = wrapper.findComponent({ name: 'ContextMenu' })
+    await ctxMenu.vm.$emit('action', 'copyContent')
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining(t('release.copy_failed')))
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('clipboard busy'))
   })
 
   it('无摘要时右键不触发菜单', async () => {
