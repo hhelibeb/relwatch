@@ -1,3 +1,21 @@
+//! 剪贴板写入命令。**读取不走这里**（前端用 `tauri-plugin-clipboard-manager` 的 `readText`）。
+//!
+//! 分工是：**读走插件、写走本模块的自定义命令**。这个分工有两个硬理由，不要「顺手统一到
+//! 插件」，否则会把已经绕开的坑重新踩回来：
+//!
+//! 1. **线程约束**：Windows 要求剪贴板 open→set→close 在同一线程完成。插件的 `write_text`
+//!    （其 `desktop.rs`）是在命令所在线程直接调 `arboard::set_text`，全程没有
+//!    `run_on_main_thread`，在 tauri 命令所在的 tokio worker 线程上会以 1418
+//!    （线程没有打开的剪贴板）失败；本模块的 `clipboard_write` 统一切到主线程执行。
+//! 2. **写路径未获 ACL 授权**：`capabilities/default.json` 只授了 `clipboard-manager:default`
+//!    与 `clipboard-manager:allow-read-text`。其中 `clipboard-manager:default` 是**空集**
+//!    （官方描述：No features are enabled by default…Clipboard interaction needs to be
+//!    explicitly enabled），因此插件实际只被授权读文本，写命令本就没有放行。
+//!
+//! 附带代价（可接受，但应知晓）：插件桌面端自身也是 arboard 的封装（其 `init()` 中
+//! `arboard::Clipboard::new()`），所以依赖树里编译了两份 arboard 及 clipboard-win /
+//! wl-clipboard-rs。
+
 use std::borrow::Cow;
 
 /// 将 PNG 字节解码为 (宽, 高, RGBA)。抽为纯函数以便测试图片解码错误路径。
