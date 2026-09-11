@@ -405,6 +405,22 @@ cat /tmp/changelog-raw.md
 3. 使用**中文**
 4. 如果某项分类没有对应内容，可以省略
 
+**详略原则（重要）：**
+
+Release Note 的读者是**要不要升级的用户**，不是代码维护者。它的目标是让人一眼判断"这版跟我有关吗"，
+**不是复述 commit 正文**——用户想深究细节会点进 commit 看，那里本来就有。
+
+- **一条一句、只讲结论**：说清"修好了什么问题 / 新增了什么"，不展开根因分析、实现路径、内部约束
+- **篇幅上限**：单条尽量不超过一行（约 40–60 字）；全文（含小标题）控制在 20 行内
+- **不写实现细节**：形如"满足 Windows open→set→close 同线程约束""改由批量保存收尾统一重算"
+  这类内部机制，属于 commit message 的内容，**不进 Release Note**
+- **不做影响面盘点**：列举"影响主界面搜索框、设置页、Agent 工作区等全部输入框"是评审/复盘的内容；
+  Release Note 只需"修复输入框聚焦时 Esc 失效"
+- **只保留可感知的收益**：用户能观察到的行为变化才写；纯重构、注释修正、依赖升级
+  压缩成一句甚至可省略
+
+> 判断标准：这条内容若删掉，用户是否仍能做出"升不升级"的决定？能，就删。
+
 **Fix 和 改进 范围规则：**
 
 - 如果某个 fix 或 改进 是为了解决**本次 release 内**其他 feat 引入的新问题（即该 bug 在上一版本中不存在），则不作为独立条目展示，**但其 commit hash 应附加到所从属的 feature 条目末尾**（因为它是该功能完整交付的一部分）
@@ -443,6 +459,20 @@ EOF
 cat .rpiv/artifacts/release-notes/v<新版本>.md
 ```
 
+> ⚠️ **向用户展示确认时，必须原样复制文件内容，不得另行概括。**
+> 用户确认的对象就是这份文件——它随后会被 `gh release edit --notes-file` 写进
+> Release body、并被 Step 10.5 回写进 `latest.json` 的 `notes`。
+> 若"展示给用户的版本"与"落盘的版本"是两次独立生成（比如回复里凭记忆重写一遍摘要），
+> 两份文本会静默分叉：用户确认了一份，实际发布了另一份，且双方都以为一致。
+>
+> 落盘后**立即**回读校验，用字符数相等作为可验证证据：
+>
+> ```bash
+> node -e "const fs=require('fs');const s=fs.readFileSync('.rpiv/artifacts/release-notes/v<新版本>.md','utf8').trim();console.log('文件字符数:',s.length)"
+> ```
+>
+> 展示给用户的内容与上面的字符数必须同源（直接 `cat` 输出），不要先 `cat` 再另行润色。
+
 ### 10.4 更新 Draft Release
 
 ```bash
@@ -452,6 +482,21 @@ gh release edit v<新版本> \
 ```
 
 如果后续需要再次更新 release note，重复执行上述命令即可。
+
+**写入后立即回读校验**（证明 GitHub body 与源文件逐字一致，避免"发布的"与"确认的"分叉）：
+
+```bash
+gh api repos/hhelibeb/relwatch/releases --paginate \
+  --jq '.[] | select(.tag_name=="v<新版本>") | .body' > /tmp/gh-body.txt
+
+node -e "
+const fs=require('fs');
+const src=fs.readFileSync('.rpiv/artifacts/release-notes/v<新版本>.md','utf8').trim();
+const gh=fs.readFileSync('/tmp/gh-body.txt','utf8').trim();
+console.log('文件:',src.length,'| GitHub body:',gh.length, src===gh?'✅ 一致':'❌ 不一致（禁止继续，先修正）');
+process.exit(src===gh?0:1);
+"
+```
 
 ### 10.5 把 Release Note 同步回 latest.json（应用内弹窗的数据源）
 
@@ -486,6 +531,25 @@ gh release upload "v<新版本>" latest.json --clobber
 > ⚠️ **绝不要凭空重建 latest.json**：只改 `notes` 一个字段。
 > 重建会丢掉 `platforms` 里另一半平台（同 Step 9.2 的并发覆盖坑），
 > 且 `signature` 无法从零推导——必须从 release 上现存的 `.sig` 读取。
+
+**三方一致性回归校验**（源文件 = GitHub body = latest.json 的 notes，三者必须逐字相同）：
+每次改动 Release Note（首次写入或事后修订）都要重跑 Step 10.4 + 10.5 两条链路，
+并以下面的校验收尾——只改了其中一条链路是此处最容易犯的错：
+
+```bash
+# 重新下载（--clobber 上传后，本地文件不代表远端，必须回读）
+cd "$(mktemp -d)" && gh release download "v<新版本>" -p 'latest.json'
+
+node -e "
+const fs=require('fs');
+const src=fs.readFileSync('<项目根>/.rpiv/artifacts/release-notes/v<新版本>.md','utf8').trim();
+const lj=JSON.parse(fs.readFileSync('latest.json','utf8'));
+const ok = lj.notes===src;
+console.log('源文件:',src.length,'| latest.json notes:',lj.notes.length, ok?'✅ 一致':'❌ 不一致');
+console.log('platforms:',Object.keys(lj.platforms).length,'个');
+process.exit(ok?0:1);
+"
+```
 
 ---
 
