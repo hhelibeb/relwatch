@@ -67,12 +67,15 @@ const emit = defineEmits<{
         @click="emit('switch', s.key)"
       >
         <!-- 重命名编辑态：Enter 提交 / Esc 取消 / 失焦提交 -->
+        <!-- data-esc-local：Esc 由本控件独占（取消重命名），全局逐层退出跳过它。
+             否则全局捕获期的 blur 会先触发 @blur 提交、再走 @keydown.esc 取消，语义自相矛盾。 -->
         <input
           v-if="renamingKey === s.key"
           :ref="(el) => setRenameEl(el, s.key)"
           :value="renameInput"
           class="agent-ws-rename-input"
           type="text"
+          data-esc-local
           :placeholder="t('agent.session_rename_placeholder')"
           @input="emit('update:renameInput', ($event.target as HTMLInputElement).value)"
           @click.stop
