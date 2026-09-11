@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-09-11
+
+### Fixed
+- SSRF 防护升级：目标域名解析后把已通过公网校验的 IP 组固定给 HTTP 客户端，堵住「校验时解析 A、请求时重解析成 B」的 DNS 重绑定绕过；DNS 解析失败/无结果由放行改为拒绝（fail-closed）。下载与图片网关每跳均应用。
+- 通知点击定位到对应版本：不再回填搜索词做模糊过滤，改为下发目标 id + 递增令牌精确下钻，重置筛选并滚动高亮目标行；目标已被删除时提示「未能定位到该版本」。
+- 剪贴板写入收敛到 Rust 路径（主线程 arboard），右键菜单等场景的复制不再静默失败；新增失败 Toast 提示。
+- Escape 逐层退出：输入框聚焦时第一次 Esc 退出输入框、第二次才最小化到托盘；修复此前任意输入框获得焦点即导致全局 Esc 完全失效（影响主界面搜索框、设置页、Agent 工作区等全应用）；输入法组合期不介入，会话重命名输入框独占 Esc。
+- Agent 工作区落区按拖拽类型分流：拖动选中文本不再被误判为实体拖拽，输入框原生的「拖入即插入」恢复正常。
+- 数据库并发与深度搜索卡顿：连接补 `busy_timeout=5000`，避免 WAL 并发写偶发 `database is locked`；`version_bump` 由每条插入重算（历史模式首拉退化为 O(N²)）改为批量保存收尾统一重算一次；深度搜索索引重建改为 rAF 单飞帧合并，不再阻塞主线程。
+
+### Changed
+- 依赖 patch 升级（`@types/node`、`globals`、`typescript-eslint`、`tauri-plugin-notification`、`tauri-plugin-updater` 等）。
+- 清理死代码并恢复测试对生产路径的约束力；修正注释与实现脱节之处；补剪贴板复制失败与 Esc 逐层退出的回归测试。
+
 ## [1.17.0] - 2026-09-06
 
 ### Added
@@ -406,7 +420,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.17.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.17.1...HEAD
+[1.17.1]: https://github.com/hhelibeb/relwatch/compare/v1.17.0...v1.17.1
 [1.17.0]: https://github.com/hhelibeb/relwatch/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/hhelibeb/relwatch/compare/v1.15.0...v1.16.0
 [1.15.0]: https://github.com/hhelibeb/relwatch/compare/v1.14.0...v1.15.0
