@@ -125,7 +125,7 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
         .header("Cookie", format!("SESSDATA={}", sessdata))
         .send()
         .await
-        .map_err(|e| format!("err.request_failed|{}", e))?;
+        .map_err(|e| crate::http::describe_request_error(&e))?;
     let body: serde_json::Value = nav
         .json()
         .await

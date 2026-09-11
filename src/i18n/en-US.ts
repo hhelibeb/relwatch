@@ -239,10 +239,11 @@ export default {
   'release.flag_clear': 'Clear flag',
   'release.flag_flagged': 'Flagged',
   'release.flag_unflagged': 'Unflagged',
-  'release.flag_changed': '{owner}/{repo} {tag} flag updated (group={flag}, id={id})',
-  'release.flag_changed_unknown': 'Flag updated (group={flag}, id={id})',
+  'release.flag_changed': '{owner}/{repo} {tag} flag updated ({flag}, id={id})',
+  'release.flag_changed_unknown': 'Flag updated ({flag}, id={id})',
   'migration.version_bump_backfilled': 'Backfilled version types for {count} sources',
   'migration.version_bump_backfill_failed': 'Failed to backfill version types: {error}',
+  'migration.log_redacted': 'Redacted plaintext credentials in {count} historical log row(s)',
   'err.release_flag_invalid': 'Invalid flag value: {0}',
   'release.flag_failed': 'Failed to set flag: ',
   'release.filter_more': 'Filter',
@@ -387,6 +388,8 @@ export default {
   'err.repo_verify_failed': 'Failed to verify repo: {0}',
   'err.repo_api_error': 'GitHub API returned {0}',
   'err.request_failed': 'Request failed: {0}',
+  'err.request_timeout': 'Request timed out: {0}',
+  'err.request_connect': 'Connection failed: {0}',
   'err.invalid_url': 'Invalid URL',
   'err.download_failed': 'Download failed: {0}',
   'err.private_url_blocked': 'Private or internal network addresses are blocked',
@@ -709,4 +712,9 @@ export default {
   'aiUsage.action_summary': 'Summary',
   'aiUsage.action_detect_language': 'Language detection',
   'aiUsage.action_test': 'Connection test',
+  // ── Frontend global error fallback (V2): {error} is filled by the Rust-side
+  //    render; the toast reuses the same template (see src/api/report-error.ts) ──
+  'ui.vue_error': 'Unhandled UI error (logged): {error}',
+  'ui.unhandled_rejection': 'Unhandled promise rejection (logged): {error}',
+  'ui.window_error': 'Uncaught script error (logged): {error}',
 }

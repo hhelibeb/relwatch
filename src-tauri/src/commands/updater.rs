@@ -34,6 +34,7 @@ use tauri::{Manager, ResourceId, State, Webview};
 use tauri_plugin_updater::UpdaterExt;
 
 use crate::db;
+use crate::redact::redact;
 use crate::types::AppState;
 
 /// 检查更新的返回结构，字段与 tauri-plugin-updater 内部的 `commands::Metadata` 一致
@@ -51,49 +52,6 @@ pub struct UpdaterMetadata {
     pub date: Option<String>,
     pub body: Option<String>,
     pub raw_json: String,
-}
-
-/// 抹去文本中 URL 的 userinfo：`scheme://user:pass@host` → `scheme://***:***@host`。
-///
-/// 更新链路的代理 URL 由用户自填，可能带凭据（`http://user:pass@host:port`）；
-/// reqwest 的错误文本在部分场景会回显完整 URL，若不处理凭据会以明文落库，
-/// 并随日志搜索展示、备份导出一起外泄。非 URL 文本（如 `connection reset by peer`）原样返回。
-///
-/// 按 RFC 3986 定位：authority 为 `://` 之后到首个 `/` `?` `#` 之间的片段，
-/// 其中最后一个 `@` 之前即 userinfo（host 不允许含 `@`）。
-///
-/// authority 边界只取 `/` `?` `#` 与空白：**不**把 `)` `,` `'` 等当作边界。
-/// 这些字符在 RFC 3986 里属于 sub-delims，可以合法出现在 userinfo 中；若拿它们切分，
-/// 一段含 `)` 的口令会被截断成「authority 无 @ → 原样输出」，反而把凭据留在明文里。
-/// 安全优先：多切不如少切，宁可让 `)` 留在 host 侧（形如 `***:***@host:8080)`），
-/// 也绝不让 userinfo 片段逃过脱敏。
-fn redact_url_credentials(text: &str) -> String {
-    const SCHEME_SEP: &str = "://";
-    /// authority 终止符：路径/查询/片段起始，或空白（URL 嵌在散文里时由空白断词）
-    fn is_authority_end(c: char) -> bool {
-        matches!(c, '/' | '?' | '#') || c.is_ascii_whitespace()
-    }
-
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(sep_pos) = rest.find(SCHEME_SEP) {
-        let authority_start = sep_pos + SCHEME_SEP.len();
-        out.push_str(&rest[..authority_start]);
-        let after = &rest[authority_start..];
-        let authority_end = after.find(is_authority_end).unwrap_or(after.len());
-        let (authority, tail) = after.split_at(authority_end);
-        match authority.rfind('@') {
-            // at > 0 排除空 userinfo（`http://@host` 无需脱敏）
-            Some(at) if at > 0 => {
-                out.push_str("***:***@");
-                out.push_str(&authority[at + 1..]);
-            }
-            _ => out.push_str(authority),
-        }
-        rest = tail;
-    }
-    out.push_str(rest);
-    out
 }
 
 /// 一条更新操作日志的参数（尚未落库）。
@@ -134,7 +92,7 @@ fn check_log_entry(result: &Result<Option<UpdaterMetadata>, String>) -> UpdateLo
         Err(e) => UpdateLogEntry::new(
             "WARN",
             "update.log.check_failed",
-            json!({ "error": redact_url_credentials(e) }).to_string(),
+            json!({ "error": redact(e) }).to_string(),
         ),
     }
 }
@@ -152,7 +110,7 @@ fn download_failed_log_entry(version: &str, error: &str) -> UpdateLogEntry {
     UpdateLogEntry::new(
         "WARN",
         "update.log.download_failed",
-        json!({ "version": version, "error": redact_url_credentials(error) }).to_string(),
+        json!({ "version": version, "error": redact(error) }).to_string(),
     )
 }
 
@@ -385,71 +343,6 @@ mod tests {
         assert_eq!(entry.level, "INFO");
         assert_eq!(entry.key, "update.log.install_started");
         assert!(render_log(&entry).contains("1.14.0"));
-    }
-
-    // ── redact_url_credentials ──
-
-    #[test]
-    fn redact_strips_userinfo_from_url() {
-        assert_eq!(
-            redact_url_credentials("error sending request for url (http://user:pass@proxy.example.com:8080)"),
-            "error sending request for url (http://***:***@proxy.example.com:8080)"
-        );
-    }
-
-    #[test]
-    fn redact_strips_userinfo_without_password() {
-        assert_eq!(
-            redact_url_credentials("http://alice@host/path"),
-            "http://***:***@host/path"
-        );
-    }
-
-    #[test]
-    fn redact_handles_multiple_urls() {
-        assert_eq!(
-            redact_url_credentials("a http://u:p@h1 b https://u2:p2@h2/x?y=1 c"),
-            "a http://***:***@h1 b https://***:***@h2/x?y=1 c"
-        );
-    }
-
-    #[test]
-    fn redact_handles_url_wrapped_in_parentheses() {
-        // 回归：reqwest 的错误文本形如 `... for url (http://...)`。
-        // 早期实现把 `)` 当 authority 边界，导致带 `)` 的口令被截断、凭据漏网。
-        assert_eq!(
-            redact_url_credentials("error sending request for url (http://u:p@h:8080)"),
-            "error sending request for url (http://***:***@h:8080)"
-        );
-        // 口令自身含 `)`：必须从最后一个 `@` 切分，而非从 `)` 断词
-        assert_eq!(
-            redact_url_credentials("http://u:p)ss@h/x"),
-            "http://***:***@h/x"
-        );
-    }
-
-    #[test]
-    fn redact_uses_last_at_as_userinfo_boundary() {
-        // host 不允许含 `@`，故最后一个 `@` 即 userinfo 结尾
-        assert_eq!(redact_url_credentials("http://a@b@c/d"), "http://***:***@c/d");
-    }
-
-    #[test]
-    fn redact_leaves_plain_text_untouched() {
-        // 普通错误文本不含 `://`，须原样保留
-        for s in [
-            "connection reset by peer",
-            "err.invalid_url",
-            "error sending request for url (https://objects.githubusercontent.com/...)",
-        ] {
-            assert_eq!(redact_url_credentials(s), s);
-        }
-    }
-
-    #[test]
-    fn redact_leaves_empty_userinfo_untouched() {
-        // 空 userinfo 无需脱敏（at > 0 判断）
-        assert_eq!(redact_url_credentials("http://@host"), "http://@host");
     }
 
     #[test]

@@ -467,7 +467,137 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
     }
 
+    // ── Migration 18: 脱敏存量日志/源状态中的明文凭据（V28 一次性清理）──
+    // 新增的日志与源状态出口已默认脱敏（`db::logs::write_log*` + `poll.rs` 的失败分支），
+    // 但历史行里仍是明文（现网实测：27 条 `check.failed` 含完整 YouTube API key，
+    // 日志留存 14 天、可搜索、可导出）。这里做一次性清洗，用 app_settings 标记避免
+    // 每次启动全表扫描；清洗失败不阻塞启动（不写标记，下次启动重试）。
+    const REDACTION_MARKER: &str = "migration.log_redaction_v1";
+    let already_redacted = super::settings::get_setting(conn, REDACTION_MARKER)
+        .ok()
+        .flatten()
+        .is_some();
+    if !already_redacted {
+        match redact_existing_credentials(conn) {
+            Ok(count) => {
+                let _ = super::settings::set_setting(conn, REDACTION_MARKER, "1");
+                if count > 0 {
+                    log::info!("已脱敏 {} 行历史记录中的明文凭据", count);
+                    // 结果落到日志页，让用户知道历史里曾出现过明文凭据
+                    super::logs::write_log_key(
+                        conn,
+                        "INFO",
+                        "migration.log_redacted",
+                        &serde_json::json!({ "count": count }).to_string(),
+                    );
+                }
+            }
+            Err(e) => log::error!("历史凭据脱敏失败（不写标记，下次启动重试）: {}", e),
+        }
+    }
+
     Ok(())
+}
+
+/// 一次性清洗历史明文凭据（Migration 18）：`logs` 三列 + `sources.last_check_message`。
+///
+/// 只更新真正变化的行（大多数行不含 `://`，脱敏后与原文相同），返回受影响行数。
+/// `rendered_message` 由 `message_args` 渲染而来，同一 URL 文本在两侧被同等替换，
+/// 因此无需重新渲染即可保持两列一致。
+///
+/// **内存约束**：`logs` 按 `id` 游标**分批**读取（每批 [`REDACT_BATCH`] 行），不一次性
+/// `collect` 全表。当前现网仅约 3 千行（默认 `log_retention_days=14` 自动清理），
+/// 但 `log_retention_days` 可被用户设为 0（不清理），届时表可无界增长；而本函数跑在
+/// **启动路径**上，全表读内存会把启动时间和内存占用一起放大。游标分页稳定：
+/// 循环内只 UPDATE 不改 id、也不 INSERT（`migration.log_redacted` 日志在循环结束后才写），
+/// 故 `WHERE id > ?` 不会漏行也不会重复。
+///
+/// `sources` 不分批：其行数由用户手动添加的监控源决定（现网 14，量级为十位数），
+/// 不是随运行时间增长的表。
+fn redact_existing_credentials(conn: &Connection) -> std::result::Result<usize, String> {
+    /// 单批读取行数：兼顾启动延迟与内存（约 3 千行现网数据一轮即可全部覆盖）。
+    const REDACT_BATCH: i64 = 500;
+
+    let mut updated = 0usize;
+    let mut last_id = 0i64;
+
+    loop {
+        let batch: Vec<(i64, String, Option<String>, Option<String>)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, message, message_args, rendered_message FROM logs \
+                     WHERE id > ?1 ORDER BY id LIMIT ?2",
+                )
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(rusqlite::params![last_id, REDACT_BATCH], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .map_err(|e| e.to_string())?
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?;
+            rows
+        };
+        if batch.is_empty() {
+            break;
+        }
+
+        for (id, message, args, rendered) in batch {
+            last_id = id;
+            let new_message = crate::redact::redact(&message);
+            let new_args = args.as_deref().map(crate::redact::redact);
+            let new_rendered = rendered.as_deref().map(crate::redact::redact);
+            if new_message == message
+                && new_args.as_deref() == args.as_deref()
+                && new_rendered.as_deref() == rendered.as_deref()
+            {
+                continue;
+            }
+            conn.execute(
+                "UPDATE logs SET message = ?1, message_args = ?2, rendered_message = ?3 WHERE id = ?4",
+                rusqlite::params![new_message, new_args, new_rendered, id],
+            )
+            .map_err(|e| e.to_string())?;
+            updated += 1;
+        }
+    }
+
+    // sources.last_check_message：不经过 `write_log_key` 的第二个凭据出口
+    let source_rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, last_check_message FROM sources WHERE last_check_message IS NOT NULL",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        rows
+    };
+
+    for (id, message) in source_rows {
+        let redacted = crate::redact::redact(&message);
+        if redacted == message {
+            continue;
+        }
+        conn.execute(
+            "UPDATE sources SET last_check_message = ?1 WHERE id = ?2",
+            rusqlite::params![redacted, id],
+        )
+        .map_err(|e| e.to_string())?;
+        updated += 1;
+    }
+
+    Ok(updated)
 }
 
 /// 对所有 source 重算 version_bump（Migration 17 存量数据一次性回填）。
@@ -872,5 +1002,146 @@ mod tests {
             )
             .unwrap();
         assert_eq!(hanging, 0);
+    }
+    // ── Migration 18：历史明文凭据一次性清洗（V28）─────────────
+
+    #[test]
+    fn test_redact_existing_credentials_cleans_logs_and_sources() {
+        let conn = init_memory_db().unwrap();
+        let key_url = "err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?id=UC1&key=AIzaSyFAKEKEY0000000000000000000000)";
+
+        // 直接写入明文（绕过 write_log_key 的默认脱敏，模拟历史行）
+        conn.execute(
+            "INSERT INTO logs (level, message, message_key, message_args, rendered_message, created_at)
+             VALUES ('WARN', 'check.failed', 'check.failed', ?1, ?1, '2026-09-11T00:00:00Z')",
+            rusqlite::params![format!("{{\"error\":\"{key_url}\"}}", key_url = key_url)],
+        )
+        .unwrap();
+        // 与凭据无关的普通行不应被改动
+        conn.execute(
+            "INSERT INTO logs (level, message, created_at) VALUES ('INFO', 'check auto: 3 new', '2026-09-11T00:00:01Z')",
+            [],
+        )
+        .unwrap();
+
+        let source_id = crate::db::sources::add_source(&conn, "youtube", "UC1", "", "").unwrap();
+        conn.execute(
+            "UPDATE sources SET last_check_message = ?1 WHERE id = ?2",
+            rusqlite::params![key_url, source_id],
+        )
+        .unwrap();
+
+        let cleaned = redact_existing_credentials(&conn).unwrap();
+        assert_eq!(cleaned, 2, "日志与源状态各命中一行");
+
+        let (args, rendered): (String, String) = conn
+            .query_row(
+                "SELECT message_args, rendered_message FROM logs WHERE message_key = 'check.failed'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert!(!args.contains("AIzaSy"), "message_args 仍有明文: {args}");
+        assert!(!rendered.contains("AIzaSy"), "rendered_message 仍有明文: {rendered}");
+        assert!(args.contains("&key=***)"));
+
+        let msg: String = conn
+            .query_row(
+                "SELECT last_check_message FROM sources WHERE id = ?1",
+                [source_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!msg.contains("AIzaSy"), "last_check_message 仍有明文: {msg}");
+
+        let untouched: String = conn
+            .query_row(
+                "SELECT message FROM logs WHERE message = 'check auto: 3 new'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(untouched, "check auto: 3 new");
+
+        // 幂等：再跑一次不再命中
+        assert_eq!(redact_existing_credentials(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_migration_redaction_marker_prevents_rescan() {
+        let conn = init_memory_db().unwrap();
+        // init_memory_db 已跑过 migrate：首次清洗已执行、标记已落库
+        let marker = crate::db::settings::get_setting(&conn, "migration.log_redaction_v1").unwrap();
+        assert_eq!(marker.as_deref(), Some("1"));
+
+        // 直接插入一行含明文凭据的新日志（绕过 write_log_key 的默认脱敏）
+        let plaintext = "err.request_failed|url (https://h/p?token=SECRETVALUE)";
+        conn.execute(
+            "INSERT INTO logs (level, message, created_at) VALUES ('ERROR', ?1, '2026-09-11T00:00:00Z')",
+            rusqlite::params![plaintext],
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row("SELECT count(*) FROM logs", [], |r| r.get(0))
+            .unwrap();
+
+        // 再次 migrate：标记已存在 ⇒ 应当**跳过**重扫，该行保持原样
+        migrate(&conn).unwrap();
+
+        let after: i64 = conn
+            .query_row("SELECT count(*) FROM logs", [], |r| r.get(0))
+            .unwrap();
+        let msg: String = conn
+            .query_row(
+                "SELECT message FROM logs WHERE message LIKE '%SECRETVALUE%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(msg, plaintext, "带标记时第二次 migrate 不应重扫日志表");
+        assert_eq!(before, after, "带标记时第二次 migrate 不得增删日志行");
+        // 附带：不重复写 `migration.log_redacted` 提示行
+        let notices: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM logs WHERE message_key = 'migration.log_redacted'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(notices, 0, "首次清洗无命中时不应写提示行，重扫更不应写");
+    }
+
+    /// 对照：无标记时必须真的重扫（证明上一个用例的「未变」来自标记而非其他原因）。
+    #[test]
+    fn redact_existing_credentials_scans_in_batches_across_boundary() {
+        let conn = init_memory_db().unwrap();
+        // 造 1200 行（> REDACT_BATCH=500），其中首、尾各一行含明文，验证游标分批不漏行
+        for i in 0..1200 {
+            let msg = if i == 0 || i == 1199 {
+                "url (https://h/p?token=SECRETVALUE)".to_string()
+            } else {
+                format!("check auto: {i} new")
+            };
+            conn.execute(
+                "INSERT INTO logs (level, message, created_at) VALUES ('INFO', ?1, '2026-09-11T00:00:00Z')",
+                rusqlite::params![msg],
+            )
+            .unwrap();
+        }
+
+        let cleaned = redact_existing_credentials(&conn).unwrap();
+        assert_eq!(cleaned, 2, "首行与尾行（跮批边界之外）都应被清洗");
+        let left: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM logs WHERE message LIKE '%SECRETVALUE%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(left, 0);
+        let total: i64 = conn
+            .query_row("SELECT count(*) FROM logs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 1200, "清洗只 UPDATE，不得增删行");
     }
 }

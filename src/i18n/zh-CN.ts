@@ -239,10 +239,11 @@ export default {
   'release.flag_clear': '取消标记',
   'release.flag_flagged': '已标记',
   'release.flag_unflagged': '未标记',
-  'release.flag_changed': '{owner}/{repo} {tag} 标记已更新(group={flag}, id={id})',
-  'release.flag_changed_unknown': '标记已更新(group={flag}, id={id})',
+  'release.flag_changed': '{owner}/{repo} {tag} 标记已更新({flag}, id={id})',
+  'release.flag_changed_unknown': '标记已更新({flag}, id={id})',
   'migration.version_bump_backfilled': '版本类型数据回填完成，共 {count} 个监控源',
   'migration.version_bump_backfill_failed': '版本类型数据回填失败: {error}',
+  'migration.log_redacted': '已清理 {count} 行历史日志中的明文凭据',
   'err.release_flag_invalid': '无效的标记值: {0}',
   'release.flag_failed': '标记设置失败: ',
   'release.filter_more': '筛选',
@@ -387,6 +388,8 @@ export default {
   'err.repo_verify_failed': '验证仓库失败: {0}',
   'err.repo_api_error': 'GitHub API 返回 {0}',
   'err.request_failed': '网络请求失败: {0}',
+  'err.request_timeout': '网络请求超时: {0}',
+  'err.request_connect': '网络连接失败: {0}',
   'err.invalid_url': '无效的链接地址',
   'err.download_failed': '下载失败: {0}',
   'err.private_url_blocked': '禁止访问内网/私网地址',
@@ -710,4 +713,9 @@ export default {
   'aiUsage.action_summary': '摘要',
   'aiUsage.action_detect_language': '语言检测',
   'aiUsage.action_test': '连接测试',
+  // ── 前端全局错误兜底（V2）：模板中的 {error} 由 Rust 侧 render 填充，
+  //    前端 toast 用同一模板做同样的替换（见 src/api/report-error.ts）──
+  'ui.vue_error': '界面出现未处理异常（已记录到日志）: {error}',
+  'ui.unhandled_rejection': '未处理的异步异常（已记录到日志）: {error}',
+  'ui.window_error': '未捕获的脚本错误（已记录到日志）: {error}',
 }

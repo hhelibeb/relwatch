@@ -74,6 +74,24 @@ export const commands = {
 	proxyMode: string | null,
 } | null) => __TAURI_INVOKE<null>("test_deepseek_connection", { payload }),
 	searchLogs: (keyword: string, page: number, pageSize: number, level: string | null) => __TAURI_INVOKE<LogSearchResult>("search_logs", { keyword, page, pageSize, level }),
+	/**
+	 *  前端未捕获异常上报（V2 全局兜底通道）。
+	 * 
+	 *  背景：release 版没有控制台，`app.config.errorHandler` / `unhandledrejection` 里
+	 *  的异常原本既无提示、也无落库，用户报障时无从查起（“点了没反应且查不到”）。
+	 *  前端侧 `src/api/report-error.ts` 是唯一调用方——它负责节流（同一 key 60s 内只报一条）、
+	 *  截断（堆栈 ≤2KB）与 toast 提示；本命令只负责落库。
+	 * 
+	 *  **命名约束**：`message_key` 由前端传入，**不得以 err. 开头**。
+	 *  `src/__tests__/i18n-keys.test.ts` 会扫描 Rust 生产代码中以双引号开头的 err. 前缀
+	 *  字面量，并要求两个字典都有翻译；若这种写法出现在此处，会被当成一个未翻译的 key
+	 *  而卡住 CI（本注释特意不写出该字面量，以免自投罗网）。
+	 *  前端现用 `ui.vue_error` / `ui.unhandled_rejection` / `ui.window_error`。
+	 * 
+	 *  落库前经 `db::logs::write_log_key` 的默认脱敏（V28），无需在此重复处理；
+	 *  DB 写入失败时该函数会降级写 `logs/fallback.log`（V23）。
+	 */
+	reportFrontendError: (messageKey: string, detail: string, info: string | null) => __TAURI_INVOKE<null>("report_frontend_error", { messageKey, detail, info }),
 	exportBackup: () => __TAURI_INVOKE<string>("export_backup"),
 	importBackup: () => __TAURI_INVOKE<null>("import_backup"),
 	/**

@@ -706,6 +706,12 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
             }
         }
         Err((status, msg)) => {
+            // 凭据脱敏（V28）：适配器错误文本会回显完整 URL（如 `…&key=AIzaSy…`），
+            // 此处的 msg 有**三个去向**，逐个出口处理不现实，故在源头脱敏：
+            // ① logs（`write_log_key` 也默认脱敏，此处是二道保险）；
+            // ② `sources.last_check_message`（`record_check_failure` 同样默认脱敏）；
+            // ③ **返回给前端**——手动检查失败时该文本会进 toast，用户截图报障即外泄。
+            let msg = crate::redact::redact(&msg);
             // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
             let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
             let db_pool_blk = ctx.db_pool.clone();

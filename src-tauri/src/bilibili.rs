@@ -368,7 +368,7 @@ async fn init_anonymous_cookie_via_client(
         .header("User-Agent", BILI_UA)
         .send()
         .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
+        .map_err(|e| (0, crate::http::describe_request_error(&e)))?;
     let mut cookies: Vec<(String, String)> = Vec::new();
     for header in resp.headers().get_all("set-cookie") {
         if let Ok(raw) = header.to_str() {

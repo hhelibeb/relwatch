@@ -143,7 +143,7 @@ async fn fetch_page(
     let resp = req
         .send()
         .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
+        .map_err(|e| (0, describe_request_error(&e)))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         let reason = resp.status().canonical_reason().unwrap_or("").to_string();
@@ -176,6 +176,31 @@ where
 {
     let config = crate::retry::RetryConfig::default();
     crate::retry::retry_with_backoff(&config, should_retry, f).await
+}
+
+/// 把 reqwest 的发送错误细分为可分辨的诊断串。
+///
+/// 原先一律记 `err.request_failed|<e>`，而 reqwest 对 send 失败的 `Display` 只输出
+/// `error sending request for url (...)`、**不含根因**——现网 87 条 `check.failed`
+/// 因此无法区分 DNS / TLS / 代理 / 连接重置 / 超时，排障只能靠猜。这里：
+/// - 按 `is_timeout()` / `is_connect()` 分出超时与连接失败（语义键不同，文案不同）；
+/// - 追加 `source()` 首层的 Display（如 `dns error: failed to lookup address` /
+///   `tcp connect error: connection refused`），根因直接出现在日志行里。
+///
+/// 错误文本可能回显带凭据的 URL（代理 / API key）——脱敏由日志出口
+/// （`redact::redact`）统一负责，此处不做处理。
+pub fn describe_request_error(e: &reqwest::Error) -> String {
+    let key = if e.is_timeout() {
+        "err.request_timeout"
+    } else if e.is_connect() {
+        "err.request_connect"
+    } else {
+        "err.request_failed"
+    };
+    match std::error::Error::source(e) {
+        Some(cause) if !cause.to_string().is_empty() => format!("{}|{} ({})", key, e, cause),
+        _ => format!("{}|{}", key, e),
+    }
 }
 
 /// 默认重试判断：403 不重试（source 拒绝访问），其他可重试错误重试。
@@ -214,7 +239,7 @@ where
     let resp = build_req(client.get(url))
         .send()
         .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
+        .map_err(|e| (0, describe_request_error(&e)))?;
     let status = resp.status();
     let text = resp
         .text()
@@ -515,7 +540,7 @@ pub async fn fetch_public_with_headers(
             .get(&current)
             .send()
             .await
-            .map_err(|e| format!("err.request_failed|{}", e))?;
+            .map_err(|e| describe_request_error(&e))?;
         if let Some(loc) = resp
             .headers()
             .get(reqwest::header::LOCATION)
@@ -564,7 +589,7 @@ async fn read_limited_body(
     let bytes = resp
         .bytes()
         .await
-        .map_err(|e| format!("err.request_failed|{}", e))?;
+        .map_err(|e| describe_request_error(&e))?;
     if bytes.len() > max_bytes {
         return Err(format!(
             "err.download_failed|file too large ({} bytes)",

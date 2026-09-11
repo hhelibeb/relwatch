@@ -19,7 +19,6 @@
     "updater:default",
     "process:allow-restart",
     "dialog:default",
-    "clipboard-manager:default",
     "clipboard-manager:allow-read-text"
   ]
 }

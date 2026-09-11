@@ -223,7 +223,7 @@ pub async fn verify_org_exists(
         .get(&url)
         .send()
         .await
-        .map_err(|e| (0, format!("err.request_failed|{}", e)))?;
+        .map_err(|e| (0, crate::http::describe_request_error(&e)))?;
     let status = resp.status();
     if !status.is_success() {
         let code = status.as_u16();

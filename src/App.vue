@@ -7,6 +7,7 @@ import { events, commands } from './bindings'
 import { type Source, listSources, sourceRepoKey, syncSourceCapabilities } from './api/sources'
 import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
 import { copyTextToClipboard } from './api/client'
+import { setErrorToastSink } from './api/report-error'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
 import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
@@ -379,6 +380,8 @@ function dismissCurrentToast() {
 }
 
 provide(ShowToastKey, showToast)
+// 全局错误兜底（V2）的 toast 出口：main.ts 的处理器不在组件树内，拿不到 provide/inject
+setErrorToastSink(showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
 // 「显示重要度」开关：仅控制版本卡片/详情/筛选的 UI 展示（设置页 AI 分组）
 provide(ShowImportanceKey, computed(() => settings.value.show_importance))

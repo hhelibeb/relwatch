@@ -19,6 +19,7 @@ mod poll;
 mod retry;
 mod net;
 mod media;
+mod redact;
 pub mod agent;
 pub mod agent_rpc;
 pub mod agent_session;
@@ -73,6 +74,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::open_bilibili_login_window,
         commands::test_deepseek_connection,
         commands::search_logs,
+        commands::report_frontend_error,
         commands::export_backup,
         commands::import_backup,
         commands::hide_to_tray,

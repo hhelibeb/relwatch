@@ -197,9 +197,15 @@ pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Res
     Ok(())
 }
 
+/// 记录一次检查失败（源健康状态 + 累计失败数）。
+///
+/// `sources.last_check_message` 是**不经过** `db::logs::write_log_key` 的凭据出口
+/// （V28）：错误文本常回显完整请求 URL（如 `…&key=AIzaSy…`），而该列会被源列表 /
+/// 详情展示，并随备份导出。故本函数（该列的唯一写入者）在落库前统一脱敏，
+/// 避免每个调用点各写一遍而漏掉某一处。
 pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
-    let trimmed: String = message.chars().take(500).collect();
+    let trimmed: String = crate::redact::redact(message).chars().take(500).collect();
     conn.execute(
         "UPDATE sources
          SET last_checked_at = ?1,
@@ -290,6 +296,28 @@ mod tests {
         // 更新不存在的 id 不应报错（0 rows affected）
         let result = update_source(&conn, 999, false, 60);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_record_check_failure_redacts_credentials() {
+        // V28：last_check_message 是独立于日志表的凭据出口，必须在唯一写入者处脱敏
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "youtube", "UC1", "", "").unwrap();
+        record_check_failure(
+            &conn,
+            id,
+            "err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?id=UC1&key=AIzaSyFAKEKEY0000000000000000000000)",
+        )
+        .unwrap();
+
+        let s = get_source(&conn, id).unwrap().unwrap();
+        let msg = s.last_check_message.unwrap();
+        assert!(!msg.contains("AIzaSy"), "凭据泄露到 last_check_message: {msg}");
+        assert!(msg.contains("&key=***)"), "应保留参数名与闭合括号: {msg}");
+        // 诊断信息不丢
+        assert!(msg.contains("youtube/v3/channels?id=UC1"));
+        assert_eq!(s.last_check_status, "error");
+        assert_eq!(s.consecutive_failures, 1);
     }
 
     #[test]

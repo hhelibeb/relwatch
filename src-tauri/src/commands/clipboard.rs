@@ -7,10 +7,12 @@
 //!    （其 `desktop.rs`）是在命令所在线程直接调 `arboard::set_text`，全程没有
 //!    `run_on_main_thread`，在 tauri 命令所在的 tokio worker 线程上会以 1418
 //!    （线程没有打开的剪贴板）失败；本模块的 `clipboard_write` 统一切到主线程执行。
-//! 2. **写路径未获 ACL 授权**：`capabilities/default.json` 只授了 `clipboard-manager:default`
-//!    与 `clipboard-manager:allow-read-text`。其中 `clipboard-manager:default` 是**空集**
-//!    （官方描述：No features are enabled by default…Clipboard interaction needs to be
-//!    explicitly enabled），因此插件实际只被授权读文本，写命令本就没有放行。
+//! 2. **写路径未获 ACL 授权**：`capabilities/default.json` 只授了 `clipboard-manager:allow-read-text`
+//!    ——**不要**再往回加 `clipboard-manager:default`：它是**空集**（官方描述：No features are
+//!    enabled by default…Clipboard interaction needs to be explicitly enabled），加上它并不
+//!    授予任何写权限，只会让后人误以为写已放行（V1 已于本次移除）。
+//!    若将来真要走插件写路径，必须显式声明 `clipboard-manager:allow-write-text`（并自行解决
+//!    下面的线程约束），否则仍会静默失败。
 //!
 //! 附带代价（可接受，但应知晓）：插件桌面端自身也是 arboard 的封装（其 `init()` 中
 //! `arboard::Clipboard::new()`），因此同一条写路径存在**两份实现**，两份都在各自维护

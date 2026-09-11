@@ -1,6 +1,58 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use specta::Type;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+/// 降级日志文件大小上限（1MB）：超过即轮转为 `fallback.log.1`（覆盖上一份），
+/// 保证 DB 长期不可用时该文件不会无界增长。
+const FALLBACK_MAX_BYTES: u64 = 1024 * 1024;
+
+/// 降级日志目录：生产为 `%APPDATA%\RelWatch\logs`；单测走系统临时目录——
+/// 「DB 写入失败」的用例会真的落文件，不能污染真实用户数据。
+fn fallback_dir() -> PathBuf {
+    if cfg!(test) {
+        std::env::temp_dir().join("relwatch-test-logs")
+    } else {
+        crate::db::init::app_data_dir().join("logs")
+    }
+}
+
+/// 日志**降级通道**（V23）：DB 写入失败时把一行追加到 `logs/fallback.log`。
+///
+/// 为什么必须降级：V2 的全局错误兜底把「看不见的失败」变成「日志页可见」，
+/// 但若日志写入本身失败（DB 锁 / 文件被占 / 磁盘异常）且依然静默，兜底通道
+/// 就自毁了——用户以为「日志里一定有」，实际什么都没有。
+///
+/// 不重试 DB：失败通常是持锁或连接不可用，重试只会放大锁竞争。
+/// 行格式 `时间|level|key|args`（与 DB 表的列顺序一致，便于事后人工导入）。
+pub fn fallback_write(dir: &Path, line: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let path = dir.join("fallback.log");
+    if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) >= FALLBACK_MAX_BYTES {
+        // 轮转移除旧备份；失败（如被占用）时继续追加，只损失边界
+        let _ = std::fs::rename(&path, dir.join("fallback.log.1"));
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    file.write_all(line.as_bytes())?;
+    file.write_all(b"\n")
+}
+
+/// 写入失败时的统一降级：尽最大努力留痕，任何失败都不再向上抛
+/// （调用方均忽略返回值 `()`，抛错会迫使全部调用点改签名）。
+fn fallback_on_failure(level: &str, key: &str, args: &str) {
+    let line = format!(
+        "{}|{}|{}|{}",
+        chrono::Utc::now().to_rfc3339(),
+        level,
+        key,
+        args
+    );
+    let _ = fallback_write(&fallback_dir(), &line);
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct LogEntry {
@@ -46,14 +98,24 @@ pub fn release_log_ident(r: &crate::db::releases::ReleaseInfo) -> (String, Strin
 
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
     let now = chrono::Utc::now().to_rfc3339();
-    let _ = conn.execute(
+    // 所有日志出口默认脱敏（V28）：凭据（userinfo / query 参数 / 已知 token 形状）
+    // 不得以明文落库——日志可搜索、可导出，等同于凭据外泄。
+    let message = crate::redact::redact(message);
+    if let Err(e) = conn.execute(
         "INSERT INTO logs (level, message, created_at) VALUES (?1, ?2, ?3)",
         params![level, message, now],
-    );
+    ) {
+        log::error!("日志写入失败（降级写文件，V23）: {}", e);
+        fallback_on_failure(level, &message, "");
+    }
 }
 
 pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     let now = chrono::Utc::now().to_rfc3339();
+
+    // 所有日志出口默认脱敏（V28）：先把 args 过滤再渲染，使 message_args 与
+    // rendered_message 两侧都无明文，且渲染输入与落库内容一致。
+    let args = crate::redact::redact(args);
 
     // 读取用户语言设置，渲染翻译文本用于搜索
     // 注意：rendered_message 在写入时固定了当前 locale。切换语言后已有日志行
@@ -65,13 +127,16 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
         crate::db::settings::KEY_LANGUAGE,
         &crate::db::settings::get_default_language(),
     ).unwrap_or_else(|_| crate::db::settings::get_default_language());
-    let args_value: serde_json::Value = serde_json::from_str(args).unwrap_or_default();
+    let args_value: serde_json::Value = serde_json::from_str(&args).unwrap_or_default();
     let rendered = crate::i18n::render(key, &args_value, &locale);
 
-    let _ = conn.execute(
+    if let Err(e) = conn.execute(
         "INSERT INTO logs (level, message, message_key, message_args, rendered_message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![level, key, key, args, rendered, now],
-    );
+    ) {
+        log::error!("日志写入失败（降级写文件，V23）: {}", e);
+        fallback_on_failure(level, key, &args);
+    }
 }
 
 pub fn search_logs(
@@ -420,6 +485,157 @@ mod tests {
         // 边界：499（最后一个 4xx）应 ERROR，500（第一个 5xx）应 WARN
         assert_eq!(check_failure_log_level(499), "ERROR");
         assert_eq!(check_failure_log_level(500), "WARN");
+    }
+
+    // ── V23：日志写入静默失败 → 降级写文件 ─────────────────────
+
+    /// 每个用例独立的临时目录，避免并行测试互相干扰。
+    fn temp_log_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("relwatch-test-logs-{}-{}", std::process::id(), tag))
+    }
+
+    #[test]
+    fn fallback_write_appends_line() {
+        let dir = temp_log_dir("append");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        fallback_write(&dir, "2026-09-11T00:00:00Z|INFO|check.auto|{}").unwrap();
+        fallback_write(&dir, "2026-09-11T00:00:01Z|ERROR|ui.vue_error|{}").unwrap();
+
+        let content = std::fs::read_to_string(dir.join("fallback.log")).unwrap();
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "追加而非覆盖: {content}");
+        assert!(lines[0].starts_with("2026-09-11T00:00:00Z|INFO|check.auto"));
+        assert!(lines[1].contains("ui.vue_error"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fallback_write_rotates_when_over_limit() {
+        let dir = temp_log_dir("rotate");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 预置一个超限文件（内容不重要，只看轮转行为）
+        std::fs::write(dir.join("fallback.log"), "x".repeat(FALLBACK_MAX_BYTES as usize)).unwrap();
+        fallback_write(&dir, "after-rotate").unwrap();
+
+        assert!(dir.join("fallback.log.1").exists(), "超限后应轮转为 .1");
+        let current = std::fs::read_to_string(dir.join("fallback.log")).unwrap();
+        assert_eq!(current.trim_end(), "after-rotate", "新文件只含轮转后的行");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_log_degrades_to_fallback_file_when_table_missing() {
+        // 无 logs 表（DB 不可用）时应降级而非 panic。
+        // 旧版只断言「不 panic」——那连「降级到底做没做」都没测到（函数体全空也绿）。
+        // 这里进一步断言降级文件确实拿到那一行。
+        let conn = Connection::open_in_memory().unwrap();
+        let dir = fallback_dir();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        write_log(&conn, "ERROR", "boom");
+        write_log_key(&conn, "ERROR", "check.failed", r#"{"error":"boom"}"#);
+
+        let content = std::fs::read_to_string(dir.join("fallback.log"))
+            .expect("DB 写入失败必须降级写 fallback.log（V23）");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(lines.len(), 2, "两次失败各降级一行: {content}");
+        assert!(lines[0].ends_with("|ERROR|boom|"), "{} ", lines[0]);
+        assert!(lines[1].contains("|ERROR|check.failed|"), "{}", lines[1]);
+        // 降级行不得带明文凭据
+        write_log(&conn, "WARN", "url (https://h/p?token=SECRETVALUE)");
+        let content = std::fs::read_to_string(dir.join("fallback.log")).unwrap();
+        assert!(!content.contains("SECRETVALUE"), "降级文件泄露凭据: {content}");
+
+        // 该目录是所有用例共享的固定位置（`fallback_dir()` 在 cfg(test) 下恒定），
+        // 用完即清，不给 TEMP 留测试垃圾。
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── V28：日志出口默认脱敏 ─────────────────────────────
+
+    #[test]
+    fn write_log_key_redacts_credentials_in_args_and_rendered() {
+        let conn = init_memory_db().unwrap();
+        crate::db::settings::set_setting(&conn, crate::db::settings::KEY_LANGUAGE, "zh-CN").unwrap();
+
+        write_log_key(
+            &conn,
+            "WARN",
+            "check.failed",
+            &serde_json::json!({
+                "owner": "Freesia",
+                "repo": "",
+                "error": "err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?id=UC1&key=AIzaSyFAKEKEY0000000000000000000000)"
+            })
+            .to_string(),
+        );
+
+        let logs = get_logs(&conn, 10).unwrap();
+        let args = logs[0].message_args.clone().unwrap();
+        let rendered = logs[0].rendered_message.clone().unwrap();
+        assert!(!args.contains("AIzaSy"), "message_args 泄露: {args}");
+        assert!(!rendered.contains("AIzaSy"), "rendered_message 泄露: {rendered}");
+        assert!(args.contains("&key=***)"), "保留参数名与闭合括号: {args}");
+        // 搜索依然能命中被脱敏后的日志
+        let (_entries, total) = search_logs(&conn, "key=***", None, 1, 10).unwrap();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn write_log_redacts_credentials_in_message() {
+        let conn = init_memory_db().unwrap();
+        write_log(
+            &conn,
+            "ERROR",
+            "proxy connect failed: http://admin:hunter2@10.0.0.1:3128",
+        );
+        let logs = get_logs(&conn, 10).unwrap();
+        assert!(!logs[0].message.contains("hunter2"), "{}", logs[0].message);
+        assert!(logs[0].message.contains("***:***@10.0.0.1:3128"));
+    }
+
+    /// CI 护栅（制度化）：logs 表只允许经本模块写入。
+    ///
+    /// 本模块的 `write_log` / `write_log_key` 是唯一的默认脱敏出口；任何绕过它
+    /// 直接 `INSERT INTO logs` 的新代码都会把凭据泄露风险重新引进来。
+    #[test]
+    fn insert_into_logs_is_confined_to_this_module() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders: Vec<String> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                let src = std::fs::read_to_string(&path).unwrap();
+                // 只看生产代码：测试模块可以直写（如 Migration 18 的用例需要造历史明文行）
+                let prod = match src.find("#[cfg(test)]") {
+                    Some(pos) => &src[..pos],
+                    None => src.as_str(),
+                };
+                let rel = path
+                    .strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel != "db/logs.rs" && prod.contains("INSERT INTO logs") {
+                    offenders.push(rel);
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "发现绕过脱敏出口的日志写入，请改用 db::logs::write_log/write_log_key: {offenders:?}"
+        );
     }
 
     #[test]

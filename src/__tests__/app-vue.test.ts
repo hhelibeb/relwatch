@@ -1372,3 +1372,27 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     wrapper.unmount()
   })
 })
+
+// ── V2 全局错误兜底：App 把 showToast 注册为上报出口，异常必须能被用户看见 ──
+describe('App.vue — 全局错误兜底的 toast 出口（V2）', () => {
+  it('reportFrontendError 弹出 toast 并把同一明细落库', async () => {
+    const wrapper = await mountRealApp()
+    const { reportFrontendError, resetReportThrottle } = await import('../api/report-error')
+    resetReportThrottle()
+
+    await reportFrontendError('ui.unhandled_rejection', new Error('boom'))
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    const toast = wrapper.find('.toast')
+    expect(toast.exists()).toBe(true)
+    expect(toast.text()).toContain('boom')
+    // 模板占位符必须已被替换（否则用户看到裸的 {error}）
+    expect(toast.text()).not.toContain('{error}')
+
+    expect(invoke).toHaveBeenCalledWith('report_frontend_error', expect.objectContaining({
+      messageKey: 'ui.unhandled_rejection',
+    }))
+    wrapper.unmount()
+  })
+})
