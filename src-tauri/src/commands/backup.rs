@@ -1,8 +1,59 @@
 use rusqlite::backup::Backup;
+use rusqlite::Connection;
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
+
+/// 同目录临时文件名：`<目标名>.tmp-<pid>`。
+///
+/// 必须与目标**同目录**（同卷）——`rename` 跨卷会失败；带 pid 避免同机多实例互踩。
+fn sibling_temp_path(target: &Path) -> PathBuf {
+    let mut name = target.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".tmp-{}", std::process::id()));
+    target.with_file_name(name)
+}
+
+/// 把 `conn` 导出为紧凑的独立 SQLite 副本（`VACUUM INTO`）并写入 `target`。
+///
+/// ## 为什么不直接 `VACUUM INTO '<target>'`
+///
+/// `VACUUM INTO` 要求目标**不存在或为 0 字节**：目标已存在且有内容时 SQLite 直接报
+/// `file is not a database`（实测 bundled SQLite 3.49）。而保存对话框虽然默认给
+/// 带时间戳的文件名，用户仍可选中一个旧备份并确认「覆盖」——此时导出会以一个与真实
+/// 原因毫不相干的错误失败（用户只看到「备份导出失败: file is not a database」）。
+///
+/// ## 做法：先导出到同目录临时文件，成功后再改名覆盖
+///
+/// - 失败时**旧备份原样保留**（“先删旧再写”会在中途失败时把备份弄丢）；
+/// - `rename` 在 Windows 上等价 `MOVEFILE_REPLACE_EXISTING`，具备覆盖语义；
+/// - 临时文件中途失败/rename 失败均清理，不留下垃圾文件。
+///
+/// ## 用绑定参数而非字符串拼接
+///
+/// `VACUUM INTO ?1` 的参数是一个**表达式**，实测绑定参数可用，于是不再需要手工转义。
+/// 原实现拼 `.replace('\'', "''").replace('\\', "\\\\")`，其中把反斜杠加倍是
+/// **没有意义的**（SQLite 字符串字面量不处理 `\` 转义，也不会把它还原成单个）——
+/// 实测它在 Windows 上不造成故障，只是因为系统会宽容归并重复的路径分隔符（写出的仍是
+/// 预期的 `backup.db`），**并非因为转义正确**。改用参数绑定后不再依赖这个巧合，
+/// 也避开了「路径含单引号时拼串是否可靠」这类只能靠人推的细节。
+fn vacuum_into(conn: &Connection, target: &Path) -> Result<(), String> {
+    let tmp = sibling_temp_path(target);
+    // 上次异常退出可能留下同名临时文件——VACUUM INTO 同样不接受已存在的文件
+    let _ = std::fs::remove_file(&tmp);
+
+    let tmp_str = tmp.to_string_lossy();
+    if let Err(e) = conn.execute("VACUUM INTO ?1", rusqlite::params![tmp_str.as_ref()]) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("err.backup_export_failed|{}", e));
+    }
+
+    std::fs::rename(&tmp, target).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("err.backup_export_failed|{}", e)
+    })
+}
 
 /// 验证指定路径的文件是有效的 SQLite 数据库（检查魔数前 16 字节）
 pub fn validate_sqlite_file(path: &str) -> Result<(), String> {
@@ -51,7 +102,12 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
         None => return Err("err.backup_cancelled_export".to_string()),
     };
 
-    let path_str = path.as_path().unwrap().to_string_lossy().to_string();
+    // FilePath 在桌面端恒为 Path 变体；此处仍不用 unwrap——路径形态意外时
+    // 报可读错误，比 panic 掉整个命令好
+    let Some(target) = path.as_path() else {
+        return Err("err.backup_export_failed|path is not a filesystem path".to_string());
+    };
+    let path_str = target.to_string_lossy().to_string();
 
     let state = app.state::<crate::types::AppState>();
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
@@ -61,11 +117,8 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
         .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
         .map_err(|e| format!("err.backup_wal_checkpoint_failed|{}", e))?;
 
-    // VACUUM INTO 创建紧凑干净的独立副本
-    let escaped = path_str.replace('\'', "''").replace('\\', "\\\\");
-    conn
-        .execute_batch(&format!("VACUUM INTO '{}';", escaped))
-        .map_err(|e| format!("err.backup_export_failed|{}", e))?;
+    // 导出紧凑副本（含「目标已存在 / 路径转义」处理，见 vacuum_into 文档）
+    vacuum_into(&conn, target)?;
 
     if let Ok(conn) = state.db.get() {
         crate::db::logs::write_log_key(&conn, "INFO", "backup.exported", &json!({"path": &path_str}).to_string());
@@ -202,35 +255,141 @@ mod tests {
         assert!(result.unwrap_err().contains("err.backup_read_failed"));
     }
 
-    #[test]
-    fn test_export_vacuum_into_creates_valid_sqlite_file() {
-        let dir = std::env::temp_dir();
-        let backup_path = dir.join(format!("test_export_{}.db", std::process::id()));
+    /// 每个用例独立的临时目录（名带 pid + 标签），用完即删。
+    ///
+    /// 回归背景：旧用例把目标写成 `temp_dir()/test_export_<pid>.db`——
+    /// ① 直接落在系统 temp 根目录且不保证清理，已累积大量残留；
+    /// ② pid 会被复用，一旦撞上旧残留文件，`VACUUM INTO` 就报
+    ///    `file is not a database`，使 CI 随机变红。
+    fn unique_temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("relwatch-test-{}-{}", std::process::id(), tag));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
 
-        // 创建源内存数据库并写入数据
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
+    /// 临时目录卫兵：Drop 时删除目录。
+    ///
+    /// 用例里**不能**只写一句 `remove_dir_all` 就完事：Windows 不允许删除仍被打开的文件
+    /// 所在目录，而用例还持有 `Connection::open(备份文件)`——在 `restored` 仍存活时清理
+    /// 会**静默失败**（`let _ =` 吞掉），留下残留目录（实测 `export_valid` /
+    /// `export_overwrite` 各留一堆）。用卫兵即可：局部变量按声明逆序析构，卫兵声明在最前
+    /// ⇒ 最后析构，届时连接已全部关闭；断言失败/panic 展开时同样会走到 Drop。
+    /// 顺带把「结尾手动清理」这个容易漏写的约定收口成一种写法。
+    struct TempDirGuard(PathBuf);
+
+    impl TempDirGuard {
+        fn new(tag: &str) -> Self {
+            Self(unique_temp_dir(tag))
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// 建一个内存库并写入一行 t.val = 'hello'。
+    fn seed_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE t (id INTEGER PRIMARY KEY, val TEXT);
-             INSERT INTO t VALUES (1, 'hello');"
-        ).unwrap();
+             INSERT INTO t VALUES (1, 'hello');",
+        )
+        .unwrap();
+        conn
+    }
 
-        // VACUUM INTO —— export_backup 的核心操作
-        let escaped = backup_path.to_str().unwrap().replace('\'', "''");
-        conn.execute_batch(&format!("VACUUM INTO '{}';", escaped)).unwrap();
+    #[test]
+    fn test_export_vacuum_into_creates_valid_sqlite_file() {
+        let dir = TempDirGuard::new("export_valid");
+        let backup_path = dir.path().join("backup.db");
+        let conn = seed_db();
 
-        // 验证文件已创建且是有效的 SQLite
-        assert!(backup_path.exists(), "VACUUM INTO 应创建备份文件");
+        // 调生产同一份实现（不再在测试里另拄一遍 VACUUM INTO——旧写法是
+        // 「测试副本」：它既测不到生产的转义/覆盖处理，自身又引入了 temp 残留 flake）
+        vacuum_into(&conn, &backup_path).unwrap();
+
+        assert!(backup_path.exists(), "应创建备份文件");
         assert!(validate_sqlite_file(backup_path.to_str().unwrap()).is_ok(),
                 "导出的文件应为有效的 SQLite 数据库");
 
-        // 验证数据往返
-        let restored = rusqlite::Connection::open(&backup_path).unwrap();
-        let val: String = restored.query_row(
-            "SELECT val FROM t WHERE id = 1", [], |row| row.get(0)
-        ).unwrap();
+        // 数据往返
+        let restored = Connection::open(&backup_path).unwrap();
+        let val: String = restored
+            .query_row("SELECT val FROM t WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(val, "hello");
 
-        let _ = std::fs::remove_file(&backup_path);
+        // 临时文件不得留下
+        assert!(!sibling_temp_path(&backup_path).exists(), "不应留下 .tmp-<pid> 临时文件");
+    }
+
+    /// 回归：目标已存在且非空时，导出必须成功并覆盖。
+    ///
+    /// 修复前此处报 `file is not a database`（`VACUUM INTO` 不接受已有内容的文件），
+    /// 用户看到的是一句与真实原因毫无关系的报错。
+    #[test]
+    fn test_export_overwrites_existing_nonempty_target() {
+        let dir = TempDirGuard::new("export_overwrite");
+        let backup_path = dir.path().join("backup.db");
+        // 模拟「用户选中旧备份并确认覆盖」：目标已存在且有内容
+        std::fs::write(&backup_path, b"stale backup content".repeat(64)).unwrap();
+
+        let conn = seed_db();
+        vacuum_into(&conn, &backup_path).unwrap();
+
+        assert!(validate_sqlite_file(backup_path.to_str().unwrap()).is_ok(),
+                "覆盖后应为合法 SQLite，而非旧内容残留");
+        let restored = Connection::open(&backup_path).unwrap();
+        let val: String = restored
+            .query_row("SELECT val FROM t WHERE id = 1", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(val, "hello");
+        assert!(!sibling_temp_path(&backup_path).exists());
+    }
+
+    /// 回归：路径含单引号时不再依赖字符串拼接转义（改用绑定参数）。
+    #[test]
+    fn test_export_handles_single_quote_in_path() {
+        let root = TempDirGuard::new("export_quote");
+        let dir = root.path().join("it's here");
+        std::fs::create_dir_all(&dir).unwrap();
+        let backup_path = dir.join("back'up.db");
+
+        let conn = seed_db();
+        vacuum_into(&conn, &backup_path).unwrap();
+
+        assert!(validate_sqlite_file(backup_path.to_str().unwrap()).is_ok());
+    }
+
+    /// 目标目录不存在时失败得干净：返回可翻译错误键，不 panic、不留临时文件。
+    #[test]
+    fn test_export_failure_is_clean_and_leaves_no_temp() {
+        let dir = TempDirGuard::new("export_fail");
+        let missing = dir.path().join("no_such_subdir").join("backup.db");
+
+        let conn = seed_db();
+        let err = vacuum_into(&conn, &missing).unwrap_err();
+        assert!(err.starts_with("err.backup_export_failed|"), "{err}");
+        assert!(!missing.exists());
+        assert!(!sibling_temp_path(&missing).exists(), "失败后不应留下临时文件");
+    }
+
+    #[test]
+    fn test_sibling_temp_path_is_same_dir_and_suffixed() {
+        let target = std::env::temp_dir().join("a").join("backup.db");
+        let tmp = sibling_temp_path(&target);
+        assert_eq!(tmp.parent(), target.parent(), "必须同目录（同卷）才能 rename");
+        assert!(
+            tmp.file_name().unwrap().to_string_lossy().starts_with("backup.db.tmp-"),
+            "{:?}",
+            tmp.file_name()
+        );
     }
 
     #[test]
