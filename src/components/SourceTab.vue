@@ -12,6 +12,7 @@ import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import { AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
+import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
 const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean }>()
 const emit = defineEmits<{
@@ -104,7 +105,7 @@ function handleSendToAgent(source: Source) {
 function handleDragStart(e: DragEvent, source: Source) {
   if (!agentEnabled.value || !agentPanelOpen.value) return
   const data = JSON.stringify({ kind: 'source', id: source.id })
-  e.dataTransfer?.setData('application/x-relwatch-entity', data)
+  e.dataTransfer?.setData(ENTITY_DRAG_MIME, data)
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
 }
 const headerMode = ref<HeaderMode>('add')

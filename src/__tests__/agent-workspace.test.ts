@@ -99,10 +99,38 @@ async function flushRpcFrame() {
   await flushPromises()
 }
 
+/**
+ * 构造落区 dragover/drop 用的 dataTransfer 替身。
+ * 必须同时提供 types 与 getData：落区用 types 探测拖拽类型（dragover 阶段浏览器
+ * 禁止读 getData），真实浏览器对实体拖拽会给出自定义 MIME，对拖动选中文本只给
+ * text/plain——正是这个差异决定「拦截」还是「放行给原生」。
+ * 传 entity 省略 → 模拟拖动选中文本；传 entity 对象 → 模拟应用内实体拖拽。
+ */
+function dragDataTransfer(entity?: unknown) {
+  if (entity === undefined) {
+    // 拖动选中文本：浏览器只提供 text/plain，无自定义 MIME
+    return {
+      types: ['text/plain'],
+      getData: (fmt: string) => (fmt === 'text/plain' ? '选中的对话文本' : ''),
+      setData: () => {},
+      effectAllowed: 'uninitialized',
+      dropEffect: 'none',
+    }
+  }
+  return {
+    types: ['application/x-relwatch-entity'],
+    getData: (fmt: string) => (fmt === 'application/x-relwatch-entity' ? JSON.stringify(entity) : ''),
+    setData: () => {},
+    effectAllowed: 'copy',
+    dropEffect: 'none',
+  }
+}
+
 /** Teleport 到 body 的浮层（rpc 状态菜单 / 会话 ⋯ 菜单）不在 wrapper 子树内，须以 document.body 为根查找。 */
 function findTeleported(selector: string): DOMWrapper<Element> {
   return new DOMWrapper(document.body).find(selector)
 }
+
 function findTeleportedAll(selector: string): DOMWrapper<Element>[] {
   return new DOMWrapper(document.body).findAll(selector)
 }
@@ -462,10 +490,7 @@ describe('AgentWorkspace 冒烟', () => {
 
     // 拖入版本实体 → chip 同样显示 owner/repo（版本名），不显示仓库描述
     await wrapper.find('.agent-ws-main').trigger('drop', {
-      dataTransfer: {
-        getData: (fmt: string) =>
-          fmt === 'application/x-relwatch-entity' ? JSON.stringify({ kind: 'release', id: 7 }) : '',
-      },
+      dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
     })
     await flushPromises()
     const chipText = wrapper.find('.agent-ws-chip-attached .agent-ws-chip-text').text()
@@ -491,16 +516,13 @@ describe('AgentWorkspace 冒烟', () => {
 
     const header = wrapper.find('.agent-ws-header')
     // 拖拽悬停：标题栏出现虚线框 + 提示文本，工作区主体不高亮
-    await header.trigger('dragenter')
+    await header.trigger('dragenter', { dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }) })
     expect(header.classes()).toContain('drop-over')
     expect(wrapper.find('.agent-ws-drop-hint-header').exists()).toBe(true)
     expect(wrapper.find('.agent-ws-main').classes()).not.toContain('drag-over')
     // 把版本实体放到标题栏
     await header.trigger('drop', {
-      dataTransfer: {
-        getData: (fmt: string) =>
-          fmt === 'application/x-relwatch-entity' ? JSON.stringify({ kind: 'release', id: 7 }) : '',
-      },
+      dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
     })
     await flushPromises()
     // 已切换为新建的草稿会话（新建即登记，评审 1.2）+ 引用 chip 放入
@@ -530,16 +552,13 @@ describe('AgentWorkspace 冒烟', () => {
     await flushPromises()
     const main = wrapper.find('.agent-ws-main')
     // 拖拽悬停：工作区主体出现虚线框 + 提示文本，标题栏不高亮
-    await main.trigger('dragover')
+    await main.trigger('dragover', { dataTransfer: dragDataTransfer({ kind: 'source', id: 3 }) })
     expect(main.classes()).toContain('drag-over')
     expect(wrapper.find('.agent-ws-drop-hint-main').exists()).toBe(true)
     expect(wrapper.find('.agent-ws-header').classes()).not.toContain('drop-over')
     // 把监控源实体放到工作区
     await main.trigger('drop', {
-      dataTransfer: {
-        getData: (fmt: string) =>
-          fmt === 'application/x-relwatch-entity' ? JSON.stringify({ kind: 'source', id: 3 }) : '',
-      },
+      dataTransfer: dragDataTransfer({ kind: 'source', id: 3 }),
     })
     await flushPromises()
     // 仍处于旧会话（未新建）+ 引用加入当前会话 + 就地高亮（不弹 Toast）
@@ -550,6 +569,74 @@ describe('AgentWorkspace 冒烟', () => {
     expect(wrapper.find('.agent-ws-sr-only').text()).toBe(t('agent.attached'))
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  // ── 非实体拖拽必须放行给原生（回归守卫）──
+  // 拖动选中的对话文本拖入输入框，本应由 textarea 原生行为插入；若落区不判类型
+  // 一律 preventDefault，会把这层原生能力取消（曾发生的回归）。
+  it('拖动选中文本经过工作区：不拦截默认行为、不弹实体提示', async () => {
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const main = wrapper.find('.agent-ws-main')
+
+    // dragover：不应 preventDefault，也不应出现实体落区高亮
+    const dragOverEvent = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.assign(dragOverEvent, { dataTransfer: dragDataTransfer() })
+    main.element.dispatchEvent(dragOverEvent)
+    await nextTick()
+
+    expect(dragOverEvent.defaultPrevented).toBe(false)
+    expect(main.classes()).not.toContain('drag-over')
+    expect(wrapper.find('.agent-ws-drop-hint-main').exists()).toBe(false)
+
+    // drop：不应 preventDefault（放行给 textarea 原生插入），也不应产生引用 chip
+    const dropEvent = new Event('drop', { bubbles: true, cancelable: true })
+    Object.assign(dropEvent, { dataTransfer: dragDataTransfer() })
+    main.element.dispatchEvent(dropEvent)
+    await flushPromises()
+
+    expect(dropEvent.defaultPrevented).toBe(false)
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('拖动选中文本经过标题栏：同样不拦截、不高亮', async () => {
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const header = wrapper.find('.agent-ws-header')
+
+    const dragEnterEvent = new Event('dragenter', { bubbles: true, cancelable: true })
+    Object.assign(dragEnterEvent, { dataTransfer: dragDataTransfer() })
+    header.element.dispatchEvent(dragEnterEvent)
+    await nextTick()
+
+    expect(dragEnterEvent.defaultPrevented).toBe(false)
+    expect(header.classes()).not.toContain('drop-over')
+    expect(wrapper.find('.agent-ws-drop-hint-header').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('实体拖拽仍被拦截：dragover 高亮、drop 插入引用（分流未误伤正常路径）', async () => {
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const main = wrapper.find('.agent-ws-main')
+
+    const dragOverEvent = new Event('dragover', { bubbles: true, cancelable: true })
+    Object.assign(dragOverEvent, { dataTransfer: dragDataTransfer({ kind: 'source', id: 3 }) })
+    main.element.dispatchEvent(dragOverEvent)
+    await nextTick()
+
+    expect(dragOverEvent.defaultPrevented).toBe(true)
+    expect(main.classes()).toContain('drag-over')
+
+    const dropEvent = new Event('drop', { bubbles: true, cancelable: true })
+    Object.assign(dropEvent, { dataTransfer: dragDataTransfer({ kind: 'source', id: 3 }) })
+    main.element.dispatchEvent(dropEvent)
+    await flushPromises()
+
+    expect(dropEvent.defaultPrevented).toBe(true)
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
+    wrapper.unmount()
   })
 
   it('user 消息整条被 <用户指令> 包裹时剥离标签，首轮模板折叠为可展开详情', async () => {

@@ -15,6 +15,7 @@ import { track } from '../composables/useUsageTracking'
 import { useLineClamp } from '../composables/useLineClamp'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
+import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
 const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
@@ -278,7 +279,7 @@ function handleSendToAgent() {
 function handleDragStart(e: DragEvent) {
   if (!agentEnabled.value || !agentPanelOpen.value) return
   const data = JSON.stringify({ kind: 'release', id: props.release.id })
-  e.dataTransfer?.setData('application/x-relwatch-entity', data)
+  e.dataTransfer?.setData(ENTITY_DRAG_MIME, data)
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
 }
 onMounted(() => {

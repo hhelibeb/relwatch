@@ -9,6 +9,37 @@ import { InvokeI18nError } from '../../api/client'
 /** i18n 翻译函数形状（与 src/i18n 的 t 一致，注入以解耦全局 locale 状态）。 */
 export type TranslateFn = (key: string, ...args: string[]) => string
 
+/**
+ * 实体拖拽的自定义 MIME（ReleaseItem / SourceTab 写入，AgentWorkspace 落区读取）。
+ * 集中定义防两端字面量漂移——写侧改了读侧不改，拖拽会静默失效。
+ */
+export const ENTITY_DRAG_MIME = 'application/x-relwatch-entity'
+
+/**
+ * 本次拖拽是否为本应用的实体拖拽。
+ *
+ * 必须用 dataTransfer.types 探测而非 getData：dragover 阶段多数浏览器禁止读取
+ * getData（安全限制），只有 types 可用。
+ *
+ * 用途是让落区**只拦截实体拖拽**。拖动选中文本走 text/plain，若不判类型一律
+ * preventDefault，会把输入框自身的原生「拖入即插入」一并取消（回归）。
+ */
+export function isEntityDrag(e: DragEvent): boolean {
+  return e.dataTransfer?.types.includes(ENTITY_DRAG_MIME) ?? false
+}
+
+/** 解析实体拖拽载荷；非本应用实体（含拖动选中文本）返回 null。 */
+export function parseEntityDrag(e: DragEvent): AgentEntityRefSeed | null {
+  const raw = e.dataTransfer?.getData(ENTITY_DRAG_MIME)
+  if (!raw) return null
+  try {
+    const entity = JSON.parse(raw) as AgentEntityRefSeed
+    return entity.kind === 'source' || entity.kind === 'release' ? entity : null
+  } catch {
+    return null
+  }
+}
+
 /** run 状态文案（agent.status_* i18n 键；RunBanner 状态条与消息区失败气泡共用）。 */
 export function runStatusLabel(status: string, t: TranslateFn): string {
   return t(`agent.status_${status}`)

@@ -2,7 +2,7 @@
 import { ref, reactive, computed, inject, onMounted, onUnmounted, nextTick, watch, type ComponentPublicInstance } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { events } from '../bindings'
-import { ShowToastKey, type AgentEntityRefSeed, type AgentWorkspaceSeed } from '../injection-keys'
+import { ShowToastKey, type AgentWorkspaceSeed } from '../injection-keys'
 import {
   getAgentConfig,
   getAgentAvailableModels,
@@ -22,6 +22,7 @@ import { useAgentModels } from './agent/useAgentModels'
 import { useAgentComposer } from './agent/useAgentComposer'
 import { useAgentSessions } from './agent/useAgentSessions'
 import { useAgentChat } from './agent/useAgentChat'
+import { isEntityDrag, parseEntityDrag } from './agent/agentChatUtils'
 import AgentRpcIndicator from './agent/AgentRpcIndicator.vue'
 import AgentSessionSidebar from './agent/AgentSessionSidebar.vue'
 import AgentRunBanner from './agent/AgentRunBanner.vue'
@@ -645,24 +646,38 @@ function applySeed() {
 }
 
 // ── 拖拽：实体（监控源/版本）从主界面拖入工作区 → 插入引用 chip ──
+// 落区只拦截**实体拖拽**（自定义 MIME）。拖动选中文本走 text/plain，若一律
+// preventDefault 会把输入框自身的原生「拖入即插入」取消掉——那是浏览器默认行为，
+// 日志搜索框等未接管拖放的输入框一直依赖它。故两类拖拽必须分流：
+// 非实体 → 不 preventDefault、不置高亮，整条链路放行给原生。
 const dragOver = ref(false)
 
-function handleDrop(e: DragEvent) {
+function onDragOver(e: DragEvent) {
+  if (!isEntityDrag(e)) return // 放行：输入框原生粘贴/拖放照常
+  e.preventDefault()
+  dragOver.value = true
+}
+
+function onDragLeave() {
   dragOver.value = false
-  const raw = e.dataTransfer?.getData('application/x-relwatch-entity')
-  if (!raw) return
-  try {
-    const entity = JSON.parse(raw) as AgentEntityRefSeed
-    if (entity.kind === 'source' || entity.kind === 'release') {
-      afterAttach(entity, addEntity(entity))
-    }
-  } catch {
-    // 非本应用拖入内容，忽略
-  }
+}
+
+function handleDrop(e: DragEvent) {
+  if (!isEntityDrag(e)) return // 放行：交给目标元素的原生默认行为
+  e.preventDefault()
+  dragOver.value = false
+  const entity = parseEntityDrag(e)
+  if (entity) afterAttach(entity, addEntity(entity))
 }
 
 // ── 拖到头部标题栏：切换新会话并把实体引用放进新会话 ──
 const headerDropOver = ref(false)
+
+function onHeaderDragOver(e: DragEvent) {
+  if (!isEntityDrag(e)) return // 同上：非实体拖拽不拦截
+  e.preventDefault()
+  headerDropOver.value = true
+}
 
 function onHeaderDragLeave(e: DragEvent) {
   // 仅当真正离开标题栏时才取消高亮（子元素间移动不闪烁）
@@ -673,18 +688,15 @@ function onHeaderDragLeave(e: DragEvent) {
 }
 
 function handleDropNewSession(e: DragEvent) {
+  if (!isEntityDrag(e)) return // 放行：非实体拖拽不拦截
+  e.preventDefault()
+  e.stopPropagation()
   dragOver.value = false
   headerDropOver.value = false
-  const raw = e.dataTransfer?.getData('application/x-relwatch-entity')
-  if (!raw) return
-  try {
-    const entity = JSON.parse(raw) as AgentEntityRefSeed
-    if (entity.kind === 'source' || entity.kind === 'release') {
-      startNewSession()
-      afterAttach(entity, addEntity(entity))
-    }
-  } catch {
-    // 非本应用拖入内容，忽略
+  const entity = parseEntityDrag(e)
+  if (entity) {
+    startNewSession()
+    afterAttach(entity, addEntity(entity))
   }
 }
 
@@ -723,14 +735,16 @@ onUnmounted(() => {
 
 <template>
   <div class="agent-ws" :style="{ width: panelWidth + 'px', flexBasis: panelWidth + 'px' }">
-    <!-- 头部标题栏：拖入 = 新建会话并放入引用 -->
+    <!-- 头部标题栏：拖入 = 新建会话并放入引用。
+         注意 @dragover / @drop **不加 .prevent 修饰符**——是否拦截由处理器内部
+         按拖拽类型决定（非实体拖拽放行给原生，见 onHeaderDragOver / handleDropNewSession）。 -->
     <header
       class="agent-ws-header"
       :class="{ 'drop-over': headerDropOver }"
-      @dragenter.prevent="headerDropOver = true"
-      @dragover.prevent="headerDropOver = true"
-      @dragleave.prevent="onHeaderDragLeave"
-      @drop.prevent.stop="handleDropNewSession"
+      @dragenter="onHeaderDragOver"
+      @dragover="onHeaderDragOver"
+      @dragleave="onHeaderDragLeave"
+      @drop="handleDropNewSession"
     >
       <div class="agent-ws-title">
         <svg class="agent-ws-title-icon"><use href="/icons.svg#agent-icon" /></svg>
@@ -764,13 +778,15 @@ onUnmounted(() => {
       <div v-if="headerDropOver" class="agent-ws-drop-hint agent-ws-drop-hint-header">{{ t('agent.drop_new_session') }}</div>
     </header>
 
-    <!-- 工作区主体：拖入 = 添加到当前会话 -->
+    <!-- 工作区主体：拖入 = 添加到当前会话。
+         同样不加 .prevent：非实体拖拽（如选中的对话文本）必须放行，
+         否则输入框自身的原生「拖入即插入」会被取消（回归）。 -->
     <div
       class="agent-ws-main"
       :class="{ 'drag-over': dragOver }"
-      @dragover.prevent="dragOver = true"
-      @dragleave="dragOver = false"
-      @drop.prevent="handleDrop"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="handleDrop"
     >
       <!-- 拖拽悬停提示：虚线框 + 目的说明 -->
       <div v-if="dragOver" class="agent-ws-drop-hint agent-ws-drop-hint-main">{{ t('agent.drop_current_session') }}</div>
