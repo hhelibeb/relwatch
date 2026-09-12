@@ -26,7 +26,10 @@ tauri-plugin-opener = "2"
 rusqlite = { version = "0.39", features = ["bundled", "backup"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.34"
-reqwest = { version = "0.12", features = ["json"] }
+# stream：bytes_stream 流式读响应体（M-2——先全量缓冲后判大小会被 chunked 无限流打爆内存）
+reqwest = { version = "0.12", features = ["json", "stream"] }
+# StreamExt：配合 reqwest stream 逐块累加并超限中断（M-2）
+futures-util = "0.3"
 # WBI 签名需要 MD5（B 站 web 端风控签名）
 md-5 = "0.10"
 tokio = { version = "1", features = ["full"] }

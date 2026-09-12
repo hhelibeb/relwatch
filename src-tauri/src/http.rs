@@ -241,14 +241,60 @@ where
         .await
         .map_err(|e| (0, describe_request_error(&e)))?;
     let status = resp.status();
-    let text = resp
-        .text()
-        .await
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+    let text = read_text_limited(resp, MAX_TEXT_BYTES).await?;
     if !status.is_success() {
         return Err(map_err(status.as_u16(), &text));
     }
     Ok(text)
+}
+
+/// 文本响应体上限：XML/JSON/HTML 各源路径共用。正常 RSS feed / API 分页远小于此，
+/// 上限只用于把「恶意超大响应」从内存耗尽降级为一次失败。
+pub const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+/// 流式读取的失败原因：超限（可预期）或传输错误。
+pub enum BodyReadError {
+    Overflow(usize),
+    Transport(String),
+}
+
+/// 流式累加响应体，超限立即中断（M-2：`bytes()` 是先全量缓冲后判大小，
+/// chunked 传输时内存已被吃光才轮到检查——改为逐块累加，超限即 drop 连接）。
+pub async fn read_body_limited(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<Vec<u8>, BodyReadError> {
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(64 * 1024);
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| BodyReadError::Transport(describe_request_error(&e)))?;
+        if buf.len() + chunk.len() > max_bytes {
+            return Err(BodyReadError::Overflow(max_bytes));
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok(buf)
+}
+
+/// 读响应体为文本（流式累加，超限中断）。
+/// 非 2xx 且超限时返回占位文本——错误映射器只需要状态码与错误要点，不需要完整 body。
+async fn read_text_limited(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<String, (u16, String)> {
+    let status = resp.status();
+    match read_body_limited(resp, max_bytes).await {
+        Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
+        Err(BodyReadError::Overflow(_)) if !status.is_success() => {
+            Ok("<body too large>".to_string())
+        }
+        Err(BodyReadError::Overflow(n)) => Err((
+            0,
+            format!("err.parse_failed|body too large (exceeded {} bytes)", n),
+        )),
+        Err(BodyReadError::Transport(e)) => Err((0, e)),
+    }
 }
 
 /// 带重试的 `get_text`：XML/HTML/JSON 路径统一复用重试骨架与错误格式化（M3）。
@@ -562,9 +608,9 @@ pub async fn fetch_public_with_headers(
     Err("err.download_failed|too many redirects".to_string())
 }
 
-/// 已校验响应的读取与限流：状态码非 2xx 拒绝、`Content-Length` 与实际字节数
-/// 双重上限校验（后者防服务端谎报/分块传输绕过），并回传 `Content-Type`
-/// （media 网关需原样透传给 Chromium）。
+/// 已校验响应的读取与限流：状态码非 2xx 拒绝、`Content-Length` 预检与流式累加
+/// 实际字节数双重上限校验（后者防服务端谎报/分块传输绕过——M-2），并回传 `Content-Type`
+/// （media 网关需透传给 Chromium）。
 ///
 /// 抽成独立函数是为了让生产路径（`fetch_public_with_headers`）与单元测试
 /// 共用**同一份**实现——此前测试用副本函数，生产改错测试依然全绿。
@@ -586,17 +632,15 @@ async fn read_limited_body(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
-    let bytes = resp
-        .bytes()
+    let bytes = read_body_limited(resp, max_bytes)
         .await
-        .map_err(|e| describe_request_error(&e))?;
-    if bytes.len() > max_bytes {
-        return Err(format!(
-            "err.download_failed|file too large ({} bytes)",
-            bytes.len()
-        ));
-    }
-    Ok((bytes.to_vec(), content_type))
+        .map_err(|e| match e {
+            BodyReadError::Overflow(n) => {
+                format!("err.download_failed|file too large (exceeded {} bytes)", n)
+            }
+            BodyReadError::Transport(e) => e,
+        })?;
+    Ok((bytes, content_type))
 }
 
 #[cfg(test)]

@@ -252,10 +252,28 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
     };
     let (bytes, content_type) =
         http::fetch_public_with_headers(&config, &url, MAX_MEDIA_BYTES).await?;
-    let content_type = content_type.unwrap_or_else(|| "application/octet-stream".to_string());
+    // Content-Type 白名单（M-1）：media 是被 Tauri 判定为本地源的自定义协议，
+    // 透传远端 Content-Type 意味着 text/html 可成为可导航文档；只放行真正的
+    // 媒体类型，其余一律 octet-stream（nosniff 下不会被执行/渲染为 HTML）。
+    // SVG 不在白名单（可含脚本）。缓存的 content_type 一并白名单化，保证缓存与响应一致。
+    let content_type = sanitize_content_type(&content_type.unwrap_or_default());
     write_cache(&url, &bytes, &content_type);
     evict_if_needed();
     Ok((bytes, content_type))
+}
+
+/// 媒体响应 Content-Type 白名单：取 base 类型（忽略参数）并小写比较；
+/// image/*（svg 除外）、video/*、audio/* 原样放行，其余一律 `application/octet-stream`。
+fn sanitize_content_type(ct: &str) -> String {
+    let base = ct.split(';').next().unwrap_or("").trim().to_lowercase();
+    let allowed = (base.starts_with("image/") && !base.starts_with("image/svg"))
+        || base.starts_with("video/")
+        || base.starts_with("audio/");
+    if allowed {
+        base
+    } else {
+        "application/octet-stream".to_string()
+    }
 }
 
 /// 读取代理设置（mode 为空时按 url 推断 custom/none，与其它入口一致）。
@@ -284,12 +302,21 @@ fn read_proxy_settings(app: &AppHandle) -> Result<(String, String), String> {
 /// 供 URI scheme 协议 handler 在异步上下文调用后喂给 responder。
 pub async fn handle_media_request(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
     match fetch_or_cache(app, path).await {
-        Ok((bytes, content_type)) => Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", content_type)
-            .header("cache-control", "private, max-age=86400")
-            .body(bytes)
-            .unwrap_or_else(|e| error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())),
+        Ok((bytes, content_type)) => {
+            // M-1 加固：nosniff 防 MIME 嗅探；CSP `default-src 'none'` + `sandbox`
+            // 使该响应即使被浏览器当文档打开也无可执行资源、无同源能力。
+            // （CSP 由 Tauri 只注入自家 tauri:// 协议，自定义协议必须自带头。）
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("content-type", content_type)
+                .header("cache-control", "private, max-age=86400")
+                .header("x-content-type-options", "nosniff")
+                .header("content-security-policy", "default-src 'none'; sandbox")
+                .body(bytes)
+                .unwrap_or_else(|e| {
+                    error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+                })
+        }
         Err(e) if e == "err.invalid_url" => error_response(StatusCode::BAD_REQUEST, &e),
         Err(e) => error_response(StatusCode::BAD_GATEWAY, &e),
     }
@@ -315,6 +342,30 @@ mod tests {
     fn decode_plain_https_url() {
         let u = decode_media_path("https%3A%2F%2Fi.ytimg.com%2Fvi%2Fx%2Fmqdefault.jpg").unwrap();
         assert_eq!(u, "https://i.ytimg.com/vi/x/mqdefault.jpg");
+    }
+
+    #[test]
+    fn content_type_whitelist() {
+        // 媒体类型放行（含参数、大小写归一）
+        assert_eq!(sanitize_content_type("image/jpeg"), "image/jpeg");
+        assert_eq!(
+            sanitize_content_type("Image/WebP; charset=utf-8"),
+            "image/webp"
+        );
+        assert_eq!(sanitize_content_type("video/mp4"), "video/mp4");
+        assert_eq!(sanitize_content_type("audio/mpeg"), "audio/mpeg");
+        // SVG 可含脚本，不在白名单
+        assert_eq!(
+            sanitize_content_type("image/svg+xml"),
+            "application/octet-stream"
+        );
+        // HTML / 未知 / 空一律 octet-stream
+        assert_eq!(
+            sanitize_content_type("text/html; charset=utf-8"),
+            "application/octet-stream"
+        );
+        assert_eq!(sanitize_content_type("application/json"), "application/octet-stream");
+        assert_eq!(sanitize_content_type(""), "application/octet-stream");
     }
 
     #[test]

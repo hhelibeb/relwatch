@@ -179,7 +179,24 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
     .title(title)
     .inner_size(BILI_LOGIN_WIDTH, BILI_LOGIN_HEIGHT)
     .center()
-    .resizable(false);
+    .resizable(false)
+    // 顶层导航白名单（M-1 加固）：该窗口加载第三方远程站点，且不具备主窗口的
+    // 五重防线（useExternalLinkGuard / DOMPurify / CSP / wry 新窗拒绝 / 禁拖放），
+    // 远程页面可自行 `location.href` 导航到 `http://media.localhost/...`——media
+    // 是 app 级注册的协议、被 Tauri 判定为本地源，一旦导航成功，窗口就变成
+    // 「本地 origin + 继承全部 IPC 能力」的文档（审计报告 §M-1 环节 5）。
+    // 只放行 B 站系域（hdslb.com 为 B 站 CDN）；media 协议与其余一律拦截。
+    .on_navigation(|url| {
+        let host = url.host_str().unwrap_or_default();
+        let ok = host == "bilibili.com"
+            || host.ends_with(".bilibili.com")
+            || host == "hdslb.com"
+            || host.ends_with(".hdslb.com");
+        if !ok {
+            log::warn!("已拦截 B 站登录窗口的非白名单导航: {}", url);
+        }
+        ok
+    });
 
     // 读代理设置决定是否注入 proxy_url（与后端轮询 client 的语义一致）。
     // 仅 custom + 有效 URL 注入；none / system / 解析失败不注入（交由平台默认）。

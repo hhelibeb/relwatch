@@ -238,6 +238,10 @@ pub async fn verify_org_exists(
     Ok(())
 }
 
+/// README（model card）上限：正常 model card 远小于此，上限只用于把恶意超大响应
+/// 降级为「README 缺失」而非内存耗尽（M-2）。
+const MAX_README_BYTES: usize = 4 * 1024 * 1024;
+
 /// 获取单个模型的 README（model card）作为人类可读内容。
 ///
 /// HF 模型仓库根目录的 `README.md` 即 model card，是模型的主体描述文档，
@@ -249,7 +253,9 @@ async fn fetch_readme(client: &reqwest::Client, url: &str) -> Option<String> {
         log::warn!("获取 HF README 失败: 状态={}", resp.status());
         return None;
     }
-    let text = resp.text().await.ok()?;
+    // 流式累加 + 超限中断（M-2）：此前 text() 无上限，chunked 无限流会吃满内存
+    let bytes = crate::http::read_body_limited(resp, MAX_README_BYTES).await.ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
     if text.is_empty() {
         return None;
     }
