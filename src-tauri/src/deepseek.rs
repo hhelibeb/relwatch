@@ -241,10 +241,18 @@ pub(crate) async fn chat_completion(
         .await
         .map_err(|e| (0, format!("请求失败: {}", describe_reqwest_error(&e))))?;
     if resp.status().is_success() {
-        let json: serde_json::Value = resp
-            .json()
+        // 流式累加 + 超限中断（M-2）；错误文案保持本模块中文风格，不走
+        // read_json_limited 的 err. 前缀格式
+        let bytes = crate::http::read_body_limited(resp, crate::http::MAX_JSON_BYTES)
             .await
-            .map_err(|e| (0, format!("解析响应失败: {}", e)))?;
+            .map_err(|e| match e {
+                crate::http::BodyReadError::Overflow(n) => {
+                    (0, format!("响应体过大 (超过 {} 字节)", n))
+                }
+                crate::http::BodyReadError::Transport(e) => (0, e),
+            })?;
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|e| (0, format!("解析响应失败: {}", e)))?;
         let duration_ms = started.elapsed().as_millis() as i64;
         return Ok(ChatCompletionOk {
             content: extract_content(&json),
@@ -253,7 +261,14 @@ pub(crate) async fn chat_completion(
         });
     }
     let status = resp.status().as_u16();
-    let text = resp.text().await.unwrap_or_default();
+    // 错误体同样限流（M-2 同源收口）：错误文本会进日志与 toast，超限时以占位
+    // 文本替代完整 body
+    const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
+    let text = match crate::http::read_body_limited(resp, MAX_ERROR_BODY_BYTES).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(crate::http::BodyReadError::Overflow(_)) => "<body too large>".to_string(),
+        Err(crate::http::BodyReadError::Transport(e)) => e,
+    };
     Err((status, text))
 }
 

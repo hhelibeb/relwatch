@@ -156,10 +156,9 @@ async fn fetch_page(
         .and_then(|v| v.to_str().ok())
         .and_then(parse_next_link);
 
-    let items: Vec<serde_json::Value> = resp
-        .json()
+    let items: Vec<serde_json::Value> = read_json_limited(resp, MAX_JSON_BYTES)
         .await
-        .map_err(|e| (status, format!("err.parse_failed|{}", e)))?;
+        .map_err(|e| (status, e))?;
 
     Ok((items, next_url))
 }
@@ -251,6 +250,25 @@ where
 /// 文本响应体上限：XML/JSON/HTML 各源路径共用。正常 RSS feed / API 分页远小于此，
 /// 上限只用于把「恶意超大响应」从内存耗尽降级为一次失败。
 pub const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
+
+/// JSON 响应体上限：分页列表 / API JSON 响应共用（GitHub 单页 100 条 releases 的
+/// JSON 最大数 MB；上限把恶意超大响应从内存耗尽降级为一次解析失败）。
+pub const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
+
+/// 读响应体为 JSON（流式累加，超限中断，M-2 全域收口）。错误统一 `err.parse_failed|`
+/// 前缀；需要自定义错误文案的调用方（如 deepseek）改用 `read_body_limited` 自行解析。
+pub async fn read_json_limited<T: serde::de::DeserializeOwned>(
+    resp: reqwest::Response,
+    max_bytes: usize,
+) -> Result<T, String> {
+    let bytes = read_body_limited(resp, max_bytes).await.map_err(|e| match e {
+        BodyReadError::Overflow(n) => {
+            format!("err.parse_failed|body too large (exceeded {} bytes)", n)
+        }
+        BodyReadError::Transport(e) => e,
+    })?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("err.parse_failed|{}", e))
+}
 
 /// 流式读取的失败原因：超限（可预期）或传输错误。
 pub enum BodyReadError {

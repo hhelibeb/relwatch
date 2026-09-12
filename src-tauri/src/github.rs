@@ -181,10 +181,9 @@ pub async fn fetch_repo_info(
         let code = resp.status().as_u16();
         return Err((code, format!("err.repo_api_error|{}", code)));
     }
-    let info: serde_json::Value = resp
-        .json()
+    let info: serde_json::Value = crate::http::read_json_limited(resp, crate::http::MAX_JSON_BYTES)
         .await
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+        .map_err(|e| (0, e))?;
     Ok(info["description"].as_str().unwrap_or("").to_string())
 }
 

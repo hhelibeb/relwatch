@@ -279,8 +279,10 @@ async fn fetch_bili_ticket(client: &reqwest::Client) -> Option<String> {
         .send()
         .await
         .ok()?;
-    let text = resp.text().await.ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let v: serde_json::Value =
+        crate::http::read_json_limited(resp, crate::http::MAX_JSON_BYTES)
+            .await
+            .ok()?;
     let ticket = v["data"]["ticket"].as_str()?.to_string();
     if ticket.is_empty() {
         return None;
@@ -388,12 +390,15 @@ async fn init_anonymous_cookie_via_client(
         .send()
         .await
     {
-        if let Ok(text) = spi.text().await {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(b4) = v["data"]["b_4"].as_str() {
-                    if !b4.is_empty() {
-                        cookies.push(("buvid4".to_string(), b4.to_string()));
-                    }
+        if let Ok(v) = crate::http::read_json_limited::<serde_json::Value>(
+            spi,
+            crate::http::MAX_JSON_BYTES,
+        )
+        .await
+        {
+            if let Some(b4) = v["data"]["b_4"].as_str() {
+                if !b4.is_empty() {
+                    cookies.push(("buvid4".to_string(), b4.to_string()));
                 }
             }
         }

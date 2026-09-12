@@ -231,10 +231,10 @@ pub async fn verify_org_exists(
         return Err((code, format!("err.api_error|{}|{}", code, reason)));
     }
     // 确保响应体是合法 JSON 数组（区分网络异常/HTML 错误页与正常 API 响应）
-    let _: Vec<serde_json::Value> = resp
-        .json()
-        .await
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+    let _: Vec<serde_json::Value> =
+        crate::http::read_json_limited(resp, crate::http::MAX_JSON_BYTES)
+            .await
+            .map_err(|e| (0, e))?;
     Ok(())
 }
 
