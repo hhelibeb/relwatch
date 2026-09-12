@@ -10,19 +10,7 @@
     "beforeBuildCommand": "pnpm run build"
   },
   "app": {
-    "windows": [
-      {
-        "title": "RelWatch",
-        "width": 750,
-        "height": 750,
-        "minWidth": 710,
-        "minHeight": 450,
-        "resizable": true,
-        "fullscreen": false,
-        "center": true,
-        "dragDropEnabled": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: http://media.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'",
       "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://localhost:5173; img-src 'self' data: http://media.localhost; object-src 'none'; frame-src 'none'; base-uri 'self'"

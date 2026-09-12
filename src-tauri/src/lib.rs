@@ -260,6 +260,57 @@ pub fn run() {
             });
         })
         .setup(|app| {
+            // 主窗口改为 Rust 建窗（原 tauri.conf.json 静态配置逐项迁至此）：
+            // on_navigation 导航守卫只能在 builder 上挂载。这是 M-1 的纵深防御——
+            // 主 webview 的五重防线（useExternalLinkGuard / DOMPurify / CSP /
+            // wry 新窗拒绝 / 禁拖放）全在前端层，这道 Rust 层守卫把「任意内容
+            // 成为主窗口文档」从根源排除：只放行自家 origin，http(s) 外链交给
+            // 系统浏览器（与前端 useExternalLinkGuard 行为一致），其余（media
+            // 等自定义协议域、file: 等）一律拦截并记日志。
+            let app_handle = app.handle().clone();
+            // dev server 端口取自 build.devUrl（生产构建无 devUrl，为 None）
+            let dev_port = app.config().build.dev_url.as_ref().and_then(|u| u.port());
+            tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("RelWatch")
+            .inner_size(750.0, 750.0)
+            .min_inner_size(710.0, 450.0)
+            .resizable(true)
+            .center()
+            .disable_drag_drop_handler()
+            .on_navigation(move |url| {
+                let scheme = url.scheme();
+                let host = url.host_str().unwrap_or_default();
+                // 自家 origin：tauri://localhost（macOS/Linux 生产）、
+                // http://tauri.localhost（Windows 生产）、devUrl（开发）
+                let is_own = (scheme == "tauri" && host == "localhost")
+                    || (scheme == "http" && host == "tauri.localhost" && url.port().is_none())
+                    || (scheme == "http"
+                        && host == "localhost"
+                        && dev_port.is_some()
+                        && url.port() == dev_port);
+                if is_own {
+                    return true;
+                }
+                if (scheme == "http" || scheme == "https") && !host.ends_with(".localhost") {
+                    // 外链：系统浏览器打开（*.localhost 是 media 等自定义协议域，
+                    // 不外开、直接拦）
+                    use tauri_plugin_opener::OpenerExt;
+                    if let Err(e) =
+                        app_handle.opener().open_url(url.as_str(), None::<&str>)
+                    {
+                        log::warn!("外链交系统浏览器失败: {} ({})", url, e);
+                    }
+                } else {
+                    log::warn!("已拦截主窗口的非自家 origin 导航: {}", url);
+                }
+                false
+            })
+            .build()?;
+
             // 注册事件名映射（release 构建的 emit 同样依赖），必须在 emit 之前挂载
             specta_builder().mount_events(app);
 
