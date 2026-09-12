@@ -256,7 +256,11 @@ fn parse_feed(xml: &str, kind: FeedKind) -> Result<FeedParseResult, String> {
                 if let Some(entry) = cur.as_mut() {
                     for attr in e.attributes().flatten() {
                         if attr.key.local_name().as_ref() == b"url" {
-                            if let Ok(v) = attr.unescape_value() {
+                            // normalized_value：0.39 的 unescape_value 已弃用，其内部实现
+                            // 就是 normalized_value(XmlVersion::Implicit1_0)，两者语义等价
+                            if let Ok(v) =
+                                attr.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                            {
                                 entry.thumbnail = Some(v.into_owned());
                             }
                         }

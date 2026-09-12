@@ -1,0 +1,42 @@
+name: Dependency Audit
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # 每周一 03:00 UTC：push/PR 只能发现「当时已知」的漏洞，定时任务用于捕获新披露的 advisory
+    - cron: '0 3 * * 1'
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          cache: false
+      - name: install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      # src-tauri/.cargo/audit.toml 的 ignore 白名单只放行「当前不可达」条目并附解除条件；
+      # vulnerable 条目一律失败，warning（unmaintained/unsound/yanked）默认不阻塞
+      - run: cargo audit
+        working-directory: src-tauri
+
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      # --prod：只审计运行时会实际加载的依赖，dev 依赖的漏洞不阻塞发布
+      - run: pnpm audit --prod

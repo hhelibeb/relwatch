@@ -1,0 +1,17 @@
+# cargo audit 配置（Rust 依赖漏洞扫描白名单）
+#
+# 原则（见 docs/安全审计报告-2026-09-11.md §2 / §6）：
+#   · 有补丁版本的 vulnerable 条目一律**不** ignore，直接升级依赖；
+#   · 只放行「当前依赖图中不可达」或「上游尚无补丁」的条目，且必须写明理由与解除条件；
+#   · unmaintained / unsound / yanked 类 warning 默认不阻塞（cargo audit 只在
+#     `--deny warnings` 时对 warning 失败），因此无需在此列出。
+
+[advisories]
+ignore = [
+    # rkyv 0.7.46 — RUSTSEC-2026-0235（归档校验不足可致 Rc/Arc 归档越界读）
+    # 理由：**不可达**。rkyv 仅由 rust_decimal 的可选 feature 引入，当前 feature 解析下
+    #       未被任何编入二进制的 crate 使用（`cargo tree -i rkyv --target all` 无输出）。
+    # 解除条件：rust_decimal 放开 rkyv 版本约束（>= 0.8.17）后随 cargo update 自然消除，
+    #           届时请删除本行。
+    "RUSTSEC-2026-0235",
+]

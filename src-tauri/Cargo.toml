@@ -50,7 +50,9 @@ tauri-plugin-process = "2"
 arboard = "3.6"
 sys-locale = "0.3"
 async-trait = "0.1"
-quick-xml = "0.39"
+# >= 0.41 修复 RUSTSEC-2026-0194（重复属性名检查二次方耗时）与 RUSTSEC-2026-0195
+# （NsReader 无界命名空间分配）——0.39→0.41 无 API 破坏性变更，调用点无需改动
+quick-xml = "0.41"
 # 前后端类型单一来源：为 Tauri 命令自动生成 TS 绑定（阶段 0 试点，pin 精确版本防 rc 漂移）
 tauri-specta = { version = "=2.0.0-rc.25", features = ["typescript", "derive"] }
 specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
@@ -62,7 +64,8 @@ wiremock = "0.6"
 tauri = { version = "~2.11.1", features = ["test"] }
 
 [target.'cfg(windows)'.dependencies]
-tauri-winrt-notification = "0.7"
+# >= 0.7.3 起不再依赖 quick-xml（旧版 0.7.2 拉入的 0.37.5 受 RUSTSEC-2026-0194/0195 影响）
+tauri-winrt-notification = "0.7.3"
 # Win32_System_JobObjects：把 pi 常驻进程纳入 JobObject（评审 3.5——句柄关闭时由内核
 # 终止作业内全部进程，消除「pi 自身退出后其工具子进程残留」的窗口）。
 # Win32_System_Threading：OpenProcess 取进程句柄以纳管进 JobObject。
