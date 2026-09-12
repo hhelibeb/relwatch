@@ -63,6 +63,18 @@ export const commands = {
 	 *  `custom` + 非空 url → 注入（登录页/后续请求走应用自定义代理）；
 	 *  `system` / `none` / 空 url → 不注入（交由平台默认 = 系统代理）。
 	 *  若窗口已存在（如轮询期间用户重复点击）则静默成功（幂等）。
+	 * 
+	 *  必须是 `async` 命令：Tauri 对**同步**命令在调用线程（= 主线程/事件循环线程）
+	 *  直接执行函数体，而 Windows 下 `WebviewWindowBuilder::build()` 经
+	 *  `WaitWithPump` 等待 WebView2 的异步环境/控制器回调——回调依赖主线程消息泵，
+	 *  主线程被占死等回调即自我死锁（wry#583，Tauri 文档对 `WebviewWindowBuilder`
+	 *  与 `Webview::cookies` 均有明确警告）。表现为点击后弹出一个空窗口骨架且完全
+	 *  无法关闭：空窗口是 tao 在事件循环中建好的 HWND（标题/尺寸已生效），webview
+	 *  与 WebView2 环境仍卡在等待中；关不掉是因为 WM_CLOSE 只投递 `CloseRequested`
+	 *  到事件循环，而事件循环正卡在 `WaitWithPump` 的死循环里（tao 的 WM_CLOSE
+	 *  → 事件循环处理，事件循环不动则窗口无法销毁）。改为 async 后命令体在
+	 *  async runtime（非主线程）执行，主线程消息泵保持可用。
+	 *  该缺陷自 c8d28f8「B 站登录窗 Rust 建窗」（v1.16.0 起）引入。
 	 */
 	openBilibiliLoginWindow: (title: string) => __TAURI_INVOKE<null>("open_bilibili_login_window", { title }),
 	testDeepseekConnection: (payload: {

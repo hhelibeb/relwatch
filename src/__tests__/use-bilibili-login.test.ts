@@ -104,6 +104,52 @@ describe('useBilibiliLogin — 登录状态机', () => {
     expect(showToast).toHaveBeenCalledWith(t('settings.bilibili_login_window_failed'))
   })
 
+  it('建窗命令报成功但窗口实际未建成：探活失败即解锁按钮，不卡在等待登录', async () => {
+    // 复现真实缺陷：tauri-runtime-wry 事件循环对 webview 创建失败只 log::error!
+    // 且不回传，build() 仍返回 Ok → 窗口闪退、但命令 resolve。此前前端据此转入
+    // 轮询，两个定时器都未归位（轮询遇 window_missing 才重置 busy，而探活已证明
+    // 窗口不在）→ 按钮永久显示“等待登录”，无法重试。
+    // 建窗命令始终 resolve；随后任何一次读取都报窗口缺失。
+    readBilibiliLoginCookieMock.mockRejectedValue(
+      new InvokeI18nError('err.bili_login_window_missing', [], 'window missing'),
+    )
+    const { wrapper, showToast } = mountHarness()
+
+    await wrapper.get('.login').trigger('click')
+    await nextTick()
+
+    // 按钮必须解锁（不再 busy）
+    expect(wrapper.find('.busy').exists()).toBe(false)
+    expect(showToast).toHaveBeenCalledWith(t('settings.bilibili_login_window_failed'))
+    // 不得进入轮询：不应留下会反复失败的 2s 定时器
+    const callsAfterClick = readBilibiliLoginCookieMock.mock.calls.length
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(readBilibiliLoginCookieMock.mock.calls.length).toBe(callsAfterClick)
+    // 允许重试：再次点击仍会重新建窗（而非被 busy 锁死）
+    openBilibiliLoginWindowMock.mockClear()
+    await wrapper.get('.login').trigger('click')
+    expect(openBilibiliLoginWindowMock).toHaveBeenCalled()
+  })
+
+  it('建窗后探活为未登录：正常进入轮询（不误判为建窗失败）', async () => {
+    // 预探测：窗口缺失 → 走建窗；建窗后探活：未登录（窗口确实建好了）→ 应继续轮询
+    readBilibiliLoginCookieMock
+      .mockRejectedValueOnce(new InvokeI18nError('err.bili_login_window_missing', [], 'window missing'))
+      .mockRejectedValue(new InvokeI18nError('err.bili_login_not_logged_in', [], 'not logged in'))
+    const { wrapper, showToast } = mountHarness()
+
+    await wrapper.get('.login').trigger('click')
+    await nextTick()
+
+    expect(openBilibiliLoginWindowMock).toHaveBeenCalled()
+    expect(wrapper.find('.busy').exists()).toBe(true)
+    // 未登录不得当成建窗失败
+    expect(showToast).not.toHaveBeenCalledWith(t('settings.bilibili_login_window_failed'))
+    const callsAfterClick = readBilibiliLoginCookieMock.mock.calls.length
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(readBilibiliLoginCookieMock.mock.calls.length).toBeGreaterThan(callsAfterClick)
+  })
+
   it('窗口已存在且已登录：不建窗直接收尾', async () => {
     readBilibiliLoginCookieMock.mockResolvedValue(true)
     const { wrapper, onLoginSuccess, showToast } = mountHarness()

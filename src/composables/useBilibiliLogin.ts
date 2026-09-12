@@ -138,6 +138,24 @@ export function useBilibiliLogin(opts: {
           showToast(t('settings.bilibili_login_window_failed'))
           return
         }
+        // 建窗「声称成功」也不可全信：tauri-runtime-wry 的事件循环对 webview 创建
+        // 失败只 log::error! 且不回传，build() 仍返回 Ok（曾致窗口闪退 + 按钮锁死）。
+        // 这里立刻用一次读取探活：窗口不存在（err.bili_login_window_missing）
+        // 即视为建窗失败，直接解锁按钮并提示，不让用户卡在“等待登录”。
+        try {
+          await readBilibiliLoginCookie(BILI_LOGIN_WINDOW_LABEL)
+        } catch (e: unknown) {
+          if (attempt !== biliLoginAttempt) return
+          const key = e instanceof InvokeI18nError ? e.key : null
+          // 已登录（不会到这）或未登录（= 窗口确实在，正常继续）；
+          // 窗口缺失/其它错误 → 建窗实际失败，解锁按钮
+          if (key !== 'err.bili_login_not_logged_in') {
+            stopBiliLoginPolling()
+            biliLoginBusy.value = false
+            showToast(t('settings.bilibili_login_window_failed'))
+            return
+          }
+        }
       }
       startBiliLoginPolling()
       // 超时保护：60 秒未登录则停止轮询（窗口保留；再次点击会恢复轮询，不会重复建窗）。
