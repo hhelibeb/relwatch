@@ -341,6 +341,52 @@ describe('useAgentChat 提交 / 停止 / 重试', () => {
     expect(runAgentJob).not.toHaveBeenCalled()
     expect(d.focusAtEnd).toHaveBeenCalled()
   })
+
+  it('重试前用户在当前会话显式换了模型：尊重当前选择，不被 run 的旧模型覆盖', async () => {
+    const { api, d } = setup()
+    vi.mocked(listAgentRuns).mockResolvedValue([])
+    await api.loadChat()
+    // 失败 run 用的是旧模型 m1；用户随后在下拉里换成了 m2（会写 selectedModel）
+    d.selectedModel.value = { provider: 'deepseek', model_id: 'm2' }
+    const run = makeRun({
+      id: 9,
+      status: 'failed',
+      instruction: '再来一次',
+      model: JSON.stringify({ provider: 'deepseek', model_id: 'm1' }),
+    })
+    await api.handleRetry(run)
+    // 当前会话已显式选过模型 → 提交用它；run 的旧模型不覆盖
+    expect(runAgentJob).toHaveBeenCalledWith(
+      expect.objectContaining({ model: { provider: 'deepseek', model_id: 'm2' } }),
+    )
+  })
+
+  it('重试时勾了「仅本次」：提交用一次性模型，会话长期选择不被 run 的旧模型污染', async () => {
+    const { api, d } = setup()
+    vi.mocked(listAgentRuns).mockResolvedValue([])
+    await api.loadChat()
+    // 用户勾「仅本次」选了 m3：只落一次性槽位，会话长期选择仍是默认（null）
+    d.oneShotModel.value = { provider: 'deepseek', model_id: 'm3' }
+    d.modelOnce.value = true
+    const run = makeRun({
+      id: 9,
+      status: 'failed',
+      instruction: '再来一次',
+      model: JSON.stringify({ provider: 'deepseek', model_id: 'm1' }),
+    })
+    await api.handleRetry(run)
+    // 提交用一次性模型（m3），失败那次的 m1 不参与
+    expect(runAgentJob).toHaveBeenCalledWith(
+      expect.objectContaining({ model: { provider: 'deepseek', model_id: 'm3' } }),
+    )
+    // 长期选择仍是默认：没被 run 的旧模型写脏，提交固化到会话的也是 null
+    expect(d.selectedModel.value).toBeNull()
+    expect(d.persistSessionMeta).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      null,
+    )
+  })
 })
 
 describe('useAgentChat 会话切换清空（§4.2 三 mode 逐状态复刻）', () => {

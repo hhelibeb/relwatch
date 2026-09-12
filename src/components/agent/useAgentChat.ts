@@ -569,7 +569,23 @@ export function useAgentChat(deps: {
     }
     entities.value = alive
     skillPath.value = run.skill_path || null
-    selectedModel.value = runModel(run)
+    // 模型：尊重用户当前的选择，不被 run 的旧模型覆盖。
+    // 典型场景是 run 因 API 报错（如鉴权失败 / 限流 / 服务不可用）而失败，用户
+    // 直接在下拉里换了个模型再点「重试」——这是「换个模型再试一次」的直觉操作；
+    // 若无条件写回 runModel(run)，刚选的模型会被瞬间打回失败那次的模型，重试
+    // 必然再次撞同一堵墙。
+    // 判空用 effectiveModel（一次性覆盖 ?? 会话选择）而非 selectedModel：勾了「仅本次」
+    // 时模型只落在一次性槽位、selectedModel 仍为 null，若据此回填会把 run 的旧模型写进
+    // 会话长期选择并在提交时固化——「仅本次不影响会话长期选择」的承诺被静默打破，
+    // 会话往后的默认模型会变成刚失败的那一个。
+    // 注意别为「简化」改回 selectedModel === null：提交路径里两个变量口径不同——
+    // handleSubmit 用 effectiveModel.value 提交（含一次性覆盖），却用
+    // selectedModel.value 固化到会话（persistSessionMeta，一次性覆盖不落库）。
+    // 用 selectedModel 判空会让「仅本次」的重试把旧模型写进长期选择，而提交模型
+    // 仍取一次性值（看起来是对的），污染只在会话默认上静默体现，难被察觉。
+    // 仅当这一轮实际没有指定任何模型（会话为默认且无一次性覆盖）时，才回填 run
+    // 记录的模型，保持「原样重发」语义（旧 run 的 model 为 null 时同样是默认）。
+    if (effectiveModel.value === null) selectedModel.value = runModel(run)
     // 附件随重试一并还原（否则"再跑一次这个日志"会静默丢掉文件）
     files.value = runFiles(run)
   }
