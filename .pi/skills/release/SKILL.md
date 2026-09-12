@@ -273,7 +273,7 @@ git push origin main v<新版本>
 需要同时检查两个 ref 的 workflow run：
 
 ```bash
-# main 分支上的 CI / Lint / Secret Scan
+# main 分支上的 CI / Lint / Secret Scan / Dependency Audit
 gh run list --branch main --limit 10 --json name,status,conclusion
 
 # tag 触发上的 Release workflow
@@ -287,7 +287,11 @@ gh run list --limit 20 --json name,status,conclusion,headBranch | grep "v<新版
 | CI（frontend + backend tests） | push main | `gh run list --branch main` |
 | Lint（clippy -D warnings） | push main | `gh run list --branch main` |
 | Secret Scan | push main | `gh run list --branch main` |
+| Dependency Audit（cargo audit + pnpm audit --prod） | push main / 每周一定时 | `gh run list --branch main` |
 | Release（构建产物 + draft release） | push tag v* | `gh run list --branch v<新版本>`（或在列表中按 tag 名筛选） |
+
+> `scripts/poll-ci.sh` 的 `NAMES` 覆盖 main 侧全部 workflow。**新增 workflow 时必须同步加进去**
+> ——否则该 workflow 失败不会让轮询报错，release 会带着红的 CI 照发。
 
 ### 9.2 检查 Draft Release 和产物
 
@@ -315,10 +319,12 @@ gh api repos/hhelibeb/relwatch/releases --paginate \
   （另一平台用户永远收不到更新）：
 
   ```bash
-  gh api repos/hhelibeb/relwatch/releases --paginate --jq '.[] | select(.tag_name=="v<新版本>") | .assets[] | select(.name=="latest.json") | .url' \
-    | head -1 | xargs curl -sL | tee /tmp/latest.json
+  D=$(mktemp -d) && cd "$D"
+  # 取资产用 gh release download：assets API 的 .url 是 GitHub API 地址，未带 Accept/鉴权时
+  # 返回的是资产元数据 JSON 而非文件本体，直接 curl 拿不到 latest.json
+  gh release download "v<新版本>" --repo hhelibeb/relwatch -p 'latest.json' --clobber
   # 断言：windows-x86_64 与 linux-x86_64 同时存在，缺任一 → 立即手动补传/重跑，不得发布
-  node -e "const p=Object.keys(require('/tmp/latest.json').platforms); if(!p.some(k=>k.startsWith('windows-x86_64'))||!p.some(k=>k.startsWith('linux-x86_64'))){console.error('FATAL: platforms 缺平台:',p);process.exit(1)};console.log('platforms OK:',p.join(', '))"
+  node -e "const p=Object.keys(require('./latest.json').platforms); if(!p.some(k=>k.startsWith('windows-x86_64'))||!p.some(k=>k.startsWith('linux-x86_64'))){console.error('FATAL: platforms 缺平台:',p);process.exit(1)};console.log('platforms OK:',p.join(', '))"
   ```
 
   > ⚠️ **这条断言只做检测、不做消除**：tauri-action 的 latest.json 上传是
@@ -331,7 +337,7 @@ gh api repos/hhelibeb/relwatch/releases --paginate \
   TMP=$(mktemp -d) && cd "$TMP"
 
   # 1. 拉下现有 latest.json 与全部 .sig
-  gh release download "v$VERSION" -p 'latest.json' -p '*.sig'
+  gh release download "v$VERSION" --repo hhelibeb/relwatch -p 'latest.json' -p '*.sig'
 
   # 2. 补缺失平台（已有的不动）：signature 取同名 .sig，url 取安装包下载直链
   cat > fix-latest-json.cjs <<'EOF'
@@ -340,7 +346,7 @@ gh api repos/hhelibeb/relwatch/releases --paginate \
   const v = process.env.VERSION
   const j = JSON.parse(fs.readFileSync('latest.json', 'utf8'))
   if (!j.platforms || typeof j.platforms !== 'object') j.platforms = {}
-  const assets = JSON.parse(execSync(`gh release view v${v} --json assets`).toString()).assets
+  const assets = JSON.parse(execSync(`gh release view v${v} --repo hhelibeb/relwatch --json assets`).toString()).assets
   const want = { 'windows-x86_64': '_x64-setup.exe', 'linux-x86_64': '_amd64.AppImage' }
   for (const [platform, suffix] of Object.entries(want)) {
     if (j.platforms?.[platform]) continue
@@ -360,7 +366,7 @@ gh api repos/hhelibeb/relwatch/releases --paginate \
   VERSION="$VERSION" node fix-latest-json.cjs
 
   # 3. 覆盖上传（--clobber 替换同名 asset），然后重跑上面的双平台断言回归
-  gh release upload "v$VERSION" latest.json --clobber
+  gh release upload "v$VERSION" latest.json --repo hhelibeb/relwatch --clobber
   ```
 - ⏸️ body 目前是 workflow 的固定文本 `请查看附件下载对应平台的安装包。`，后续会被替换
 
@@ -515,7 +521,7 @@ process.exit(src===gh?0:1);
 cd "$(mktemp -d)"
 
 # 1. 拉下当前 latest.json（若 Step 9.2 手工补传过平台，这里拿到的是补传后的完整版本）
-gh release download "v<新版本>" -p 'latest.json'
+gh release download "v<新版本>" --repo hhelibeb/relwatch -p 'latest.json'
 
 # 2. 读旧改新：只覆盖 notes，platforms / version / pub_date 原样保留
 cat > set-notes.cjs <<'EOF'
@@ -530,8 +536,12 @@ EOF
 NOTES_FILE="<项目根>/.rpiv/artifacts/release-notes/v<新版本>.md" node set-notes.cjs
 
 # 3. 覆盖上传（--clobber 替换同名 asset）
-gh release upload "v<新版本>" latest.json --clobber
+gh release upload "v<新版本>" latest.json --repo hhelibeb/relwatch --clobber
 ```
+
+> ⚠️ **在临时目录里执行 `gh release` 必须带 `--repo`**：`gh` 靠当前目录的 git remote
+> 推断仓库，`cd "$(mktemp -d)"` 之后已脱离仓库，不带该参数会直接报
+> `fatal: not a git repository`。凡在临时目录操作 release 的地方同理。
 
 > ⚠️ **绝不要凭空重建 latest.json**：只改 `notes` 一个字段。
 > 重建会丢掉 `platforms` 里另一半平台（同 Step 9.2 的并发覆盖坑），
@@ -543,7 +553,7 @@ gh release upload "v<新版本>" latest.json --clobber
 
 ```bash
 # 重新下载（--clobber 上传后，本地文件不代表远端，必须回读）
-cd "$(mktemp -d)" && gh release download "v<新版本>" -p 'latest.json'
+cd "$(mktemp -d)" && gh release download "v<新版本>" --repo hhelibeb/relwatch -p 'latest.json'
 
 node -e "
 const fs=require('fs');

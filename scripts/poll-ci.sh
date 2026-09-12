@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# CI 轮询脚本 — 前台阻塞，等待 main 分支 CI/Lint/Secret Scan 和可选 tag Release 全部通过
+# CI 轮询脚本 — 前台阻塞，等待 main 分支 CI/Lint/Secret Scan/Dependency Audit 和可选 tag Release 全部通过
 # Usage: ./scripts/poll-ci.sh [tag]
+# ⚠️ main 侧新增 workflow 时必须同步加进 NAMES：漏掉的 workflow 即便失败也不会让本脚本报错
 set -euo pipefail
 
 TAG="${1:-}"
 POLL=30
-NAMES=("CI" "Lint" "Secret Scan")
+NAMES=("CI" "Lint" "Secret Scan" "Dependency Audit")
 
 echo "===== CI 轮询开始 ====="
 echo "Branch: main${TAG:+ | Tag: $TAG}"
