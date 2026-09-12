@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.17.2] - 2026-09-12
+
+### Security
+- 主窗口导航守卫下沉到 Rust 层：主窗口改由 Rust 建窗（`tauri.conf.json` 静态窗口配置迁入 `WebviewWindowBuilder`），`on_navigation` 只放行自家 origin（`tauri://localhost`、`http://tauri.localhost` 与 devUrl），http(s) 外链交系统浏览器打开，`*.localhost` 自定义协议域与 `file:` 等一律拦截并记日志。前端五重防线（外链守卫 / DOMPurify / CSP / 新窗拒绝 / 禁拖放）被绕过时，任意内容成为主窗口文档这条路径从根源上不再可达。
+- 响应体限流全域收口：新增 `http::read_json_limited`（复用既有流式累加 + 超限中断），补齐 GitHub / HuggingFace / B 站 / DeepSeek 仍在用 `resp.json()` / `resp.text()` 的漏网调用点，上限 16MB。恶意超大响应由「内存耗尽」降级为一次解析失败。
+- media 网关增加 Content-Type 白名单与 `X-Content-Type-Options: nosniff`，CSP 同步收紧；B 站登录窗补顶层导航白名单（此前唯一有条件可达的注入路径）。
+- 凭据不再明文落库：`check.failed` 曾把 reqwest 原始错误文本整段落库（含 `…&key=AIzaSy…`），而日志留 14 天、可搜索可导出，等同凭据外泄。新增 `redact` 模块作为唯一出口过滤器，覆盖 URL userinfo、敏感 query 参数（key / token / …）与已知凭据形状（AIza / ghp_ / sk-…），接入日志写入、`sources.last_check_message` 唯一写入者与 `poll` 失败分支（该文本还会进 Toast），并以 Migration 18 一次性清洗历史明文行（分批游标，失败下次重试）。配套新增 CI 护栅测试，禁止绕过该模块直写 logs 表。
+- 依赖漏洞修复：`h2` → 0.4.19（RUSTSEC-2026-0258）、`quick-xml` → 0.41（RUSTSEC-2026-0194 / 0195）、`tauri-winrt-notification` → 0.7.3；新增依赖审计 CI（`audit.yml`，push / PR + 每周一定时）与 `audit.toml` 白名单（只放行当前不可达条目并附解除条件）。
+
+### Fixed
+- B 站登录窗口闪退 / 卡死（自 v1.16.0 引入的回归，实测 AppHangB1）。三处缺陷叠加、逐层暴露：同步命令在主线程建窗自我死锁（WebView2 回调依赖被占死的主线程消息泵）；登录窗与主窗口共用 WebView2 用户数据目录导致创建失败（注入 `--proxy-server` 时触发，而该失败在上游仅 log 不返回、`build()` 仍为 `Ok`）；失败被吞导致按钮永久 busy。分别改为 async + 子线程建窗、独立数据目录、建窗后探活。
+- 备份导出支持覆盖已存在文件：此前在保存对话框选中旧备份并确认「覆盖」时，SQLite 报 `file is not a database`，用户看到的错误与真实原因无关。改为先导出到同目录临时文件、成功后再改名覆盖（失败时旧备份原样保留），路径由字符串拼接改为绑定参数。
+- 未处理异常不再静默：release 版无控制台，`app.config.errorHandler` / `unhandledrejection` / `window error` 中的异常此前既无提示也无落库，用户报障只有「点了没反应」。现捕获 → 按 key 节流 60s → 截断堆栈（≤2KB）→ Toast → 落库（新命令 `report_frontend_error`）。
+- 日志写入失败降级：日志写入本身失败（DB 锁 / 磁盘异常）时不再连兜底通道一起静默，改为写 `logs/fallback.log`（1MB 轮转为 `.1`），不重试 DB 以免放大锁竞争。
+- 请求错误细分根因：reqwest 对 send 失败的 `Display` 不含根因，现网 `check.failed` 无法区分 DNS / TLS / 代理 / 重置 / 超时；新增 `describe_request_error` 按 `is_timeout` / `is_connect` 分键并追加 `source()` 首层文本。
+
+### Changed
+- 依赖 patch 升级（`h2`、`quick-xml`、`tauri-winrt-notification` 等，`Cargo.lock` 同步）。
+- 清理死代码与失实配置：移除空集的 `clipboard-manager:default` 权限（避免后人误认为前端写路径已放行）；去掉 `release.flag_changed` 模板多余的 `group=` 前缀。
+- 补充回归测试：前端全局错误兜底、备份导出覆盖 / 路径含单引号 / 失败不留临时文件、B 站建窗与探活约定、凭据脱敏护栅；release skill 文档补 Release Note 详略原则与三方一致性校验。
+
 ## [1.17.1] - 2026-09-11
 
 ### Fixed
@@ -420,7 +441,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.17.1...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.17.2...HEAD
+[1.17.2]: https://github.com/hhelibeb/relwatch/compare/v1.17.1...v1.17.2
 [1.17.1]: https://github.com/hhelibeb/relwatch/compare/v1.17.0...v1.17.1
 [1.17.0]: https://github.com/hhelibeb/relwatch/compare/v1.16.0...v1.17.0
 [1.16.0]: https://github.com/hhelibeb/relwatch/compare/v1.15.0...v1.16.0
