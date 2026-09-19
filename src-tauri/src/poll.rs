@@ -1179,6 +1179,24 @@ async fn collect_pending_and_notify(
     (all_pending, new_releases)
 }
 
+/// 轮询等待的分片上限：单次等待不超过这个时长，超出部分留给下一片用挂钟重算。
+///
+/// 取值远小于可配间隔（分钟级），既不会把一个短间隔切碎成多次无效唤醒，又把
+/// 「系统休眠唤醒后恢复检查」的延迟上界压到它（详见 `start_poll_thread`）。
+const POLL_WAIT_SLICE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// 本轮轮询还需等待多久；`None` = 已到点（含已过期），应当立即检查。
+///
+/// 返回值按 [`POLL_WAIT_SLICE`] 截断，调用方据此分段等待。判定用**挂钟**
+/// （`chrono::Utc::now`）而不是单调时钟，正是为了让系统休眠唤醒后能立刻发现
+/// 「已经过期」—— 单调时钟在休眠期间不推进，一次睡到底时它看不出时间已经走过。
+fn poll_wait_slice(target_ts: i64, now_ts: i64) -> Option<std::time::Duration> {
+    if target_ts <= now_ts {
+        return None;
+    }
+    Some(std::time::Duration::from_secs((target_ts - now_ts) as u64).min(POLL_WAIT_SLICE))
+}
+
 pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc<AtomicI64>) {
     tauri::async_runtime::spawn(async move {
         // Save the initial next_poll_at so restart can restore it
@@ -1188,17 +1206,31 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
         }
 
         loop {
-            if !is_poll_running() {
-                return;
-            }
-            let target = next_poll.load(Ordering::Relaxed);
-            let now = chrono::Utc::now().timestamp();
-            let until = std::time::Duration::from_secs((target - now).max(0) as u64);
-            // 一次性睡到下一个轮询点；设置变更（update_settings 改间隔）或 stop_poll
-            // 通过 POLL_WAKE 提前唤醒重算，替代逐秒 sleep 轮询。
-            tokio::select! {
-                _ = POLL_WAKE.notified() => continue,
-                _ = tokio::time::sleep(until) => {}
+            // 等待到下一个轮询点。**分段重算，而非一次睡到底**：tokio 的 sleep 基于
+            // 单调时钟（Windows 为 QPC），而系统休眠期间单调时钟不推进 —— 一次睡到底时，
+            // 唤醒后仍要「补等」休眠前剩余的时长（实测：9/12 那轮本来到点还差 36.6 分钟，
+            // 07:38 唤醒后到 08:12 才恢复检查；9/19 长休眠唤醒后推算得等到 19:46:55，
+            // 即唤醒后再空等 23 分钟）。分段后每片醒来都用挂钟重算，休眠唤醒后最多
+            // 一个分片（`POLL_WAIT_SLICE`）内就会立即检查。
+            //
+            // `is_poll_running` 放在内层循环开头：`stop_poll()` 也是经 `POLL_WAKE`
+            // 唤醒的，必须让它能在一段分片内就退出，而不是先白等到本轮到点。
+            loop {
+                if !is_poll_running() {
+                    return;
+                }
+                let Some(slice) = poll_wait_slice(
+                    next_poll.load(Ordering::Relaxed),
+                    chrono::Utc::now().timestamp(),
+                ) else {
+                    break;
+                };
+                // 设置变更（update_settings 改间隔）、手动触发或 stop_poll 都经
+                // POLL_WAKE 提前唤醒重算，替代逐秒 sleep 轮询。
+                tokio::select! {
+                    _ = POLL_WAKE.notified() => {}
+                    _ = tokio::time::sleep(slice) => {}
+                }
             }
 
             do_poll_async(app_handle.clone()).await;
@@ -1229,6 +1261,39 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
 mod tests {
     use super::*;
     use crate::github;
+
+    /// 已到点（包括系统休眠唤醒后挂钟已远超 target 的情形）应返回 `None`，
+    /// 让轮询立即执行而不是继续等。
+    #[test]
+    fn poll_wait_slice_none_when_due_or_overdue() {
+        assert_eq!(poll_wait_slice(100, 100), None, "恰好到点应视为该检查");
+        assert_eq!(
+            poll_wait_slice(100, 100 + 7 * 24 * 3600),
+            None,
+            "挂钟已过期（休眠 7 天后唤醒）应视为该检查"
+        );
+    }
+
+    /// 剩余时间超过一个分片时按分片截断：这是「休眠唤醒后最多再空等一个分片」
+    /// 的实现依据（若改回一次睡到底，本用例会挂）。
+    #[test]
+    fn poll_wait_slice_is_clamped_to_slice() {
+        assert_eq!(
+            poll_wait_slice(100 + 65 * 60, 100),
+            Some(POLL_WAIT_SLICE),
+            "65 分钟应被截断为一个分片"
+        );
+        assert_eq!(
+            poll_wait_slice(100 + 60, 100),
+            Some(POLL_WAIT_SLICE),
+            "恰为一个分片时不应多切"
+        );
+        assert_eq!(
+            poll_wait_slice(100 + 10, 100),
+            Some(std::time::Duration::from_secs(10)),
+            "不足一个分片时按剩余等待，不无谓拖长"
+        );
+    }
 
     #[test]
     fn test_poll_lock_acquire_and_release() {
