@@ -141,6 +141,36 @@ fn declare_app_user_model_id() {
     }
 }
 
+/// 退出时留给 pi RPC 常驻进程优雅收尾的时间预算。
+///
+/// 取 3 秒的依据：正常路径下 `RpcProcess::shutdown` 只需「关 stdin + 等 500ms」，
+/// 远小于该值，因而不会拖慢退出；异常路径下它就是主线程被阻塞的**硬上限**。
+const EXIT_SHUTDOWN_BUDGET: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// 有界等待一个清理 future，返回它是否在 `budget` 内完成。
+///
+/// **为什么不用 `tokio::time::timeout` 兜底**：它同样依赖 tokio 的 timer driver，
+/// 而这里要防的恰恰是「tokio 内部不推进」这类悬挂 —— 那种情况下 timeout 自身也不会
+/// 到期，等于没兜住。改走 `std::sync::mpsc::recv_timeout`（基于 OS 同步原语，与 tokio
+/// 内部状态完全无关），才是真上限。
+///
+/// **为什么把清理 future 丢给 `async_runtime::spawn` 而不是 `block_on`**：`block_on`
+/// 会占住当前线程直到 future 完成，调用方（退出路径上的 Tauri 主线程）就再没有被
+/// 第三方收回控制权的机会 —— 那正是「点了退出之后永久卡死」的成因。交给线程池后，
+/// 取消权始终留在调用方手里。
+fn await_bounded<F>(cleanup: F, budget: std::time::Duration) -> bool
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    let (tx, rx) = std::sync::mpsc::channel();
+    tauri::async_runtime::spawn(async move {
+        cleanup.await;
+        // 发送失败 = 调用方已超时离开；这是预期路径之一，无需处理
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(budget).is_ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 先声明 AUMID 再建窗口（Windows 要求在任何 UI 创建前设置）
@@ -375,12 +405,40 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            // 应用退出：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理子进程）
+            // 应用退出：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理子进程）。
+            //
+            // 这里的等待**必须有界**。本回调跑在 Tauri 事件循环所在的**主线程**上，
+            // 它返回之后才轮到 `cleanup_before_exit()`（隐窗口 / 清托盘图标）与
+            // `process::exit`。若在此无限阻塞，主线程的消息循环就停摆：窗口与托盘
+            // 全部无响应、进程也不会退出 —— 用户看到的就是「点了托盘退出之后卡死，
+            // 只能去任务管理器强杀」（1.17.2 / Windows 11 实测发生过：长休眠唤醒后
+            // 点退出，`Responding=False` 持续悬挂，WER 记 AppHangTransient）。
             if let tauri::RunEvent::Exit = event {
                 let rpc = app_handle.state::<AppState>().agent_rpc.clone();
-                tauri::async_runtime::block_on(async move {
-                    rpc.shutdown().await;
-                });
+                let closed = await_bounded(async move { rpc.shutdown().await }, EXIT_SHUTDOWN_BUDGET);
+                if !closed {
+                    // 放弃等待是安全兜底，不需要重试也不该 panic：
+                    // Windows 侧 pi 由 JobObject 兜着（ProcessScope 的
+                    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE —— 本进程退出、句柄关闭时
+                    // 内核终止整棵作业树）；Unix 侧 pi 以新进程组首领启动，
+                    // kill_process_tree 同样不依赖本函数跑完。最坏后果只是 pi 少了
+                    // 一个优雅收尾窗口，不会有孤儿进程残留。
+                    //
+                    // 留痕走降级文件而不是 DB：退出路径不该为了记一行日志去同步取
+                    // DB 连接（那正是本次要消除的阻塞面，且此刻进程即将终止）。
+                    // 持久化记录是必要的 —— release 版无控制台、tauri_plugin_log 也
+                    // 未挂载（见 setup 的 debug_assertions 分支），`eprintln!` 只对
+                    // dev 构建可见，不落文件就什么都留不下。
+                    eprintln!(
+                        "WARNING: pi RPC 进程未在 {:?} 内结束，放弃等待并继续退出（子进程由内核兜底回收）",
+                        EXIT_SHUTDOWN_BUDGET
+                    );
+                    crate::db::logs::write_fallback_only(
+                        "WARN",
+                        "agent.exit_shutdown_timeout",
+                        &format!("{{\"budget_secs\":{}}}", EXIT_SHUTDOWN_BUDGET.as_secs()),
+                    );
+                }
             }
         });
 }
@@ -391,6 +449,36 @@ mod tests {
     #[cfg(debug_assertions)]
     fn export_typescript_bindings() {
         super::export_bindings();
+    }
+
+    /// 清理在预算内完成时立即返回 true，不空等到预算用尽。
+    #[test]
+    fn await_bounded_returns_true_when_cleanup_finishes() {
+        let budget = std::time::Duration::from_secs(10);
+        let t0 = std::time::Instant::now();
+        let finished = super::await_bounded(async {}, budget);
+        let elapsed = t0.elapsed();
+        assert!(finished, "清理立即完成时应报告已结束");
+        assert!(
+            elapsed < std::time::Duration::from_secs(2),
+            "不应等到 {budget:?} 预算耗尽，实际 {elapsed:?}"
+        );
+    }
+
+    /// 清理永不完成时必须在预算处放弃（返回 false），而不是把调用方永久挂住
+    /// —— 这是「点退出后卡死」的回归护栏：把实现换回 `block_on` 本用例会挂死。
+    #[test]
+    fn await_bounded_gives_up_at_budget() {
+        let budget = std::time::Duration::from_millis(300);
+        let t0 = std::time::Instant::now();
+        let finished = super::await_bounded(std::future::pending(), budget);
+        let elapsed = t0.elapsed();
+        assert!(!finished, "清理卡住时不应报告已结束");
+        assert!(elapsed >= budget, "应至少等满预算，实际 {elapsed:?}");
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "放弃等待必须及时（硬上限），实际 {elapsed:?}"
+        );
     }
 }
 

@@ -54,6 +54,27 @@ fn fallback_on_failure(level: &str, key: &str, args: &str) {
     let _ = fallback_write(&fallback_dir(), &line);
 }
 
+/// 主动把一条日志写进降级文件，**不尝试 DB**。
+///
+/// 与 [`fallback_on_failure`] 的区别在意图：那个是「DB 写失败」的被动降级；这里是
+/// 调用方**明知不该碰 DB** 时的主动落盘。典型场景是**退出路径** —— 进程即将终止，
+/// 同步取 DB 连接可能阻塞主线程（正是要消除的反模式），但这条记录又有事后排查价值：
+/// release 版无控制台，`eprintln!` 完全不可见，不落文件就什么都留不下。
+///
+/// 行格式与 [`fallback_on_failure`] 一致（时间|level|key|args，与 DB `logs` 表列序
+/// 对齐，可人工导入）。key 仍应在 `src/i18n/*.ts` 注册：若将来把它导入 DB，日志页
+/// 要靠它渲染文案，否则会直接显示裸 key。
+pub fn write_fallback_only(level: &str, key: &str, args: &str) {
+    let line = format!(
+        "{}|{}|{}|{}",
+        chrono::Utc::now().to_rfc3339(),
+        level,
+        key,
+        args
+    );
+    let _ = fallback_write(&fallback_dir(), &line);
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct LogEntry {
     pub id: i64,

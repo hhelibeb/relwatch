@@ -323,6 +323,7 @@ export default {
 
   'source.added': 'Source added: {source_type} {owner}/{repo}',
   'agent.config_saved': 'Agent config saved: {enabled}',
+  'agent.exit_shutdown_timeout': 'Agent process did not exit within {budget_secs}s; gave up waiting and continued exiting (child processes reclaimed by the system)',
   'source.removed': 'Source removed: {owner}/{repo} id={id}',
   'source.removed_unknown': 'Source removed: id={id}',
   'source.log_paused': 'Source paused: {owner}/{repo} id={id}',

@@ -766,6 +766,23 @@ mod tests {
         }
     }
 
+    /// 无存活进程时 `shutdown` 必须立即返回。
+    ///
+    /// 退出路径给它的是 3s 预算（`lib.rs` 的 `EXIT_SHUTDOWN_BUDGET`），而最常见的情形
+    /// 恰恰是「本次会话根本没用过 Agent」或「pi 早已自行退出」—— 此时没有任何东西可
+    /// 关闭，不该把这份预算真的花掉、让退出白等 3 秒。
+    #[tokio::test]
+    async fn shutdown_returns_immediately_without_process() {
+        let rpc = RpcManager::new(crate::db::init::init_memory_pool().unwrap());
+        let t0 = std::time::Instant::now();
+        rpc.shutdown().await;
+        assert!(
+            t0.elapsed() < std::time::Duration::from_millis(500),
+            "无存活进程时 shutdown 应立即返回，实际 {:?}",
+            t0.elapsed()
+        );
+    }
+
     /// JobObject 生命周期域：句柄释放时作业内进程应被内核终止。
     ///
     /// 这段是本次改动里唯一的 unsafe FFI，且失败是静默的（日志 warn 后降级），

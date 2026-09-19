@@ -323,6 +323,7 @@ export default {
 
   'source.added': '添加监控源: {source_type} {owner}/{repo}',
   'agent.config_saved': 'Agent 配置已保存: {enabled}',
+  'agent.exit_shutdown_timeout': 'Agent 进程未在 {budget_secs} 秒内结束，已放弃等待并继续退出（子进程由系统回收）',
   'source.removed': '移除监控源 {owner}/{repo} id={id}',
   'source.removed_unknown': '移除监控源 id={id}',
   'source.log_paused': '暂停监控源 {owner}/{repo} id={id}',
