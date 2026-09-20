@@ -201,7 +201,11 @@ describe('useAgentComposer 菜单选择与输入替换', () => {
     expect(api.releaseDisplayName(RELEASES[0])).toBe('宁静ASMR频道 · 白袜轻蹭耳朵柔和触发音')
     expect(api.entityLabel({ kind: 'source', id: 1 })).toContain('宁静ASMR频道')
     expect(api.entityLabel({ kind: 'release', id: 7 })).toBe('宁静ASMR频道 · 白袜轻蹭耳朵柔和触发音')
-    expect(api.entityLabel({ kind: 'source', id: 99 })).toBe('source #99') // 目录缺失回退 id
+    // 目录缺失（面板打开后新采集 / 加载失败）：回退文案必须点明「名称未加载」，
+    // 不能是裸 `release #99`——那串数字在 chip 上会被当成版本号读
+    expect(api.entityLabel({ kind: 'source', id: 99 })).toBe(t('agent.entity_name_unavailable', '99'))
+    expect(api.entityLabel({ kind: 'release', id: 99 })).toBe(t('agent.entity_name_unavailable', '99'))
+    expect(api.entityLabel({ kind: 'release', id: 99 })).not.toContain('release #')
     expect(api.entityKindLabel('source')).toBe(t('agent.entity_source'))
     expect(api.entityKindLabel('release')).toBe(t('agent.entity_release'))
   })

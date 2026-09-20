@@ -88,6 +88,7 @@ import {
 } from '../api/agent'
 import { listSources } from '../api/sources'
 import { getReleases } from '../api/releases'
+import type { ReleaseInfo } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
 import { ShowToastKey } from '../injection-keys'
 import { InvokeI18nError } from '../api/client'
@@ -156,6 +157,42 @@ function makeRun(over: Record<string, unknown> = {}): AgentRunSummary {
   } as unknown as AgentRunSummary
 }
 
+/** 构造一条 release 目录项（实体 chip 的可读名解析用；默认：GitHub 源 + 语义化 tag）。 */
+function makeRelease(over: Record<string, unknown> = {}): ReleaseInfo {
+  return {
+    id: 7,
+    source_id: 1,
+    source_type: 'github',
+    owner: 'earendil-works',
+    repo: 'pi',
+    tag_name: 'v0.86.1',
+    release_name: 'v0.86.1',
+    html_url: 'https://github.com/earendil-works/pi/releases/tag/v0.86.1',
+    published_at: '2026-09-20T11:19:20Z',
+    prerelease: false,
+    body: null,
+    detected_at: '2026-09-20T11:33:17Z',
+    notification_status: 'pending',
+    snooze_until: null,
+    ai_summary: null,
+    ai_importance: null,
+    body_translated: null,
+    extra_metadata: null,
+    // GitHub 源的 description 是仓库描述，可读名走 owner/repo；此处给个可断言的特征值
+    source_description: 'pi 仓库描述',
+    flag: 0,
+    version_bump: null,
+    ...over,
+  } as unknown as ReleaseInfo
+}
+
+/** 等目录刷新合帧窗口（组件内 50ms）走完：与 flushRpcFrame 同理，
+ *  flushPromises 清不掉定时器，必须等真实 timer。 */
+async function flushCatalogFrame() {
+  await new Promise((resolve) => setTimeout(resolve, 70))
+  await flushPromises()
+}
+
 function sampleMessages(): AgentChatMessage[] {
   return [
     {
@@ -204,6 +241,9 @@ beforeEach(() => {
   vi.mocked(listAgentMessages).mockResolvedValue(sampleMessages())
   vi.mocked(listAgentSessions).mockResolvedValue([])
   vi.mocked(getAgentConfig).mockResolvedValue(agentConfig())
+  // 实体目录同理：mockResolvedValue/mockRejectedValue 跨用例残留会让断言依赖执行顺序
+  vi.mocked(listSources).mockResolvedValue([])
+  vi.mocked(getReleases).mockResolvedValue([])
 })
 
 describe('AgentWorkspace 冒烟', () => {
@@ -681,6 +721,78 @@ describe('AgentWorkspace 冒烟', () => {
     wrapper.unmount()
   })
 
+  // ── 实体目录时效性（回归）──
+  // 目录原为「面板打开时拉一次」的快照，而主列表（App.vue）订阅 release-state-changed
+  // 实时刷新——于是面板开着时轮询刚采到的版本在主列表可见可拖，在工作区却查不到：
+  // chip 退化成 `release #124741`（用户读成「版本号」，认不出是哪个 release），
+  // 重试还会误判为「已删除」把引用静默剔除。
+  it('面板打开后新采集的版本：release-state-changed 刷新目录，chip 从 #id 变为可读名', async () => {
+    // 打开面板时该版本尚未入库（模拟「面板已开着，随后轮询才采到」）
+    vi.mocked(getReleases).mockResolvedValue([])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.find('.agent-ws-main').trigger('drop', {
+      dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
+    })
+    // 先让「拖入未知实体」触发的自愈刷新跑完（这次后端仍返回空），把两条路径分开验
+    await flushCatalogFrame()
+    const chip = () => wrapper.find('.agent-ws-chip-attached').text()
+    expect(chip()).toContain(t('agent.entity_name_unavailable', '7'))
+    expect(chip()).not.toContain('release #') // 不再有读起来像版本号的裸 id 回退
+
+    // 后端采集到该版本并广播 release-state-changed（payload = release id）
+    vi.mocked(getReleases).mockResolvedValue([makeRelease()])
+    rpcHandlers.get('release-state-changed')?.({ payload: 7 })
+    await flushCatalogFrame()
+
+    // 名称解析是响应式的：目录到手后 chip 自行变可读，无需重开面板或重新拖入
+    expect(chip()).toContain('earendil-works/pi · v0.86.1')
+    expect(chip()).not.toContain(t('agent.entity_name_unavailable', '7'))
+    wrapper.unmount()
+  })
+
+  it('拖入目录外的实体：自动补拉目录，chip 自行变可读（订阅建立前/首载失败的兜底）', async () => {
+    // 首次加载失败：面板挂载时目录为空
+    vi.mocked(getReleases).mockRejectedValue(new Error('db busy'))
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    const callsAfterMount = vi.mocked(getReleases).mock.calls.length
+
+    // 拖入时目录里没有 → 补拉一次，此刻后端已恢复
+    vi.mocked(getReleases).mockResolvedValue([makeRelease()])
+    await wrapper.find('.agent-ws-main').trigger('drop', {
+      dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
+    })
+    await flushCatalogFrame()
+
+    expect(vi.mocked(getReleases).mock.calls.length).toBeGreaterThan(callsAfterMount)
+    const chip = () => wrapper.find('.agent-ws-chip-attached').text()
+    expect(chip()).toContain('earendil-works/pi · v0.86.1')
+
+    // 目录已认得它：再拖一次不再补拉（正常拖拽不该反复拉 200 行全量）
+    const callsAfterSelfHeal = vi.mocked(getReleases).mock.calls.length
+    await wrapper.find('.agent-ws-main').trigger('drop', {
+      dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
+    })
+    await flushCatalogFrame()
+    expect(vi.mocked(getReleases).mock.calls.length).toBe(callsAfterSelfHeal)
+    wrapper.unmount()
+  })
+
+  it('目录刷新部分失败：源列表拉取失败不清空已到手的版本名称映射', async () => {
+    // Promise.all 时代：任一请求失败即整体抛出，两侧名称映射双双保持空值
+    vi.mocked(listSources).mockRejectedValue(new Error('db busy'))
+    vi.mocked(getReleases).mockResolvedValue([makeRelease()])
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.find('.agent-ws-main').trigger('drop', {
+      dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
+    })
+    await flushCatalogFrame()
+    expect(wrapper.find('.agent-ws-chip-attached').text()).toContain('earendil-works/pi · v0.86.1')
+    wrapper.unmount()
+  })
+
   it('user 消息整条被 <用户指令> 包裹时剥离标签，首轮模板折叠为可展开详情', async () => {
     vi.mocked(listAgentMessages).mockResolvedValue([
       {
@@ -1092,6 +1204,32 @@ describe('AgentWorkspace 冒烟', () => {
     // 指令仍提交，实体为空（后端对任一实体缺失会整体拒绝）
     expect(vi.mocked(runAgentJob)).toHaveBeenCalledWith(
       expect.objectContaining({ instruction: '帮我总结这个版本', entities: [] }),
+    )
+    wrapper.unmount()
+  })
+
+  it('重试：目录加载失败时不把引用当「已删除」剔除（静默丢引用比可见的拒绝更糟）', async () => {
+    vi.mocked(runAgentJob).mockClear()
+    // 版本目录拉取失败（DB 忙）：「查不到」源于目录不可用，不代表实体已删除
+    vi.mocked(getReleases).mockRejectedValue(new Error('db busy'))
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
+    vi.mocked(listAgentRuns).mockResolvedValue([
+      makeRun({ entities: '[{"kind":"release","id":7}]' }),
+    ])
+    const showToast = vi.fn()
+    const wrapper = mount(AgentWorkspace, {
+      global: { provide: { [ShowToastKey as symbol]: showToast } },
+    })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-run-failed-actions button')[0].trigger('click')
+    await flushPromises()
+    expect(showToast).not.toHaveBeenCalledWith(t('agent.retry_entities_dropped', '1'))
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledWith(
+      expect.objectContaining({ entities: [{ kind: 'release', id: 7 }] }),
     )
     wrapper.unmount()
   })

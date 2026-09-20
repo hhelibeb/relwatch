@@ -67,6 +67,8 @@ export function useAgentChat(deps: {
   // ── 实体目录（重试时校验引用实体仍然存在）──
   sources: Ref<Source[]>
   releases: Ref<ReleaseInfo[]>
+  /** 各类目录是否成功加载过：未加载 ≠ 实体已删除（见 existingEntities） */
+  catalogReady: Ref<{ source: boolean; release: boolean }>
   // ── 全局队列（编排层持有：侧栏状态点 / 横幅共用，本域 loadQueue 写入）──
   queueActive: Ref<AgentQueueItem[]>
 }) {
@@ -91,6 +93,7 @@ export function useAgentChat(deps: {
     loadRpcStatus,
     sources,
     releases,
+    catalogReady,
     queueActive,
   } = deps
 
@@ -555,12 +558,17 @@ export function useAgentChat(deps: {
 
   /** 过滤掉已删除的引用实体：重试历史 run 时，被引用的监控源/版本可能已被清理，
    * 而后端对任一实体缺失即整体拒绝（err.agent.entity_missing）——不剔除会让整次
-   * 重试直接失败，剔除后指令本身仍然成立。 */
+   * 重试直接失败，剔除后指令本身仍然成立。
+   *
+   *  但「查不到」不等于「已删除」：目录是面板打开时的快照且只覆盖最近若干条，
+   *  加载失败 / 尚未加载 / 超出窗口的实体都不在里面。误剔是**静默的数据丢失**
+   *  （引用从重试里消失，只有一句误导性的 toast），而漏剔最坏是重试被后端拒绝、
+   *  用户看得见也能重来——故仅在对应目录**成功加载过**时才据它判定删除。 */
   function existingEntities(ents: AgentEntityRefSeed[]): AgentEntityRefSeed[] {
     return ents.filter((e) =>
       e.kind === 'source'
-        ? sources.value.some((s) => s.id === e.id)
-        : releases.value.some((r) => r.id === e.id),
+        ? !catalogReady.value.source || sources.value.some((s) => s.id === e.id)
+        : !catalogReady.value.release || releases.value.some((r) => r.id === e.id),
     )
   }
 

@@ -493,6 +493,9 @@ export default {
   'agent.model_none': '暂无可选模型',
   'agent.entity_source': '监控源',
   'agent.entity_release': '版本',
+  // 实体目录里查不到该项时的 chip 回退文案（{0} = id）。
+  // 特意点明「名称未加载」：写成裸 `release #123` 会被当成版本号读（见 useAgentComposer.entityLabel）
+  'agent.entity_name_unavailable': '名称未加载 #{0}',
   'agent.attached': '已加入引用',
   'agent.attached_exists': '引用已存在',
   'agent.remove_entity': '移除引用',

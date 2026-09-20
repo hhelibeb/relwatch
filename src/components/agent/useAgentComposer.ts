@@ -123,13 +123,17 @@ export function useAgentComposer(deps: {
   const sourceById = computed(() => new Map(sources.value.map((s) => [s.id, s])))
   const releaseById = computed(() => new Map(releases.value.map((r) => [r.id, r])))
 
+  /** chip / 菜单里的引用可读名；目录里查不到时回退 i18n 文案（含 id）。
+   *  回退**不写成裸 `release #124741`**：那串数字在 chip 上读起来就像「版本号」，
+   *  用户无从判断是哪个 release（曾据此误报为「拖入显示成了版本号」）。
+   *  目录为何会缺项见 AgentWorkspace 的 refreshEntityCatalog / ensureEntityKnown。 */
   function entityLabel(e: AgentEntityRefSeed): string {
     if (e.kind === 'source') {
       const s = sourceById.value.get(e.id)
-      return s ? `${s.source_type} | ${sourceDisplayName(s)}` : `source #${e.id}`
+      return s ? `${s.source_type} | ${sourceDisplayName(s)}` : t('agent.entity_name_unavailable', String(e.id))
     }
     const r = releaseById.value.get(e.id)
-    return r ? releaseDisplayName(r) : `release #${e.id}`
+    return r ? releaseDisplayName(r) : t('agent.entity_name_unavailable', String(e.id))
   }
 
   function entityKindLabel(kind: string): string {

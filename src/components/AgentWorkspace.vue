@@ -2,7 +2,7 @@
 import { ref, reactive, computed, inject, onMounted, onUnmounted, nextTick, watch, type ComponentPublicInstance } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { events } from '../bindings'
-import { ShowToastKey, type AgentWorkspaceSeed } from '../injection-keys'
+import { ShowToastKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
 import {
   getAgentConfig,
   getAgentAvailableModels,
@@ -39,6 +39,9 @@ const panelWidth = computed(() => props.width ?? 440)
 const skills = ref<string[]>([])
 const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
+// 实体目录是否成功加载过（按类分开记）。判据只用于「存在性校验」的降级：
+// 目录没拿到 ≠ 实体已删除（详见 useAgentChat 的 existingEntities）。
+const catalogReady = ref<{ source: boolean; release: boolean }>({ source: false, release: false })
 
 // ── 全局队列（侧栏状态点 / 横幅「被谁占用」）：跨域共享，编排层持有、chat 写入 ──
 const queueActive = ref<AgentQueueItem[]>([])
@@ -243,6 +246,7 @@ const {
   loadRpcStatus,
   sources,
   releases,
+  catalogReady,
   queueActive,
 })
 
@@ -331,16 +335,70 @@ const actionsExpanded = ref(false)
 
 let unlistenRunFinished: UnlistenFn | undefined
 let unlistenRpcStream: UnlistenFn | undefined
+let unlistenReleaseState: UnlistenFn | undefined
+
+/** 目录刷新合帧窗口（ms）：与 App.vue 的 releases 刷新同口径。
+ *  release-state-changed 在批量操作（连点已读/忽略/删除）时会连续到达，
+ *  不合帧就是每事件一次 200 行全量查询。 */
+const CATALOG_REFRESH_FRAME_MS = 50
+let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 拉取实体目录（监控源 + 版本）并写入名称映射。
+ *
+ * 两个请求各自结算（allSettled 而非 all）：此前用 Promise.all，任一失败即整体
+ * 抛出，被 catch 吞掉后 sources/releases 双双保持原值——首次加载时就是双空，
+ * 整个面板生命周期内所有 chip 都退化成 `#id`。
+ */
+async function refreshEntityCatalog() {
+  const [srcs, rels] = await Promise.allSettled([listSources(), getReleases()])
+  if (srcs.status === 'fulfilled') {
+    sources.value = srcs.value
+    catalogReady.value.source = true
+  }
+  if (rels.status === 'fulfilled') {
+    releases.value = rels.value
+    catalogReady.value.release = true
+  }
+}
+
+/** 合帧刷新实体目录（release-state-changed / 拖入未知实体时调用）。 */
+function scheduleCatalogRefresh() {
+  if (catalogRefreshTimer !== null) return
+  catalogRefreshTimer = setTimeout(() => {
+    catalogRefreshTimer = null
+    void refreshEntityCatalog()
+  }, CATALOG_REFRESH_FRAME_MS)
+}
+
+/**
+ * 拖入/预置实体时校验它在不在当前目录里；不在就补拉一次目录。
+ *
+ * 目录是**面板打开时的快照**，而主列表随 release-state-changed 实时刷新——
+ * 于是「面板开着时轮询刚采到的新版本」在主列表可见可拖，在这里却查不到，
+ * chip 只能回退成 `#id`（用户看不出是哪个版本），重试还会把它当已删除剔除。
+ * 事件订阅已覆盖绝大多数情形，这里兜住两类漏网的：订阅建立前的窗口、
+ * 以及刷新本身失败（首次加载失败也会走到这里）。不阻塞 chip 插入——
+ * 名称解析是响应式的，目录到手后 chip 自行变可读。
+ */
+function ensureEntityKnown(entity: AgentEntityRefSeed) {
+  const known =
+    entity.kind === 'source'
+      ? sources.value.some((s) => s.id === entity.id)
+      : releases.value.some((r) => r.id === entity.id)
+  if (!known) scheduleCatalogRefresh()
+}
+
 async function loadCatalog() {
+  // 技能列表 / 超时配置与实体目录解耦：任一失败都不再连带丢另一份
   try {
-    const [cfg, srcs, rels] = await Promise.all([getAgentConfig(), listSources(), getReleases()])
+    const cfg = await getAgentConfig()
     skills.value = cfg.skills
     timeoutSecs.value = cfg.timeout_seconds
-    sources.value = srcs
-    releases.value = rels
   } catch {
-    // 目录加载失败不阻塞工作区使用（名称映射降级为 #id）
+    // 配置读取失败不阻塞工作区使用（技能菜单为空，超时保持默认值）
   }
+  await refreshEntityCatalog()
   // 模型列表独立拉取：失败仅影响模型下拉（只剩「默认」），不影响技能/实体目录
   await loadModels()
 }
@@ -641,6 +699,9 @@ function handleMenuKeydown(e: KeyboardEvent) {
 function applySeed() {
   if (!props.seed?.entities?.length) return
   for (const e of props.seed.entities) {
+    // 面板刚挂载时目录还在路上（loadCatalog 未返回），这里顺手校验一次：
+    // 目录里没有就补拉，避免预置引用停在 `#id` 上
+    ensureEntityKnown(e)
     addEntity(e)
   }
 }
@@ -667,7 +728,10 @@ function handleDrop(e: DragEvent) {
   e.preventDefault()
   dragOver.value = false
   const entity = parseEntityDrag(e)
-  if (entity) afterAttach(entity, addEntity(entity))
+  if (entity) {
+    ensureEntityKnown(entity)
+    afterAttach(entity, addEntity(entity))
+  }
 }
 
 // ── 拖到头部标题栏：切换新会话并把实体引用放进新会话 ──
@@ -696,6 +760,7 @@ function handleDropNewSession(e: DragEvent) {
   const entity = parseEntityDrag(e)
   if (entity) {
     startNewSession()
+    ensureEntityKnown(entity)
     afterAttach(entity, addEntity(entity))
   }
 }
@@ -713,6 +778,12 @@ onMounted(async () => {
   unlistenRpcStream = await events.agentRpcStream.listen((e) => {
     handleRpcStream(e.payload)
   })
+  // 实体目录跟随 release 状态变更刷新：主列表（App.vue）订阅同一事件保持实时，
+  // 工作区此前一次性拉取，快照停在打开那一刻——新采集的版本在主列表可拖、
+  // 在这里却解析不出名字（chip 退化成 `#id`），重试还会误剔引用。
+  unlistenReleaseState = await events.releaseStateChanged.listen(() => {
+    scheduleCatalogRefresh()
+  })
   await nextTick()
   focusComposer()
   // 捕获期监听：点击菜单/触发控件之外的区域即收起打开的下拉菜单
@@ -728,6 +799,11 @@ watch(
 onUnmounted(() => {
   unlistenRunFinished?.()
   unlistenRpcStream?.()
+  unlistenReleaseState?.()
+  if (catalogRefreshTimer !== null) {
+    clearTimeout(catalogRefreshTimer)
+    catalogRefreshTimer = null
+  }
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
 })
 

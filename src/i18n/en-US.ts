@@ -493,6 +493,8 @@ export default {
   'agent.model_none': 'No models available',
   'agent.entity_source': 'Source',
   'agent.entity_release': 'Release',
+  // Fallback chip label when the entity catalog has no entry ({0} = id)
+  'agent.entity_name_unavailable': 'name unavailable #{0}',
   'agent.attached': 'Attached',
   'agent.attached_exists': 'Already attached',
   'agent.remove_entity': 'Remove reference',

@@ -94,6 +94,8 @@ const deps = () => {
     loadRpcStatus: vi.fn().mockResolvedValue(undefined),
     sources: ref<Source[]>([]),
     releases: ref<ReleaseInfo[]>([]),
+    // 默认「目录已成功加载」：沿用既有剔除语义；「未加载不剔除」的用例单独覆盖
+    catalogReady: ref({ source: true, release: true }),
     queueActive: ref<AgentQueueItem[]>([]),
   }
 }
@@ -340,6 +342,24 @@ describe('useAgentChat 提交 / 停止 / 重试', () => {
       files: ['C:/a.log'],
     }))
     expect(d.selectedModel.value).toEqual({ provider: 'deepseek', model_id: 'm1' })
+  })
+
+  it('handleRetry：目录从未成功加载时不剔除引用（未加载 ≠ 已删除，误剔是静默丢数据）', async () => {
+    const { api, d } = setup({ catalogReady: ref({ source: false, release: false }) })
+    vi.mocked(listAgentRuns).mockResolvedValue([])
+    await api.loadChat()
+    const run = makeRun({
+      id: 9,
+      status: 'failed',
+      instruction: '重试指令',
+      entities: JSON.stringify([{ kind: 'source', id: 1 }, { kind: 'release', id: 99 }]),
+    })
+    await api.handleRetry(run)
+    expect(d.showToast).not.toHaveBeenCalledWith(t('agent.retry_entities_dropped', '2'))
+    expect(runAgentJob).toHaveBeenCalledWith(expect.objectContaining({
+      instruction: '重试指令',
+      entities: [{ kind: 'source', id: 1 }, { kind: 'release', id: 99 }],
+    }))
   })
 
   it('handleRetryEdit：回填但不提交，光标送到输入框末尾', async () => {
