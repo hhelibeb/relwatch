@@ -183,11 +183,27 @@ function sampleMessages(): AgentChatMessage[] {
   ]
 }
 
+/** Agent 配置默认值。mockResolvedValue 会跨用例残留（用例内为造 skill 菜单而覆盖
+ *  skills），不复位就会泄漏给后面的用例，让断言依赖执行顺序——故 beforeEach 每轮复位。 */
+function agentConfig(skills: string[] = []) {
+  return {
+    enabled: true,
+    agent_type: 'pi',
+    binary: null,
+    model: null,
+    working_dir: null,
+    prompt_suffix: null,
+    timeout_seconds: 300,
+    skills,
+  }
+}
+
 beforeEach(() => {
   setLocale('zh-CN')
   localStorage.clear() // 会话索引走 localStorage，用例间必须隔离
   vi.mocked(listAgentMessages).mockResolvedValue(sampleMessages())
   vi.mocked(listAgentSessions).mockResolvedValue([])
+  vi.mocked(getAgentConfig).mockResolvedValue(agentConfig())
 })
 
 describe('AgentWorkspace 冒烟', () => {
@@ -245,16 +261,7 @@ describe('AgentWorkspace 冒烟', () => {
 
   it('菜单打开时 Enter 只选择菜单项，不自动提交；提交时清理 @skill 标记', async () => {
     const SKILL = 'E:\\project\\relwatch\\.pi\\skills\\commit\\SKILL.md'
-    vi.mocked(getAgentConfig).mockResolvedValue({
-      enabled: true,
-      agent_type: 'pi',
-      binary: null,
-      model: null,
-      working_dir: null,
-      prompt_suffix: null,
-      timeout_seconds: 300,
-      skills: [SKILL],
-    })
+    vi.mocked(getAgentConfig).mockResolvedValue(agentConfig([SKILL]))
     const wrapper = mount(AgentWorkspace, {
       global: { provide: { [ShowToastKey]: vi.fn() } },
     })
@@ -281,6 +288,41 @@ describe('AgentWorkspace 冒烟', () => {
     expect(vi.mocked(runAgentJob)).toHaveBeenCalledWith(
       expect.objectContaining({ skillPath: SKILL, instruction: '帮我看看' }),
     )
+    wrapper.unmount()
+  })
+
+  it('提交成功后输入区的引用 chip 与 skill 徽章一并清空（不带进下一轮）', async () => {
+    const SKILL = 'E:\\project\\relwatch\\.pi\\skills\\commit\\SKILL.md'
+    vi.mocked(getAgentConfig).mockResolvedValue(agentConfig([SKILL]))
+    const seed: { entities: AgentEntityRefSeed[] } = { entities: [{ kind: 'release', id: 7 }] }
+    vi.mocked(runAgentJob).mockClear() // 本 describe 的 beforeEach 不负责清 runAgentJob，调用计数会跨用例累积
+    const wrapper = mount(AgentWorkspace, {
+      props: { seed },
+      global: { provide: { [ShowToastKey]: vi.fn() } },
+    })
+    await flushPromises()
+    const ta = wrapper.find('.agent-ws-textarea')
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1) // seed 引用 chip
+
+    // @ 打开 skill 菜单 → Enter 选中：skill 徽章出现在输入区上方
+    // 选择器必须限定在输入区（.agent-ws-input）：.agent-ws-skill-badge 在消息区
+    // user 气泡上也有一个（run.skill_path），全局查会让「输入区是否清空」被消息区的
+    // 徽章掩盖，用例随 listAgentRuns 的 mock 变化而假通过 / 假失败
+    await ta.setValue('@')
+    await flushPromises()
+    await ta.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(wrapper.find('.agent-ws-input .agent-ws-skill-badge').exists()).toBe(true)
+
+    await ta.setValue('@commit 帮我看看')
+    await ta.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+
+    expect(vi.mocked(runAgentJob)).toHaveBeenCalledTimes(1)
+    // 本轮引用已由 run 承载、在消息区以 chip / 徽章展示；输入区必须清空，
+    // 否则下一轮会被静默带上这一轮的选择
+    expect(wrapper.find('.agent-ws-input .agent-ws-skill-badge').exists()).toBe(false)
+    expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(0)
     wrapper.unmount()
   })
 

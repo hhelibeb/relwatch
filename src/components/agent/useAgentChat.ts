@@ -415,6 +415,12 @@ export function useAgentChat(deps: {
       oneShotModel.value = null
       modelOnce.value = false
       files.value = []
+      // 引用与技能同属「这一轮的输入」：已随本 run 落盘，消息区由 user 气泡上的
+      // 实体 chip / skill 徽章展示（messageDecorations），输入区再留着只是重复；
+      // 还留着会诱导「下一轮无意间带着上一轮的引用发出去」。失败路径刻意不清——
+      // 提交被拒时没有 run 承载这些选择，清掉等于让用户重选一遍（见 catch 分支）。
+      entities.value = []
+      skillPath.value = null
       // 会话登记（标题取首次指令前 40 字）+ 固化本次模型选择 + 清除草稿标记
       // （新建即登记后 key 恒在索引中；draft 清除 = 已提交，不再是「新会话」）
       // 注意固化的是 selectedModel（会话长期选择），一次性覆盖不落库。

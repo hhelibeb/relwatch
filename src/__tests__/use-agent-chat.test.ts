@@ -228,7 +228,7 @@ describe('useAgentChat 提交 / 停止 / 重试', () => {
     expect(runAgentJob).not.toHaveBeenCalled()
   })
 
-  it('handleSubmit：实体合并去重、提交参数、消费一次性覆盖与附件、固化会话登记、启动轮询', async () => {
+  it('handleSubmit：实体合并去重、提交参数、消费一次性覆盖/附件/引用/技能、固化会话登记、启动轮询', async () => {
     const { api, d } = setup()
     // 提交后 loadChat 刷新出 pending run：活跃 run 由 runs 推导接管（兜底 id 复位）
     vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 101, status: 'pending' })])
@@ -250,11 +250,14 @@ describe('useAgentChat 提交 / 停止 / 重试', () => {
       instruction: '帮我  分析',
       model: { provider: 'x', model_id: 'y' },
       files: ['C:/a.log'],
-    })    // 提交成功：清指令/一次性覆盖/附件；固化的是 selectedModel（会话长期选择）
+    })    // 提交成功：清指令/一次性覆盖/附件/引用/技能；固化的是 selectedModel（会话长期选择）
     expect(d.instruction.value).toBe('')
     expect(d.oneShotModel.value).toBeNull()
     expect(d.modelOnce.value).toBe(false)
     expect(d.files.value).toEqual([])
+    // 引用与技能是一次性输入：本轮已由 run 承载（消息区有 chip / 徽章），输入区不再保留
+    expect(d.entities.value).toEqual([])
+    expect(d.skillPath.value).toBeNull()
     expect(d.persistSessionMeta).toHaveBeenCalledWith('s1', '帮我  分析', { provider: 'deepseek', model_id: 'm1' })
     // runId 兜底已随 loadChat 复位，活跃 run 由 runs 推导接管
     expect(api.canStop.value).toBe(true)
@@ -268,6 +271,9 @@ describe('useAgentChat 提交 / 停止 / 重试', () => {
   it('handleSubmit：提交被拒时清本地回显与快照，submitting 复位', async () => {
     const { api, d } = setup()
     d.instruction.value = 'hi'
+    d.entities.value = [{ kind: 'source', id: 1 }]
+    d.skillPath.value = 'E:\\x\\SKILL.md'
+    d.files.value = ['C:/a.log']
     vi.mocked(runAgentJob).mockRejectedValueOnce(new Error('boom'))
 
     await api.handleSubmit()
@@ -276,6 +282,12 @@ describe('useAgentChat 提交 / 停止 / 重试', () => {
     expect(api.liveMessages.value).toEqual([])
     expect(api.historySnapshot.value).toEqual([])
     expect(api.submitting.value).toBe(false)
+    // 被拒 = 没有 run 承载这轮输入 → 指令/引用/技能/附件全保留，改一改即可重发
+    // （与成功路径的清空刻意不对称，勿「顺手对齐」）
+    expect(d.instruction.value).toBe('hi')
+    expect(d.entities.value).toEqual([{ kind: 'source', id: 1 }])
+    expect(d.skillPath.value).toBe('E:\\x\\SKILL.md')
+    expect(d.files.value).toEqual(['C:/a.log'])
   })
 
   it('handleCancel：无可停 run 忽略；成功保持 cancelling 等终态；失败复位', async () => {
