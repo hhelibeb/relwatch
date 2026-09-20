@@ -41,24 +41,23 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
             match event.id().as_ref() {
+                // 菜单点击同样受 Windows 前台锁限制（点击发生在 shell 进程的消息队列里），
+                // 故一律走 focus::show_and_focus 而不是 show + set_focus
                 "tray_sources" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        crate::focus::show_and_focus(&window);
                         let _ = crate::events::Navigate("sources".to_string()).emit(app);
                     }
                 }
                 "tray_releases" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        crate::focus::show_and_focus(&window);
                         let _ = crate::events::Navigate("releases".to_string()).emit(app);
                     }
                 }
                 "tray_settings" => {
                     if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        crate::focus::show_and_focus(&window);
                         let _ = crate::events::Navigate("settings".to_string()).emit(app);
                     }
                 }
@@ -88,8 +87,9 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
                     } else {
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        // 托盘点击的输入归属 explorer.exe，SetForegroundWindow 会被系统
+                        // 拒绝 → 只 show 会出现「任务栏有按钮但窗口没到最前」，故走统一实现
+                        crate::focus::show_and_focus(&window);
                     }
                 }
             }

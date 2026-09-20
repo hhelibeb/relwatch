@@ -5,6 +5,7 @@ pub mod db;
 pub mod i18n;
 mod commands;
 mod events;
+mod focus;
 mod notify;
 mod tray;
 mod types;
@@ -233,8 +234,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+                focus::show_and_focus(&window);
             }
         }))
         // 应用内更新（tauri.conf.json plugins.updater 配置 endpoint/pubkey）与 relaunch

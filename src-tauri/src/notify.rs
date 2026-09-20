@@ -31,10 +31,10 @@ pub(crate) const WINDOWS_AUMID: &str = "com.relwatch";
 pub(crate) fn activate_main_window(app: &AppHandle, release_id: i64) {
     log::info!("通知主体被点击: release id={}", release_id);
     if let Some(window) = app.get_webview_window("main") {
-        // 窗口可能处于最小化态（show() 只切可见性，不还原最小化），先还原再显示
-        let _ = window.unminimize();
-        let _ = window.show();
-        let _ = window.set_focus();
+        // 最小化态还原、显示、置前（含 Windows 前台锁兜底）统一在 focus::show_and_focus：
+        // 点通知主体同样不满足 SetForegroundWindow 的前台条件，只 show + set_focus 会
+        // 出现「任务栏有按钮但窗口没到最前」
+        crate::focus::show_and_focus(&window);
     }
     // 记一条应用内日志：点主体是低频动作，但排查「点了没反应」时这是唯一线索
     let state = app.state::<crate::types::AppState>();
