@@ -46,9 +46,11 @@ pub fn add_source_with_config(
 ) -> Result<i64, String> {
     let now = chrono::Utc::now().to_rfc3339();
     let desc = if description.is_empty() { None } else { Some(description) };
+    // `poll_interval_minutes` **显式**写 0 = 未设置（跟随全局）：老库的建表默认值
+    // 仍是历史遗留的 30，省略此列会让每个新源凭空带上一个 30 分钟间隔。
     conn.execute(
-        "INSERT OR IGNORE INTO sources (source_type, owner, repo, description, config, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT OR IGNORE INTO sources (source_type, owner, repo, poll_interval_minutes, description, config, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
         params![source_type, owner, repo, desc, config, now, now],
     )
     .map_err(|e| e.to_string())?;
@@ -201,24 +203,89 @@ pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Res
 ///
 /// `sources.last_check_message` 是**不经过** `db::logs::write_log_key` 的凭据出口
 /// （V28）：错误文本常回显完整请求 URL（如 `…&key=AIzaSy…`），而该列会被源列表 /
-/// 详情展示，并随备份导出。故本函数（该列的唯一写入者）在落库前统一脱敏，
-/// 避免每个调用点各写一遍而漏掉某一处。
+/// 详情展示，并随备份导出。故 `record_check_failure_inner`（该列的唯一写入者，
+/// 两个公开入口共用）在落库前统一脱敏，避免每个调用点各写一遍而漏掉某一处。
 pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
+    record_check_failure_inner(conn, id, message, true)
+}
+
+/// 记录一次检查失败，但**不**累加 `consecutive_failures`。
+///
+/// 用于两类「不是源本身坏了」的失败（误伤断路器的那两类）：
+/// - 上游按账号/配额/风控拒绝服务（YouTube 配额、B 站限流/风控、API key 失效）：
+///   重试会自愈（配额按日重置），且常一次命中全部同类源（共用 key/cookie），
+///   把它们逐个自动禁用纯属误伤。
+/// - 本轮已判定为网络层抖动（≥50% 源同轮失败）时预检失败的全量源。
+///
+/// 状态与消息照旧落库（`last_check_status/last_check_message`），所以源列表依旧显示
+/// 红点与错误文本，只是不再往断路器的计数上摞。
+pub fn record_check_failure_uncounted(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
+    record_check_failure_inner(conn, id, message, false)
+}
+
+/// 回退一次失败累加（下限 0）。
+///
+/// 断路器判定需要**整轮结果**才能下结论（见 `poll::apply_mass_failure_guard`），而失败
+/// 记录发生在单源检查内部、早于整轮汇总。故采用「先照常累加、整轮汇总后回退」：
+/// 每轮每源最多累加 1，所以回退 1 就等于本轮不累加，不会误伤上一轮的计数。
+pub fn decrement_consecutive_failures(conn: &Connection, id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE sources SET consecutive_failures = MAX(consecutive_failures - 1, 0), updated_at = ?2 WHERE id = ?1",
+        params![id, chrono::Utc::now().to_rfc3339()],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn record_check_failure_inner(
+    conn: &Connection,
+    id: i64,
+    message: &str,
+    count_failure: bool,
+) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     let trimmed: String = crate::redact::redact(message).chars().take(500).collect();
     conn.execute(
-        "UPDATE sources
-         SET last_checked_at = ?1,
-             last_check_status = 'error',
-             last_check_message = ?2,
-             consecutive_failures = consecutive_failures + 1,
-             last_new_count = 0,
-             updated_at = ?1
-         WHERE id = ?3",
+        if count_failure {
+            "UPDATE sources
+             SET last_checked_at = ?1,
+                 last_check_status = 'error',
+                 last_check_message = ?2,
+                 consecutive_failures = consecutive_failures + 1,
+                 last_new_count = 0,
+                 updated_at = ?1
+             WHERE id = ?3"
+        } else {
+            "UPDATE sources
+             SET last_checked_at = ?1,
+                 last_check_status = 'error',
+                 last_check_message = ?2,
+                 last_new_count = 0,
+                 updated_at = ?1
+             WHERE id = ?3"
+        },
         params![now, trimmed, id],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// 读源级配置槽（`sources.config` JSON）里的布尔开关：`Some(true/false)` = 该源显式覆盖，
+/// `None` = 未配置/解析失败/非布尔值（调用方回退全局设置）。
+///
+/// 目前只用于 `fetch_history` 与 `check_prereleases` 两个开关的「全局默认 + 按源覆盖」。
+pub fn config_flag(config: Option<&str>, key: &str) -> Option<bool> {
+    let parsed: serde_json::Value = serde_json::from_str(config?).ok()?;
+    parsed.get(key)?.as_bool()
+}
+
+/// 同上，但按源 id 取行后解析（适配器只能拿到 `source_id` 时用，如 `github::save_releases`）。
+pub fn source_config_flag(conn: &Connection, id: i64, key: &str) -> Option<bool> {
+    let config: Option<String> = conn
+        .query_row("SELECT config FROM sources WHERE id = ?1", params![id], |r| r.get(0))
+        .ok()
+        .flatten();
+    config_flag(config.as_deref(), key)
 }
 
 pub fn update_source_description(conn: &Connection, id: i64, description: &str) -> Result<(), String> {
@@ -337,6 +404,61 @@ mod tests {
         assert_eq!(s.consecutive_failures, 1);
     }
 
+    /// 不计入型失败：状态/消息照旧落库（源列表红点不变），但不动断路器计数。
+    #[test]
+    fn test_record_check_failure_uncounted_keeps_counter() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "youtube", "UCtest", "", "").unwrap();
+
+        record_check_failure_uncounted(&conn, id, "err.youtube_api_quota|quotaExceeded").unwrap();
+        let s = &list_sources(&conn).unwrap()[0];
+        assert_eq!(s.consecutive_failures, 0, "配额类失败不应累加连续失败计数");
+        assert_eq!(s.last_check_status, "error", "状态仍应落库（否则源列表看不出异常）");
+        assert!(s.last_check_message.as_deref().unwrap().contains("youtube_api_quota"));
+
+        // 普通失败仍照旧累加，保证断路器本身不被废掉
+        record_check_failure(&conn, id, "err.api_error|500|x").unwrap();
+        assert_eq!(list_sources(&conn).unwrap()[0].consecutive_failures, 1);
+    }
+
+    /// 整轮回退：累加后回退 1 等于本轮不计入，且下限为 0（不会倒欠）。
+    #[test]
+    fn test_decrement_consecutive_failures_floors_at_zero() {
+        let conn = init_memory_db().unwrap();
+        let id = add_source(&conn, "github", "x", "y", "").unwrap();
+
+        decrement_consecutive_failures(&conn, id).unwrap();
+        assert_eq!(list_sources(&conn).unwrap()[0].consecutive_failures, 0, "下限应为 0");
+
+        record_check_failure(&conn, id, "timeout").unwrap();
+        record_check_failure(&conn, id, "timeout").unwrap();
+        decrement_consecutive_failures(&conn, id).unwrap();
+        assert_eq!(
+            list_sources(&conn).unwrap()[0].consecutive_failures,
+            1,
+            "回退 1 只抵消本轮累加，不碰上一轮计数"
+        );
+    }
+
+    /// 源级开关解析：未配置/非布尔/JSON 损坏 → None（调用方回退全局）。
+    #[test]
+    fn test_source_config_flag() {
+        assert_eq!(config_flag(None, "fetch_history"), None);
+        assert_eq!(config_flag(Some("not json"), "fetch_history"), None);
+        assert_eq!(config_flag(Some("{\"videos\":true}"), "fetch_history"), None);
+        assert_eq!(
+            config_flag(Some("{\"videos\":true,\"fetch_history\":false}"), "fetch_history"),
+            Some(false),
+            "同一条 config 里 YouTube 订阅与通用开关共存"
+        );
+
+        // 按 id 读取（适配器只有 source_id 时用）
+        let conn = init_memory_db().unwrap();
+        let id = add_source_with_config(&conn, "github", "o", "r", "", Some("{\"check_prereleases\":true}")).unwrap();
+        assert_eq!(source_config_flag(&conn, id, "check_prereleases"), Some(true));
+        assert_eq!(source_config_flag(&conn, 9999, "check_prereleases"), None);
+    }
+
     #[test]
     fn test_source_add_and_list() {
         let conn = init_memory_db().unwrap();
@@ -366,6 +488,49 @@ mod tests {
         let s = &list_sources(&conn).unwrap()[0];
         assert!(!s.enabled);
         assert_eq!(s.poll_interval_minutes, 60);
+    }
+
+    /// 新源的间隔恒为 0（未设置/跟随全局），**不能**依赖 DDL 默认值：
+    /// 老库的 `sources` 建表默认值仍是历史遗留的 30，靠默认值会让每个新源
+    /// 凭空带上一个 30 分钟间隔（将来重新引入按源调度就是静默降频）。
+    #[test]
+    fn test_add_source_leaves_interval_unset_on_legacy_schema() {
+        let conn = Connection::open_in_memory().unwrap();
+        // 复刻老库（含 DEFAULT 30）的 sources DDL；description/config 是历史上
+        // 由 Migration 4/11 补上的列，INSERT 会用到，故一并声明。
+        conn.execute_batch(
+            "CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                repo TEXT NOT NULL,
+                poll_interval_minutes INTEGER NOT NULL DEFAULT 30,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_checked_at TEXT,
+                last_check_status TEXT NOT NULL DEFAULT 'unknown',
+                last_check_message TEXT,
+                consecutive_failures INTEGER NOT NULL DEFAULT 0,
+                last_new_count INTEGER NOT NULL DEFAULT 0,
+                muted INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                description TEXT,
+                config TEXT,
+                UNIQUE(source_type, owner, repo)
+            );",
+        )
+        .unwrap();
+
+        let id = add_source_with_config(&conn, "github", "o", "r", "", None).unwrap();
+        assert!(id > 0);
+        let iv: i64 = conn
+            .query_row(
+                "SELECT poll_interval_minutes FROM sources WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(iv, 0, "新源应写入 0 = 未设置，而不是落 DDL 默认值 30");
     }
 
     #[test]

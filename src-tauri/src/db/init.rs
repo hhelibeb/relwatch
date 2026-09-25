@@ -145,7 +145,9 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
             source_type TEXT NOT NULL,
             owner TEXT NOT NULL,
             repo TEXT NOT NULL,
-            poll_interval_minutes INTEGER NOT NULL DEFAULT 30,
+            -- 0 = 未设置/跟随全局（调度只读全局周期，此列当前无读取方；
+            -- 存量行的归一化见 Migration 20）。
+            poll_interval_minutes INTEGER NOT NULL DEFAULT 0,
             enabled INTEGER NOT NULL DEFAULT 1,
             last_checked_at TEXT,
             last_check_status TEXT NOT NULL DEFAULT 'unknown',
@@ -179,6 +181,7 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
             status TEXT NOT NULL DEFAULT 'pending',
             snooze_until TEXT,
             last_notified_at TEXT,
+            notify_failures INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (release_id) REFERENCES releases(id) ON DELETE CASCADE
@@ -496,6 +499,57 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
     }
 
+    // ── Migration 19: notify_failures on notification_state ──
+    // 通知发送失败的累计次数（失败留痕 + 受限重试，见 `notify::handle_send_failure`）。
+    // 刻意**不**在 `set_last_notified_at`（发送前的批量标记）里清零：否则每轮标记都会把
+    // 重试预算重置，失败重试就失去上限了。清零只发生在「重置为待通知/稍后提醒」时。
+    let has_notify_failures: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('notification_state') WHERE name='notify_failures'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+    if !has_notify_failures {
+        conn.execute_batch(
+            "ALTER TABLE notification_state ADD COLUMN notify_failures INTEGER NOT NULL DEFAULT 0;"
+        )?;
+    }
+
+    // ── Migration 20: sources.poll_interval_minutes 归一为「未设置」──
+    // 该列自建库起就是死字段：字段/写入/前端透传都在，但无人读，值来自建表默认值。
+    // 于是存量行里清一色是建表默认值 30，**不含任何用户意图**。而「按源间隔调度」
+    // 曾一度把它当调度依据（is_source_due），会把用户的源静默压到每 30 分钟一次、
+    // 盖掉他设的全局周期，且无日志无提示。该功能已整体撤掉（见 poll.rs::do_poll_async）。
+    //
+    // 这里把值等于建表默认值 30 的行统一置 0，并定下约定：
+    //   0 = 未设置（跟随全局周期）；>0 = 显式间隔（重新引入按源调度时必须先处理 0）。
+    // 只动等于 30 的行：其他值只可能来自开发期手动写入的显式选择，不该被这次归一化
+    // 抹掉（本功能未随任何发布版交付，正常用户库里 100% 是 30）。
+    // 用 app_settings 标记保证只跑一次；失败不写标记，下次启动重试。
+    const SOURCE_INTERVAL_MARKER: &str = "migration.source_interval_follow_global_v1";
+    let interval_normalized = super::settings::get_setting(conn, SOURCE_INTERVAL_MARKER)
+        .ok()
+        .flatten()
+        .is_some();
+    if !interval_normalized {
+        match conn.execute(
+            "UPDATE sources SET poll_interval_minutes = 0 WHERE poll_interval_minutes = 30",
+            [],
+        ) {
+            Ok(count) => {
+                let _ = super::settings::set_setting(conn, SOURCE_INTERVAL_MARKER, "1");
+                if count > 0 {
+                    log::info!("已将 {} 个源的检查间隔归一为「未设置」", count);
+                    super::logs::write_log_key(
+                        conn,
+                        "INFO",
+                        "migration.source_interval_normalized",
+                        &serde_json::json!({ "count": count }).to_string(),
+                    );
+                }
+            }
+            Err(e) => log::error!("源检查间隔归一失败（不写标记，下次启动重试）: {}", e),
+        }
+    }
+
     Ok(())
 }
 
@@ -766,6 +820,9 @@ mod tests {
 
         // Migration 11: sources.config
         assert!(has_column(&conn, "sources", "config"));
+
+        // Migration 19: notification_state.notify_failures（通知失败留痕 + 受限重试）
+        assert!(has_column(&conn, "notification_state", "notify_failures"));
 
         // Migration 14: Agent 全局化 —— 旧绑定表已删除，agent_runs 为工作区提交记录
         let has_bindings_table: bool = conn
@@ -1143,5 +1200,93 @@ mod tests {
             .query_row("SELECT count(*) FROM logs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, 1200, "清洗只 UPDATE，不得增删行");
+    }
+
+    /// 新库的建表默认值必须是 0（未设置）：退回 30 会让每个新源凭空带上
+    /// 一个「30 分钟间隔」，而调度只读全局周期，这个值只会误导读取方。
+    #[test]
+    fn test_sources_poll_interval_default_is_unset() {
+        let conn = Connection::open_in_memory().unwrap();
+        apply_schema(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO sources (source_type, owner, repo, created_at, updated_at)
+             VALUES ('github', 'o', 'r', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let iv: i64 = conn
+            .query_row("SELECT poll_interval_minutes FROM sources", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(iv, 0, "建表默认值应为 0 = 未设置");
+    }
+
+    /// Migration 20：建表默认值来源的 30 → 0，显式值保留，标记保证只跑一次。
+    #[test]
+    fn test_migration_20_normalizes_stale_source_interval() {
+        let conn = init_memory_db().unwrap();
+        // 模拟存量库：两行是建表默认值 30，一行是显式选择 10
+        conn.execute_batch(
+            "INSERT INTO sources (source_type, owner, repo, poll_interval_minutes, created_at, updated_at)
+             VALUES ('github','a','a',30,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('github','b','b',30,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z'),
+                    ('github','c','c',10,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');",
+        )
+        .unwrap();
+        // init_memory_db 已跑过 migrate（当时 sources 为空，未写提示行），
+        // 去掉标记以模拟「存量库首次升级」
+        conn.execute(
+            "DELETE FROM app_settings WHERE key = 'migration.source_interval_follow_global_v1'",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let mut stmt = conn
+            .prepare("SELECT owner, poll_interval_minutes FROM sources ORDER BY owner")
+            .unwrap();
+        let rows: Vec<(String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("a".to_string(), 0),
+                ("b".to_string(), 0),
+                ("c".to_string(), 10),
+            ],
+            "30（建表默认值来源）应归一为 0，显式值 10 应保留"
+        );
+
+        let marker =
+            crate::db::settings::get_setting(&conn, "migration.source_interval_follow_global_v1")
+                .unwrap();
+        assert_eq!(marker.as_deref(), Some("1"), "成功后应落标记");
+        let notices: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM logs WHERE message_key = 'migration.source_interval_normalized'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(notices, 1, "有命中时写一条提示行，且不重复写");
+
+        // 标记已存在 ⇒ 再 migrate 不重跑（把一行改回 30 不应被再次归一）
+        conn.execute(
+            "UPDATE sources SET poll_interval_minutes = 30 WHERE owner = 'c'",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        let c: i64 = conn
+            .query_row(
+                "SELECT poll_interval_minutes FROM sources WHERE owner = 'c'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(c, 30, "带标记时不得重跑归一化");
     }
 }

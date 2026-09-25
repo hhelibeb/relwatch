@@ -629,8 +629,11 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
     // YouTube 源开启历史拉取时，每次检查都按 fetch_history_count 拉取历史：
     // save 阶段按 UNIQUE(source_id, tag_name) 去重跳过已存在条目，因此
     // 重新配置 Data API Key 后无需删除源即可补拉历史视频。RSS 模式单页拉取，不受影响。
-    let history_query = ctx.fetch_history && (is_first_query || ctx.adapter.always_fetch_history());
-    let (max_count, per_page, needs_pagination) = compute_fetch_plan(ctx.fetch_history, history_query, ctx.fetch_history_count);
+    // 拉取历史/预发布这类开关支持**按源覆盖**（`sources.config` JSON）：未配置则沿用全局。
+    let fetch_history = db::sources::config_flag(source.config.as_deref(), "fetch_history")
+        .unwrap_or(ctx.fetch_history);
+    let history_query = fetch_history && (is_first_query || ctx.adapter.always_fetch_history());
+    let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, ctx.fetch_history_count);
 
     // 单源超时保护：fetch（含适配器内部重试）整体约束在 SOURCE_FETCH_TIMEOUT_SECS 内，
     // 超时转临时故障错误走统一失败分支（记 check.failed），下轮自动重试。
@@ -719,13 +722,20 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
             let owner = log_owner;
             let repo = log_repo;
             let msg_for_log = msg.clone();
+            // 上游配额/限流/凭据类失败不计入断路器（见 is_uncounted_failure）
+            let uncounted = is_uncounted_failure(&msg);
+            let log_key_failed = if uncounted { "check.failed_uncounted" } else { "check.failed" };
             let _ = tokio::task::spawn_blocking(move || {
                 if let Ok(conn) = db_pool_blk.get() {
-                    let _ = db::sources::record_check_failure(&conn, source_id, &msg_for_log);
+                    let _ = if uncounted {
+                        db::sources::record_check_failure_uncounted(&conn, source_id, &msg_for_log)
+                    } else {
+                        db::sources::record_check_failure(&conn, source_id, &msg_for_log)
+                    };
                     db::logs::write_log_key(
                         &conn,
                         level,
-                        "check.failed",
+                        log_key_failed,
                         &json!({"owner": &owner, "repo": &repo, "error": &msg_for_log}).to_string(),
                     );
                 }
@@ -959,6 +969,16 @@ async fn do_poll_async(app: tauri::AppHandle) {
         return;
     }
 
+    // 调度只读全局周期（`KEY_POLL_INTERVAL`）：每轮检查**全部**启用源。
+    //
+    // 曾经短暂引入过「按源间隔过滤」（`is_source_due` 读 `sources.poll_interval_minutes`），
+    // 已整体撤掉，原因有两条：
+    // - 该列自建库起就是死字段（写回的都是原值），存量行的值必然来自建表默认值 30，
+    //   不含任何用户意图 —— 一旦当调度依据用，会把源静默压到每 30 分钟一次，
+    //   用户设的全局周期（如 10 分钟）被无视，且无日志无提示。
+    // - tick 周期恒等于全局周期，按源间隔只能做减法（源永不可能比全局更勤），
+    //   收益不抵复杂度。
+    // 该列的「未设置」约定与存量归一化见 `db::init` 的 Migration 20。
     {
         let state = app.state::<AppState>();
         let db_pool = state.db.clone();
@@ -971,6 +991,32 @@ async fn do_poll_async(app: tauri::AppHandle) {
     }
 
     let _ = crate::events::PollCompleted.emit(&app);
+}
+
+/// 全局轮询周期的取值范围（分钟），与设置页输入框的 min/max 一致。
+/// 写入侧（`commands::setting::update_settings`）用它做边界归一，避免越界值落库。
+pub const MIN_POLL_INTERVAL_MINUTES: i64 = 5;
+pub const MAX_POLL_INTERVAL_MINUTES: i64 = 1440;
+
+/// 环境/上游类失败的错误前缀：不该计入连续失败（详见 [`is_uncounted_failure`]）。
+const UNCOUNTED_FAILURE_PREFIXES: &[&str] = &[
+    // YouTube Data API 配额用尽（按日重置）
+    "err.youtube_api_quota",
+    // YouTube API key 失效/受限（全局凭据问题，共用同一 key 的源会一起挂）
+    "err.youtube_api_key_invalid",
+    // B 站风控校验失败 / IP 级限流（账号/IP 层，非源本身）
+    "err.bili_risk",
+    "err.bili_rate_limit",
+];
+
+/// 该错误是否属于「不该计入连续失败」的类别。
+///
+/// 为什么要分这一条：这些错误要么重试会自愈（配额按日重置），要么需要用户改配置，
+/// 而且常常**一次命中全部同类源**（共用 API key / cookie）——照旧累加的话，
+/// 只要连续 3 轮配额耗尽，所有 YouTube/B 站源就会被断路器逐个禁掉并需手动重开。
+/// 自动禁用的本意是干掉「怎么重试都不会好的源」，不是干掉能自愈的。
+fn is_uncounted_failure(msg: &str) -> bool {
+    UNCOUNTED_FAILURE_PREFIXES.iter().any(|p| msg.starts_with(p))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -997,7 +1043,8 @@ async fn poll_all_sources_async(
         Err(e) => {
             if let Ok(conn) = db_pool.get() {
                 for source in sources {
-                    let _ = db::sources::record_check_failure(&conn, source.id, &e);
+                    // 环境层面（代理/证书）问题：所有源一起挂，不是源本身坏了 → 不计入断路器
+                    let _ = db::sources::record_check_failure_uncounted(&conn, source.id, &e);
                 }
                 db::logs::write_log_key(&conn, "ERROR", "check.http_client_error", &json!({"error": &e}).to_string());
             }
@@ -1012,6 +1059,7 @@ async fn poll_all_sources_async(
     for source in sources {
         let sem = semaphore.clone();
         let client = client.clone();
+        let source_id = source.id;
         let source = source.clone();
         let db_pool = pool.clone();
         // source 分发收敛为 trait 调用；token 按适配器声明的 auth_kind 选取
@@ -1033,11 +1081,12 @@ async fn poll_all_sources_async(
                 Ok(p) => p,
                 Err(e) => {
                     log::error!("err.sem_closed|{}", e);
-                    return (vec![], vec![]);
+                    // 未真正发起检查：不计入 attempted（不参与整轮失败比例判定）
+                    return TaskOutcome { source_id, failed: false, checked: false, new_ids: vec![], saved: vec![] };
                 }
             };
             // 单源检查核心链路（fetch→save→post_save→日志）与手动检查共用
-            // check_one_source；失败已记 check.failed，此处仅跳过本轮。
+            // check_one_source；失败已记 check.failed，此处仅标记本轮失败。
             let ctx = CheckCtx {
                 db_pool: &db_pool,
                 adapter: adapter.as_ref(),
@@ -1048,22 +1097,95 @@ async fn poll_all_sources_async(
                 log_key: "check.auto",
             };
             match check_one_source(&ctx, &source).await {
-                Ok(outcome) => (outcome.new_ids, outcome.saved),
-                Err(_) => (vec![], vec![]),
+                Ok(outcome) => TaskOutcome {
+                    source_id,
+                    failed: false,
+                    checked: true,
+                    new_ids: outcome.new_ids,
+                    saved: outcome.saved,
+                },
+                Err(_) => TaskOutcome {
+                    source_id,
+                    failed: true,
+                    checked: true,
+                    new_ids: vec![],
+                    saved: vec![],
+                },
             }
         }));
     }
 
     let mut all_new_ids = Vec::new();
     let mut all_saved = Vec::new();
+    let mut outcomes = Vec::new();
     for handle in handles {
-        if let Ok((ids, saved)) = handle.await {
-            all_new_ids.extend(ids);
-            all_saved.extend(saved);
+        if let Ok(outcome) = handle.await {
+            all_new_ids.extend(outcome.new_ids.iter().copied());
+            all_saved.extend(outcome.saved.iter().cloned());
+            outcomes.push(outcome);
         }
     }
 
+    // 整轮失败判定必须在整轮结果齐了之后才能做
+    apply_mass_failure_guard(db_pool, &outcomes).await;
+
     (all_new_ids, all_saved)
+}
+
+/// 本轮单个源的结局（用于整轮失败比例判定）。
+struct TaskOutcome {
+    source_id: i64,
+    failed: bool,
+    /// 是否真的发起了检查（信号量关闭等情况下为 false，不参与比例判定）。
+    checked: bool,
+    new_ids: Vec<i64>,
+    saved: Vec<(i64, Option<String>)>,
+}
+
+/// 同时失败源数占已检查源数的最小百分比：达到即判定为网络层抖动。
+const MASS_FAILURE_PERCENT: usize = 50;
+/// 触发整轮失败判定的最小源数：单源用户的失败就是单源问题，不该被本规则豁免。
+const MASS_FAILURE_MIN_SOURCES: usize = 2;
+
+/// 本轮 ≥[`MASS_FAILURE_PERCENT`]% 的源同时失败时，判定为网络/代理层抖动，
+/// 回退本轮给每个失败源累加的 `consecutive_failures`。
+///
+/// 为何这样改：现网实测过「整轮同时失败」——10 个源在同一秒报同一个
+/// `err.source_timeout|300`（`logs` 表可查），那是链路抖一下全挂，不是 10 个源同时坏。
+/// 照旧累加的话，连续 3 轮抖动就把所有源逐个自动禁掉，而用户看到的现象只是
+/// 「这些源怎么不更新了」，需手动逐个重开。
+///
+/// 实现上「先累加、整轮汇总后回退」而非「检查时就决定不累加」：失败记录发生在单源
+/// 检查内部，早于整轮汇总，而每轮每源最多累加 1，回退 1 就等价于本轮不计入。
+async fn apply_mass_failure_guard(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    outcomes: &[TaskOutcome],
+) {
+    let attempted = outcomes.iter().filter(|o| o.checked).count();
+    let failed_ids: Vec<i64> = outcomes
+        .iter()
+        .filter(|o| o.checked && o.failed)
+        .map(|o| o.source_id)
+        .collect();
+    if attempted < MASS_FAILURE_MIN_SOURCES || failed_ids.len() * 100 < attempted * MASS_FAILURE_PERCENT {
+        return;
+    }
+
+    let failed = failed_ids.len();
+    let pool = db_pool.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let Ok(conn) = pool.get() else { return };
+        for id in &failed_ids {
+            let _ = db::sources::decrement_consecutive_failures(&conn, *id);
+        }
+        db::logs::write_log_key(
+            &conn,
+            "WARN",
+            "check.round_failed",
+            &json!({"failed": failed, "attempted": attempted}).to_string(),
+        );
+    })
+    .await;
 }
 
 async fn collect_pending_and_notify(
@@ -1781,6 +1903,103 @@ mod tests {
     fn make_source(conn: &rusqlite::Connection, owner: &str, repo: &str) -> db::sources::Source {
         let id = db::sources::add_source(conn, "github", owner, repo, "").unwrap();
         db::sources::get_source(conn, id).unwrap().unwrap()
+    }
+
+    // 说明：`sources.poll_interval_minutes` 是死字段（无读取方），调度只读全局周期。
+    // 曾短暂引入过按源间隔调度（`is_source_due`），因「存量值全是建表默认值 30，
+    // 一旦当调度依据用会静默降频」而整体撤掉，故此处**刻意没有**相关用例 ——
+    // 重新引入前请先看 `db::init` Migration 20 与 `do_poll_async` 的说明。
+
+    // ── 断路器误伤修复：不计入分类 + 整轮回退 ─────────────────
+
+    #[test]
+    fn is_uncounted_failure_matches_account_level_errors() {
+        // 配额/限流/凭据类：重试会自愈或需改配置，且一次命中全部同类源
+        assert!(is_uncounted_failure("err.youtube_api_quota|quotaExceeded"));
+        assert!(is_uncounted_failure("err.youtube_api_key_invalid|keyInvalid"));
+        assert!(is_uncounted_failure("err.bili_rate_limit"));
+        assert!(is_uncounted_failure("err.bili_risk"));
+        // 源本身的问题仍计入，断路器不能被废掉
+        assert!(!is_uncounted_failure("err.api_error|500|boom"));
+        assert!(!is_uncounted_failure("err.source_timeout|300"));
+        assert!(!is_uncounted_failure("err.repo_not_found|404"));
+        assert!(!is_uncounted_failure("err.youtube_channel_not_found|x"));
+    }
+
+    fn outcome(id: i64, failed: bool) -> TaskOutcome {
+        TaskOutcome { source_id: id, failed, checked: true, new_ids: vec![], saved: vec![] }
+    }
+
+    /// 整轮全挂（网络/代理层抖动）→ 回退本轮累加，源不会被逐个自动禁用。
+    /// 现网实测过的场景：10 个源在同一秒报同一个 err.source_timeout|300。
+    #[tokio::test]
+    async fn mass_failure_guard_rolls_back_whole_round() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let ids: Vec<i64> = {
+            let conn = pool.get().unwrap();
+            (0..4)
+                .map(|i| {
+                    let id = db::sources::add_source(&conn, "github", &format!("o{i}"), "r", "").unwrap();
+                    db::sources::record_check_failure(&conn, id, "err.source_timeout|300").unwrap();
+                    id
+                })
+                .collect()
+        };
+
+        let outcomes: Vec<TaskOutcome> = ids.iter().map(|id| outcome(*id, true)).collect();
+        apply_mass_failure_guard(&pool, &outcomes).await;
+
+        let conn = pool.get().unwrap();
+        for id in &ids {
+            let s = db::sources::get_source(&conn, *id).unwrap().unwrap();
+            assert_eq!(s.consecutive_failures, 0, "整轮全挂不应累加连续失败（否则 3 轮抖动即全禁用）");
+            assert_eq!(s.last_check_status, "error", "状态仍应保留失败标记，源列表照旧提示");
+        }
+        let logged = db::logs::get_logs(&conn, 100).unwrap_or_default();
+        assert!(
+            logged.iter().any(|l| l.message_key.as_deref() == Some("check.round_failed")),
+            "整轮回退应留一条 check.round_failed 日志"
+        );
+    }
+
+    /// 单源失败（比例未达阈、或源数不足）→ 照旧累加，真坏源仍会被自动禁用。
+    #[tokio::test]
+    async fn mass_failure_guard_keeps_single_source_failures() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let ids: Vec<i64> = {
+            let conn = pool.get().unwrap();
+            (0..4)
+                .map(|i| {
+                    let id = db::sources::add_source(&conn, "github", &format!("o{i}"), "r", "").unwrap();
+                    db::sources::record_check_failure(&conn, id, "err.api_error|500|x").unwrap();
+                    id
+                })
+                .collect()
+        };
+
+        let mixed = vec![
+            outcome(ids[0], true),
+            outcome(ids[1], false),
+            outcome(ids[2], false),
+            outcome(ids[3], false),
+        ];
+        apply_mass_failure_guard(&pool, &mixed).await;
+
+        let conn = pool.get().unwrap();
+        assert_eq!(
+            db::sources::get_source(&conn, ids[0]).unwrap().unwrap().consecutive_failures,
+            1,
+            "25% 失败不应被当成网络层抖动"
+        );
+
+        // 只有 1 个源时 100% 失败也不豁免（单源用户的失败就是单源问题）
+        let single = vec![outcome(ids[1], true)];
+        apply_mass_failure_guard(&pool, &single).await;
+        assert_eq!(
+            db::sources::get_source(&conn, ids[1]).unwrap().unwrap().consecutive_failures,
+            1,
+            "源数不足阈值时不走整轮回退"
+        );
     }
 
     /// 模拟 poll.rs 编排主链路：

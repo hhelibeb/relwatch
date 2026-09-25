@@ -44,7 +44,9 @@ pub struct ReleaseNotifyParams {
 impl Emitter for tauri::AppHandle {
     fn notify_release(&self, params: ReleaseNotifyParams) {
         let app = self.clone();
-        let _ = self.run_on_main_thread(move || {
+        let fallback_app = self.clone();
+        let release_id = params.release_id;
+        if let Err(e) = self.run_on_main_thread(move || {
             let ReleaseNotifyParams {
                 release_id,
                 html_url,
@@ -57,7 +59,11 @@ impl Emitter for tauri::AppHandle {
             crate::notify::send_release_notification(
                 &app, release_id, html_url, owner, repo, tag, name, importance,
             );
-        });
+        }) {
+            // 派发失败（主线程已退出等）意味着通知根本没人发：同样要留痕 + 允许重试，
+            // 不能像以前那样 `let _ =` 默默丢掉（release 版连 log 都不落）。
+            crate::notify::handle_send_failure(&fallback_app, release_id, &e.to_string());
+        }
     }
 
     fn emit_release_state_changed(&self, release_id: i64) {

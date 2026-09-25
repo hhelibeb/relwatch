@@ -19,7 +19,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: vi.fn(),
 }))
 
-import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl, parseYoutubeUrl, parseBilibiliUrl, buildYoutubeConfig } from '../api/sources'
+import { parseGitHubUrl, parseHFOrgUrl, parseSourceUrl, parseYoutubeUrl, parseBilibiliUrl, buildYoutubeConfig, patchSourceConfig, readConfigFlag } from '../api/sources'
 import { translateError } from '../api/client'
 import { t } from '../i18n'
 
@@ -233,6 +233,44 @@ describe('buildYoutubeConfig', () => {
     expect(buildYoutubeConfig(true, true)).toBe(JSON.stringify({ videos: true, live: true, posts: false }))
     expect(buildYoutubeConfig(false, true)).toBe(JSON.stringify({ videos: false, live: true, posts: false }))
     expect(buildYoutubeConfig(true, false, true)).toBe(JSON.stringify({ videos: true, live: false, posts: true }))
+  })
+})
+
+// ── patchSourceConfig / readConfigFlag（源级开关与订阅明细共用 config 槽位）──
+
+describe('patchSourceConfig', () => {
+  it('保留同槽位里其它键（改订阅不能抹掉源级开关，反之亦然）', () => {
+    const merged = patchSourceConfig('{"videos":true,"live":false,"posts":false}', { fetch_history: true })
+    expect(JSON.parse(merged)).toEqual({ videos: true, live: false, posts: false, fetch_history: true })
+
+    const back = patchSourceConfig(merged, { videos: false })
+    expect(JSON.parse(back)).toEqual({ videos: false, live: false, posts: false, fetch_history: true })
+  })
+
+  it('undefined/null 表示删除该键（回到「跟随全局」）', () => {
+    const removed = patchSourceConfig('{"videos":true,"fetch_history":true}', { fetch_history: undefined })
+    expect(JSON.parse(removed)).toEqual({ videos: true })
+    expect(JSON.parse(patchSourceConfig('{"videos":true,"fetch_history":true}', { fetch_history: null }))).toEqual({ videos: true })
+  })
+
+  it('空/脏 config 不报错，按空对象起底', () => {
+    expect(JSON.parse(patchSourceConfig(null, { check_prereleases: true }))).toEqual({ check_prereleases: true })
+    expect(JSON.parse(patchSourceConfig('not json', { check_prereleases: false }))).toEqual({ check_prereleases: false })
+    expect(JSON.parse(patchSourceConfig('[1,2]', { check_prereleases: false }))).toEqual({ check_prereleases: false })
+  })
+})
+
+describe('readConfigFlag', () => {
+  it('未配置 / 非布尔 → undefined（跟随全局）', () => {
+    expect(readConfigFlag(null, 'fetch_history')).toBeUndefined()
+    expect(readConfigFlag('{"videos":true}', 'fetch_history')).toBeUndefined()
+    expect(readConfigFlag('{"fetch_history":"yes"}', 'fetch_history')).toBeUndefined()
+    expect(readConfigFlag('broken json', 'fetch_history')).toBeUndefined()
+  })
+
+  it('显式 true/false 原样返回', () => {
+    expect(readConfigFlag('{"fetch_history":false}', 'fetch_history')).toBe(false)
+    expect(readConfigFlag('{"check_prereleases":true}', 'check_prereleases')).toBe(true)
   })
 })
 

@@ -214,6 +214,13 @@ fn update_source_core<E: BadgeEventEmitter>(
     let old_config = source.as_ref().and_then(|s| s.config.clone());
     let mut muted_changed = false;
 
+    // `poll_interval_minutes` 现在是历史透传参数：调度只读全局周期
+    // （`app_settings.key='poll_interval_minutes'`），该列恒为 0 = 未设置
+    // （约定与存量归一化见 Migration 20）。
+    //
+    // **不要在这里做 clamp**：曾有过 `.clamp(5, 1440)`，它会把 0 归一到 5 ——
+    // 「未设置」被写成一个真实间隔，将来重新引入按源调度时会被误读成
+    // 「每 5 分钟查一次」（比原来的 30 更糟）。越界与归一都留给未来的读取方处理。
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     db::sources::update_source(&tx, id, enabled, poll_interval_minutes)?;

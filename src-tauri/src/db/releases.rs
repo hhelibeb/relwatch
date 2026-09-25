@@ -417,6 +417,7 @@ pub fn set_notification_state(
          VALUES (?1, ?2, ?3, ?4, ?4)
          ON CONFLICT(release_id) DO UPDATE SET status = ?2, snooze_until = ?3,
            last_notified_at = CASE WHEN ?2 IN ('snoozed', 'pending') THEN NULL ELSE last_notified_at END,
+           notify_failures = CASE WHEN ?2 IN ('snoozed', 'pending') THEN 0 ELSE notify_failures END,
            updated_at = ?4",
         params![release_id, status, snooze_until, now],
     )
@@ -436,6 +437,42 @@ pub fn set_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), St
          VALUES (?1, 'pending', ?2, ?2, ?2)
          ON CONFLICT(release_id) DO UPDATE SET last_notified_at = ?2, updated_at = ?2",
         rusqlite::params![release_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 记录一次桌面通知发送失败，返回累计失败次数（不清标记）。
+///
+/// 配合 [`clear_last_notified_at`] 构成「失败重试」闭环：`collect_pending_and_notify`
+/// 是**先批量标记、再派发**（批量标记只需一次取连接），所以发送失败时若不撤销标记，
+/// 该 release 的桌面通知就永久丢失：`get_pending_releases` 的 `last_notified_at IS NULL`
+/// 条件再也不会命中它。
+///
+/// 计数只增不减：达到上限后调用方不再清标记，重试自然停止，计数器也就没用了；
+/// 用户重新标记为待通知（`set_notification_state`）时归零，重发享有全新预算。
+pub fn record_notify_failure(conn: &Connection, release_id: i64) -> Result<i64, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT INTO notification_state (release_id, status, created_at, updated_at, notify_failures)
+         VALUES (?1, 'pending', ?2, ?2, 1)
+         ON CONFLICT(release_id) DO UPDATE SET notify_failures = notify_failures + 1, updated_at = ?2",
+        rusqlite::params![release_id, now],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT notify_failures FROM notification_state WHERE release_id = ?1",
+        rusqlite::params![release_id],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// 撤销已通知标记（通知发送失败时调用）：让下一轮轮询重新拾起这条 release 重发。
+pub fn clear_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE notification_state SET last_notified_at = NULL, updated_at = ?2 WHERE release_id = ?1",
+        rusqlite::params![release_id, chrono::Utc::now().to_rfc3339()],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -869,6 +906,16 @@ mod tests {
     use crate::db::sources;
     use crate::db::init::init_memory_db;
 
+    /// 读 notification_state.notify_failures（通知失败重试计数）。
+    fn notify_failures(conn: &Connection, release_id: i64) -> i64 {
+        conn.query_row(
+            "SELECT notify_failures FROM notification_state WHERE release_id = ?1",
+            rusqlite::params![release_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn test_release_insert() {
         let conn = init_memory_db().unwrap();
@@ -1003,6 +1050,63 @@ mod tests {
         assert!(pending_ids.contains(&rid4), "snoozed with expired snooze_until should appear");
         assert!(!pending_ids.contains(&rid5), "snoozed with future snooze_until should not appear");
         assert!(!pending_ids.contains(&rid6), "ignored should not appear");
+    }
+
+    /// 通知发送失败：清标记后该 release 重新进入待通知集合，超上限后不再重试。
+    ///
+    /// 这条链路是「先标记后发送」不丢通知的关键补偿（见 `record_notify_failure` 注释）。
+    #[test]
+    fn test_notify_failure_clears_mark_for_retry() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+
+        // 发送前标记 → 不再待通知
+        set_last_notified_at(&conn, rid).unwrap();
+        assert_eq!(get_pending_releases(&conn).unwrap().len(), 0);
+
+        // 第 1、2 次失败：计数未达上限 → 调用方清标记 → 重新待通知
+        for expected in [1, 2] {
+            assert_eq!(record_notify_failure(&conn, rid).unwrap(), expected);
+            clear_last_notified_at(&conn, rid).unwrap();
+            assert_eq!(
+                get_pending_releases(&conn).unwrap().len(),
+                1,
+                "清标记后应重新进入待通知（下一轮重发）"
+            );
+            set_last_notified_at(&conn, rid).unwrap();
+        }
+
+        // 第 3 次失败：达上限，调用方不清标记 → 不再重试
+        assert_eq!(record_notify_failure(&conn, rid).unwrap(), 3);
+        assert_eq!(
+            get_pending_releases(&conn).unwrap().len(),
+            0,
+            "超上限后应保持已标记（不再重试，避免每轮刷屏）"
+        );
+        // release 本身未丢：仍是 pending 状态，在未读列表里可见
+        assert_eq!(get_unread_releases(&conn).unwrap().len(), 1);
+    }
+
+    /// 重置为待通知（重新标记未读 / 稍后提醒）时重试预算归零；标记本身不碰计数器。
+    #[test]
+    fn test_reset_to_pending_resets_notify_failures() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
+        let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
+
+        set_last_notified_at(&conn, rid).unwrap();
+        record_notify_failure(&conn, rid).unwrap();
+        record_notify_failure(&conn, rid).unwrap();
+        assert_eq!(notify_failures(&conn, rid), 2);
+
+        set_notification_state(&conn, rid, "pending", None).unwrap();
+        assert_eq!(notify_failures(&conn, rid), 0, "重置为待通知应清零重试预算");
+
+        // 发送前标记不碰计数器：否则每轮标记都会重置预算，重试就没上限了
+        record_notify_failure(&conn, rid).unwrap();
+        set_last_notified_at(&conn, rid).unwrap();
+        assert_eq!(notify_failures(&conn, rid), 1, "set_last_notified_at 不应清零计数");
     }
 
     #[test]

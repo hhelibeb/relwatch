@@ -193,14 +193,16 @@ pub fn save_releases(
     gh_releases: &[serde_json::Value],
     max_count: usize,
 ) -> Vec<(i64, Option<String>)> {
-    let check_pre = crate::db::settings::get_setting(
-        conn,
-        crate::db::settings::KEY_CHECK_PRERELEASES,
-    )
-    .ok()
-    .flatten()
-    .map(|v| v == "true")
-    .unwrap_or(false);
+    // 预发布开关支持按源覆盖（`sources.config.check_prereleases`）：未配置则沿用全局设置。
+    // 本函数只拿到 source_id，所以走 `source_config_flag` 反查 config。
+    let check_pre = crate::db::sources::source_config_flag(conn, source_id, "check_prereleases")
+        .or_else(|| {
+            crate::db::settings::get_setting(conn, crate::db::settings::KEY_CHECK_PRERELEASES)
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+        })
+        .unwrap_or(false);
 
     // 行为收敛到 db::save::save_entries_generic：按 published_at 降序排列，
     // max_count=1 遇到已入库记录立即返回空；历史模式跳过已存在记录继续。

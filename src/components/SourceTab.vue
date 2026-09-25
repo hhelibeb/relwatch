@@ -2,7 +2,7 @@
 import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig, getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/sources'
+import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig, patchSourceConfig, readConfigFlag, getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/sources'
 import { checkSingleSource } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
@@ -291,18 +291,50 @@ function parseYtConfig(source: Source): { videos: boolean; live: boolean; posts:
   }
 }
 
-/** 切换 YouTube 源的订阅内容类型（即时保存）。 */
+/** 切换 YouTube 源的订阅内容类型（即时保存）。保留 config 中的其他键（源级开关）。 */
 async function handleYtConfigToggle(source: Source, key: 'videos' | 'live', value: boolean) {
   track('source.yt_subscribe')
   const cfg = parseYtConfig(source)
   cfg[key] = value
-  const config = buildYoutubeConfig(cfg.videos, cfg.live, cfg.posts)
+  // 只覆盖订阅三项，不重建整个 config：否则会把 fetch_history / check_prereleases 抹掉
+  const config = patchSourceConfig(source.config, { videos: cfg.videos, live: cfg.live, posts: cfg.posts })
   try {
     await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
     emit('update')
   } catch (e: unknown) {
     await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
   }
+}
+
+/** 保存源级开关（三态：undefined = 跟随全局）。 */
+async function handleSourceFlagChange(source: Source, key: 'fetch_history' | 'check_prereleases', value: string) {
+  const flag = value === 'on' ? true : value === 'off' ? false : undefined
+  await saveSourceSettings(source, { flag: { key, value: flag } })
+}
+
+/**
+ * 源设置的统一写入：muted 与源级 config 一次提交，失败弹错。
+ *
+ * 不再提交单源检查间隔：调度只读全局轮询周期（`source.poll_interval_minutes`
+ * 恒为 0 = 未设置，仅作为历史透传参数原样回写，见 Migration 20）。
+ */
+async function saveSourceSettings(
+  source: Source,
+  patch: { flag: { key: 'fetch_history' | 'check_prereleases'; value: boolean | undefined } },
+) {
+  const config = patchSourceConfig(source.config, { [patch.flag.key]: patch.flag.value })
+  try {
+    await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
+    emit('update')
+  } catch (e: unknown) {
+    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
+  }
+}
+
+/** 源级开关当前取值（'global' | 'on' | 'off'）供下拉绑定。 */
+function sourceFlagValue(source: Source, key: 'fetch_history' | 'check_prereleases'): string {
+  const v = readConfigFlag(source.config, key)
+  return v === undefined ? 'global' : v ? 'on' : 'off'
 }
 
 /** 输入为 YouTube 频道时，展开订阅内容复选框行。 */
@@ -755,6 +787,34 @@ function hideHealthTooltip() {
                 </label>
                 <div class="sort-dropdown-divider"></div>
               </template>
+              <div class="dropdown-section-label">{{ t('source.settings_title') }}</div>
+              <label class="source-setting-row">
+                <span class="source-setting-label">{{ t('source.fetch_history') }}</span>
+                <select
+                  class="source-setting-input"
+                  :value="sourceFlagValue(source, 'fetch_history')"
+                  @click.stop
+                  @change="handleSourceFlagChange(source, 'fetch_history', ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="global">{{ t('source.follow_global') }}</option>
+                  <option value="on">{{ t('source.switch_on') }}</option>
+                  <option value="off">{{ t('source.switch_off') }}</option>
+                </select>
+              </label>
+              <label v-if="source.source_type === 'github'" class="source-setting-row">
+                <span class="source-setting-label">{{ t('source.check_prereleases') }}</span>
+                <select
+                  class="source-setting-input"
+                  :value="sourceFlagValue(source, 'check_prereleases')"
+                  @click.stop
+                  @change="handleSourceFlagChange(source, 'check_prereleases', ($event.target as HTMLSelectElement).value)"
+                >
+                  <option value="global">{{ t('source.follow_global') }}</option>
+                  <option value="on">{{ t('source.switch_on') }}</option>
+                  <option value="off">{{ t('source.switch_off') }}</option>
+                </select>
+              </label>
+              <div class="sort-dropdown-divider"></div>
               <button type="button" role="menuitem" class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
                 <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
                 {{ source.muted ? t('source.unmute') : t('source.mute') }}
@@ -1448,6 +1508,36 @@ function hideHealthTooltip() {
 .yt-menu-option.yt-subscribe-disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+/* 源设置区（更多面板内）：标签 + 控件同行，控件保持窄宽度不撞开下拉面板 */
+.source-setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 4px 14px;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.source-setting-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.source-setting-input {
+  width: calc(13ch * 1.1);
+  flex: none;
+  padding: 2px 4px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-input, var(--bg-subtle));
+  border: 1px solid var(--border);
+  border-radius: 4px;
 }
 
 /* 选择模式复选框 */

@@ -1144,3 +1144,72 @@ describe('SourceTab — YouTube 源显示名', () => {
     expect(wrapper.get('.source-name').text()).toBe('vuejs/core')
   })
 })
+
+// ============ 源设置（更多面板：按源开关）============
+// 单源「检查间隔」已撤掉：调度只读全局轮询周期，而该列的存量值全是建表默认值
+// （30），一旦当调度依据用会把源静默降频到每 30 分钟一次（见 Migration 20）。
+// 这里锁住「面板里不再有间隔输入框」，防止它被无意识地加回来。
+
+describe('SourceTab — 源设置', () => {
+  async function openMore(wrapper: ReturnType<typeof mountSourceTab>['wrapper']) {
+    await wrapper.get('.btn-more').trigger('click')
+    return wrapper.get('.dropdown-more-panel')
+  }
+
+  it('面板内只有按源开关，不再有检查间隔输入框', async () => {
+    const { wrapper } = mountSourceTab([createSource()])
+    const panel = await openMore(wrapper)
+
+    expect(panel.text()).toContain(t('source.settings_title'))
+    expect(panel.text()).toContain(t('source.fetch_history'))
+    expect(panel.text()).toContain(t('source.check_prereleases'))
+    expect(panel.find('input[type="number"]').exists()).toBe(false)
+  })
+
+  it('非 GitHub 源不显示预发布开关（该开关只有 GitHub 适配器读）', async () => {
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'huggingface', repo: '' })])
+    const panel = await openMore(wrapper)
+
+    expect(panel.text()).toContain(t('source.fetch_history'))
+    expect(panel.text()).not.toContain(t('source.check_prereleases'))
+  })
+
+  it('改按源开关：写进 config 且保留 YouTube 订阅键', async () => {
+    const source = createSource({ config: JSON.stringify({ videos: true, live: false, posts: false }) })
+    const { wrapper } = mountSourceTab([source])
+    const panel = await openMore(wrapper)
+
+    const selects = panel.findAll('select')
+    await selects[0].setValue('on')
+
+    const call = updateSourceMock.mock.calls.at(-1)!
+    expect(JSON.parse(call[4] as string)).toEqual({
+      videos: true,
+      live: false,
+      posts: false,
+      fetch_history: true,
+    })
+  })
+
+  it('选「跟随全局」时从 config 中删除该键', async () => {
+    const source = createSource({ config: JSON.stringify({ fetch_history: true, videos: true }) })
+    const { wrapper } = mountSourceTab([source])
+    const panel = await openMore(wrapper)
+
+    await panel.findAll('select')[0].setValue('global')
+
+    const call = updateSourceMock.mock.calls.at(-1)!
+    expect(JSON.parse(call[4] as string)).toEqual({ videos: true })
+  })
+
+  it('保存失败时弹出错误提示', async () => {
+    updateSourceMock.mockRejectedValueOnce(new Error('boom'))
+    const { wrapper } = mountSourceTab([createSource()])
+    const panel = await openMore(wrapper)
+
+    await panel.findAll('select')[0].setValue('off')
+    await flushPromises()
+
+    expect(messageMock).toHaveBeenCalled()
+  })
+})

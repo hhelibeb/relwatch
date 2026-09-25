@@ -85,7 +85,10 @@ use serde_json::json;
 ) -> Result<(), String> {
     // 边界 clamp（保持原有行为）与 prompt 后缀剥离在写入前统一处理
     let payload = AppSettings {
-        poll_interval_minutes: payload.poll_interval_minutes.clamp(5, 1440),
+        poll_interval_minutes: payload.poll_interval_minutes.clamp(
+            crate::poll::MIN_POLL_INTERVAL_MINUTES,
+            crate::poll::MAX_POLL_INTERVAL_MINUTES,
+        ),
         log_retention_days: payload.log_retention_days.clamp(0, 3650),
         fetch_history_count: payload.fetch_history_count.max(0),
         font_scale: payload.font_scale.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX),

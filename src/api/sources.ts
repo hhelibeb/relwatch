@@ -31,6 +31,40 @@ export function buildYoutubeConfig(videos: boolean, live: boolean, posts = false
   return JSON.stringify({ videos, live, posts })
 }
 
+/**
+ * 在已有 config 上打补丁（undefined 表示删除该键）：源级开关与 YouTube 订阅明细
+ * 共用 `sources.config` 这一个槽位，所以任何一侧写入都必须**保留另一侧的键**，
+ * 否则用户在源设置里改间隔会把订阅勾选清掉（反之亦然）。
+ */
+export function patchSourceConfig(existing: string | null | undefined, patch: Record<string, unknown>): string {
+  let obj: Record<string, unknown> = {}
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) obj = parsed as Record<string, unknown>
+    } catch {
+      // 脏 config（历史手改/旧版本）按空对象处理，由本次写入覆盖成合法 JSON
+    }
+  }
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined || v === null) delete obj[k]
+    else obj[k] = v
+  }
+  return JSON.stringify(obj)
+}
+
+/** 读取源级开关：未配置返回 undefined，表示「跟随全局设置」。 */
+export function readConfigFlag(config: string | null | undefined, key: string): boolean | undefined {
+  if (!config) return undefined
+  try {
+    const parsed = JSON.parse(config)
+    const v = parsed?.[key]
+    return typeof v === 'boolean' ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
 export async function addSource(sourceType: string, owner: string, repo: string, config?: string): Promise<number> {
   return invokeI18nFn(() => commands.addSource(sourceType, owner, repo, config ?? null))
 }

@@ -71,6 +71,53 @@ pub(crate) fn activate_main_window(app: &AppHandle, release_id: i64) {
     let _ = crate::events::FocusRelease(release_id).emit(app);
 }
 
+/// 通知发送失败的重试上限（连续失败次数）。
+///
+/// 为何要有上限：`collect_pending_and_notify` 是**先标记、后派发**，所以失败后要靠
+/// 清标记让下一轮重发；但若系统永久屏蔽本应用的通知（策略/权限），无上限就会每轮
+/// 重试到天荒地老。超限后保持已标记（不再重发）+ 记一条 ERROR 日志，用户仍能在
+/// 应用内的未读列表看到这条 release。
+pub(crate) const MAX_NOTIFY_ATTEMPTS: i64 = 3;
+
+/// 通知发送失败的统一处理：留痕 + 受限重试。
+///
+/// 为什么必须有它：`poll.rs` 在派发**之前**就批量写 `last_notified_at`（批量标记只需
+/// 一次取连接），而 `Emitter::notify_release` 返回 `()`、分发链路的错误无处可去，
+/// 于是发送失败时该 release 的桌面通知**永久丢失**：`get_pending_releases` 依靠
+/// `last_notified_at IS NULL` 选条目，标记已落就再也不会重发。更糟的是 release 版
+/// 没有挂载 `tauri_plugin_log`（仅 debug 构建注册），`log::error!` 是纯 no-op——
+/// 连降级文件都不会写，排查时零线索。
+///
+/// 所以失败必须：① 写进 DB 日志（应用内日志页可见，release 版同样可见）；
+/// ② 清掉 `last_notified_at`，让下一轮轮询自动重发；③ 超过上限后停手并记 ERROR。
+pub(crate) fn handle_send_failure(app: &AppHandle, release_id: i64, error: &str) {
+    // dev 构建下进控制台；release 下的持久痕迹靠下面的 DB 日志
+    log::error!("发送通知失败: {}", error);
+    let state = app.state::<crate::types::AppState>();
+    let Ok(conn) = state.db.get() else {
+        return;
+    };
+    // 计数器读失败（DB 异常）时按「已达上限」处理：不再清标记，避免无上限重试
+    let attempts = crate::db::releases::record_notify_failure(&conn, release_id)
+        .unwrap_or(MAX_NOTIFY_ATTEMPTS);
+    if attempts < MAX_NOTIFY_ATTEMPTS {
+        let _ = crate::db::releases::clear_last_notified_at(&conn, release_id);
+    }
+    let retrying = attempts < MAX_NOTIFY_ATTEMPTS;
+    crate::db::logs::write_log_key(
+        &conn,
+        if retrying { "WARN" } else { "ERROR" },
+        if retrying { "notify.failed" } else { "notify.failed_giveup" },
+        &serde_json::json!({
+            "id": release_id,
+            "attempts": attempts,
+            "error": error,
+        })
+        .to_string(),
+    );
+    let _ = crate::events::LogAppended.emit(app);
+}
+
 /// 通知标题：`owner / repo`；repo 为空时仅显示 owner（视频源无仓库概念）。
 pub(crate) fn notification_title(owner: &str, repo: &str) -> String {
     if repo.is_empty() {
@@ -311,7 +358,8 @@ mod inner {
         })();
 
         if let Err(e) = result {
-            log::error!("发送通知失败: {}", e);
+            // 失败不再只写 log（release 版无 logger，等于丢进黑洞）：统一走留痕 + 受限重试
+            crate::notify::handle_send_failure(app, rid, &e.to_string());
         }
     }
 }
@@ -355,7 +403,8 @@ mod inner {
         {
             Ok(h) => h,
             Err(e) => {
-                log::error!("发送通知失败: {}", e);
+                // 失败统一留痕 + 受限重试（与 Windows 分支同源）
+                crate::notify::handle_send_failure(app, release_id, &e.to_string());
                 return;
             }
         };
@@ -502,8 +551,8 @@ mod inner {
     /// TODO: 未来可改用 UNUserNotificationCenter 或 notify-rust 以获得按钮支持。
     #[allow(clippy::too_many_arguments)]
     pub fn send_release_notification(
-        _app: &AppHandle,
-        _release_id: i64,
+        app: &AppHandle,
+        release_id: i64,
         _html_url: String,
         owner: String,
         repo: String,
@@ -535,10 +584,10 @@ mod inner {
             }
             Ok(out) => {
                 let stderr = String::from_utf8_lossy(&out.stderr);
-                log::error!("osascript 发送通知失败: {}", stderr);
+                crate::notify::handle_send_failure(app, release_id, &stderr);
             }
             Err(e) => {
-                log::error!("无法执行 osascript: {}", e);
+                crate::notify::handle_send_failure(app, release_id, &e.to_string());
             }
         }
     }
