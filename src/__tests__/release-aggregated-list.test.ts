@@ -202,4 +202,18 @@ describe('ReleaseAggregatedList.vue — 分组显示名（注册表 displayName�
 
     expect(wrapper.find('.repo-name').text()).toBe('tauri-apps/tauri')
   })
+
+  // 组头与卡片遵守同一套截断策略（仓库名/版本号都有 title 兜底，宽度不足时才靠省略号）
+  it('组头仓库名与最新版本号都带 title（截断后可取回完整值）', () => {
+    const releases = [createRelease({
+      owner: 'deepseek-ai',
+      repo: 'deepseek-harness',
+      tag_name: 'dsh-v0.1.7-rc.2',
+      published_at: '2025-06-01T00:00:00Z',
+    })]
+    const wrapper = mountList(releases)
+
+    expect(wrapper.find('.repo-name').attributes('title')).toBe('deepseek-ai/deepseek-harness')
+    expect(wrapper.find('.repo-latest-tag').attributes('title')).toBe('dsh-v0.1.7-rc.2')
+  })
 })

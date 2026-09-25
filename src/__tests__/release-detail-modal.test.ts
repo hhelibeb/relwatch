@@ -58,6 +58,26 @@ function mountModalWithRelease(release: ReleaseInfo, provide: Record<symbol, unk
   })
 }
 
+// 详情弹窗与卡片共用同一套长文本策略（仓库名/版本号可省略 + title 兜底）
+describe('ReleaseDetailModal — 长文本截断兜底', () => {
+  it('仓库名与版本号都带 title（截断后可取回完整值）', async () => {
+    const release = {
+      ...makeRelease(null),
+      owner: 'deepseek-ai',
+      repo: 'deepseek-harness',
+      tag_name: 'dsh-v0.1.7-rc.2',
+    }
+    const wrapper = mountModalWithRelease(release)
+    await nextTick()
+
+    expect(document.body.querySelector('.release-detail-repo')?.getAttribute('title'))
+      .toBe('deepseek-ai/deepseek-harness')
+    expect(document.body.querySelector('.release-detail-tag')?.getAttribute('title'))
+      .toBe('dsh-v0.1.7-rc.2')
+    wrapper.unmount()
+  })
+})
+
 describe('ReleaseDetailModal — 显示重要度开关', () => {
   it('默认显示 AI 重要度徽标，开关关闭后隐藏', async () => {
     const release = { ...makeRelease(null), ai_importance: '大' }

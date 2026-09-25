@@ -29,6 +29,39 @@ export function formatDate(dateStr: string): string {
   return d.toLocaleString(getLocale())
 }
 
+/** 卡片日期三档精度（按卡片实宽切换，见 ReleaseItem 的 @container）：
+ *  完整 formatDate      → 「发布时间: 2026/9/24 22:10:21」
+ *  中档 formatDateNoSeconds → 「2026/9/24 22:10」（去标签与秒，保住年份）
+ *  窄档 formatDateShort  → 「9/24 22:10」（去年份，保住时刻）
+ *  分档动机：头部宽度是零和的，年份能从日历视图/聚合组头/详情弹窗补，
+ *  时刻只有这里能看到，所以先舍标签与秒，最后才舍年份。 */
+export function formatDateNoSeconds(dateStr: string): string {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString(getLocale(), {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** 窄卡片用的紧凑日期（月/日 时:分，如 `9/24 22:10`）：不带年份，
+ *  完整值靠 title 与详情弹窗兜底。 */
+export function formatDateShort(dateStr: string): string {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  if (isNaN(d.getTime())) return ''
+  return d.toLocaleString(getLocale(), {
+    month: 'numeric',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 export function formatCountdown(secs: number): string {
   if (secs <= 0) return t('app.check_soon')
   const m = Math.floor(secs / 60)

@@ -336,8 +336,8 @@ async function applyFlag(flag: number) {
       <div ref="modalEl" class="release-detail-modal" role="dialog" aria-modal="true">
         <div class="release-detail-header" @pointerdown="startDrag">
           <div class="release-detail-heading">
-            <span v-if="showReleaseRepo" class="release-detail-repo">{{ release.owner }}/{{ release.repo }}</span>
-            <span class="release-detail-tag">{{ release.tag_name }}</span>
+            <span v-if="showReleaseRepo" class="release-detail-repo" :title="`${release.owner}/${release.repo}`">{{ release.owner }}/{{ release.repo }}</span>
+            <span class="release-detail-tag" :title="release.tag_name">{{ release.tag_name }}</span>
             <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
             <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
             <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
@@ -559,10 +559,13 @@ async function applyFlag(flag: number) {
   flex: 1;
 }
 
+/* 仓库名/版本号：与卡片同一套策略——等权收缩、不设 min-width 保底
+   （min-width 会把短内容反而撑宽），完整值靠 title */
 .release-detail-repo {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -572,7 +575,10 @@ async function applyFlag(flag: number) {
   font-weight: 600;
   font-size: 15px;
   color: var(--primary);
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .release-detail-close {

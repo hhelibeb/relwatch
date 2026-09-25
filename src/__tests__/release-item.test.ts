@@ -5,6 +5,7 @@ import ReleaseItem from '../components/ReleaseItem.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, setLocale } from '../i18n'
+import { formatDate, formatDateNoSeconds, formatDateShort } from '../utils'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
 
@@ -121,16 +122,20 @@ describe('ReleaseItem.vue — 渲染', () => {
     expect(wrapper.find('.release-title').exists()).toBe(false)
   })
 
-  it('预发布版显示 prerelease badge', () => {
+  // 卡片不再渲染「预发布」文字（版本号自身能看出，且占宽度）：仅保留
+  // is-prerelease 类作样式/测试钩子，文本提示归详情弹窗
+  it('预发布版打上 is-prerelease 类，但不渲染「预发布」文字', () => {
     const wrapper = mountRelease(createRelease({ prerelease: true }))
 
-    expect(wrapper.text()).toContain(t('release.prerelease'))
+    expect(wrapper.find('.release-item').classes()).toContain('is-prerelease')
+    expect(wrapper.find('.pre-release-badge').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain(t('release.prerelease'))
   })
 
-  it('正式版不显示 prerelease badge', () => {
+  it('正式版不打 is-prerelease 类', () => {
     const wrapper = mountRelease(createRelease({ prerelease: false }))
 
-    expect(wrapper.text()).not.toContain(t('release.prerelease'))
+    expect(wrapper.find('.release-item').classes()).not.toContain('is-prerelease')
   })
 
   it('snoozed 且 snooze_until 有值时显示提醒时间', () => {
@@ -153,6 +158,65 @@ describe('ReleaseItem.vue — 渲染', () => {
     const wrapper = mountRelease(createRelease({ ai_summary: null }))
 
     expect(wrapper.find('.release-summary-line').exists()).toBe(false)
+  })
+})
+
+// 头部宽度不足时的信息取舍：宽度是零和的，所以「能不省略的不省略」+
+// 「被省略的必须有冗余来源」两条规则要靠 DOM 约束住（样式见组件 @container）。
+describe('ReleaseItem.vue — 长文本截断兜底', () => {
+  it('发布时间渲染为 <time>，三档精度形态同时在 DOM 里（由 CSS 按卡片宽度切换）', () => {
+    const release = createRelease({ published_at: '2026-09-24T14:10:21Z' })
+    const wrapper = mountRelease(release)
+
+    const time = wrapper.find('time.release-date')
+    expect(time.exists()).toBe(true)
+    // 机器可读语义不随显示精度变化
+    expect(time.attributes('datetime')).toBe(release.published_at)
+    expect(time.find('.release-date-full').text()).toBe(t('release.published_at', formatDate(release.published_at)))
+    expect(time.find('.release-date-mid').text()).toBe(formatDateNoSeconds(release.published_at))
+    expect(time.find('.release-date-short').text()).toBe(formatDateShort(release.published_at))
+    // 中档必须带年份（宽度够用时用户要看到年）
+    expect(formatDateNoSeconds(release.published_at)).toContain('2026')
+  })
+
+  it('整串发布时间带 title（指向完整值），紧凑档也能拿回年份', () => {
+    const release = createRelease({ published_at: '2026-09-24T14:10:21Z' })
+    const wrapper = mountRelease(release)
+
+    expect(wrapper.find('time.release-date').attributes('title'))
+      .toBe(t('release.published_at', formatDate(release.published_at)))
+  })
+
+  it('仓库名带 title（owner/repo），被省略时仍有完整值可取', () => {
+    const wrapper = mountRelease(createRelease({ owner: 'deepseek-ai', repo: 'deepseek-harness' }))
+
+    expect(wrapper.find('.release-repo').attributes('title')).toBe('deepseek-ai/deepseek-harness')
+  })
+
+  it('版本号带 title（tag_name）', () => {
+    const wrapper = mountRelease(createRelease({ tag_name: 'dsh-v0.1.7-rc.2' }))
+
+    expect(wrapper.find('.release-tag').attributes('title')).toBe('dsh-v0.1.7-rc.2')
+  })
+
+  it('HF 源自带元数据 tooltip 时不绑 title（避免两层提示叠在一起）', () => {
+    const wrapper = mountRelease(createRelease({
+      source_type: 'huggingface',
+      tag_name: 'moonshotai/Kimi-K2',
+      extra_metadata: JSON.stringify({ pipeline_tag: 'text-generation', downloads: 1200 }),
+    }))
+
+    expect(wrapper.find('.release-tag').attributes('title')).toBeUndefined()
+  })
+
+  it('HF 源无元数据 tooltip 时仍绑 title（不回退成无兜底）', () => {
+    const wrapper = mountRelease(createRelease({
+      source_type: 'huggingface',
+      tag_name: 'moonshotai/Kimi-K2',
+      extra_metadata: null,
+    }))
+
+    expect(wrapper.find('.release-tag').attributes('title')).toBe('moonshotai/Kimi-K2')
   })
 })
 

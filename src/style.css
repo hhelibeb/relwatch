@@ -703,6 +703,11 @@ html {
   font-size: 11px;
   line-height: 16px;
   color: var(--text-muted);
+  /* 头部宽度不足时，flex 会按基础宽比例分摊收缩量：不设保底时这个 11px 小徽标
+     会被压到 2 字宽以内，汉字被竖排成「预发／布」（卡片与详情弹窗头部同样中招）。
+     元信息一律不参与收缩，压力交给仓库名/版本号（它们有不省略的兜底）。 */
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .release-importance-chip {

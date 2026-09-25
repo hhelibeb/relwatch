@@ -117,8 +117,8 @@ function handleOpenUrl(url: string) {
       <button class="repo-group-toggle" :class="{ expanded: expandedRepos.has(group.key) }" @click.stop="toggleRepo(group.key)">
         <svg><use href="/icons.svg#chevron-down-icon"/></svg>
       </button>
-      <span class="repo-name">{{ repoGroupName(group) }}</span>
-      <span class="repo-latest-tag">{{ group.releases[0].tag_name }}</span>
+      <span class="repo-name" :title="repoGroupName(group)">{{ repoGroupName(group) }}</span>
+      <span class="repo-latest-tag" :title="group.releases[0].tag_name">{{ group.releases[0].tag_name }}</span>
       <button class="btn-icon-link" @click.stop="handleOpenUrl(group.releases[0].html_url)" @contextmenu.prevent.stop="handleRepoContextMenu($event, group.releases[0].html_url)" :title="t('release.open_link')">
         <svg><use href="/icons.svg#link-icon"/></svg>
       </button>
@@ -164,12 +164,24 @@ function handleOpenUrl(url: string) {
   font-weight: 600;
   font-size: 14px;
   flex: 1;
+  /* 组头宽度不足时用省略号收尾（它自身的完整值靠 title）：长仓库名会把
+     右侧的最新版本号/日期/计数整体挤出容器。不设 min-width 保底——
+     flex 里它会把短仓库名反而撑宽，多出一段空白 */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .repo-group-header .repo-latest-tag {
   font-weight: 600;
   font-size: 13px;
   color: var(--primary);
+  /* 与卡片同一策略：等权收缩 + 省略号，不设 min-width（它会撑宽短版本号） */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .repo-group-header .repo-latest-date {

@@ -6,7 +6,7 @@ import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPa
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
-import { formatDate, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
+import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
 import { mediaUrlOrEmpty } from '../utils/imageProxy'
@@ -548,14 +548,18 @@ const youtubeViewTitle = computed(() =>
     @dragstart="handleDragStart">
     <div class="release-header">
       <div class="release-heading">
-        <span v-if="showReleaseRepo" class="release-repo">{{ release.owner }}/{{ release.repo }}</span>
+        <span v-if="showReleaseRepo" class="release-repo" :title="`${release.owner}/${release.repo}`">{{ release.owner }}/{{ release.repo }}</span>
         <span v-else-if="isYoutube" class="release-repo release-repo-yt" :title="youtubeChannelName">{{ youtubeChannelName }}</span>
-        <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
+        <!-- 版本号过长时与仓库名等权收缩（见样式 min-width:0 + 省略号）；完整值用原生 title 兜底。
+             HF 源自带的元数据 tooltip 也挂在 mouseenter 上，两者同时出现会叠成两层，
+             故有自定义 tooltip 时不绑 title（undefined 不落属性）。 -->
+        <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" :title="hfTooltip ? undefined : release.tag_name" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
         <!-- 用户旗标（Outlook 式贴纸）贴在版本号后：不打断「仓库名 + 版本号」的连贯语义，颜色即语义 -->
         <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
-        <!-- 版本固有属性（重要性/预发布）贴版本号；状态（圆点+文字）放在分隔符后自成一体，避免圆点被误读为重要性指示 -->
+        <!-- 版本固有属性：仅保留重要性做追加提示（预发布不再占一席——版本号
+             自身（-rc/-beta/-alpha）已能看出，文字徒占宽度）；状态（圆点+文字）
+             跟在后面自成一体，避免圆点被误读为重要性指示 -->
         <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-        <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
         <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
       </div>
       <div class="release-header-right">
@@ -568,7 +572,15 @@ const youtubeViewTitle = computed(() =>
         <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
           <svg><use href="/icons.svg#link-icon"/></svg>
         </button>
-        <span class="release-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
+        <!-- 发布时间：按卡片实宽分三档精度（见样式里的 @container）——宽则完整
+             「发布时间: 2026/9/24 22:10:21」，中等则「2026/9/24 22:10」（保住年份），
+             最窄才降到「9/24 22:10」。三种形态都带 title 指向完整值，datetime
+             属性保证机器可读语义不随显示精度变化。 -->
+        <time class="release-date" :datetime="release.published_at" :title="t('release.published_at', formatDate(release.published_at))">
+          <span class="release-date-full">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
+          <span class="release-date-mid">{{ formatDateNoSeconds(release.published_at) }}</span>
+          <span class="release-date-short">{{ formatDateShort(release.published_at) }}</span>
+        </time>
       </div>
     </div>
     <!-- YouTube：B 站风格（左封面 + 右标题/简介），阅读全文进详情弹窗 -->
@@ -679,6 +691,13 @@ const youtubeViewTitle = computed(() =>
   border-radius: var(--radius);
   border: 1px solid var(--border);
   transition: border-color 0.15s ease;
+  /* 头部信息密度按「卡片实宽」分级，而不是视口宽：同一个卡片在简单列表、
+     聚合视图（内缩进 + 更小 padding）、日历日期详情里的宽度各不相同，
+     媒体查询会判错（见下方 @container）。
+     container-type 会带来 inline-size 包含：卡片宽度不再由内容决定。
+     本组件三个入口都是块级拉伸/列向 flex 拉伸（宽度完全由父级给出），
+     因此安全；若将来出现按内容自适应的卡片容器，这行需重新评估。 */
+  container-type: inline-size;
 }
 
 .release-item:hover {
@@ -721,20 +740,31 @@ const youtubeViewTitle = computed(() =>
   flex: 1;
 }
 
+/* 仓库名：宽度不足时与版本号等权收缩（谁长谁让得多），完整值靠 title。
+   刻意不设 min-width 保底：flex 里 min-width 是「实际尺寸」而非「收缩下限」，
+   会把短内容反而撑宽（`Freesia` 被 12ch 撑到 87px，后面凭空多出一片空白），
+   已踩过这个坑。省略号已足够表达「被截断」。 */
 .release-repo {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* 版本号：长 tag（dsh-v0.1.7-rc.2 这类前缀+语义版本+rc 后缀）曾是 flex-shrink: 0，
+   会把仓库名挤到只剩十几个字符，而自己从不省略。现在与仓库名等权收缩，
+   两边都不会被对方单独饿死；完整值由 title 与详情弹窗兜底（同样不设 min-width）。 */
 .release-tag {
   font-weight: 600;
   font-size: 14px;
   color: var(--primary);
-  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .release-title {
@@ -896,6 +926,41 @@ const youtubeViewTitle = computed(() =>
   font-size: 12px;
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+/* 中档/窄档日期默认隐藏，由下方 @container 按卡片实宽分三档切换。
+   阈值口径：容器查询量的是**内容盒**（已扣掉卡片 padding 14px×2 + 边框 2px，
+   即外宽 − 30px），不是卡片外宽——按外宽写会差 30px 而让相邻档位错位。
+   换算后再按“能不能装下”定价：
+   709 → 对应外宽 740px：把「长仓库名 + 长版本号 + 可选重要性徽标 + 状态」和
+         完整日期「发布时间: 2026/9/24 22:10:21」同时装下的下限；
+   619 → 对应外宽 650px：中档「2026/9/24 22:10」（保住年份）的下限。
+         默认 750 窗口的卡片约 695px、最小 710 窗口约 655px，两者都落在中档
+         （用户要求：宽度够用就看得到年份），去年份的窄档只在极窄容器出现。
+   不支持 container queries 的环境三条规则都不生效 → 永远显示完整日期，即旧行为，不会坏。 */
+.release-date-mid,
+.release-date-short {
+  display: none;
+}
+
+@container (max-width: 709px) {
+  .release-date-full {
+    display: none;
+  }
+
+  .release-date-mid {
+    display: inline;
+  }
+}
+
+@container (max-width: 619px) {
+  .release-date-mid {
+    display: none;
+  }
+
+  .release-date-short {
+    display: inline;
+  }
 }
 
 

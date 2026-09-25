@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
   formatDate,
+  formatDateNoSeconds,
+  formatDateShort,
   releaseMatchesSearch,
   tokenizeQuery,
   getSearchIndex,
@@ -261,6 +263,47 @@ describe('formatDate', () => {
   it('无效日期字符串返回空字符串', () => {
     expect(formatDate('not-a-date')).toBe('')
     expect(formatDate('2024-13-01T00:00:00Z')).toBe('')
+  })
+})
+
+// ── formatDateNoSeconds ──────────────────────────────────────────
+// 卡片日期中档：保住年份、去掉秒（宽度不足时才再去年份 → formatDateShort）
+describe('formatDateNoSeconds', () => {
+  it('带年份、无秒（比完整短，比 formatDateShort 长）', () => {
+    const iso = '2026-09-24T14:10:21Z'
+    const mid = formatDateNoSeconds(iso)
+
+    expect(mid).toContain('2026')
+    expect(mid.length).toBeLessThan(formatDate(iso).length)
+    expect(mid.length).toBeGreaterThan(formatDateShort(iso).length)
+  })
+
+  it('空字符串与非法日期返回空字符串', () => {
+    expect(formatDateNoSeconds('')).toBe('')
+    expect(formatDateNoSeconds('not-a-date')).toBe('')
+    expect(formatDateNoSeconds('2024-13-01T00:00:00Z')).toBe('')
+  })
+})
+
+// ── formatDateShort ──────────────────────────────────────────────
+// 窄卡片头部专用：只要「月/日 时:分」，不重复完整日期里的年份。
+describe('formatDateShort', () => {
+  it('输出月/日 + 时:分，且不含年份', () => {
+    const result = formatDateShort('2026-09-24T14:10:00Z')
+    expect(result).not.toContain('2026')
+    // 月/日与时:分都在（时分秒分隔符不计，只校验两个数字段存在）
+    expect(result).toMatch(/\d{1,2}\D+\d{1,2}\D+\d{1,2}\D+\d{2}/)
+  })
+
+  it('比 formatDate 短（降级目的：给仓库名/版本号腾宽度）', () => {
+    const iso = '2026-09-24T14:10:21Z'
+    expect(formatDateShort(iso).length).toBeLessThan(formatDate(iso).length)
+  })
+
+  it('空字符串与非法日期返回空字符串', () => {
+    expect(formatDateShort('')).toBe('')
+    expect(formatDateShort('not-a-date')).toBe('')
+    expect(formatDateShort('2024-13-01T00:00:00Z')).toBe('')
   })
 })
 
