@@ -91,6 +91,20 @@ pub fn list_adapters() -> Vec<Box<dyn SourceAdapter>> {
     adapters().iter().map(|(_, factory)| factory()).collect()
 }
 
+/// `body` 属于「短简介 / 内容载体」（搜索 Tier1）的源类型集合。
+///
+/// 判据与前端 `utils.ts::isSummaryBodySource` 同源：`ai_eligible() == false` 的源不生成
+/// AI 摘要，其 `body` 就是唯一内容载体（视频标题 + 简介），因此必须整体参与常规搜索，
+/// 不能像长正文那样按 Tier2 截断预览。目录查询（`get_release_catalog`）据此决定
+/// 哪些源的 `body` 回全文、哪些只回预览，两端口径由同一能力位派生。
+pub fn tier1_body_source_types() -> Vec<&'static str> {
+    list_adapters()
+        .iter()
+        .filter(|a| !a.ai_eligible())
+        .map(|a| a.source_type())
+        .collect()
+}
+
 /// 监控源适配器 trait：把 fetch / save / verify / description 收敛为统一接口。
 ///
 /// `fetch` / `fetch_all` / `verify_and_describe` 接收的 `client` **不携带 default

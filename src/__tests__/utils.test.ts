@@ -4,6 +4,9 @@ import {
   releaseMatchesSearch,
   tokenizeQuery,
   getSearchIndex,
+  filterReleaseIndices,
+  mergeBodyIndex,
+  tier2FieldsFromBody,
   logLevelClass,
   statusLabel,
   statusClass,
@@ -17,6 +20,7 @@ import { sourceTypeDefs } from '../api/source-registry'
 
 function makeRelease(overrides = {}) {
   return {
+    id: 1,
     owner: 'hhelibeb',
     repo: 'relwatch',
     tag_name: 'v1.0.0',
@@ -160,6 +164,70 @@ describe('getSearchIndex', () => {
   it('包含 owner/repo 片段', () => {
     const idx = getSearchIndex([makeRelease()])
     expect(idx[0][0]).toBe('hhelibeb/relwatch')
+  })
+})
+
+// ── 正文索引（深度搜索）─────────────────────────────────────────
+
+describe('tier2FieldsFromBody', () => {
+  it('正文与译文各自成字段并小写化', () => {
+    expect(tier2FieldsFromBody('Major Release', null)).toEqual(['major release', ''])
+  })
+  it('null / undefined 归一为空串', () => {
+    expect(tier2FieldsFromBody(null, undefined)).toEqual(['', ''])
+  })
+})
+
+describe('mergeBodyIndex', () => {
+  const chunk = (id: number, body: string | null, translated: string | null = null) =>
+    ({ id, body, body_translated: translated })
+
+  it('按 id 建表并返回新 Map（原 Map 不被修改）', () => {
+    const base = new Map<number, string[]>([[1, ['old', '']]])
+    const merged = mergeBodyIndex(base, [chunk(2, 'New Body')])
+
+    expect(merged).not.toBe(base)
+    expect(base.has(2)).toBe(false)
+    expect(merged.get(1)).toEqual(['old', ''])
+    expect(merged.get(2)).toEqual(['new body', ''])
+  })
+
+  it('同 id 覆盖（重取变化行）', () => {
+    const merged = mergeBodyIndex(new Map([[2, ['old', '']]]), [chunk(2, 'Fixed', '修复')])
+    expect(merged.get(2)).toEqual(['fixed', '修复'])
+  })
+
+  it('空分块返回等价的新 Map', () => {
+    const base = new Map<number, string[]>([[1, ['a', '']]])
+    const merged = mergeBodyIndex(base, [])
+    expect(merged).not.toBe(base)
+    expect(merged.get(1)).toEqual(['a', ''])
+  })
+})
+
+describe('filterReleaseIndices — 按 id 查正文索引', () => {
+  const releases = [
+    makeRelease({ id: 1, repo: 'alpha', body: null }),
+    makeRelease({ id: 2, repo: 'beta', body: null }),
+    makeRelease({ id: 3, repo: 'gamma', body: null }),
+  ]
+  const bodyIndex = new Map<number, string[]>([
+    [1, ['普通正文', '']],
+    [3, ['仅水位内可搜', '']],
+  ])
+
+  it('未收录的 id 视为「正文不在水位内」，不参与 Tier2 命中', () => {
+    // id 3 的正文在索引里（下标 2），id 2 不在 → 搜其正文词无结果
+    expect(filterReleaseIndices(releases, '水位内可搜', bodyIndex)).toEqual([2])
+    expect(filterReleaseIndices(releases, '仅水位', null)).toEqual([])
+  })
+
+  it('Tier1 元数据命中不受索引影响', () => {
+    expect(filterReleaseIndices(releases, 'beta', bodyIndex)).toEqual([1])
+  })
+
+  it('空查询返回全部下标', () => {
+    expect(filterReleaseIndices(releases, '  ', bodyIndex)).toEqual([0, 1, 2])
   })
 })
 

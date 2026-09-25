@@ -6,7 +6,11 @@ use serde_json::json;
 
 #[tauri::command]
 
-#[specta::specta]pub async fn get_releases(
+/// 版本列表数据源：**全库**目录（不再有 LIMIT 200）。
+///
+/// 正文为预览投影（见 `db::releases::get_release_catalog` 的契约说明）；全文由
+/// `get_release_detail`（详情弹窗）与 `get_release_search_bodies`（全文搜索）按需取。
+#[specta::specta]pub async fn get_release_catalog(
     state: tauri::State<'_, AppState>,
 ) -> Result<Vec<db::releases::ReleaseInfo>, String> {
     // 同步 SQLite I/O 放进 spawn_blocking，避免在 Tauri 主线程冻结 UI
@@ -14,10 +18,67 @@ use serde_json::json;
     let pool = state.db.clone();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        db::releases::get_releases_with_state(&conn)
+        db::releases::get_release_catalog(&conn)
     })
     .await
-    .map_err(|e| format!("err.task_failed|get_releases|{}", e))?
+    .map_err(|e| format!("err.task_failed|get_release_catalog|{}", e))?
+}
+
+/// 单条 release 全文（详情弹窗用）：目录里只有正文预览，打开详情时取全文。
+#[tauri::command]
+
+#[specta::specta]pub async fn get_release_detail(
+    state: tauri::State<'_, AppState>,
+    release_id: i64,
+) -> Result<db::releases::ReleaseInfo, String> {
+    let pool = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        db::releases::get_release(&conn, release_id)
+            .map_err(|e| format!("err.query_failed|{}", e))?
+            .ok_or_else(|| format!("err.release_not_found|{}", release_id))
+    })
+    .await
+    .map_err(|e| format!("err.task_failed|get_release_detail|{}", e))?
+}
+
+/// 全文搜索索引的正文分块（按 id 游标 + 单次字符预算，**从新到旧**）。详见
+/// `db::releases::get_release_search_bodies` 的契约说明。
+#[tauri::command]
+
+#[specta::specta]pub async fn get_release_search_bodies(
+    state: tauri::State<'_, AppState>,
+    before_id: i64,
+    max_chars: i64,
+) -> Result<Vec<db::releases::ReleaseSearchBody>, String> {
+    // 单次预算 clamp：过小会让超大正文条目撑爆调用次数，过大则失去分块的意义
+    let max_chars = max_chars.clamp(64 * 1024, 4 * 1024 * 1024);
+    let pool = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        db::releases::get_release_search_bodies(&conn, before_id, max_chars)
+    })
+    .await
+    .map_err(|e| format!("err.task_failed|get_release_search_bodies|{}", e))?
+}
+
+/// 按 id 批量取正文：用于刷新索引里内容已变化的条目（翻译落库 / README 回填），
+/// 游标分块只覆盖新增行，覆盖不了"已存在的行内容变了"。
+#[tauri::command]
+
+#[specta::specta]pub async fn get_release_search_bodies_by_ids(
+    state: tauri::State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<Vec<db::releases::ReleaseSearchBody>, String> {
+    // 上限保护：一次至多 500 条，避免超长 IN 子句与超大响应
+    let ids: Vec<i64> = ids.into_iter().take(500).collect();
+    let pool = state.db.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        db::releases::get_release_bodies_by_ids(&conn, &ids)
+    })
+    .await
+    .map_err(|e| format!("err.task_failed|get_release_search_bodies_by_ids|{}", e))?
 }
 
 #[tauri::command]

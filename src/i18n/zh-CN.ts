@@ -214,6 +214,8 @@ export default {
   'release.deep_search_label': '深度搜索',
   'release.deep_search': '深度',
   'release.deep_search_hint': '搜索 GitHub / HuggingFace 版本正文与译文全文',
+  'release.deep_search_recent_only': '仅搜索近期正文',
+  'release.deep_search_agent_hint': '更多内容可使用 Agent 工作区搜索',
   'release.empty': '暂无版本记录，请先添加监控源后点击"立即检查"。',
   'release.focus_missing': '未能定位到该版本（可能已被删除）',
   'release.prerelease': '预发布',

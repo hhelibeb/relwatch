@@ -13,7 +13,7 @@ import {
   type AgentRunSummary,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
-import { getReleases, type ReleaseInfo } from '../api/releases'
+import { getReleaseCatalog, type ReleaseInfo } from '../api/releases'
 import { copyTextToClipboard } from '../api/client'
 import { t } from '../i18n'
 import { useAgentUsage } from './agent/useAgentUsage'
@@ -351,7 +351,7 @@ let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
  * 整个面板生命周期内所有 chip 都退化成 `#id`。
  */
 async function refreshEntityCatalog() {
-  const [srcs, rels] = await Promise.allSettled([listSources(), getReleases()])
+  const [srcs, rels] = await Promise.allSettled([listSources(), getReleaseCatalog()])
   if (srcs.status === 'fulfilled') {
     sources.value = srcs.value
     catalogReady.value.source = true

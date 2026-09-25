@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { ref, computed, defineComponent } from 'vue'
 import { mount } from '@vue/test-utils'
-import { isUnreadStatus, isReadStatus, filterReleaseIndices, buildBodyIndex } from '../utils'
+import { isUnreadStatus, isReadStatus, filterReleaseIndices, tier2FieldsFromBody, type BodyIndex } from '../utils'
 
 // 模拟 ReleaseTab.vue 的 filteredReleases + sortedReleases 逻辑
 // 绕过真实组件依赖（Tauri API、inject 等），直接测试筛选/排序计算
@@ -43,8 +43,8 @@ const FilterTester = defineComponent({
     search: { type: String, default: '' },
     statusFilter: { type: String, default: 'all' },
     importanceFilter: { type: String, default: 'all' },
-    // 深度搜索索引（与 releases 对齐）；传入即启用 Tier2 搜索
-    bodyIndex: { type: Array as () => string[][] | null, default: null },
+    // 深层搜索正文索引（按 release id 查）；传入即启用 Tier2 搜索
+    bodyIndex: { type: Object as () => BodyIndex | null, default: null },
   },
   emits: ['result'],
   setup(props, { emit }) {
@@ -135,10 +135,21 @@ describe('ReleaseTab — 筛选/排序逻辑', () => {
   })
 
   it('传入 bodyIndex（深度搜索）后 GitHub body 可命中', () => {
-    const wrapper = mount(FilterTester, { props: { releases, search: 'Major release', bodyIndex: buildBodyIndex(releases) } })
+    const bodyIndex: BodyIndex = new Map(
+      releases.map(r => [r.id, tier2FieldsFromBody(r.body, null)]),
+    )
+    const wrapper = mount(FilterTester, { props: { releases, search: 'Major release', bodyIndex } })
     const result = wrapper.emitted('result')![0][0] as MockRelease[]
     expect(result).toHaveLength(1)
     expect(result[0].id).toBe(5)
+  })
+
+  it('正文不在水位内（索引缺该 id）时不命中 Tier2', () => {
+    // 只收录 id=1 的正文：id=5 的 GitHub body 虽含关键词仍不可命中
+    const bodyIndex: BodyIndex = new Map([[1, tier2FieldsFromBody(null, null)]])
+    const wrapper = mount(FilterTester, { props: { releases, search: 'Major release', bodyIndex } })
+    const result = wrapper.emitted('result')![0][0] as MockRelease[]
+    expect(result).toHaveLength(0)
   })
 
   it('statusFilter=unread 过滤已读状态', () => {

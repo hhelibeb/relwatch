@@ -54,7 +54,7 @@ vi.mock('../api/sources', async (importOriginal) => {
 })
 vi.mock('../api/releases', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/releases')>()
-  return { ...actual, getReleases: vi.fn(), getPollCountdown: vi.fn(), triggerPoll: vi.fn() }
+  return { ...actual, getReleaseCatalog: vi.fn(), getPollCountdown: vi.fn(), triggerPoll: vi.fn() }
 })
 vi.mock('../api/settings', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/settings')>()
@@ -70,7 +70,7 @@ vi.mock('../composables/useUsageTracking', () => ({
 vi.mock('../composables/useEscapeToTray', () => ({ useEscapeToTray: vi.fn() }))
 
 import { listSources } from '../api/sources'
-import { getReleases, getPollCountdown, triggerPoll } from '../api/releases'
+import { getReleaseCatalog, getPollCountdown, triggerPoll } from '../api/releases'
 import { getSettings } from '../api/settings'
 import { invoke } from '@tauri-apps/api/core'
 import { useEscapeToTray } from '../composables/useEscapeToTray'
@@ -155,7 +155,7 @@ async function mountRealApp() {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(listSources).mockResolvedValue([])
-  vi.mocked(getReleases).mockResolvedValue([])
+  vi.mocked(getReleaseCatalog).mockResolvedValue([])
   vi.mocked(getPollCountdown).mockResolvedValue(300)
   vi.mocked(getSettings).mockResolvedValue(defaultSettings)
   vi.mocked(triggerPoll).mockResolvedValue({ new_releases: [] })
@@ -181,17 +181,17 @@ describe('App.vue — 挂载初始化', () => {
     await mountRealApp()
 
     expect(listSources).toHaveBeenCalled()
-    expect(getReleases).toHaveBeenCalled()
+    expect(getReleaseCatalog).toHaveBeenCalled()
     expect(getSettings).toHaveBeenCalled()
   })
 
   it('某个 API 失败时不影响其他 API（Promise.allSettled）', async () => {
     vi.mocked(listSources).mockRejectedValue(new Error('网络错误'))
-    vi.mocked(getReleases).mockResolvedValue([{ id: 1, tag_name: 'v1' } as never])
+    vi.mocked(getReleaseCatalog).mockResolvedValue([{ id: 1, tag_name: 'v1' } as never])
 
     await mountRealApp()
 
-    expect(getReleases).toHaveBeenCalled()
+    expect(getReleaseCatalog).toHaveBeenCalled()
     expect(getSettings).toHaveBeenCalled()
   })
 
@@ -624,7 +624,7 @@ describe('App.vue — Poll 轮询', () => {
 
 describe('App.vue — 版本统计 computed', () => {
   it('unreadReleaseCounts 按 repo 统计未读（owner/repo 统一小写）', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'Tauri-Apps', repo: 'Tauri', notification_status: 'pending', snooze_until: null } as never,
       { id: 2, source_type: 'github', owner: 'Tauri-Apps', repo: 'Tauri', notification_status: 'pending', snooze_until: null } as never,
       { id: 3, source_type: 'github', owner: 'vuejs', repo: 'core', notification_status: 'clicked', snooze_until: null } as never,
@@ -643,7 +643,7 @@ describe('App.vue — 版本统计 computed', () => {
     vi.mocked(listSources).mockResolvedValue([
       { id: 42, source_type: 'github', owner: 'Tauri-Apps', repo: 'Tauri', muted: true } as never,
     ])
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'Tauri-Apps', repo: 'Tauri', notification_status: 'pending', snooze_until: null } as never,
     ])
 
@@ -655,7 +655,7 @@ describe('App.vue — 版本统计 computed', () => {
   })
 
   it('totalReleaseCounts 按 repo 统计总数', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'a', repo: 'b', notification_status: 'pending' } as never,
       { id: 2, source_type: 'github', owner: 'a', repo: 'b', notification_status: 'clicked' } as never,
       { id: 3, source_type: 'github', owner: 'c', repo: 'd', notification_status: 'ignored' } as never,
@@ -667,6 +667,28 @@ describe('App.vue — 版本统计 computed', () => {
     const counts = wrapper.findComponent(SourceTabStub).props('totalReleaseCounts') as Record<string, number>
     expect(counts['github|a|b']).toBe(2)
     expect(counts['github|c|d']).toBe(1)
+  })
+
+  it('目录含 300 条时计数等于全量（不再被 200 条上限截断）', async () => {
+    // 300 条同源：历史实现只下发最新 200 条，计数会停在 200
+    vi.mocked(getReleaseCatalog).mockResolvedValue(
+      Array.from({ length: 300 }, (_, i) => ({
+        id: i + 1,
+        source_type: 'github',
+        owner: 'tauri-apps',
+        repo: 'tauri',
+        notification_status: 'pending',
+        snooze_until: null,
+      })) as never,
+    )
+
+    const wrapper = await mountRealApp()
+    await flushPromises()
+
+    const total = wrapper.findComponent(SourceTabStub).props('totalReleaseCounts') as Record<string, number>
+    const unread = wrapper.findComponent(SourceTabStub).props('unreadReleaseCounts') as Record<string, number>
+    expect(total['github|tauri-apps|tauri']).toBe(300)
+    expect(unread['github|tauri-apps|tauri']).toBe(300)
   })
 })
 
@@ -706,7 +728,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   }
 
   it('focus-release 事件 → 切到版本列表并下发 focusTarget（按 id 精确定位）', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
     ])
     const wrapper = await mountRealApp()
@@ -726,7 +748,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
       { id: 8, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v1', release_name: 'R1', body: null, source_description: null },
       { id: 9, source_type: 'github', owner: 'vuejs', repo: 'core', tag_name: 'v3', release_name: 'R3', body: null, source_description: null },
     ]
-    vi.mocked(getReleases).mockResolvedValue(releases as never)
+    vi.mocked(getReleaseCatalog).mockResolvedValue(releases as never)
     const wrapper = await mountRealApp()
 
     await emitFocusRelease(wrapper, 7)
@@ -736,7 +758,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   })
 
   it('release id 不存在时仍切到版本列表（定位与否由 ReleaseTab 依据数据判定）', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'a', repo: 'b', tag_name: 'v1' } as never,
     ])
     const wrapper = await mountRealApp()
@@ -749,7 +771,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   })
 
   it('视频源（repo 为空）定位：不做频道名搜索词回填，直接下发 focusTarget', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 3, source_type: 'youtube', owner: 'UCabc', repo: '', tag_name: '', source_description: '某频道' } as never,
     ])
     const wrapper = await mountRealApp()
@@ -762,7 +784,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   })
 
   it('视频源且无 source_description 时也直接下发 focusTarget', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 4, source_type: 'bilibili', owner: '12345', repo: '', tag_name: '', source_description: null } as never,
     ])
     const wrapper = await mountRealApp()
@@ -775,7 +797,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   })
 
   it('连续两次 focus-release 时 token 递增（ReleaseTab 依 token 消费最新目标）', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
       { id: 9, source_type: 'github', owner: 'vuejs', repo: 'core', tag_name: 'v3' } as never,
     ])
@@ -791,7 +813,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   })
 
   it('focus-consumed 事件到达时清空 focusTarget', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 7, source_type: 'github', owner: 'tauri-apps', repo: 'tauri', tag_name: 'v2' } as never,
     ])
     const wrapper = await mountRealApp()
@@ -806,7 +828,7 @@ describe('App.vue — 点击通知主体定位 release（focus-release 事件）
   })
 
   it('focus-not-found 事件到达时给 Toast 提示并清空目标', async () => {
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       { id: 1, source_type: 'github', owner: 'a', repo: 'b', tag_name: 'v1' } as never,
     ])
     const wrapper = await mountRealApp()
@@ -881,7 +903,7 @@ describe('App.vue — 异步错误处理', () => {
   })
 
   it('loadReleases 失败时显示 toast', async () => {
-    vi.mocked(getReleases).mockRejectedValue(new Error('network'))
+    vi.mocked(getReleaseCatalog).mockRejectedValue(new Error('network'))
     const wrapper = await mountRealApp()
     await flushPromises()
 
@@ -902,7 +924,7 @@ describe('App.vue — Tauri 事件处理', () => {
     const wrapper = await mountRealApp()
 
     vi.mocked(listSources).mockClear()
-    vi.mocked(getReleases).mockClear()
+    vi.mocked(getReleaseCatalog).mockClear()
 
     const pollCall = vi.mocked(mockListen).mock.calls.find(c => c[0] === 'poll-completed')
     expect(pollCall).toBeDefined()
@@ -912,14 +934,14 @@ describe('App.vue — Tauri 事件处理', () => {
     await flushPromises()
 
     expect(listSources).toHaveBeenCalled()
-    expect(getReleases).toHaveBeenCalled()
+    expect(getReleaseCatalog).toHaveBeenCalled()
     expect(wrapper.findComponent(LogTabStub).props('refreshKey')).toBe(refreshKeyBefore + 1)
   })
 
   it('release-state-changed 触发 releases 刷新（50ms 合帧窗口内合并）', async () => {
     await mountRealApp()
 
-    vi.mocked(getReleases).mockClear()
+    vi.mocked(getReleaseCatalog).mockClear()
 
     const stateCall = vi.mocked(mockListen).mock.calls.find(c => c[0] === 'release-state-changed')
     expect(stateCall).toBeDefined()
@@ -930,13 +952,13 @@ describe('App.vue — Tauri 事件处理', () => {
     await new Promise((resolve) => setTimeout(resolve, 60))
     await flushPromises()
 
-    expect(getReleases).toHaveBeenCalledTimes(1)
+    expect(getReleaseCatalog).toHaveBeenCalledTimes(1)
   })
 
   it('release-state-changed 与组件 emit(update) 双路径到达时合并成一次重拉', async () => {
     const wrapper = await mountRealApp()
 
-    vi.mocked(getReleases).mockClear()
+    vi.mocked(getReleaseCatalog).mockClear()
 
     const stateCall = vi.mocked(mockListen).mock.calls.find(c => c[0] === 'release-state-changed')
     expect(stateCall).toBeDefined()
@@ -949,7 +971,7 @@ describe('App.vue — Tauri 事件处理', () => {
     await flushPromises()
 
     // 双路径合帧去重：50ms 窗口内只重拉一次全量（此前是两次）
-    expect(getReleases).toHaveBeenCalledTimes(1)
+    expect(getReleaseCatalog).toHaveBeenCalledTimes(1)
   })
 
   it('source-auto-disabled 显示 Toast 并刷新数据（真实文案）', async () => {
@@ -1183,13 +1205,13 @@ describe('App.vue — SettingsTab update 回调（事件入口）', () => {
   it('update(forceReload=true) 时重新加载 sources/releases', async () => {
     const wrapper = await mountRealApp()
     vi.mocked(listSources).mockClear()
-    vi.mocked(getReleases).mockClear()
+    vi.mocked(getReleaseCatalog).mockClear()
 
     await wrapper.find('.stub-settings-reload').trigger('click')
     await flushPromises()
 
     expect(listSources).toHaveBeenCalled()
-    expect(getReleases).toHaveBeenCalled()
+    expect(getReleaseCatalog).toHaveBeenCalled()
   })
 })
 

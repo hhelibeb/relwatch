@@ -4,7 +4,7 @@ import { ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
-import { ShowImportanceKey } from '../injection-keys'
+import { ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import { t } from '../i18n'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
@@ -942,6 +942,54 @@ describe('ReleaseSearchBar — 激活筛选 chips', () => {
 
     await chips[2].trigger('click')
     expect(wrapper.emitted('update:flagFilter')?.[0]).toEqual(['all'])
+  })
+})
+
+// ============ 深度搜索能力边界标注 ============
+
+describe('ReleaseSearchBar — 深度搜索能力边界', () => {
+  const agentOn = { [AgentEnabledKey as symbol]: ref(true) }
+
+  it('未越界时不显示提示', () => {
+    const wrapper = createWrapper({ deepSearch: true, bodyTruncated: false })
+
+    expect(wrapper.find('.deep-search-limit').exists()).toBe(false)
+  })
+
+  it('深度搜索未开启时不显示提示（即使已越界）', () => {
+    const wrapper = createWrapper({ deepSearch: false, bodyTruncated: true })
+
+    expect(wrapper.find('.deep-search-limit').exists()).toBe(false)
+  })
+
+  it('越界时显示「仅搜索近期正文」', () => {
+    const wrapper = createWrapper({ deepSearch: true, bodyTruncated: true })
+
+    expect(wrapper.find('.deep-search-limit').exists()).toBe(true)
+    expect(wrapper.find('.deep-search-limit').text()).toContain(t('release.deep_search_recent_only'))
+  })
+
+  it('Agent 关闭时不追加 Agent 提示', () => {
+    const wrapper = createWrapper(
+      { deepSearch: true, bodyTruncated: true },
+      { [AgentEnabledKey as symbol]: ref(false) },
+    )
+
+    expect(wrapper.find('.deep-search-limit-action').exists()).toBe(false)
+  })
+
+  it('Agent 启用时追加可点动作，点击打开 Agent 工作区', async () => {
+    const openAgentWorkspace = vi.fn()
+    const wrapper = createWrapper(
+      { deepSearch: true, bodyTruncated: true },
+      { ...agentOn, [AgentWorkspaceKey as symbol]: openAgentWorkspace },
+    )
+
+    const action = wrapper.find('.deep-search-limit-action')
+    expect(action.text()).toBe(t('release.deep_search_agent_hint'))
+
+    await action.trigger('click')
+    expect(openAgentWorkspace).toHaveBeenCalled()
   })
 })
 

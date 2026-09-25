@@ -11,7 +11,25 @@ export const commands = {
 	removeSource: (id: number) => __TAURI_INVOKE<null>("remove_source", { id }),
 	updateSource: (id: number, enabled: boolean, pollIntervalMinutes: number, muted: boolean | null, config: string | null) => __TAURI_INVOKE<null>("update_source", { id, enabled, pollIntervalMinutes, muted, config }),
 	listSources: () => __TAURI_INVOKE<Source[]>("list_sources"),
-	getReleases: () => __TAURI_INVOKE<ReleaseInfo[]>("get_releases"),
+	/**
+	 *  版本列表数据源：**全库**目录（不再有 LIMIT 200）。
+	 * 
+	 *  正文为预览投影（见 `db::releases::get_release_catalog` 的契约说明）；全文由
+	 *  `get_release_detail`（详情弹窗）与 `get_release_search_bodies`（全文搜索）按需取。
+	 */
+	getReleaseCatalog: () => __TAURI_INVOKE<ReleaseInfo[]>("get_release_catalog"),
+	/**  单条 release 全文（详情弹窗用）：目录里只有正文预览，打开详情时取全文。 */
+	getReleaseDetail: (releaseId: number) => __TAURI_INVOKE<ReleaseInfo>("get_release_detail", { releaseId }),
+	/**
+	 *  全文搜索索引的正文分块（按 id 游标 + 单次字符预算，**从新到旧**）。详见
+	 *  `db::releases::get_release_search_bodies` 的契约说明。
+	 */
+	getReleaseSearchBodies: (beforeId: number, maxChars: number) => __TAURI_INVOKE<ReleaseSearchBody[]>("get_release_search_bodies", { beforeId, maxChars }),
+	/**
+	 *  按 id 批量取正文：用于刷新索引里内容已变化的条目（翻译落库 / README 回填），
+	 *  游标分块只覆盖新增行，覆盖不了"已存在的行内容变了"。
+	 */
+	getReleaseSearchBodiesByIds: (ids: number[]) => __TAURI_INVOKE<ReleaseSearchBody[]>("get_release_search_bodies_by_ids", { ids }),
 	setNotificationState: (releaseId: number, status: string, snoozeMinutes: number | null) => __TAURI_INVOKE<null>("set_notification_state", { releaseId, status, snoozeMinutes }),
 	setReleaseFlag: (releaseId: number, flag: number) => __TAURI_INVOKE<null>("set_release_flag", { releaseId, flag }),
 	deleteRelease: (releaseId: number) => __TAURI_INVOKE<null>("delete_release", { releaseId }),
@@ -712,6 +730,13 @@ export type ReleaseInfo = {
 	 *  无 semver tag 的源（YouTube/B 站等）或无法比较（相等/回落）时为 NULL。
 	 */
 	version_bump: string | null,
+};
+
+/**  全文搜索索引用的正文分块。 */
+export type ReleaseSearchBody = {
+	id: number,
+	body: string | null,
+	body_translated: string | null,
 };
 
 /**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id。 */

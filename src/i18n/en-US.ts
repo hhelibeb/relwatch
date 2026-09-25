@@ -214,6 +214,8 @@ export default {
   'release.deep_search_label': 'Deep search',
   'release.deep_search': 'Deep',
   'release.deep_search_hint': 'Search GitHub/HuggingFace release body and translation',
+  'release.deep_search_recent_only': 'Searching recent content only',
+  'release.deep_search_agent_hint': 'Search more content in the Agent workspace',
   'release.empty': 'No releases yet. Add a source and click "Check Now".',
   'release.focus_missing': 'Could not locate this release (it may have been deleted)',
   'release.prerelease': 'Prerelease',

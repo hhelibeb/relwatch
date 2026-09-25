@@ -6,7 +6,7 @@ import { track } from '../composables/useUsageTracking'
 import { getSourceTypeDef, sourceTypeDefs } from '../api/source-registry'
 import { flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { isUnreadStatus } from '../utils'
-import { ShowImportanceKey } from '../injection-keys'
+import { ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
 
@@ -24,6 +24,8 @@ const props = withDefaults(defineProps<{
   count?: number
   deepSearch?: boolean
   deepSearching?: boolean
+  /** 深度搜索已触及字符水位：正文索引只覆盖近期，命中面小于全库。 */
+  bodyTruncated?: boolean
 }>(), {
   releases: () => [],
   showSearch: true,
@@ -53,6 +55,14 @@ const filterDropdown = useDropdown({
 
 // 「显示重要度」开关（App.vue provide）：关闭时漏斗面板不含重要度分组、chips 不显示重要度
 const showImportance = inject(ShowImportanceKey, ref(false))
+
+// 深度搜索的能力边界：正文索引受字符水位约束，越界时只覆盖近期正文。
+// 这条边界必须显式告知用户，不能让「搜不到」被误读成「不存在」；Agent 工作区可用时
+// 同时给出下一步动作（它的检索不受该水位约束）。缺省（未 provide，如单组件测试）取
+// Agent 未启用，与设置项默认一致。
+const agentEnabled = inject(AgentEnabledKey, ref(false))
+const openAgentWorkspace = inject(AgentWorkspaceKey, null)
+const showDeepSearchLimit = computed(() => props.deepSearch === true && props.bodyTruncated === true)
 
 const statusDisplayText = computed(() => {
   if (props.statusFilter === 'unread') return t('release.filter_unread')
@@ -393,6 +403,15 @@ function clearAllFilters() {
       </div>
       <slot />
     </div>
+    <div v-if="showDeepSearchLimit" class="deep-search-limit">
+      <span>{{ t('release.deep_search_recent_only') }}</span>
+      <button
+        v-if="agentEnabled && openAgentWorkspace"
+        type="button"
+        class="deep-search-limit-action"
+        @click="openAgentWorkspace()"
+      >{{ t('release.deep_search_agent_hint') }}</button>
+    </div>
     <div v-if="activeChips.length" class="filter-chips-row">
       <button v-for="chip in activeChips" :key="chip.key" type="button" class="filter-chip" :title="t('release.filter_reset')" @click="chip.clear()">
         <span v-if="chip.color" class="filter-chip-flag" :style="{ color: chip.color }"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
@@ -562,6 +581,32 @@ function clearAllFilters() {
   font-size: 10px;
   color: var(--text-muted);
   user-select: none;
+}
+
+/* 能力边界提示：深度搜索触及水位时，搜索栏下方的显式标注；
+   Agent 可用时末句为可点动作（打开工作区），样式按链接处理而非按钮。 */
+.deep-search-limit {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.deep-search-limit-action {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--primary);
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.deep-search-limit-action:hover {
+  color: var(--primary-soft-text);
 }
 
 /* 激活筛选 chips 行 */

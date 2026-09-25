@@ -62,7 +62,7 @@ vi.mock('../api/sources', async (importOriginal) => {
 })
 vi.mock('../api/releases', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/releases')>()
-  return { ...actual, getReleases: vi.fn().mockResolvedValue([]) }
+  return { ...actual, getReleaseCatalog: vi.fn().mockResolvedValue([]) }
 })
 vi.mock('../composables/useUsageTracking', () => ({ track: vi.fn() }))
 // jsdom 无本地化渲染，固定时间格式
@@ -87,7 +87,7 @@ import {
   deleteAgentSession,
 } from '../api/agent'
 import { listSources } from '../api/sources'
-import { getReleases } from '../api/releases'
+import { getReleaseCatalog } from '../api/releases'
 import type { ReleaseInfo } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
 import { ShowToastKey } from '../injection-keys'
@@ -243,7 +243,7 @@ beforeEach(() => {
   vi.mocked(getAgentConfig).mockResolvedValue(agentConfig())
   // 实体目录同理：mockResolvedValue/mockRejectedValue 跨用例残留会让断言依赖执行顺序
   vi.mocked(listSources).mockResolvedValue([])
-  vi.mocked(getReleases).mockResolvedValue([])
+  vi.mocked(getReleaseCatalog).mockResolvedValue([])
 })
 
 describe('AgentWorkspace 冒烟', () => {
@@ -454,7 +454,7 @@ describe('AgentWorkspace 冒烟', () => {
         config: null,
       },
     ])
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       {
         id: 7,
         source_id: 1,
@@ -532,7 +532,7 @@ describe('AgentWorkspace 冒烟', () => {
         config: null,
       },
     ])
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       {
         id: 7,
         source_id: 1,
@@ -728,7 +728,7 @@ describe('AgentWorkspace 冒烟', () => {
   // 重试还会误判为「已删除」把引用静默剔除。
   it('面板打开后新采集的版本：release-state-changed 刷新目录，chip 从 #id 变为可读名', async () => {
     // 打开面板时该版本尚未入库（模拟「面板已开着，随后轮询才采到」）
-    vi.mocked(getReleases).mockResolvedValue([])
+    vi.mocked(getReleaseCatalog).mockResolvedValue([])
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
     await wrapper.find('.agent-ws-main').trigger('drop', {
@@ -741,7 +741,7 @@ describe('AgentWorkspace 冒烟', () => {
     expect(chip()).not.toContain('release #') // 不再有读起来像版本号的裸 id 回退
 
     // 后端采集到该版本并广播 release-state-changed（payload = release id）
-    vi.mocked(getReleases).mockResolvedValue([makeRelease()])
+    vi.mocked(getReleaseCatalog).mockResolvedValue([makeRelease()])
     rpcHandlers.get('release-state-changed')?.({ payload: 7 })
     await flushCatalogFrame()
 
@@ -753,36 +753,36 @@ describe('AgentWorkspace 冒烟', () => {
 
   it('拖入目录外的实体：自动补拉目录，chip 自行变可读（订阅建立前/首载失败的兜底）', async () => {
     // 首次加载失败：面板挂载时目录为空
-    vi.mocked(getReleases).mockRejectedValue(new Error('db busy'))
+    vi.mocked(getReleaseCatalog).mockRejectedValue(new Error('db busy'))
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
-    const callsAfterMount = vi.mocked(getReleases).mock.calls.length
+    const callsAfterMount = vi.mocked(getReleaseCatalog).mock.calls.length
 
     // 拖入时目录里没有 → 补拉一次，此刻后端已恢复
-    vi.mocked(getReleases).mockResolvedValue([makeRelease()])
+    vi.mocked(getReleaseCatalog).mockResolvedValue([makeRelease()])
     await wrapper.find('.agent-ws-main').trigger('drop', {
       dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
     })
     await flushCatalogFrame()
 
-    expect(vi.mocked(getReleases).mock.calls.length).toBeGreaterThan(callsAfterMount)
+    expect(vi.mocked(getReleaseCatalog).mock.calls.length).toBeGreaterThan(callsAfterMount)
     const chip = () => wrapper.find('.agent-ws-chip-attached').text()
     expect(chip()).toContain('earendil-works/pi · v0.86.1')
 
     // 目录已认得它：再拖一次不再补拉（正常拖拽不该反复拉 200 行全量）
-    const callsAfterSelfHeal = vi.mocked(getReleases).mock.calls.length
+    const callsAfterSelfHeal = vi.mocked(getReleaseCatalog).mock.calls.length
     await wrapper.find('.agent-ws-main').trigger('drop', {
       dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
     })
     await flushCatalogFrame()
-    expect(vi.mocked(getReleases).mock.calls.length).toBe(callsAfterSelfHeal)
+    expect(vi.mocked(getReleaseCatalog).mock.calls.length).toBe(callsAfterSelfHeal)
     wrapper.unmount()
   })
 
   it('目录刷新部分失败：源列表拉取失败不清空已到手的版本名称映射', async () => {
     // Promise.all 时代：任一请求失败即整体抛出，两侧名称映射双双保持空值
     vi.mocked(listSources).mockRejectedValue(new Error('db busy'))
-    vi.mocked(getReleases).mockResolvedValue([makeRelease()])
+    vi.mocked(getReleaseCatalog).mockResolvedValue([makeRelease()])
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
     await wrapper.find('.agent-ws-main').trigger('drop', {
@@ -1101,7 +1101,7 @@ describe('AgentWorkspace 冒烟', () => {
 
   it('失败 run 提供「重试」：点击即用原输入（指令/引用/模型）重新提交', async () => {
     vi.mocked(runAgentJob).mockClear()
-    vi.mocked(getReleases).mockResolvedValue([
+    vi.mocked(getReleaseCatalog).mockResolvedValue([
       {
         id: 7,
         source_id: 1,
@@ -1184,7 +1184,7 @@ describe('AgentWorkspace 冒烟', () => {
   it('重试时剔除已被删除的引用实体，不因实体缺失整体失败', async () => {
     vi.mocked(runAgentJob).mockClear()
     // 目录为空：run 引用的 release #7 已不存在
-    vi.mocked(getReleases).mockResolvedValue([])
+    vi.mocked(getReleaseCatalog).mockResolvedValue([])
     localStorage.setItem(
       'relwatch.agent.sessions.v1',
       JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
@@ -1211,7 +1211,7 @@ describe('AgentWorkspace 冒烟', () => {
   it('重试：目录加载失败时不把引用当「已删除」剔除（静默丢引用比可见的拒绝更糟）', async () => {
     vi.mocked(runAgentJob).mockClear()
     // 版本目录拉取失败（DB 忙）：「查不到」源于目录不可用，不代表实体已删除
-    vi.mocked(getReleases).mockRejectedValue(new Error('db busy'))
+    vi.mocked(getReleaseCatalog).mockRejectedValue(new Error('db busy'))
     localStorage.setItem(
       'relwatch.agent.sessions.v1',
       JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),

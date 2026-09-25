@@ -5,7 +5,7 @@ import ContextMenu, { type ContextMenuItem } from './components/common/ContextMe
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events, commands } from './bindings'
 import { type Source, listSources, sourceRepoKey, syncSourceCapabilities } from './api/sources'
-import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleases } from './api/releases'
+import { type ReleaseInfo, triggerPoll, getPollCountdown, getReleaseCatalog } from './api/releases'
 import { copyTextToClipboard } from './api/client'
 import { setErrorToastSink } from './api/report-error'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
@@ -445,7 +445,7 @@ async function loadSources() {
 }
 async function loadReleases() {
   try {
-    releases.value = await getReleases()
+    releases.value = await getReleaseCatalog()
   } catch (e: unknown) {
     showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
   }
@@ -453,7 +453,7 @@ async function loadReleases() {
 
 // ── 刷新合帧：组件 emit('update')（操作成功后就近刷新）与后端 release-state-changed
 // 事件（托盘角标主消费，前端列表顺手监听）会在同一次操作中先后到达，双路径各拉
-// 一次全量（200 行含 body 全文列）。50ms 窗口内合并成一次实际重拉，
+// 一次全量目录。50ms 窗口内合并成一次实际重拉，
 // 首次加载/轮询完成等单路径刷新不受影响（直接调 loadReleases）。──
 let releasesRefreshTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleLoadReleases() {

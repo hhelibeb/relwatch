@@ -7,9 +7,31 @@ vi.mock('../api/client', () => ({
   translateError: vi.fn((raw: string) => raw),
 }))
 
+// 命令层单独 mock：invokeI18nFn 被 mock 成"直接执行回调"后，才能断言到底调了哪个
+// 命令、带了什么参数（原有断言只覆盖"调用过一次"）。
+vi.mock('../bindings', () => ({
+  commands: {
+    getReleaseCatalog: vi.fn(),
+    getReleaseDetail: vi.fn(),
+    getReleaseSearchBodies: vi.fn(),
+    getReleaseSearchBodiesByIds: vi.fn(),
+    setNotificationState: vi.fn(),
+    deleteRelease: vi.fn(),
+    setReleaseFlag: vi.fn(),
+    translateRelease: vi.fn(),
+    triggerPoll: vi.fn(),
+    checkSingleSource: vi.fn(),
+    getPollCountdown: vi.fn(),
+  },
+}))
+
 import { invokeI18nFn } from '../api/client'
+import { commands } from '../bindings'
 import {
-  getReleases,
+  getReleaseCatalog,
+  getReleaseDetail,
+  getReleaseSearchBodies,
+  getReleaseSearchBodiesByIds,
   setNotificationState,
   deleteRelease,
   triggerPoll,
@@ -19,31 +41,89 @@ import {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // clearAllMocks 不清实现：每个用例前复位成透传，避免上一个用例的 mockResolvedValue 泄漏
+  vi.mocked(invokeI18nFn).mockImplementation(
+    (fn: () => Promise<unknown>) => Promise.resolve(fn()),
+  )
 })
 
-describe('getReleases', () => {
-  it('调起 get_releases 命令，返回 ReleaseInfo[]', async () => {
+describe('getReleaseCatalog', () => {
+  it('调起 get_release_catalog 命令，返回 ReleaseInfo[]', async () => {
     const mockData = [{ id: 1, tag_name: 'v1.0.0', owner: 'test', repo: 'test' }]
-    vi.mocked(invokeI18nFn).mockResolvedValue(mockData)
+    vi.mocked(commands.getReleaseCatalog).mockResolvedValue(mockData as never)
 
-    const result = await getReleases()
+    const result = await getReleaseCatalog()
 
-    expect(invokeI18nFn).toHaveBeenCalled()
+    expect(commands.getReleaseCatalog).toHaveBeenCalledTimes(1)
     expect(result).toEqual(mockData)
   })
 
   it('后端返回空数组时正常透传', async () => {
-    vi.mocked(invokeI18nFn).mockResolvedValue([])
+    vi.mocked(commands.getReleaseCatalog).mockResolvedValue([])
 
-    const result = await getReleases()
-
-    expect(result).toEqual([])
+    expect(await getReleaseCatalog()).toEqual([])
   })
 
   it('后端错误时抛出异常', async () => {
-    vi.mocked(invokeI18nFn).mockRejectedValue(new Error('err.database'))
+    vi.mocked(commands.getReleaseCatalog).mockRejectedValue(new Error('err.database'))
 
-    await expect(getReleases()).rejects.toThrow('err.database')
+    await expect(getReleaseCatalog()).rejects.toThrow('err.database')
+  })
+})
+
+describe('getReleaseDetail', () => {
+  it('按 release id 调起 get_release_detail', async () => {
+    const full = { id: 7, body: '全文正文' }
+    vi.mocked(commands.getReleaseDetail).mockResolvedValue(full as never)
+
+    const result = await getReleaseDetail(7)
+
+    expect(commands.getReleaseDetail).toHaveBeenCalledWith(7)
+    expect(result).toEqual(full)
+  })
+
+  it('后端错误时抛出异常（详情失败必须可感知）', async () => {
+    vi.mocked(commands.getReleaseDetail).mockRejectedValue(new Error('err.release_not_found|7'))
+
+    await expect(getReleaseDetail(7)).rejects.toThrow('err.release_not_found|7')
+  })
+})
+
+describe('getReleaseSearchBodies', () => {
+  it('透传游标与字符预算（首次游标高于任何真实 id，从最新一块开始）', async () => {
+    const chunk = [{ id: 3, body: 'body', body_translated: null }]
+    vi.mocked(commands.getReleaseSearchBodies).mockResolvedValue(chunk)
+
+    const result = await getReleaseSearchBodies(Number.MAX_SAFE_INTEGER, 512 * 1024)
+
+    expect(commands.getReleaseSearchBodies).toHaveBeenCalledWith(Number.MAX_SAFE_INTEGER, 512 * 1024)
+    expect(result).toEqual(chunk)
+  })
+
+  it('返回空数组表示已到库底，正常透传', async () => {
+    vi.mocked(commands.getReleaseSearchBodies).mockResolvedValue([])
+
+    expect(await getReleaseSearchBodies(1, 1024)).toEqual([])
+  })
+})
+
+describe('getReleaseSearchBodiesByIds', () => {
+  it('按 id 列表调起 get_release_search_bodies_by_ids', async () => {
+    const chunk = [{ id: 5, body: '译文落库后的正文', body_translated: 'translated' }]
+    vi.mocked(commands.getReleaseSearchBodiesByIds).mockResolvedValue(chunk)
+
+    const result = await getReleaseSearchBodiesByIds([5, 6])
+
+    expect(commands.getReleaseSearchBodiesByIds).toHaveBeenCalledWith([5, 6])
+    expect(result).toEqual(chunk)
+  })
+
+  it('空 id 列表不发请求（避免无谓 IPC）', async () => {
+    const result = await getReleaseSearchBodiesByIds([])
+
+    expect(result).toEqual([])
+    expect(commands.getReleaseSearchBodiesByIds).not.toHaveBeenCalled()
+    expect(invokeI18nFn).not.toHaveBeenCalled()
   })
 })
 

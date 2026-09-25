@@ -590,7 +590,8 @@ pub fn send_test_notification(app: &tauri::AppHandle) {
             return;
         }
     };
-    let releases = crate::db::releases::get_releases_with_state(&conn).unwrap_or_default();
+    // 用目录投影（正文为预览）而非全量：这里只要第一条，没必要把全库正文读进内存
+    let releases = crate::db::releases::get_release_catalog(&conn).unwrap_or_default();
     let Some(r) = releases.into_iter().next() else {
         log::warn!("测试通知：库中暂无 release，无法发送");
         return;

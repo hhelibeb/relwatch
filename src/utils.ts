@@ -3,6 +3,7 @@ import { getSourceTypeDef } from './api/source-registry'
 
 // 字段与 src/bindings.ts 的 ReleaseInfo 对齐（源描述与 AI 摘要可为 null）
 interface SearchableRelease {
+  id: number                   // ← Tier2 索引按 id 建表（水位外无对应行）
   owner: string
   repo: string
   tag_name: string
@@ -12,6 +13,13 @@ interface SearchableRelease {
   source_description?: string | null
   ai_summary?: string | null
   body_translated?: string | null
+}
+
+/** 分块正文（结构同 bindings.ReleaseSearchBody，此处不引 Tauri 层以免 utils 反向依赖）。 */
+export interface SearchBodyChunk {
+  id: number
+  body: string | null
+  body_translated: string | null
 }
 
 export function formatDate(dateStr: string): string {
@@ -35,7 +43,8 @@ export function tokenizeQuery(query: string): string[] {
 }
 
 /** body 属于「简介/标签」而非「长正文」的源类型判定（视频源无 AI 摘要，body 是唯一内容载体）。
- *  判据是字段语义，不是长度 —— 见 docs/release-fulltext-search-impl.md §1.4（长度阈值会在同类源内部制造不可预测性）。
+ *  判据是字段语义，不是长度 —— 长度阈值会在同类源内部制造不可预测性
+ *  （同一源里短简介与长正文会被劈成两类，搜索结果随条目长度漂移）。
  *
  *  能力位**派生自源类型注册表**（aiSummary === false），不在此处镜像类型集合：
  *  注册表是唯一事实来源，`syncSourceCapabilities()` 依后端 `list_source_types` 的 ai_eligible 覆写
@@ -66,17 +75,20 @@ function tier1Fields(r: SearchableRelease): string[] {
   ].map(s => s.toLowerCase())
 }
 
-/** Tier2 字段（GitHub / HF 的长正文 + 译文）。仅在深度搜索时构建。
- *  视频源已在 Tier1 覆盖，返回空串避免重复持有同一份文本。 */
-function tier2Fields(r: SearchableRelease): string[] {
-  if (isSummaryBodySource(r)) return ['']
-  return [(r.body ?? ''), (r.body_translated ?? '')].map(s => s.toLowerCase())
+/** 单条正文的 Tier2 字段（小写）。`body` / `body_translated` 任一可缺省。
+ *  正文不再随目录下发（目录里是预览投影），由 `getReleaseSearchBodies` 按 id 游标
+ *  分块取回后经 `mergeBodyIndex` 入表。 */
+export function tier2FieldsFromBody(
+  body: string | null | undefined,
+  bodyTranslated: string | null | undefined,
+): string[] {
+  return [(body ?? ''), (bodyTranslated ?? '')].map(s => s.toLowerCase())
 }
 
 // ── 缓存 ─────────────────────────────────────────────────────────
-// 按数组引用缓存：App.vue 每次 loadReleases() 整体替换 releases.value，
-// 故每次刷新都会重建。Tier1 真实规模约 6ms，无感。
-// Tier2 不进 WeakMap —— 它必须由调用方显式构建与释放。
+// 按数组引用缓存：App.vue 每次刷新都整体替换 releases.value，故每次刷新都会重建。
+// Tier1 真实规模约 6ms，无感。
+// Tier2（正文索引）不进 WeakMap —— 它由 ReleaseTab 持有并按水位增量维护。
 const tier1Cache = new WeakMap<readonly SearchableRelease[], string[][]>()
 
 export function getSearchIndex(releases: readonly SearchableRelease[]): string[][] {
@@ -88,10 +100,21 @@ export function getSearchIndex(releases: readonly SearchableRelease[]): string[]
   return idx
 }
 
-/** 深度搜索用：构建 Tier2 索引（长正文 + 译文）。
- *  调用方负责在用完后丢弃引用（不缓存，交给 GC）。 */
-export function buildBodyIndex(releases: readonly SearchableRelease[]): string[][] {
-  return releases.map(tier2Fields)
+/** 深度搜索用的 Tier2 索引：release id → 已小写的 [正文, 译文] 字段。
+ *
+ *  用 Map 而不是与 `releases` 数组对齐的 `string[][]`：正文按 id 游标分块取，
+ *  水位之外（尚未取到）的 id 不在表里 —— 数组位置无法表达这种「缺行」，
+ *  而缺行必须与「该条正文为空」区分开（前者不参与 Tier2 命中，后者本就没有可命中内容）。 */
+export type BodyIndex = Map<number, string[]>
+
+/** 把一批分块正文并入索引，返回**新的 Map**。
+ *  新引用是刻意的：索引挂在 `shallowRef` 上，靠引用变化触发过滤重算。 */
+export function mergeBodyIndex(base: BodyIndex, chunks: readonly SearchBodyChunk[]): BodyIndex {
+  const next = new Map(base)
+  for (const c of chunks) {
+    next.set(c.id, tier2FieldsFromBody(c.body, c.body_translated))
+  }
+  return next
 }
 
 /** 对单个 release 判断：所有 token 都必须命中 fields 中的某一个字段。 */
@@ -112,11 +135,12 @@ function matchesFields(fields: readonly string[], tokens: string[]): boolean {
 
 /** 批量过滤：返回命中的下标序列，调用方再按下标取对象。
  *  这样 Tier1 索引只遍历一次，且与 releases 数组天然对齐。
- *  @param bodyIndex 传入 buildBodyIndex() 的结果即启用深度搜索 */
+ *  @param bodyIndex 深度搜索正文索引（按 release id 查）；未收录的 id 视为
+ *                   「正文不在水位内」，不参与 Tier2 命中。 */
 export function filterReleaseIndices(
   releases: readonly SearchableRelease[],
   query: string,
-  bodyIndex?: readonly string[][] | null,
+  bodyIndex?: BodyIndex | null,
 ): number[] {
   const tokens = tokenizeQuery(query)
   if (tokens.length === 0) return releases.map((_, i) => i)
@@ -125,7 +149,8 @@ export function filterReleaseIndices(
   const out: number[] = []
   for (let i = 0; i < releases.length; i++) {
     if (matchesFields(tier1[i], tokens)) { out.push(i); continue }
-    if (bodyIndex && matchesFields(bodyIndex[i], tokens)) out.push(i)
+    const fields = bodyIndex?.get(releases[i].id)
+    if (fields && matchesFields(fields, tokens)) out.push(i)
   }
   return out
 }
