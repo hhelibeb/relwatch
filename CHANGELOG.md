@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.17.3] - 2026-09-20
 
+### Security
+- 升级 `rustls` 修复 TLS 1.3 握手相关漏洞（RUSTSEC-2026-0285 / GHSA-2mjx-qc3c-rqvc，CVSS 5.3），级联 `rustls-webpki` → 0.103.15。(`dd10f42`)
+
 ### Fixed
 - 修复点托盘「退出」后应用卡死无响应、只能强制结束进程的问题。(`1243a5d`)
 - 修复点托盘或通知时窗口不到最前、看起来像没打开的问题；窗口最小化时点托盘无反应一并修复。(`014c337`)
@@ -16,7 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 修复 Agent 工作区重试时覆盖用户刚选的模型、换模型重试仍撞同一错误的问题。(`1719342`)
 - 修复 Agent 工作区新采集到的版本拖入后显示为 `release #数字`、认不出是哪个版本的问题。(`b236c7f`)
 - 修复 Agent 提交成功后输入区仍残留引用与 skill、会随下一轮误带出去的问题。(`5afc637`)
-- 升级 `rustls` 修复 TLS 1.3 握手相关安全漏洞（RUSTSEC-2026-0285）。(`dd10f42`)
 
 ### Changed
 - 依赖升级（`vue`、`vite`、`eslint`、`marked`、`dompurify` 等 patch / minor 版本）。(`7ae305c`)
