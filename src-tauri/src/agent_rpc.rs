@@ -528,16 +528,22 @@ pub fn ensure_supported_type(config: &AgentConfig) -> Result<(), String> {
 
 // ---- scoped-models：读取 pi settings.json 的 enabledModels 并按模式过滤 ----
 
-/// pi 的 agent 配置目录（settings.json 所在目录）。对齐 pi config.getAgentDir()：
-/// 环境变量 `PI_CODING_AGENT_DIR` 优先（直接用其值），否则默认 `~/.pi/agent`。
-pub fn scoped_settings_path() -> Option<std::path::PathBuf> {
+/// pi 的 agent 配置目录（settings.json / models.json 所在目录）。对齐 pi
+/// config.getAgentDir()：环境变量 `PI_CODING_AGENT_DIR` 优先（直接用其值），
+/// 否则默认 `~/.pi/agent`。
+pub fn pi_agent_dir() -> Option<std::path::PathBuf> {
     if let Ok(dir) = std::env::var("PI_CODING_AGENT_DIR") {
         let t = dir.trim();
         if !t.is_empty() {
-            return Some(std::path::Path::new(t).join("settings.json"));
+            return Some(std::path::PathBuf::from(t));
         }
     }
-    dirs::home_dir().map(|h| h.join(".pi").join("agent").join("settings.json"))
+    dirs::home_dir().map(|h| h.join(".pi").join("agent"))
+}
+
+/// pi settings.json 路径（pi 全局设置；不存在时调用方按读取失败处理）。
+pub fn scoped_settings_path() -> Option<std::path::PathBuf> {
+    pi_agent_dir().map(|dir| dir.join("settings.json"))
 }
 
 /// 读取 pi settings.json 的 `enabledModels`（`/scoped-models` 命令持久化的模型模式列表，

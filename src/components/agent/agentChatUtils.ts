@@ -182,6 +182,17 @@ export function formatCostUsd(micros: number): string {
   return usd.toFixed(6)
 }
 
+/** 词元数/上下文窗口的紧凑展示（与 pi footer 的 `formatTokens` 逐档对齐，
+ *  这样 relwatch 的 `1.0M` 与 pi 显示的窗口串一致）：
+ *  950 → `950`；5200 → `5.2k`；116000 → `116k`；1000000 → `1.0M`。 */
+export function formatTokenCount(count: number): string {
+  if (!Number.isFinite(count) || count < 1000) return String(Math.round(count))
+  if (count < 10_000) return `${(count / 1000).toFixed(1)}k`
+  if (count < 1_000_000) return `${Math.round(count / 1000)}k`
+  if (count < 10_000_000) return `${(count / 1_000_000).toFixed(1)}M`
+  return `${Math.round(count / 1_000_000)}M`
+}
+
 /** 取错误的 i18n key（`err.*`），用于按错误类型分支而非比对翻译后的文案。
  *  InvokeI18nError 直接带 key；其余情况仅当原文就是未翻译的 err.* 键时返回。 */
 export function errorKey(e: unknown): string | null {

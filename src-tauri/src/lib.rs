@@ -22,6 +22,7 @@ mod net;
 mod media;
 mod redact;
 pub mod agent;
+pub mod agent_context;
 pub mod agent_rpc;
 pub mod agent_session;
 

@@ -49,7 +49,8 @@ defineProps<{
   chipTooltip: { x: number; y: number; text: string } | null
   // ── H 域状态（会话上下文水位）──
   usageText: string | null
-  usageWarn: boolean
+  usageEstimated: boolean
+  usageHint: string | undefined
   usage: AgentSessionUsage | null
   // ── 函数注入（composable 动作经编排层透传；ref 状态回写经 emit）──
   /** 模型菜单项文案与选中态（models.modelLabel / modelKey 语义） */
@@ -87,7 +88,6 @@ const emit = defineEmits<{
   toggleModelMenu: []
   pickModel: [model: RpcAvailableModel | null]
   toggleModelOnce: []
-  newSession: []
 }>()
 </script>
 
@@ -203,12 +203,12 @@ const emit = defineEmits<{
       </div>
     </div>
 
-    <!-- 会话上下文水位（消息数 / 词元 / 成本）：对齐主流 chat 应用惯例放在输入框下方，
-         顶部不再堆叠「状态横幅 + 水位条」两条；接近上限时警告色 + 新建会话快捷入口 -->
-    <div v-if="usageText" class="agent-ws-usage" :class="{ warn: usageWarn }">
-      <span class="agent-ws-usage-text" :title="usageWarn ? usageText : undefined">{{ usageWarn ? t('agent.context_near_limit') : usageText }}</span>
-      <span v-if="!usageWarn && usage && !usage.has_usage" class="agent-ws-usage-est" :title="t('agent.usage_estimate_hint')">≈</span>
-      <button v-if="usageWarn" class="btn-sm agent-ws-usage-new" :title="usageText ?? ''" @click="emit('newSession')">{{ t('agent.session_new') }}</button>
+    <!-- 会话上下文水位（对齐 pi footer 的 `5.2% / 1.0M (auto)`）：放在输入框下方，
+         对齐主流 chat 应用惯例，顶部不再堆叠「状态横幅 + 水位条」两条。
+         词元与窗口由后端算（agent_context.rs 复刻 pi 的 getContextUsage） -->
+    <div v-if="usageText" class="agent-ws-usage">
+      <span class="agent-ws-usage-text" :title="usageHint">{{ usageText }}</span>
+      <span v-if="usageEstimated" class="agent-ws-usage-est" :title="t('agent.usage_estimate_hint')">≈</span>
     </div>
 
     <!-- @ Skill 菜单 -->
@@ -492,7 +492,7 @@ const emit = defineEmits<{
 }
 
 /* 会话上下文水位：移至输入框下方（对齐主流 chat 应用惯例），顶部不再堆叠
- * 「状态横幅 + 水位条」两条；接近上限时警告色 + 新建会话快捷入口 */
+ * 「状态横幅 + 水位条」两条；数字由后端按 pi footer 同口径算好 */
 .agent-ws-usage {
   display: flex;
   align-items: center;
@@ -501,21 +501,12 @@ const emit = defineEmits<{
   font-size: 11px;
   color: var(--text-muted);
 }
-.agent-ws-usage.warn {
-  color: #b0882e;
-}
 .agent-ws-usage-text {
   flex: 1;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.agent-ws-usage-new {
-  flex-shrink: 0;
-  height: 20px;
-  padding: 0 8px;
-  font-size: 11px;
 }
 /* 引用 chip 全文悬浮提示（fixed 避免被消息区滚动容器裁剪） */
 .agent-ws-chip-tooltip {

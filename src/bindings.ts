@@ -214,10 +214,11 @@ export const commands = {
 	 */
 	getAgentQueue: () => __TAURI_INVOKE<AgentQueueItem[]>("get_agent_queue"),
 	/**
-	 *  查询会话文件的上下文水位（消息条数 / 文本字符数 / 文件字节数）。
+	 *  查询会话文件的上下文水位（当前上下文词元/模型窗口 + 消息数 + 累计词元与成本）。
 	 * 
 	 *  「上下文水位可见性」的数据源：relwatch 侧不做会话长度治理（依赖 pi 自身管理），
-	 *  但应向用户暴露水位——接近上限时提示开新会话。token 为前端估算（字符数 ÷ 2）。
+	 *  但应向用户暴露水位——`context_tokens / context_window` 与 pi footer 的
+	 *  `5.2% / 1.0M` 同口径（见 agent_context 模块），累计字段回答「花了多少」。
 	 */
 	getAgentSessionUsage: (sessionKey: string) => __TAURI_INVOKE<AgentSessionUsage>("get_agent_session_usage", { sessionKey }),
 	/**
@@ -537,7 +538,12 @@ export type AgentSessionInfo = {
 	run_count: number,
 };
 
-/**  会话文件的水位摘要 + pi 上报的实际词元/成本。 */
+/**
+ *  会话文件的水位摘要 + pi 上报的实际词元/成本。
+ * 
+ *  「水位」有两套口径，别混用：`context_*` 是**当前上下文**（对齐 pi footer 的
+ *  `5.2% / 1.0M`），`total_chars` / `usage.*` 是**会话累计**（旧口径与计费口径）。
+ */
 export type AgentSessionUsage = {
 	/**  消息总条数（含 user / assistant / tool / bash / custom）。 */
 	message_count: number,
@@ -569,6 +575,27 @@ export type AgentSessionUsage = {
 	 *  到字符数估算，不能把 0 当真实成本展示（那会让「免费」的错觉更危险）。
 	 */
 	has_usage: boolean,
+	/**
+	 *  当前上下文的词元数（对齐 pi footer 的 tokens）。
+	 * 
+	 *  口径与累计字段完全不同：这里是**最后一次请求的 prompt + 本次输出**，加上
+	 *  其后消息的 chars/4 估算——即「还剩多少上下文」；`total_tokens` 回答的是
+	 *  「一共花了多少」。None = 未知：压缩后还没有新一轮模型响应，pi footer
+	 *  此时也显示 `?`（旧 usage 反映的是压缩前的上下文）。
+	 */
+	context_tokens: number | null,
+	/**
+	 *  当前模型的上下文窗口（pi models.json 的 `contextWindow`，如 1000000）。
+	 *  None = 查不到（不在 pi 模型目录里 / 目录读取失败）→ 前端不显示百分比。
+	 */
+	context_window: number | null,
+	/**  `context_tokens` 是否为 chars/4 估算（会话里没有可信 usage 时的回落口径）。 */
+	context_estimated: boolean,
+	/**
+	 *  pi 是否开启自动压缩（settings.json `compaction.enabled`，缺省 true），
+	 *  对应 pi footer 水位后的 `(auto)` 标记。
+	 */
+	auto_compaction: boolean,
 };
 
 /**  按操作类型聚合行（饼图「按操作」维度：摘要 / 翻译 / 语言检测 / 连接测试）。 */

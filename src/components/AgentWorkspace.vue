@@ -145,7 +145,7 @@ const {
 })
 
 // ── 会话上下文水位（H 域 composable）──
-const { usage, loadUsage, usageText, usageWarn } = useAgentUsage(activeKey)
+const { usage, loadUsage, usageText, usageEstimated, usageHint } = useAgentUsage(activeKey)
 
 // ── 模型选择（D 域 composable）：会话级落库经回调转调会话域，不互相 import ──
 const {
@@ -567,7 +567,8 @@ const composerProps = reactive({
   canStop,
   cancelling,
   usageText,
-  usageWarn,
+  usageEstimated,
+  usageHint,
   usage,
   chipTooltip,
   modelLabel,
@@ -598,7 +599,6 @@ const composerHandlers = {
   toggleModelMenu,
   pickModel,
   toggleModelOnce,
-  newSession: startNewSession,
 }
 
 // ── 键盘统一入口 ──

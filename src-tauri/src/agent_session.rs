@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 use std::path::Path;
 
+use crate::agent_context;
+
 /// 一条消息中的内容块（前端按 kind 渲染）。
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -410,6 +412,9 @@ fn collect_text(content: &serde_json::Value) -> String {
 // ---- 会话水位统计（上下文水位可见性）----
 
 /// 会话文件的水位摘要 + pi 上报的实际词元/成本。
+///
+/// 「水位」有两套口径，别混用：`context_*` 是**当前上下文**（对齐 pi footer 的
+/// `5.2% / 1.0M`），`total_chars` / `usage.*` 是**会话累计**（旧口径与计费口径）。
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 pub struct AgentSessionUsage {
     /// 消息总条数（含 user / assistant / tool / bash / custom）。
@@ -438,6 +443,21 @@ pub struct AgentSessionUsage {
     /// false 时上述词元/成本全为 0——**是「pi 没上报」而非「没消耗」**，前端应回落
     /// 到字符数估算，不能把 0 当真实成本展示（那会让「免费」的错觉更危险）。
     pub has_usage: bool,
+    /// 当前上下文的词元数（对齐 pi footer 的 tokens）。
+    ///
+    /// 口径与累计字段完全不同：这里是**最后一次请求的 prompt + 本次输出**，加上
+    /// 其后消息的 chars/4 估算——即「还剩多少上下文」；`total_tokens` 回答的是
+    /// 「一共花了多少」。None = 未知：压缩后还没有新一轮模型响应，pi footer
+    /// 此时也显示 `?`（旧 usage 反映的是压缩前的上下文）。
+    pub context_tokens: Option<i64>,
+    /// 当前模型的上下文窗口（pi models.json 的 `contextWindow`，如 1000000）。
+    /// None = 查不到（不在 pi 模型目录里 / 目录读取失败）→ 前端不显示百分比。
+    pub context_window: Option<i64>,
+    /// `context_tokens` 是否为 chars/4 估算（会话里没有可信 usage 时的回落口径）。
+    pub context_estimated: bool,
+    /// pi 是否开启自动压缩（settings.json `compaction.enabled`，缺省 true），
+    /// 对应 pi footer 水位后的 `(auto)` 标记。
+    pub auto_compaction: bool,
 }
 
 impl AgentSessionUsage {
@@ -454,15 +474,22 @@ impl AgentSessionUsage {
             total_tokens: 0,
             cost_micros: 0,
             has_usage: false,
+            context_tokens: None,
+            context_window: None,
+            context_estimated: false,
+            // 空会话不展示水位条，该字段无意义；取 pi 的默认值（自动压缩开启）
+            auto_compaction: true,
         }
     }
 }
 
 /// 统计会话文件的水位与实际消耗：读文件一次，行级累计。
 ///
-/// 两路数据各有用途，不互相替代：
-/// - `total_chars`：字符数，用于**上下文水位**（还剩多少上下文）；
-/// - `usage.*`：pi 上报的真实词元与成本，用于**花了多少**（计费口径，
+/// 三路数据各有用途，不互相替代：
+/// - `context_tokens` / `context_window`：**当前上下文水位**（还剩多少上下文），
+///   与 pi footer 的 `5.2% / 1.0M` 同口径（见 agent_context）；
+/// - `total_chars`：会话文本字符数（旧口径，保留给「pi 未上报用量」时的估算显示）；
+/// - `usage.*`：pi 上报的词元与成本**累计**，用于**花了多少**（计费口径，
 ///   含缓存命中，无法由字符数推出）。
 ///
 /// 坏行容忍（与 parse_session_jsonl 一致）；文件不存在 / 读取失败 → None。
@@ -492,6 +519,13 @@ pub fn session_usage(path: &Path) -> Option<AgentSessionUsage> {
             }
         }
     }
+    let waterline = agent_context::context_tokens(&content);
+    // 窗口按会话最后使用的模型查 pi 模型目录：查不到时 percentage 无从谈起，
+    // 前端退化为不显示百分比（而不是猜一个默认窗口）
+    let context_window = match (&waterline.provider, &waterline.model_id) {
+        (Some(provider), Some(model_id)) => agent_context::model_context_window(provider, model_id),
+        _ => None,
+    };
     Some(AgentSessionUsage {
         message_count,
         total_chars,
@@ -502,6 +536,10 @@ pub fn session_usage(path: &Path) -> Option<AgentSessionUsage> {
         total_tokens: usage.total,
         cost_micros: usage.cost_micros,
         has_usage: usage.count > 0,
+        context_tokens: waterline.tokens,
+        context_window,
+        context_estimated: waterline.estimated,
+        auto_compaction: agent_context::auto_compaction_enabled(),
     })
 }
 
@@ -1079,6 +1117,8 @@ mod tests {
             total_tokens: 2853,
             cost_micros: 41,
             has_usage: true,
+            // 其余字段（上下文水位等）与本用例无关，取空会话默认
+            ..AgentSessionUsage::empty()
         };
         let md = render_markdown("我的会话", &messages, Some(&usage));
         assert!(md.starts_with("# 我的会话"));
@@ -1124,6 +1164,7 @@ mod tests {
             total_tokens: 293,
             cost_micros: 0,
             has_usage: true,
+            ..AgentSessionUsage::empty()
         };
         let md = render_markdown("无价格会话", &messages, Some(&usage));
         assert!(md.contains("词元消耗"), "词元行照常输出: {}", md);

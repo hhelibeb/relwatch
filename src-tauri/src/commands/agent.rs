@@ -435,10 +435,11 @@ pub fn get_agent_queue(
     agent::agent_queue(&conn).map_err(|e| e.to_string())
 }
 
-/// 查询会话文件的上下文水位（消息条数 / 文本字符数 / 文件字节数）。
+/// 查询会话文件的上下文水位（当前上下文词元/模型窗口 + 消息数 + 累计词元与成本）。
 ///
 /// 「上下文水位可见性」的数据源：relwatch 侧不做会话长度治理（依赖 pi 自身管理），
-/// 但应向用户暴露水位——接近上限时提示开新会话。token 为前端估算（字符数 ÷ 2）。
+/// 但应向用户暴露水位——`context_tokens / context_window` 与 pi footer 的
+/// `5.2% / 1.0M` 同口径（见 agent_context 模块），累计字段回答「花了多少」。
 #[tauri::command]
 #[specta::specta]
 pub fn get_agent_session_usage(

@@ -1,14 +1,15 @@
-// ── AgentWorkspace 会话上下文水位（H 域，评审 P1：上下文水位可见性）──
-// 自 AgentWorkspace.vue 出仓：usage 状态 / loadUsage / 展示文案与告警判定。
+// ── AgentWorkspace 会话上下文水位（H 域）──
+// 自 AgentWorkspace.vue 出仓：usage 状态 / loadUsage / 展示文案。
 // loadChat 的联动（预清 + 调用）经编排层把句柄传给聊天核心，本模块不反向依赖。
+//
+// 词元与窗口口径对齐 pi footer 的 `5.2% / 1.0M (auto)`：数字全部由后端
+//（agent_context.rs，复刻 pi 的 getContextUsage）算好，前端只负责展示与百分比。
+// 早先「整个会话字符数 ÷ 2」的估算与 pi 实测偏差可达 1.7 倍（8.2% vs 4.7%），
+// 已由 `context_tokens / context_window` 取代。
 import { computed, ref, type Ref } from 'vue'
 import { getAgentSessionUsage, type AgentSessionUsage } from '../../api/agent'
 import { t } from '../../i18n'
-import { formatCostUsd } from './agentChatUtils'
-
-// 警告阈值（字符）：约 10 万 tokens 的中高水位（中文 token ≈ 字符数/2）。
-// 模型上下文大小不一（128k~200k tokens），取保守中位，接近即提示开新会话。
-const USAGE_WARN_CHARS = 200_000
+import { formatCostUsd, formatTokenCount } from './agentChatUtils'
 
 export function useAgentUsage(activeKey: Ref<string>) {
   const usage = ref<AgentSessionUsage | null>(null)
@@ -21,9 +22,10 @@ export function useAgentUsage(activeKey: Ref<string>) {
     }
   }
 
-  const usageText = computed<string | null>(() => {
+  /** 词元与成本累计行（回答「花了多少」，与上下文水位口径不同）。 */
+  const totalsText = computed<string>(() => {
     const u = usage.value
-    if (!u || u.message_count === 0) return null
+    if (!u) return ''
     if (u.has_usage) {
       // pi 上报了真实用量：按计费口径展示（输入/输出分开，缓存命中不计入输入）
       const base = t(
@@ -41,7 +43,50 @@ export function useAgentUsage(activeKey: Ref<string>) {
     return t('agent.context_usage', String(u.message_count), String(Math.max(1, Math.round(u.total_chars / 2))))
   })
 
-  const usageWarn = computed<boolean>(() => (usage.value?.total_chars ?? 0) > USAGE_WARN_CHARS)
+  /** 上下文水位段：`11.6% / 1.0M (auto)`；未知水位 → `? / 1.0M`；窗口未知 → ''（不显示）。 */
+  const waterlineText = computed<string>(() => {
+    const u = usage.value
+    if (!u || u.message_count === 0) return ''
+    const window = u.context_window
+    if (window === null || window <= 0) {
+      // 窗口查不到（模型不在 pi 模型目录里）时百分比无从谈起：宁可不显示，
+      // 也不猜一个默认窗口——错误的分母比没有数字更误导
+      return ''
+    }
+    const auto = u.auto_compaction ? ` ${t('agent.context_auto_label')}` : ''
+    const windowLabel = formatTokenCount(window)
+    if (u.context_tokens === null) {
+      // 压缩后还没有新一轮响应：旧 usage 反映的是压缩前的上下文，pi 同样显示 `?`
+      return t('agent.context_unknown', windowLabel) + auto
+    }
+    return t(
+      'agent.context_waterline',
+      ((u.context_tokens / window) * 100).toFixed(1),
+      windowLabel,
+    ) + auto
+  })
 
-  return { usage, loadUsage, usageText, usageWarn }
+  const usageText = computed<string | null>(() => {
+    const u = usage.value
+    if (!u || u.message_count === 0) return null
+    return [waterlineText.value, totalsText.value].filter(Boolean).join(' · ')
+  })
+
+  /** 数字是否为估算（前端据此标 ≈，不把估算值当精确值展示）。 */
+  const usageEstimated = computed<boolean>(
+    () => !!usage.value && (usage.value.context_estimated || !usage.value.has_usage),
+  )
+
+  /** 水位悬浮说明：解释 `?`（压缩后未知）与 `(auto)`（自动压缩已开）两种非直观状态。 */
+  const usageHint = computed<string | undefined>(() => {
+    const u = usage.value
+    if (!u || u.message_count === 0) return undefined
+    if (u.context_window !== null && u.context_tokens === null) {
+      return t('agent.context_unknown_hint')
+    }
+    if (u.auto_compaction) return t('agent.context_auto_hint')
+    return undefined
+  })
+
+  return { usage, loadUsage, usageText, usageEstimated, usageHint }
 }

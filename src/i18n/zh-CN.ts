@@ -615,7 +615,12 @@ export default {
   'agent.context_usage_actual': '消息 {0} 条 · 输入 {1} · 输出 {2} 词元',
   'agent.cost_usage': ' · 成本约 ${0}',
   'agent.usage_estimate_hint': 'pi 未上报用量，词元数为按字符数估算',
-  'agent.context_near_limit': '上下文接近上限，继续对话可能丢失早期内容，建议新建会话',
+  // 上下文水位（对齐 pi footer 的 `5.2% / 1.0M (auto)`）：{0} 百分比、{1} 模型窗口
+  'agent.context_waterline': '{0}% / {1}',
+  'agent.context_unknown': '? / {0}',
+  'agent.context_auto_label': '(auto)',
+  'agent.context_auto_hint': 'pi 已开启自动压缩：接近上下文上限前会自动摘要历史',
+  'agent.context_unknown_hint': '压缩后尚未有新回复，上下文水位需等下一轮响应才能算出',
   'agent.session_search': '搜索会话',
   'agent.session_search_placeholder': '按标题搜索…',
   'agent.session_no_match': '没有匹配的会话',

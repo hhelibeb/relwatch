@@ -1306,6 +1306,10 @@ describe('AgentWorkspace P2 打磨', () => {
       total_tokens: 0,
       cost_micros: 0,
       has_usage: false,
+      context_tokens: null,
+      context_window: null,
+      context_estimated: false,
+      auto_compaction: true,
     })
   })
 
@@ -1448,6 +1452,10 @@ describe('AgentWorkspace P2 打磨', () => {
       total_tokens: 4100,
       cost_micros: 41244, // 0.041244 美元
       has_usage: true,
+      context_tokens: 115_915,
+      context_window: 1_000_000,
+      context_estimated: false,
+      auto_compaction: true,
     })
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
@@ -1455,9 +1463,59 @@ describe('AgentWorkspace P2 打磨', () => {
     expect(bar.exists()).toBe(true)
     expect(bar.text()).toContain(t('agent.context_usage_actual', '6', '1200', '340'))
     expect(bar.text()).toContain('0.0412')
+    // 水位段与 pi footer 同口径：百分比 / 模型窗口 (auto)
+    expect(bar.text()).toContain(t('agent.context_waterline', '11.6', '1.0M') + ` ${t('agent.context_auto_label')}`)
     // 真实用量不显示估算标记
     expect(wrapper.find('.agent-ws-usage-est').exists()).toBe(false)
     wrapper.unmount()
+  })
+
+  it('上下文水位：压缩后未知显示 `? / 窗口`，窗口查不到则不显示百分比', async () => {
+    vi.mocked(getAgentSessionUsage).mockResolvedValue({
+      message_count: 6,
+      total_chars: 4000,
+      file_bytes: 12345,
+      input_tokens: 1200,
+      output_tokens: 340,
+      cache_read_tokens: 0,
+      total_tokens: 1540,
+      cost_micros: 0,
+      has_usage: true,
+      context_tokens: null,
+      context_window: 1_000_000,
+      context_estimated: false,
+      auto_compaction: false,
+    })
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    let bar = wrapper.find('.agent-ws-usage')
+    expect(bar.text()).toContain(t('agent.context_unknown', '1.0M'))
+    // 自动压缩关闭：不带 (auto) 标记
+    expect(bar.text()).not.toContain(t('agent.context_auto_label'))
+    wrapper.unmount()
+
+    // 窗口查不到（模型不在 pi 模型目录里）→ 不显示百分比，宁可不显示也不猜分母
+    vi.mocked(getAgentSessionUsage).mockResolvedValue({
+      message_count: 6,
+      total_chars: 4000,
+      file_bytes: 12345,
+      input_tokens: 1200,
+      output_tokens: 340,
+      cache_read_tokens: 0,
+      total_tokens: 1540,
+      cost_micros: 0,
+      has_usage: true,
+      context_tokens: 50_000,
+      context_window: null,
+      context_estimated: false,
+      auto_compaction: true,
+    })
+    const second = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    bar = second.find('.agent-ws-usage')
+    expect(bar.text()).not.toContain('%')
+    expect(bar.text()).toContain(t('agent.context_usage_actual', '6', '1200', '340'))
+    second.unmount()
   })
 
   it('成本为零：pi 未配置模型价格时只展示词元，不显示 $0 成本', async () => {
@@ -1471,6 +1529,10 @@ describe('AgentWorkspace P2 打磨', () => {
       total_tokens: 1020,
       cost_micros: 0, // models.json 自定义模型无价格 → pi 上报 cost 全 0
       has_usage: true,
+      context_tokens: 12_000,
+      context_window: 200_000,
+      context_estimated: false,
+      auto_compaction: true,
     })
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
@@ -1491,6 +1553,10 @@ describe('AgentWorkspace P2 打磨', () => {
       total_tokens: 0,
       cost_micros: 0,
       has_usage: false,
+      context_tokens: 2000,
+      context_window: 1_000_000,
+      context_estimated: true,
+      auto_compaction: true,
     })
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
