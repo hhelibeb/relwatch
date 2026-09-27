@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-09-27
+
+### Added
+- Agent 工作区显示会话上下文水位（百分比 / 模型窗口，自动压缩时标注），与 pi footer 口径一致。(`0dfe6b6`)
+- 版本列表不再截断在 200 条，更早的历史版本在列表、日历、聚合视图与来源计数中均可访问。(`583281a`)
+- 源设置支持按源开关：拉取历史与检查预发布可逐源选择跟随全局、开启或关闭。(`e9ef330`)
+
+### Fixed
+- 修复通知发送失败后静默丢失的问题，现会留下日志并在下一轮重发。(`e9ef330`)
+- 修复断路器把配额、限流、凭据类失败误判为源故障而停止检查的问题。(`e9ef330`)
+- 修复发布时间戳格式不一致导致真正最新的版本被标为已读、漏掉通知的问题。(`583281a`)
+- 修复卡片头部被版本号挤占导致仓库名显示不全的问题；卡片不再渲染「预发布」文字。(`71a6bf5`)
+
+### Changed
+- 版本列表载荷不再随库存增长：非视频类源只带正文预览，详情弹窗按需取全文。(`583281a`)
+- 全文搜索索引改为增量维护；未能覆盖的早期正文会明确标注「仅搜索近期正文」。(`583281a`)
+- 撤掉未生效的按源检查间隔设置，检查周期统一跟随全局，避免按源配置静默降频。(`e9ef330`)
+- 依赖升级（`tauri-plugin-updater`、`eslint`、`marked` 等 patch / minor 版本）。(`46db60f`)
+
 ## [1.17.3] - 2026-09-20
 
 ### Security
@@ -457,7 +476,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.17.3...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.18.0...HEAD
+[1.18.0]: https://github.com/hhelibeb/relwatch/compare/v1.17.3...v1.18.0
 [1.17.3]: https://github.com/hhelibeb/relwatch/compare/v1.17.2...v1.17.3
 [1.17.2]: https://github.com/hhelibeb/relwatch/compare/v1.17.1...v1.17.2
 [1.17.1]: https://github.com/hhelibeb/relwatch/compare/v1.17.0...v1.17.1
