@@ -327,6 +327,9 @@ export default {
   'context.copy_content': '复制内容',
   'context.copy_image': '复制图片',
   'context.copy_image_link': '复制图片链接',
+  'context.copy_cover_image': '复制封面图片',
+  'context.copy_cover_image_link': '复制封面图片链接',
+  'context.open_cover_image': '打开封面图片',
   'context.translate': '翻译',
   'context.delete_release': '删除版本',
 

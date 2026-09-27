@@ -18,6 +18,8 @@ vi.mock('../api/releases', () => ({
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
+  copyTextToClipboard: vi.fn(),
+  copyImageToClipboard: vi.fn(),
 }))
 
 
@@ -33,7 +35,7 @@ vi.mock('../utils', async importOriginal => {
 
 // contextMenuBus 为纯内存模块，用真实实现（互斥关闭是菜单行为的一部分）
 import { setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
-import { openReleaseUrl } from '../api/client'
+import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
 import { closeAllContextMenus } from '../composables/contextMenuBus'
 
 // ContextMenu 自定义 stub：渲染菜单项文本，点击触发 action 事件
@@ -743,6 +745,105 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     expect(img.attributes('src')).toBe(
       'http://media.localhost/' + encodeURIComponent('https://i0.hdslb.com/bfs/archive/abc.jpg'),
     )
+  })
+
+  // ===== 视频封面右键菜单 =====
+  // 封面专属操作只挂在「右键封面」这一入口上；卡片其它位置右键菜单形态不变
+
+  const COVER_URL = 'https://i.ytimg.com/vi/abc123/hqdefault.jpg'
+
+  /** 真实渲染 + ContextMenu stub，并暴露 toast spy 以断言复制失败反馈 */
+  function mountCoverMenu(release: ReleaseInfo) {
+    const showToast = vi.fn()
+    const openAgentWorkspace = vi.fn()
+    lastAgentOpen = openAgentWorkspace
+    const wrapper = mount(ReleaseItem, {
+      props: { release },
+      global: {
+        provide: {
+          [ShowToastKey as symbol]: showToast,
+          [AiEnabledKey as symbol]: ref(true),
+          [AgentEnabledKey as symbol]: ref(false),
+          [AgentWorkspaceKey as symbol]: openAgentWorkspace,
+        },
+        stubs: { MarkdownContent: true, ContextMenu: ContextMenuStub },
+      },
+    })
+    return { wrapper, showToast }
+  }
+
+  it('右键封面时菜单追加「复制封面图片 / 复制封面图片链接 / 打开封面图片」', async () => {
+    const { wrapper } = mountCoverMenu(yt())
+
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      t('context.open'),
+      t('context.copy_link'),
+      t('context.copy_cover_image'),
+      t('context.copy_cover_image_link'),
+      t('context.open_cover_image'),
+      '',
+      t('context.delete_release'),
+    ])
+  })
+
+  it('右键卡片其它位置（链接按钮）不含封面项', async () => {
+    const { wrapper } = mountCoverMenu(yt())
+
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).not.toContain(t('context.copy_cover_image'))
+
+    // 先右键封面再右键链接按钮：菜单形态必须跟着落点回到无封面项的形态
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toEqual([
+      t('context.open'),
+      t('context.copy_link'),
+      '',
+      t('context.delete_release'),
+    ])
+  })
+
+  it('「复制封面图片」用未经 media 网关改写的原始封面地址写入剪贴板', async () => {
+    const { wrapper, showToast } = mountCoverMenu(yt())
+
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+    await wrapper.findAll('.stub-menu-item')[2].trigger('click')
+
+    expect(copyImageToClipboard).toHaveBeenCalledWith(COVER_URL)
+    expect(openReleaseUrl).not.toHaveBeenCalled()
+    await nextTick()
+    expect(showToast).toHaveBeenCalledWith(t('release.copied'))
+  })
+
+  it('复制封面图片失败时提示复制失败', async () => {
+    vi.mocked(copyImageToClipboard).mockRejectedValueOnce(new Error('boom'))
+    const { wrapper, showToast } = mountCoverMenu(yt())
+
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+    await wrapper.findAll('.stub-menu-item')[2].trigger('click')
+    await nextTick()
+
+    expect(showToast).toHaveBeenCalledWith(t('release.copy_image_failed') + 'boom')
+  })
+
+  it('「复制封面图片链接」复制原始封面 URL', async () => {
+    const { wrapper } = mountCoverMenu(yt())
+
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+    await wrapper.findAll('.stub-menu-item')[3].trigger('click')
+
+    expect(copyTextToClipboard).toHaveBeenCalledWith(COVER_URL)
+  })
+
+  it('「打开封面图片」交给系统打开封面原图', async () => {
+    const { wrapper } = mountCoverMenu(yt())
+
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+    await wrapper.findAll('.stub-menu-item')[4].trigger('click')
+
+    expect(openReleaseUrl).toHaveBeenCalledWith(COVER_URL)
   })
 })
 

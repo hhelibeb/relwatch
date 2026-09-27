@@ -327,6 +327,9 @@ export default {
   'context.copy_content': 'Copy Content',
   'context.copy_image': 'Copy Image',
   'context.copy_image_link': 'Copy Image Link',
+  'context.copy_cover_image': 'Copy Cover Image',
+  'context.copy_cover_image_link': 'Copy Cover Image Link',
+  'context.open_cover_image': 'Open Cover Image',
   'context.translate': 'Translate',
   'context.delete_release': 'Delete Version',
 

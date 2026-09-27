@@ -4,7 +4,7 @@ import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
-import { openReleaseUrl, copyTextToClipboard } from '../api/client'
+import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
@@ -123,7 +123,8 @@ const {
 })
 
 // ========== 右键菜单 ==========
-const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number } | null>(null)
+// onCover：右键落点是否为视频封面——封面专属操作（复制封面图片等）只在这种情况下进菜单
+const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number; onCover?: boolean } | null>(null)
 
 function closeMenus() {
   // 键盘唤出的旗标菜单关闭后焦点会落回 body，交还按钮以保住键盘位置
@@ -185,8 +186,14 @@ const releaseMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = [
     { id: 'openLink', label: t('context.open') },
     { id: 'copyLink', label: t('context.copy_link') },
-    { id: 'divider-actions', label: '', divider: true },
   ]
+  // 封面专属操作：仅右键封面时出现（卡片其它位置的右键不改变现有菜单形态）
+  if (contextMenu.value?.onCover && coverSourceUrl.value) {
+    items.push({ id: 'copyCoverImage', label: t('context.copy_cover_image') })
+    items.push({ id: 'copyCoverLink', label: t('context.copy_cover_image_link') })
+    items.push({ id: 'openCoverImage', label: t('context.open_cover_image') })
+  }
+  items.push({ id: 'divider-actions', label: '', divider: true })
   const agentItem = sendToAgentItem()
   if (agentItem) items.push(agentItem)
   items.push({ id: 'deleteRelease', label: t('context.delete_release') })
@@ -244,6 +251,12 @@ async function handleReleaseMenuAction(actionId: string) {
     handleOpenLink()
   } else if (actionId === 'copyLink') {
     handleCopyLink()
+  } else if (actionId === 'copyCoverImage') {
+    void handleCopyCoverImage()
+  } else if (actionId === 'copyCoverLink') {
+    void handleCopyCoverLink()
+  } else if (actionId === 'openCoverImage') {
+    handleOpenCoverImage()
   } else if (actionId === 'sendToAgent') {
     handleSendToAgent()
   } else if (actionId === 'deleteRelease') {
@@ -291,10 +304,10 @@ onUnmounted(() => {
   document.removeEventListener('click', closeMenus)
 })
 
-function releaseContextMenu(e: MouseEvent, url: string) {
+function releaseContextMenu(e: MouseEvent, url: string, onCover = false) {
   closeAllContextMenus()
   const releaseId = props.release.id
-  contextMenu.value = { x: e.clientX, y: e.clientY, url, releaseId }
+  contextMenu.value = { x: e.clientX, y: e.clientY, url, releaseId, onCover }
 }
 
 // ========== 旗标按钮专属颜色菜单 ==========
@@ -360,6 +373,42 @@ async function handleCopyLink() {
 function handleOpenLink() {
   openReleaseUrl(contextMenu.value!.url)
   closeMenus()
+}
+
+// ---- 封面专属操作：复制封面图片 / 复制封面图片链接 / 打开封面图片 ----
+// 封面原图 URL 先取出再关菜单（关菜单会清空 contextMenu，且复制过程中菜单可能被外部点击关闭）。
+// 一律用未过 media 网关的原始地址：网关地址只是给 <img> 绕过 CSP 用的，不是可分享的图片地址。
+async function handleCopyCoverImage() {
+  const url = coverSourceUrl.value
+  closeMenus()
+  if (!url) return
+  track('release.copy')
+  try {
+    await copyImageToClipboard(url)
+    showToast(t('release.copied'))
+  } catch (e: unknown) {
+    showToast(t('release.copy_image_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+async function handleCopyCoverLink() {
+  const url = coverSourceUrl.value
+  closeMenus()
+  if (!url) return
+  track('release.copy')
+  try {
+    await copyTextToClipboard(url)
+  } catch (e: unknown) {
+    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+function handleOpenCoverImage() {
+  const url = coverSourceUrl.value
+  closeMenus()
+  if (!url) return
+  track('release.open')
+  openReleaseUrl(url)
 }
 
 // ========== 操作处理 ==========
@@ -489,6 +538,8 @@ const youtubeMeta = computed<YoutubeMeta | null>(() => {
 // 封面走 media 网关（mediaUrlOrEmpty：null → '' 兼容模板 v-if；远程 URL 改写为
 // http://media.localhost/<原图>，由 Rust 按代理设置下载；data:/相对路径原样保留）
 const youtubeThumb = computed(() => mediaUrlOrEmpty(youtubeMeta.value?.thumbnail ?? null))
+// 封面原始地址（未经 media 网关改写）：复制图片 / 复制链接 / 打开图片都用它
+const coverSourceUrl = computed(() => youtubeMeta.value?.thumbnail ?? null)
 const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
 
 // Data API 的 ISO 8601 时长（PT1H2M3S / PT12M34S）→ 人类可读（1:02:03 / 12:34）；RSS 模式无时长返回空
@@ -590,7 +641,7 @@ const youtubeViewTitle = computed(() =>
         :disabled="isUpdating"
         :title="t('release.open_link')"
         @click="handleGoRelease(release)"
-        @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)"
+        @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url, true)"
       >
         <img v-if="youtubeThumb" class="yt-thumb" :src="youtubeThumb" alt="" loading="lazy" referrerpolicy="no-referrer" />
         <span v-if="youtubeDuration" class="yt-duration-badge">{{ youtubeDuration }}</span>
