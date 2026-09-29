@@ -10,7 +10,7 @@ import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnrea
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
 import { mediaUrlOrEmpty } from '../utils/imageProxy'
-import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
+import { registerCloser, unregisterCloser, closeAllContextMenus, isTransientUiInvalidated } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { useLineClamp } from '../composables/useLineClamp'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
@@ -86,6 +86,9 @@ function placeSummaryTooltip(x: number, y: number, text: string) {
 
 function handleSummaryEnter(e: MouseEvent, summary: string | null) {
   if (!summary) return
+  // 窗口刚隐藏/失焦回来时为失效期：此时到达的 hover 事件可能是 Chromium 用旧坐标
+  // 重放出来的，不是用户真的把鼠标移上来了（详见 contextMenuBus 的失效期说明）
+  if (isTransientUiInvalidated()) return
   const el = e.currentTarget as HTMLElement
   // 手动截断（summaryDisplay 非空）或 line-clamp 截断时都提供全文悬浮提示
   if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
@@ -99,6 +102,10 @@ function handleSummaryMove(e: MouseEvent) {
 
 function handleSummaryFocus(e: FocusEvent, summary: string | null) {
   if (!summary) return
+  // 隐藏到托盘时 Chromium 不补 mouseleave，却会在窗口重新显示时给"隐藏前获得焦点的
+  // 元素"重放一次 focus（实测：SW_HIDE → SW_SHOW 后收到 WINDOW focus + target focus，
+  // 无任何鼠标事件）。不拦的话就是"鼠标早就不在卡片上、提示自己冒出来"。
+  if (isTransientUiInvalidated()) return
   const el = e.currentTarget as HTMLElement
   if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
   const rect = el.getBoundingClientRect()
@@ -136,6 +143,8 @@ function closeMenus() {
   flagMenu.value = null
   summaryContextMenu.value = null
   summaryTooltip.value = null
+  // HF 元数据提示也是瞬态层：漏清会在窗口重新显示时原地复活
+  hfHoverTooltip.value = null
 }
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)

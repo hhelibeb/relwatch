@@ -133,3 +133,40 @@ describe('registerOverlayActive + hasActiveOverlay', () => {
     expect(() => unregister()).not.toThrow()
   })
 })
+
+// ── 瞬态层失效期（窗口隐藏/失焦后防止悬浮提示诈尸） ─────────────────
+
+describe('瞬态层失效期', () => {
+  it('初始不在失效期', () => {
+    expect(bus.isTransientUiInvalidated()).toBe(false)
+  })
+
+  it('invalidateTransientUi 置位失效期，并顺带关闭全部瞬态层', () => {
+    const closer = vi.fn()
+    bus.registerCloser(closer)
+
+    bus.invalidateTransientUi()
+
+    expect(closer).toHaveBeenCalledOnce()
+    expect(bus.isTransientUiInvalidated()).toBe(true)
+  })
+
+  it('endTransientUiInvalidation 解除失效期', () => {
+    bus.invalidateTransientUi()
+    bus.endTransientUiInvalidation()
+    expect(bus.isTransientUiInvalidated()).toBe(false)
+  })
+
+  it('重复置位/解除都是幂等的', () => {
+    const closer = vi.fn()
+    bus.registerCloser(closer)
+
+    bus.invalidateTransientUi()
+    bus.invalidateTransientUi()
+    expect(bus.isTransientUiInvalidated()).toBe(true)
+
+    bus.endTransientUiInvalidation()
+    bus.endTransientUiInvalidation()
+    expect(bus.isTransientUiInvalidated()).toBe(false)
+  })
+})

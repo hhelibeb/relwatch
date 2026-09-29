@@ -36,7 +36,12 @@ vi.mock('../utils', async importOriginal => {
 // contextMenuBus 为纯内存模块，用真实实现（互斥关闭是菜单行为的一部分）
 import { setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
-import { closeAllContextMenus } from '../composables/contextMenuBus'
+import {
+  closeAllContextMenus,
+  invalidateTransientUi,
+  isTransientUiInvalidated,
+  endTransientUiInvalidation,
+} from '../composables/contextMenuBus'
 
 // ContextMenu 自定义 stub：渲染菜单项文本，点击触发 action 事件
 const ContextMenuStub = defineComponent({
@@ -334,6 +339,76 @@ describe('ReleaseItem.vue — contextMenuBus 集成', () => {
     await nextTick()
 
     expect(wrapper.find('.stub-menu').exists()).toBe(false)
+  })
+})
+
+/**
+ * 窗口隐藏到托盘（window.hide() = SW_HIDE）时 Chromium 不补 mouseleave，
+ * 重新显示时又会重放隐藏前的 focus（实测：SW_HIDE → SW_SHOW 收到
+ * WINDOW focus + target focus，不伴随鼠标事件）。
+ * 这里用真实总线验证「失效期 + 统一清理」能挡住这条诈尸路径。
+ */
+describe('ReleaseItem.vue — 窗口隐藏/失焦后的瞬态层失效（真实总线）', () => {
+  afterEach(() => {
+    endTransientUiInvalidation()
+  })
+
+  function mountTruncatedSummary() {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '很长的摘要内容'.repeat(50), body: '## Body' }))
+    const el = wrapper.find('.release-summary-text')
+    // jsdom 无布局引擎：手动造「文本被截断」的条件
+    Object.defineProperty(el.element, 'scrollHeight', { value: 100, configurable: true })
+    Object.defineProperty(el.element, 'clientHeight', { value: 40, configurable: true })
+    el.element.getBoundingClientRect = vi.fn().mockReturnValue({ left: 100, bottom: 140 })
+    return { wrapper, el }
+  }
+
+  it('invalidateTransientUi 关闭已打开菜单并进入失效期', async () => {
+    const wrapper = mountWithMenus(createRelease({ ai_summary: '摘要', body: '## Body' }))
+    await wrapper.find('.release-link-action').trigger('contextmenu')
+    expect(wrapper.find('.stub-menu').exists()).toBe(true)
+
+    invalidateTransientUi()
+    await nextTick()
+
+    expect(wrapper.find('.stub-menu').exists()).toBe(false)
+    expect(isTransientUiInvalidated()).toBe(true)
+  })
+
+  it('失效期内重放的 focus 不弹摘要提示', async () => {
+    const { wrapper, el } = mountTruncatedSummary()
+    invalidateTransientUi()
+
+    await el.trigger('focus')
+
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+  })
+
+  it('失效期结束（用户真的动了手）后 focus 恢复正常', async () => {
+    const { wrapper, el } = mountTruncatedSummary()
+    invalidateTransientUi()
+    await el.trigger('focus')
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+
+    endTransientUiInvalidation()
+    await el.trigger('focus')
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+  })
+
+  it('总线清理一并清掉 HF 元数据提示（漏清的瞬态层会在窗口重开时复活）', async () => {
+    const wrapper = mountWithMenus(createRelease({
+      source_type: 'huggingface',
+      tag_name: 'moonshotai/Kimi-K2',
+      extra_metadata: JSON.stringify({ pipeline_tag: 'text-generation', downloads: 1200 }),
+    }))
+
+    await wrapper.find('.release-tag').trigger('mouseenter', { clientX: 10, clientY: 10 })
+    expect(wrapper.find('.release-hf-tooltip').exists()).toBe(true)
+
+    closeAllContextMenus()
+    await nextTick()
+
+    expect(wrapper.find('.release-hf-tooltip').exists()).toBe(false)
   })
 })
 

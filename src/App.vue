@@ -11,6 +11,7 @@ import { setErrorToastSink } from './api/report-error'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
 import { t, setLocale } from './i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
+import { useTransientUiGuard } from './composables/useTransientUiGuard'
 import { useEscapeToTray } from './composables/useEscapeToTray'
 import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
 import { applyTheme } from './composables/useTheme'
@@ -593,6 +594,15 @@ function openSourceUnreadReleases(query: string) {
 }
 
 useEscapeToTray(computed(() => settings.value.minimize_to_tray))
+// 窗口隐藏/失焦后清空瞬态悬浮层并进入失效期：Chromium 在隐藏时不补 mouseleave、
+// 重新显示时又会重放隐藏前的 focus（详见 useTransientUiGuard）；
+// 顺带把 Toast 的悬浮暂停解除——隐藏时不会再有 mouseleave，
+// 计时器会永久停摆，窗口再出现时 Toast 就一直挂在右下角。
+useTransientUiGuard({
+  onInvalidate: () => {
+    if (toastHovered) handleToastMouseLeave()
+  },
+})
 // 外链一律交给系统浏览器，webview 自身永不导航
 useExternalLinkGuard()
 

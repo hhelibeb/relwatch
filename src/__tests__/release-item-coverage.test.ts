@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { shallowMount } from '@vue/test-utils'
 import { ref } from 'vue'
 import { t } from '../i18n'
@@ -31,11 +31,15 @@ vi.mock('../composables/contextMenuBus', () => ({
   registerCloser: vi.fn(),
   unregisterCloser: vi.fn(),
   closeAllContextMenus: vi.fn(),
+  // 失效期开关：用例里按需 mockReturnValue(true) 模拟「窗口刚隐藏/失焦回来」
+  isTransientUiInvalidated: vi.fn(() => false),
 }))
 
 import { setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
-import { closeAllContextMenus } from '../composables/contextMenuBus'
+import { closeAllContextMenus, isTransientUiInvalidated } from '../composables/contextMenuBus'
+
+const isTransientUiInvalidatedMock = vi.mocked(isTransientUiInvalidated)
 
 // 剪贴板写入统一走 Rust 路径（src/api/client.ts 的 copyTextToClipboard）
 const copyTextToClipboardMock = vi.mocked(copyTextToClipboard)
@@ -331,6 +335,57 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
 
     await summaryEl.trigger('blur')
     expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+  })
+})
+
+/**
+ * 窗口隐藏到托盘（window.hide() = Win32 SW_HIDE）后，Chromium 会在窗口重新显示时
+ * 把「隐藏前获得焦点的元素」重放一次 focus（实测 SW_HIDE → SW_SHOW 收到
+ * WINDOW focus + target focus，不伴随任何鼠标事件）。
+ * 失效期（useTransientUiGuard 置位）内重放的 focus/hover 不得弹出摘要提示。
+ */
+describe('ReleaseItem.vue — 窗口隐藏/失焦后的失效期（防止提示诈尸）', () => {
+  afterEach(() => {
+    isTransientUiInvalidatedMock.mockReturnValue(false)
+  })
+
+  function mountTruncatedSummary() {
+    const wrapper = mountRelease(createRelease({ ai_summary: '很长的摘要内容'.repeat(50) }))
+    const el = wrapper.find('.release-summary-text')
+    // jsdom 无布局引擎：手动造「文本被截断」的条件
+    Object.defineProperty(el.element, 'scrollHeight', { value: 100, configurable: true })
+    Object.defineProperty(el.element, 'clientHeight', { value: 40, configurable: true })
+    el.element.getBoundingClientRect = vi.fn().mockReturnValue({ left: 100, bottom: 140 })
+    return { wrapper, el }
+  }
+
+  it('失效期内重放的 focus 不弹提示（托盘重开的主复现路径）', async () => {
+    const { wrapper, el } = mountTruncatedSummary()
+    isTransientUiInvalidatedMock.mockReturnValue(true)
+
+    await el.trigger('focus')
+
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+  })
+
+  it('失效期内 hover 也不弹提示', async () => {
+    const { wrapper, el } = mountTruncatedSummary()
+    isTransientUiInvalidatedMock.mockReturnValue(true)
+
+    await el.trigger('mouseenter', { clientX: 200, clientY: 300 })
+
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+  })
+
+  it('失效期结束后（用户真的动了手）focus 恢复弹提示', async () => {
+    const { wrapper, el } = mountTruncatedSummary()
+    isTransientUiInvalidatedMock.mockReturnValue(true)
+    await el.trigger('focus')
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+
+    isTransientUiInvalidatedMock.mockReturnValue(false)
+    await el.trigger('focus')
+    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
   })
 })
 
