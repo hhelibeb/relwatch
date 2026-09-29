@@ -109,7 +109,6 @@ fn translate_error_str(raw: &str, dict: &HashMap<&'static str, &'static str>) ->
 pub fn render(key: &str, args: &Value, locale: &str) -> String {
     let dict = get_dict(locale);
 
-    // 1. 获取翻译模板
     let template = match dict.get(key) {
         Some(t) => *t,
         None => return key.to_string(),
@@ -119,19 +118,17 @@ pub fn render(key: &str, args: &Value, locale: &str) -> String {
         return template.to_string();
     };
 
-    // 2. 如果有关键字 action，先翻译 action 值
     let mut text = template.to_string();
     if let Some(action_val) = raw_map.get("action").and_then(|v| v.as_str()) {
         text = resolve_action(&text, action_val, dict);
     }
 
-    // 3.0 空 repo 兜底：GitHub 风格模板 `{owner}/{repo}` 在 repo 为空时省略斜杠
+    // 空 repo 兜底：GitHub 风格模板 `{owner}/{repo}` 在 repo 为空时省略斜杠
     // （YouTube 源 repo 为空，显示为 `频道名` 而非 `频道名/`）
     if raw_map.get("repo").is_some_and(|v| v.as_str().is_some_and(|s| s.is_empty())) {
         text = text.replace("/{repo}", "");
     }
 
-    // 3. 替换其他占位符（所有值类型都转成字符串）
     for (k, v) in raw_map.iter() {
         if k == "action" {
             continue; // 已在上面处理
@@ -152,11 +149,10 @@ pub fn render(key: &str, args: &Value, locale: &str) -> String {
         text = text.replace(&format!("{{{}}}", k), &val_str);
     }
 
-    // 4. 处理残余的 setting.\w+ 引用
     resolve_setting_keys(&text, dict)
 }
 
-/// 向后兼容包装器：接受 JSON 字符串，自动解析后调用 render()
+/// 接受 JSON 字符串参数的包装器：解析后调用 `render()`。
 pub fn render_json(key: &str, args_json: &str, locale: &str) -> String {
     let args: Value = serde_json::from_str(args_json).unwrap_or_default();
     render(key, &args, locale)

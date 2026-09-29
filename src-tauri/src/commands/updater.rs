@@ -254,9 +254,8 @@ mod tests {
     use super::*;
 
     // ── 操作日志：驱动命令体真正使用的 `*_log_entry` 构造函数 ──
-    // 早期版本直接调 `write_log_key` 复述一遍命令内的参数，属于自证式测试：
-    // 命令里 level/key 写错测试照样通过。改为与命令共用同一份构造后，
-    // 断言才真正覆盖到命令行为（落库仍走内存库，端到端校验 rendered_message）。
+    // 这些构造与命令体共用同一份：若测试自行复述一遍 level/key，命令里写错也照样
+    // 通过（自证式测试）；落库仍走内存库，端到端校验 rendered_message。
 
     /// 落库一条日志并返回其 rendered_message（默认 locale）。
     fn render_log(entry: &UpdateLogEntry) -> String {

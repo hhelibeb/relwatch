@@ -13,7 +13,6 @@ import type { ReleaseInfo } from '../api/releases'
  * ReleaseSearchBar.vue 行为测试（真实 i18n 字典，不 mock）
  *
  * 组件为受控模式：状态由 props 传入、通过 emit 传出。
- * 按行为分组：搜索框 / 视图切换 / 筛选下拉 / 漏斗面板（含来源）/ 悬停 / 键盘导航 / 组合场景。
  * 末尾附 ReleaseTab 集成（ReleaseSearchBar 实例化契约）。
  */
 // 需要断言「显示重要度」行为的用例显式注入开关（组件缺省为关闭，见 ShowImportanceKey 注释）
@@ -183,7 +182,7 @@ describe('ReleaseSearchBar — 视图切换（折叠下拉）', () => {
     const wrapper = createWrapper({ viewMode: 'calendar' })
 
     const viewField = openViewDropdown(wrapper)
-    // 触发按钮图标：与旧按钮组同源（list/grid/calendar）
+    // 触发按钮图标与选项图标同套（list/grid/calendar）
     expect(viewField.find('.filter-trigger svg use').attributes('href')).toBe('/icons.svg#calendar-icon')
 
     await viewField.find('.filter-trigger').trigger('click')

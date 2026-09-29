@@ -29,7 +29,7 @@ export function useBilibiliLogin(opts: {
   let biliLoginPollTimer: ReturnType<typeof setInterval> | null = null
   let biliLoginTimeout: ReturnType<typeof setTimeout> | null = null
   /** 单调代次令牌：每次发起登录尝试递增，回调（轮询/超时）校验令牌后才生效，
-   *  避免旧流程残留的异步回调误操作新流程（F3）。 */
+   *  避免旧流程残留的异步回调误操作新流程。 */
   let biliLoginAttempt = 0
   let biliLoginSettled = false
   const BILI_LOGIN_WINDOW_LABEL = 'bilibili-login'
@@ -55,8 +55,8 @@ export function useBilibiliLogin(opts: {
     showToast(t('settings.bilibili_login_success'))
   }
 
-  /** 清除已保存的 B 站 Cookie（SESSDATA）：过期后回退匿名模式的唯一入口（F2）。
-   *  命令层 `set_credential('bilibili_cookie', '')` 本就支持空值清除，但此前没有任何 UI 触发点。 */
+  /** 清除已保存的 B 站 Cookie（SESSDATA）：过期后回退匿名模式的唯一入口
+   *  （命令层 `set_credential('bilibili_cookie', '')` 本就支持空值清除）。 */
   async function handleClearBilibiliCookie() {
     track('settings.bili_clear')
     try {
@@ -128,8 +128,8 @@ export function useBilibiliLogin(opts: {
         needCreate = key === 'err.bili_login_window_missing'
       }
       if (needCreate) {
-        // 由 Rust 建窗（可注入应用代理；窗口已存在时后端幂等返回）。不再需要等待
-        // tauri://created——命令返回即窗口已建好，建窗失败会直接 reject。
+        // 由 Rust 建窗（可注入应用代理；窗口已存在时后端幂等返回）——
+        // 命令返回即窗口已建好，建窗失败会直接 reject。
         try {
           await openBilibiliLoginWindow(t('settings.bilibili_login_title'))
         } catch {
@@ -139,7 +139,7 @@ export function useBilibiliLogin(opts: {
           return
         }
         // 建窗「声称成功」也不可全信：tauri-runtime-wry 的事件循环对 webview 创建
-        // 失败只 log::error! 且不回传，build() 仍返回 Ok（曾致窗口闪退 + 按钮锁死）。
+        // 失败只 log::error! 且不回传，build() 仍返回 Ok。
         // 这里立刻用一次读取探活：窗口不存在（err.bili_login_window_missing）
         // 即视为建窗失败，直接解锁按钮并提示，不让用户卡在“等待登录”。
         try {
@@ -159,7 +159,7 @@ export function useBilibiliLogin(opts: {
       }
       startBiliLoginPolling()
       // 超时保护：60 秒未登录则停止轮询（窗口保留；再次点击会恢复轮询，不会重复建窗）。
-      // 句柄被保存并在收尾/卸载/超时自身处清理，避免定时器跨挂载存活、多次尝试累积（F3）。
+      // 句柄被保存并在收尾/卸载/超时自身处清理，避免定时器跨挂载存活、多次尝试累积。
       biliLoginTimeout = setTimeout(() => {
         // 单调代次令牌：仅当仍是本次尝试且未成功收尾时才停止，
         // 旧流程残留的闭包（已发起新登录/已收尾）不再误改状态

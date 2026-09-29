@@ -109,7 +109,7 @@ function tier1Fields(r: SearchableRelease): string[] {
 }
 
 /** 单条正文的 Tier2 字段（小写）。`body` / `body_translated` 任一可缺省。
- *  正文不再随目录下发（目录里是预览投影），由 `getReleaseSearchBodies` 按 id 游标
+ *  正文随目录下发的只是预览投影，全文由 `getReleaseSearchBodies` 按 id 游标
  *  分块取回后经 `mergeBodyIndex` 入表。 */
 export function tier2FieldsFromBody(
   body: string | null | undefined,

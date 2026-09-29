@@ -29,7 +29,6 @@ export type {
   RpcAvailableModel,
 } from '../bindings'
 
-/** 读取全局 Agent 配置。 */
 export async function getAgentConfig(): Promise<AgentConfig> {
   return invokeI18nFn(commands.getAgentConfig)
 }
@@ -85,7 +84,8 @@ export async function getAgentQueue(): Promise<AgentQueueItem[]> {
   return invokeI18nFn(commands.getAgentQueue)
 }
 
-/** 查询会话文件的上下文水位（消息条数 / 文本字符数 / 文件字节数）。 */
+/** 查询会话的上下文水位与累计用量（消息/字符/文件统计 + 词元与成本 + 上下文窗口，
+ *  各字段口径见 AgentSessionUsage）。 */
 export async function getAgentSessionUsage(sessionKey: string): Promise<AgentSessionUsage> {
   return invokeI18nFn(() => commands.getAgentSessionUsage(sessionKey))
 }

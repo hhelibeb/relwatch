@@ -59,9 +59,7 @@ describe('i18n 核心函数', () => {
     })
 
     it('不存在的 messages 表返回 key', () => {
-      // 构造 msg 为 undefined 的场景——使用不存在的语言
-      // 但 setLocale 会拒绝不存在的语言，所以直接内部访问
-      // 实际上无法直接触发 msg 为 undefined 的路径，因此这条测试作为安全网
+      // en-US 下的位置参数渲染（msg 表缺失路径无法直接触发，setLocale 会拒绝未知语言）
       i18n.setLocale('en-US')
       expect(i18n.t('app.min_sec', '1', '30')).toBe('1m 30s')
     })
@@ -75,11 +73,8 @@ describe('i18n 核心函数', () => {
     })
 
     it('替换 {action} 为翻译后的状态文本（pending）', () => {
-      // actionKeys['pending'] → 'status.pending' → t('status.pending') = '未读'
-      // 然后尝试替换 {action}，但 'status.pending' 的翻译中无此占位符
+      // actionKeys['pending'] → 'status.pending' → '未读'；译文无 {action} 占位符，替换后不变
       const result = i18n.tm('status.pending', { action: 'pending' })
-      // 先替换 action 参数后文本无变化，再经过正则扫描也无 setting.xxx
-      // status.pending 翻译结果为 '未读'
       expect(result).toBe('未读')
     })
 
@@ -88,38 +83,14 @@ describe('i18n 核心函数', () => {
     })
 
     it('替换命名参数', () => {
-      // 找一个有命名参数的模板。app.new_found 在 zh-CN 中为 "发现 {0} 个新版本"
-      // 这用的是 {0} 而非命名参数，所以用 tm 测试命名参数需要查 locale 文件
-      // source.pending_updates = "有 {count} 个未处理更新" (zh-CN)
-      // 不对，让我们再查一遍
-      // 从 en-US 中：source.pending_updates = '{0} pending update(s)'
-      // 但这是 {0} 格式。tm 用在命名参数格式。
-      // 实际上 source.tooltip_history 可能有命名参数格式
-      // source.recorded_versions = "已记录 {count} 个版本"
-
-      // source.recorded_versions 在 en-US 中：'{0} recorded version(s)'
-      // 这个用 {0} 而非命名参数。但 tm 用的是命名参数替换
-      // 所以测试中使用命名参数 "count"
-      // 在 zh-CN 中没有命名参数键... 实际上 tm 函数支持任何键替换
-      // 我就用个简单测试：传递非 action 参数到无模板的键
       i18n.setLocale('en-US')
       const result = i18n.tm('source.recorded_versions', { count: '5' })
-      // en-US: '{0} recorded version(s)' → 尝试替换 {count}，但键是 {0}，所以不变
-      // 结果为 '{0} recorded version(s)'
+      // en-US 字典为 '{0} recorded version(s)'：占位符是 {0}，命名参数 {count} 不匹配 → 原样返回
       expect(result).toBe('{0} recorded version(s)')
     })
 
     it('自动翻译模板中的 setting.xxx 子键', () => {
-      // 这个需要消息值中包含 setting.xxx 这样的模式
-      // 在现有 locale 数据中查找...
-      // 实际上在 tm 的最后一步：text.replace(/setting\.\w+/g, match => t(match))
-      // 我们手动构造一个测试：通过 tm 调用一个包含 setting.xxx 的模板
-      // 但 locale 中可能没有这样的模板。我们可以直接测试正则替换效果。
-      // 构造一个包含 setting.xxx 的消息键
-      // t('settings.general') = '常规设置' (zh-CN)
-
-      // 由于没有现成的带 setting.xxx 的模板，我们验证函数的稳健性
-      // 传递一个不包含 setting.xxx 的键，验证不触发替换
+      // 键值不含 setting.xxx 时不触发二次翻译（正则替换仅在命中时生效）
       const result = i18n.tm('source.never_checked', {})
       expect(result).toBe('从未检查')
     })

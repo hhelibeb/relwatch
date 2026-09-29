@@ -121,14 +121,12 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     const apiInput = wrapper.findAll('input[type="password"]')[0]
     await apiInput.setValue('sk-test-key-123')
 
-    // 点击 AI tab 中的保存按钮
     const saveButtons = wrapper.findAll('.setting-actions .btn-primary')
     await saveButtons[0].trigger('click')
     await flushPromises()
     await vi.runAllTimersAsync()
 
     expect(setCredentialMock).toHaveBeenCalledWith('deepseek_api_key', 'sk-test-key-123')
-    // 保存成功后 input 应被清空
     expect((apiInput.element as HTMLInputElement).value).toBe('')
   })
 
@@ -157,17 +155,14 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     const apiKeyInput = inputs[0]
     await apiKeyInput.setValue('sk-new-key')
 
-    // 切到 accounts tab 设置 GitHub token
     await clickSidebar(wrapper, 'settings.accounts')
     const ghInput = wrapper.find('input[type="password"]')
     await ghInput.setValue('ghp-new-token')
 
-    // 保存
     await wrapper.get('.setting-actions .btn-primary').trigger('click')
     await flushPromises()
     await vi.runAllTimersAsync()
 
-    // 两个凭据都应被设置
     expect(setCredentialMock).toHaveBeenCalledWith('deepseek_api_key', 'sk-new-key')
     expect(setCredentialMock).toHaveBeenCalledWith('github_token', 'ghp-new-token')
     expect(updateSettingsMock).toHaveBeenCalledOnce()
@@ -188,9 +183,7 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
     await wrapper.get('.setting-actions .btn-primary').trigger('click')
     await flushPromises()
 
-    // 不应调用 updateSettings
     expect(updateSettingsMock).not.toHaveBeenCalled()
-    // 应提示校验失败
     expect(showToast).toHaveBeenCalledWith(t('settings.deepseek_prompt_validate_failed'))
   })
 
@@ -242,9 +235,7 @@ describe('SettingsTab — 轮询间隔变更检测', () => {
   it('保存时轮询间隔未变，emit update(false)', async () => {
     const wrapper = mountSettings(createSettings({ poll_interval_minutes: 15 }))
 
-    // 修改一个非轮询字段来触发 dirty
     const inputs = wrapper.findAll('input[type="text"]')
-    // 修改 proxy_url
     await wrapper.findAll('.settings-sidebar button')[0].trigger('click') // general tab
 
     // 不修改轮询间隔，只点保存
@@ -266,7 +257,7 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
     await flushPromises()
 
     expect(testDeepseekConnectionMock).toHaveBeenCalledOnce()
-    // 命令成功后文案由前端按 i18n key 渲染（测试中 t 被 mock 为返回 key 本身）
+    // 命令成功后文案由前端按 i18n key 渲染
     expect(messageMock).toHaveBeenCalledWith(t('settings.connection_success'), expect.objectContaining({ kind: 'info' }))
   })
 
@@ -460,11 +451,9 @@ describe('SettingsTab — 主题下拉选择', () => {
     await clickSidebar(wrapper, 'settings.appearance')
 
     const themeSelect = wrapper.findAll('.theme-select')[1]
-    // 打开下拉
     await themeSelect.get('.theme-select-trigger').trigger('click')
     await vi.runAllTimersAsync()
 
-    // 选择 dark
     const options = themeSelect.findAll('.theme-select-option')
     const darkOpt = options.find(o => o.attributes('data-value') === 'dark')
     expect(darkOpt).toBeTruthy()
@@ -498,15 +487,12 @@ describe('SettingsTab — 主题下拉选择', () => {
     const themeSelect = wrapper.findAll('.theme-select')[1]
     const trigger = themeSelect.get('.theme-select-trigger')
 
-    // 用键盘打开下拉
     await trigger.trigger('keydown', { key: 'ArrowDown' })
     await vi.runAllTimersAsync()
 
     expect(wrapper.findAll('.theme-select-dropdown').length).toBeGreaterThan(0)
 
-    // ArrowDown 移到下一个
     await trigger.trigger('keydown', { key: 'ArrowDown' })
-    // ArrowUp 回到上一个
     await trigger.trigger('keydown', { key: 'ArrowUp' })
   })
 
@@ -517,7 +503,6 @@ describe('SettingsTab — 主题下拉选择', () => {
     const themeSelect = wrapper.findAll('.theme-select')[1]
     const trigger = themeSelect.get('.theme-select-trigger')
 
-    // 打开
     await trigger.trigger('click')
     await vi.runAllTimersAsync()
 
@@ -527,11 +512,9 @@ describe('SettingsTab — 主题下拉选择', () => {
     await darkOpt!.trigger('mouseenter')
     expect(document.documentElement.dataset.theme).toBe('dark')
 
-    // Escape 关闭
     await trigger.trigger('keydown', { key: 'Escape' })
     await vi.runAllTimersAsync()
 
-    // 应恢复 light
     expect(document.documentElement.dataset.theme).toBe('light')
   })
 
@@ -545,7 +528,6 @@ describe('SettingsTab — 主题下拉选择', () => {
 
     expect(themeSelect.find('.theme-select-dropdown').exists()).toBe(true)
 
-    // 模拟外部点击
     document.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await vi.runAllTimersAsync()
 
@@ -577,13 +559,10 @@ describe('SettingsTab — 语言下拉选择', () => {
     const langSelect = wrapper.findAll('.theme-select')[0]
     const trigger = langSelect.get('.theme-select-trigger')
 
-    // 打开
     await trigger.trigger('keydown', { key: 'ArrowDown' })
     await vi.runAllTimersAsync()
 
-    // 导航到 English
     await trigger.trigger('keydown', { key: 'ArrowDown' })
-    // Enter 选中
     await trigger.trigger('keydown', { key: 'Enter' })
     await vi.runAllTimersAsync()
   })
@@ -595,7 +574,6 @@ describe('SettingsTab — 语言下拉选择', () => {
     const langSelect = wrapper.findAll('.theme-select')[0]
     const trigger = langSelect.get('.theme-select-trigger')
 
-    // 打开
     await trigger.trigger('click')
     await vi.runAllTimersAsync()
 
@@ -605,7 +583,6 @@ describe('SettingsTab — 语言下拉选择', () => {
     await enOpt!.trigger('mouseenter')
     expect(getLocale()).toBe('en-US')
 
-    // Escape 关闭并恢复
     await trigger.trigger('keydown', { key: 'Escape' })
     await vi.runAllTimersAsync()
 
@@ -620,13 +597,11 @@ describe('SettingsTab — 语言下拉选择', () => {
     await langSelect.get('.theme-select-trigger').trigger('click')
     await vi.runAllTimersAsync()
 
-    // 预览
     const options = langSelect.findAll('.theme-select-option')
     const enOpt = options.find(o => o.attributes('data-value') === 'en-US')
     await enOpt!.trigger('mouseenter')
     expect(getLocale()).toBe('en-US')
 
-    // 外部点击
     document.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await vi.runAllTimersAsync()
 
@@ -638,27 +613,21 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
   it('修改多个字段，dirtyCount 正确显示', async () => {
     const wrapper = mountSettings()
 
-    // 修改 poll_interval
     await wrapper.get('input[type="number"]').setValue(30)
     expect(wrapper.find('.settings-banner').exists()).toBe(true)
 
-    // 修改 auto_start
     const checkboxes = wrapper.findAll('input[type="checkbox"]')
     await checkboxes[0].setValue(true)
 
-    // banner 仍然可见
     expect(wrapper.find('.settings-banner').exists()).toBe(true)
-    // 应显示多个未保存变更
     expect(wrapper.find('.settings-banner').text()).toContain(t('settings.unsaved_banner', '2'))
   })
 
   it('dirtyByTab 在不同 tab 显示 dirty dot', async () => {
     const wrapper = mountSettings()
 
-    // 修改 general tab 的字段
     await wrapper.get('input[type="number"]').setValue(30)
 
-    // 切换到 appearance 检查 general tab 有 dirty dot
     const sidebarButtons = wrapper.findAll('.settings-sidebar button')
     const generalBtn = sidebarButtons.find(b => b.text().includes(t('settings.general')))
     expect(generalBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
@@ -673,7 +642,6 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     await darkOpt!.trigger('click')
     await vi.runAllTimersAsync()
 
-    // appearance 也应该有 dirty dot
     const appearanceBtn = wrapper.findAll('.settings-sidebar button').find(b => b.text().includes(t('settings.appearance')))
     expect(appearanceBtn!.find('.sidebar-dirty-dot').exists()).toBe(true)
   })
@@ -716,7 +684,6 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
 
     expect(getLocale()).toBe('en-US')
 
-    // discard
     await wrapper.get('.settings-banner .btn-secondary').trigger('click')
 
     expect(getLocale()).toBe('zh-CN')
@@ -726,7 +693,6 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     const wrapper = mountSettings(createSettings({ theme: 'light' }))
     await clickSidebar(wrapper, 'settings.appearance')
 
-    // 选择 dark
     const themeSelect = wrapper.findAll('.theme-select')[1]
     await themeSelect.get('.theme-select-trigger').trigger('click')
     await vi.runAllTimersAsync()
@@ -737,7 +703,6 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
 
     expect(document.documentElement.dataset.theme).toBe('dark')
 
-    // discard
     await wrapper.get('.settings-banner .btn-secondary').trigger('click')
 
     expect(document.documentElement.dataset.theme).toBe('light')
@@ -747,12 +712,10 @@ describe('SettingsTab — Dirty 标记与 discard', () => {
     const wrapper = mountSettings()
 
     await clickSidebar(wrapper, 'settings.accounts')
-    // 在 accounts tab 填写 GitHub token
     const ghInput = wrapper.find('input[type="password"]')
     await ghInput.setValue('ghp-something')
     expect((ghInput.element as HTMLInputElement).value).toBe('ghp-something')
 
-    // discard
     await wrapper.get('.settings-banner .btn-secondary').trigger('click')
 
     expect((ghInput.element as HTMLInputElement).value).toBe('')
@@ -773,14 +736,12 @@ describe('SettingsTab — 条件渲染', () => {
   it('proxy_mode 从 none 切换到 custom 后出现 proxy URL 输入框', async () => {
     const wrapper = mountSettings(createSettings({ proxy_mode: 'none' }))
 
-    // 初始无 proxy URL 输入
     const textInputs = wrapper.findAll('input[type="text"]')
     const proxyInputBefore = textInputs.find(i =>
       (i.element as HTMLInputElement).placeholder === t('settings.proxy_placeholder'),
     )
     expect(proxyInputBefore).toBeFalsy()
 
-    // 切换 proxy_mode
     const selects = wrapper.findAll('select')
     const proxySelect = selects[0]
     await proxySelect.setValue('custom')
@@ -804,9 +765,7 @@ describe('SettingsTab — 条件渲染', () => {
     const wrapper = mountSettings(createSettings({ deepseek_enabled: false }))
     await clickSidebar(wrapper, 'settings.ai')
 
-    // 不应有 password input（API key）
     expect(wrapper.find('input[type="password"]').exists()).toBe(false)
-    // 不应有 test connection 按钮
     expect(wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))).toBeFalsy()
   })
 
@@ -814,9 +773,7 @@ describe('SettingsTab — 条件渲染', () => {
     const wrapper = mountSettings(createSettings({ deepseek_enabled: true }))
     await clickSidebar(wrapper, 'settings.ai')
 
-    // 应有 password input（API key）
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
-    // 应有 test connection 按钮
     expect(wrapper.findAll('button').find(b => b.text().includes(t('settings.test_connection')))).toBeTruthy()
   })
 
@@ -824,7 +781,6 @@ describe('SettingsTab — 条件渲染', () => {
     const wrapper = mountSettings(createSettings({ deepseek_enabled: false }))
     await clickSidebar(wrapper, 'settings.ai')
 
-    // 初始关闭
     expect(wrapper.find('input[type="password"]').exists()).toBe(false)
 
     // 找到 enable checkbox
@@ -832,10 +788,8 @@ describe('SettingsTab — 条件渲染', () => {
     const enableCheckbox = checkboxes[0]
     await enableCheckbox.setValue(true)
 
-    // 现在应该有 API key input
     expect(wrapper.find('input[type="password"]').exists()).toBe(true)
 
-    // 再关闭
     await enableCheckbox.setValue(false)
     expect(wrapper.find('input[type="password"]').exists()).toBe(false)
   })
@@ -845,25 +799,18 @@ describe('SettingsTab — Tab 导航与版本', () => {
   it('点击各 sidebar 按钮切换 tab 内容', async () => {
     const wrapper = mountSettings()
 
-    // 默认显示 general
     expect(wrapper.find('.settings-form').exists()).toBe(true)
-    // 应能看到 poll_interval input
     expect(wrapper.find('input[type="number"]').exists()).toBe(true)
 
-    // 切换到 accounts
     await clickSidebar(wrapper, 'settings.accounts')
-    // 应能看到 3 个凭据 password input
     expect(wrapper.findAll('input[type="password"]').length).toBe(3)
 
-    // 切换到 appearance
     await clickSidebar(wrapper, 'settings.appearance')
     expect(wrapper.findAll('.theme-select').length).toBe(3) // language + theme + font scale
 
-    // 切换到 AI
     await clickSidebar(wrapper, 'settings.ai')
     expect(wrapper.find('input[type="checkbox"]').exists()).toBe(true)
 
-    // 切换到 data
     await clickSidebar(wrapper, 'settings.data')
     expect(wrapper.findAll('.backup-actions button').length).toBe(2)
   })
@@ -910,7 +857,6 @@ describe('SettingsTab — 组件卸载清理', () => {
     await themeSelect.get('.theme-select-trigger').trigger('click')
     await vi.runAllTimersAsync()
 
-    // 卸载
     wrapper.unmount()
 
     expect(removeSpy).toHaveBeenCalled()
@@ -919,8 +865,8 @@ describe('SettingsTab — 组件卸载清理', () => {
 })
 
 describe('SettingsTab — 下拉快速 toggle 监听器泄漏（P1 #11）', () => {
-  // #11 守卫针对“watch isOpen=true 已排 nextTick、回调执行前下拉被关闭”的快闪场景。
-  // 该场景的最终不泄漏目标等价于：打开→关闭后 document 上的 outsideClick 监听器被成对移除。
+  // 防回归：打开→关闭后 document 上的 outsideClick 监听器必须成对移除。
+  // 覆盖「watch isOpen=true 已排 nextTick、回调执行前下拉又被关闭」的快闪场景。
   it('主题下拉打开后关闭，outsideClick 监听器被成对移除（不残留）', async () => {
     const wrapper = mountSettings(createSettings({ theme: 'light' }))
     await clickSidebar(wrapper, 'settings.appearance')

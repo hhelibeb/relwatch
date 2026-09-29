@@ -104,7 +104,6 @@ describe('ReleaseTab — 筛选/排序逻辑', () => {
     const wrapper = mount(FilterTester, { props: { releases } })
     const result = wrapper.emitted('result')![0][0] as MockRelease[]
     expect(result).toHaveLength(5)
-    // 验证排序：最新的在前
     expect(result[0].id).toBe(5) // 2025-04-01
     expect(result[1].id).toBe(3) // 2025-03-10
     expect(result[2].id).toBe(1) // 2025-03-01

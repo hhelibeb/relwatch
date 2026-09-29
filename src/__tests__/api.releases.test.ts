@@ -8,7 +8,7 @@ vi.mock('../api/client', () => ({
 }))
 
 // 命令层单独 mock：invokeI18nFn 被 mock 成"直接执行回调"后，才能断言到底调了哪个
-// 命令、带了什么参数（原有断言只覆盖"调用过一次"）。
+// 命令、带了什么参数。
 vi.mock('../bindings', () => ({
   commands: {
     getReleaseCatalog: vi.fn(),

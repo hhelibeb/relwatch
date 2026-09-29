@@ -201,8 +201,8 @@ pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Res
 
 /// 记录一次检查失败（源健康状态 + 累计失败数）。
 ///
-/// `sources.last_check_message` 是**不经过** `db::logs::write_log_key` 的凭据出口
-/// （V28）：错误文本常回显完整请求 URL（如 `…&key=AIzaSy…`），而该列会被源列表 /
+/// `sources.last_check_message` 是**不经过** `db::logs::write_log_key` 的凭据出口：
+/// 错误文本常回显完整请求 URL（如 `…&key=AIzaSy…`），而该列会被源列表 /
 /// 详情展示，并随备份导出。故 `record_check_failure_inner`（该列的唯一写入者，
 /// 两个公开入口共用）在落库前统一脱敏，避免每个调用点各写一遍而漏掉某一处。
 pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn test_record_check_failure_redacts_credentials() {
-        // V28：last_check_message 是独立于日志表的凭据出口，必须在唯一写入者处脱敏
+        // last_check_message 是独立于日志表的凭据出口，必须在唯一写入者处脱敏
         let conn = init_memory_db().unwrap();
         let id = add_source(&conn, "youtube", "UC1", "", "").unwrap();
         record_check_failure(

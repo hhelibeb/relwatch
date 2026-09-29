@@ -38,7 +38,6 @@ describe('getSettings', () => {
 
     const result = await getSettings()
 
-    // 无参数命令：只传 command name
     expect(invoke).toHaveBeenCalledWith('get_settings')
     expect(result.poll_interval_minutes).toBe(30)
     expect(result.language).toBe('zh-CN')

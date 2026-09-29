@@ -10,7 +10,7 @@
 //! 2. **写路径未获 ACL 授权**：`capabilities/default.json` 只授了 `clipboard-manager:allow-read-text`
 //!    ——**不要**再往回加 `clipboard-manager:default`：它是**空集**（官方描述：No features are
 //!    enabled by default…Clipboard interaction needs to be explicitly enabled），加上它并不
-//!    授予任何写权限，只会让后人误以为写已放行（V1 已于本次移除）。
+//!    授予任何写权限，只会让后人误以为写已放行。
 //!    若将来真要走插件写路径，必须显式声明 `clipboard-manager:allow-write-text`（并自行解决
 //!    下面的线程约束），否则仍会静默失败。
 //!

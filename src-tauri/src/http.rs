@@ -111,7 +111,7 @@ fn build_http_client_with_dns(
     builder.build().map_err(|e| e.to_string())
 }
 
-// ── 通用分页拉取 + 重试（从 github.rs / huggingface.rs 下沉，消除逐字符重复）──
+// ── 通用分页拉取 + 重试 ──
 
 /// 从 Link header 中提取 `rel="next"` 的 URL。
 /// Link header 格式:
@@ -179,9 +179,8 @@ where
 
 /// 把 reqwest 的发送错误细分为可分辨的诊断串。
 ///
-/// 原先一律记 `err.request_failed|<e>`，而 reqwest 对 send 失败的 `Display` 只输出
-/// `error sending request for url (...)`、**不含根因**——现网 87 条 `check.failed`
-/// 因此无法区分 DNS / TLS / 代理 / 连接重置 / 超时，排障只能靠猜。这里：
+/// reqwest 对 send 失败的 `Display` 只输出 `error sending request for url (...)`、
+/// **不含根因**，单看它无法区分 DNS / TLS / 代理 / 连接重置 / 超时。这里：
 /// - 按 `is_timeout()` / `is_connect()` 分出超时与连接失败（语义键不同，文案不同）；
 /// - 追加 `source()` 首层的 Display（如 `dns error: failed to lookup address` /
 ///   `tcp connect error: connection refused`），根因直接出现在日志行里。
@@ -220,9 +219,8 @@ pub fn default_api_error(status: u16, _body: &str) -> (u16, String) {
     (status, format!("err.api_error|{}|{}", status, reason))
 }
 
-/// GET 并取文本（无重试）：统一「send → 状态映射 → text」原语（M3）。
-/// 供 XML / HTML / JSON 各路径复用，避免 youtube/bilibili 各自重写
-/// 「send → is_success → err.api_error」块；`build_req` 注入自定义 header
+/// GET 并取文本（无重试）：XML / HTML / JSON 各路径共用的
+/// 「send → 状态映射 → text」原语。`build_req` 注入自定义 header
 /// （Cookie/UA/Referer 等），`map_err` 做 source 特定错误映射（如 B 站 412、
 /// YouTube key/配额）。非 2xx 时先取 body 再映射，供需要解析错误体的映射器。
 pub async fn get_text<B, M>(
@@ -255,7 +253,7 @@ pub const MAX_TEXT_BYTES: usize = 16 * 1024 * 1024;
 /// JSON 最大数 MB；上限把恶意超大响应从内存耗尽降级为一次解析失败）。
 pub const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 
-/// 读响应体为 JSON（流式累加，超限中断，M-2 全域收口）。错误统一 `err.parse_failed|`
+/// 读响应体为 JSON（流式累加，超限中断）。错误统一 `err.parse_failed|`
 /// 前缀；需要自定义错误文案的调用方（如 deepseek）改用 `read_body_limited` 自行解析。
 pub async fn read_json_limited<T: serde::de::DeserializeOwned>(
     resp: reqwest::Response,
@@ -276,8 +274,8 @@ pub enum BodyReadError {
     Transport(String),
 }
 
-/// 流式累加响应体，超限立即中断（M-2：`bytes()` 是先全量缓冲后判大小，
-/// chunked 传输时内存已被吃光才轮到检查——改为逐块累加，超限即 drop 连接）。
+/// 流式累加响应体，超限立即中断（不用 `bytes()`：它先全量缓冲再判大小，
+/// chunked 传输时内存已被吃光才轮到检查；逐块累加则超限即 drop 连接）。
 pub async fn read_body_limited(
     resp: reqwest::Response,
     max_bytes: usize,
@@ -315,7 +313,7 @@ async fn read_text_limited(
     }
 }
 
-/// 带重试的 `get_text`：XML/HTML/JSON 路径统一复用重试骨架与错误格式化（M3）。
+/// 带重试的 `get_text`：XML/HTML/JSON 路径统一复用重试骨架与错误格式化。
 pub async fn get_text_with_retry<B, M, R>(
     client: &reqwest::Client,
     url: &str,
@@ -475,9 +473,8 @@ pub fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
 ///
 /// - host 为 IP 字面量：直接 `is_private_or_reserved` 判定，合法时返回该 IP；
 /// - host 为域名：DNS 解析**全部**地址，任一落在私网即拒绝（fail-closed）；
-/// - DNS 解析失败（故障/NXDOMAIN/无网络）：**拒绝**（fail-closed）——此前 fail-open
-///   放行会绕过 IPv6 zone-id 等无法解析的私网形式，且解析失败时请求本身也无法成功，
-///   放行没有实际收益，反而留下 SSRF 绕过面。
+/// - DNS 解析失败（故障/NXDOMAIN/无网络）：**拒绝**（fail-closed）——fail-open 会放行
+///   IPv6 zone-id 等无法解析的私网形式，且解析失败时请求本身也无法成功，放行没有收益。
 ///
 /// 错误统一为 `err.*` 格式（i18n 由调用方负责）。
 pub async fn resolve_public_host(url: &str) -> Result<(String, Vec<std::net::IpAddr>), String> {
@@ -541,7 +538,7 @@ fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
 /// - 要求 URL 为 http/https；
 /// - 手动跟随重定向（最多 10 跳），**每一跳先 `resolve_public_host` 解析并校验为
 ///   公网 IP，再以 `resolve_to_addrs` 把该组 IP 固定到本次请求的 client**——这样
-///   实际连接的 IP 与校验通过的 IP 完全一致，堵住 DNS 重绑定（TOCTOU）绕过（评审 P1-2）；
+///   实际连接的 IP 与校验通过的 IP 完全一致，堵住 DNS 重绑定（TOCTOU）绕过；
 ///   禁自动重定向是因为 reqwest 自动跟随不会对跳转目标重新校验，恶意服务器可用 302
 ///   把请求导向内网（如 169.254.169.254 云元数据）；
 /// - 响应体不得超过 `max_bytes`。
@@ -549,12 +546,12 @@ fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
 /// 代理语义：`config` 携带 proxy_url/proxy_mode（`HttpClientConfig` 复用），每次请求
 /// 都按此重新构建 client 并附加 DNS 固定；`follow_redirects` 固定为 false。
 ///
-/// # 为什么不在外部传入已建好的 client
+/// # 为什么接收配置而不是调用方建好的 client
 ///
-/// 旧实现接收调用方构建好的 `&reqwest::Client`，但该 client 已固定 DNS 解析器，无法再
-/// 附加 `resolve_to_addrs`，只能依赖“校验后让 reqwest 再解析一次” —— 这正是 TOCTOU 的
-/// 根因。改为接收配置、内部重建，代价是每次下载重建一次 client（连接池/句柄开销可忽略，
-/// 与 media 网关既有的“每请求重建”行为一致）。
+/// 外部建好的 client 已固定 DNS 解析器，无法再附加 `resolve_to_addrs`，只能依赖
+/// “校验后让 reqwest 再解析一次”——这正是 TOCTOU 的根因。故改为接收配置、内部重建，
+/// 代价是每次下载重建一次 client（连接池/句柄开销可忽略，与 media 网关既有的
+/// “每请求重建”行为一致）。
 pub async fn fetch_public_bytes(
     config: &HttpClientConfig<'_>,
     url: &str,
@@ -573,7 +570,7 @@ pub async fn fetch_public_bytes(
 /// 代理再解析目标域名——本函数的 `resolve_to_addrs` 固定对代理转发不生效，恶意代理可以
 /// 在转发时把目标解析到内网。这意味着 DNS 重绑定防护仅在直连（`none`/`system`）下
 /// 完整成立；custom 代理下本函数仍做逐跳公网校验（fail-closed），但**无法约束代理内部
-/// 的二次解析**。该限制是代理架构固有（代理本身是可信出口），已在评审中记为残余面。
+/// 的二次解析**。该限制是代理架构固有（代理本身是可信出口），无法在本函数内消除。
 pub async fn fetch_public_with_headers(
     config: &HttpClientConfig<'_>,
     url: &str,
@@ -627,11 +624,11 @@ pub async fn fetch_public_with_headers(
 }
 
 /// 已校验响应的读取与限流：状态码非 2xx 拒绝、`Content-Length` 预检与流式累加
-/// 实际字节数双重上限校验（后者防服务端谎报/分块传输绕过——M-2），并回传 `Content-Type`
+/// 实际字节数双重上限校验（后者防服务端谎报/分块传输绕过），并回传 `Content-Type`
 /// （media 网关需透传给 Chromium）。
 ///
-/// 抽成独立函数是为了让生产路径（`fetch_public_with_headers`）与单元测试
-/// 共用**同一份**实现——此前测试用副本函数，生产改错测试依然全绿。
+/// 抽成独立函数，使生产路径（`fetch_public_with_headers`）与单元测试共用**同一份**
+/// 实现（若测试另用副本，生产改错时测试依然全绿）。
 async fn read_limited_body(
     resp: reqwest::Response,
     max_bytes: usize,
@@ -721,7 +718,7 @@ mod tests {
         assert!(parse_next_link(header).is_none());
     }
 
-    // ── Token 泄露防护回归测试（问题1）──
+    // ── Token 泄露防护回归测试 ──
     // 守护"GitHub Token 不得随 HF 请求泄露"的契约：
     // token=None 时请求**不携带** Authorization header（HF 场景）；
     // token=Some 时**携带** Authorization（GitHub 场景），且按请求设置、不依赖 default header。

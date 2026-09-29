@@ -75,7 +75,7 @@ pub struct SourceTypeInfo {
                 return Err(e);
             }
         };
-        // source 分发收敛为 trait 调用，消除原 match source_type 字符串分支
+        // source 分发走 trait 调用，新增源类型只需注册适配器
         let adapter = match source::get_adapter(&source_type) {
             Ok(a) => a,
             Err((_, msg)) => {
@@ -218,9 +218,9 @@ fn update_source_core<E: BadgeEventEmitter>(
     // （`app_settings.key='poll_interval_minutes'`），该列恒为 0 = 未设置
     // （约定与存量归一化见 Migration 20）。
     //
-    // **不要在这里做 clamp**：曾有过 `.clamp(5, 1440)`，它会把 0 归一到 5 ——
-    // 「未设置」被写成一个真实间隔，将来重新引入按源调度时会被误读成
-    // 「每 5 分钟查一次」（比原来的 30 更糟）。越界与归一都留给未来的读取方处理。
+    // **不要在这里做 clamp**：把 0 归一到 5 会把「未设置」写成真实间隔，
+    // 将来重新引入按源调度时会被误读成「每 5 分钟查一次」。越界与归一都留给
+    // 未来的读取方处理。
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     db::sources::update_source(&tx, id, enabled, poll_interval_minutes)?;

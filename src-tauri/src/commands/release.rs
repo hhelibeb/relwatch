@@ -6,7 +6,7 @@ use serde_json::json;
 
 #[tauri::command]
 
-/// 版本列表数据源：**全库**目录（不再有 LIMIT 200）。
+/// 版本列表数据源：**全库**目录（无 LIMIT）。
 ///
 /// 正文为预览投影（见 `db::releases::get_release_catalog` 的契约说明）；全文由
 /// `get_release_detail`（详情弹窗）与 `get_release_search_bodies`（全文搜索）按需取。
@@ -182,10 +182,8 @@ use serde_json::json;
 /// 用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 /// 仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
 ///
-/// 返回**真实结果**（修复「翻译失败静默吞掉 → 前端翻译中永久卡死」）：
-/// - 前置校验 AI 未启用 / key 缺失 → Err。此前这两项在 run_ai_job 内静默 return、
-///   本命令无条件 Ok(())，前端成功路径不复位 translating、唯一复位点 watch
-///   译文落库永不触发 → 卡片/弹窗永久禁用无法重试（AI 未启用/key 失效/断网等）
+/// 返回**真实结果**（前端靠 Err 复位「翻译中」状态，静默 Ok 会让卡片永久禁用无法重试）：
+/// - 前置校验 AI 未启用 / key 缺失 → Err
 /// - 执行后回查：generate_translations_for_new 返回时所有任务与落库动作均已
 ///   await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
 #[tauri::command]
@@ -198,7 +196,6 @@ use serde_json::json;
     // 读取该 release 的 body，无 body 则无需翻译
     let body = {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        // 已有译文则跳过
         let existing = db::releases::get_release(&conn, release_id)
             .map_err(|e| format!("err.query_failed|{}", e))?;
         if let Some(ref r) = existing {
@@ -214,14 +211,14 @@ use serde_json::json;
             }
         }
         existing
-            .ok_or_else(|| format!("err.release_not_found|{}", release_id))? // 安全地构造错误字符串
+            .ok_or_else(|| format!("err.release_not_found|{}", release_id))?
             .body
             .clone()
     };
     let body = body.ok_or_else(|| "err.empty_body".to_string())?;
 
     // 前置校验 AI 开关与 key：失败立即返回 Err（前端 catch 复位 translating 并提示），
-    // 而不是让 run_ai_job 静默 return 后本命令无条件 Ok(()) 造成永久卡死。
+    // 不可静默 Ok 造成「翻译中」永久卡死。
     {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         let cfg = crate::deepseek::read_config(&conn);

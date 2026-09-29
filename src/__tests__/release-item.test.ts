@@ -24,7 +24,7 @@ vi.mock('../api/client', () => ({
 
 
 // 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
-// 必须引用 utils 真实实现——曾在此处复制实现，utils 语义变化时测试按旧语义放行（见阶段 2-4）
+// 必须引用 utils 真实实现——在本文件复制实现会让测试按旧语义放行
 vi.mock('../utils', async importOriginal => {
   const actual = await importOriginal<typeof import('../utils')>()
   return {
@@ -101,13 +101,8 @@ afterEach(() => {
 })
 
 /**
- * ReleaseItem.vue 真实运行场景测试（真实 i18n 字典）
- *
- * 版本列表中的单个版本卡片，提供：
- * - 版本信息展示（仓库/标签/标题/日期/状态/预发布标记）
- * - AI 摘要与截断悬浮提示
- * - 右键菜单（打开链接/复制链接/删除）和摘要右键菜单（阅读全文/复制摘要/翻译）
- * - 通知状态变更（点击链接自动标记、稍后提醒、忽略）
+ * ReleaseItem.vue 真实运行场景测试（真实 i18n 字典）：渲染、通知状态操作、
+ * 右键菜单（含封面菜单与发送到 Agent）、内容预览、旗标操作。
  */
 describe('ReleaseItem.vue — 渲染', () => {
   it('显示仓库名和标签名', () => {

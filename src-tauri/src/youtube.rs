@@ -477,7 +477,6 @@ fn extract_og_title(html: &str) -> Option<String> {
 }
 
 /// 拉取 URL 原始文本（带重试，仅限 HTML 页面等文本内容）。
-/// 复用 `http::fetch_text_with_retry` 统一封装（M3）。
 async fn fetch_text_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -486,7 +485,6 @@ async fn fetch_text_with_retry(
 }
 
 /// 拉取单个 feed 的原始 XML（带重试，供测试直接调用）。
-/// 复用 `http::fetch_text_with_retry`（M3）。
 async fn fetch_feed_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -578,8 +576,6 @@ fn map_api_error(status: u16, body: &str) -> (u16, String) {
 }
 
 /// 带重试的 API GET。key/配额类错误（401/403/400）不重试，其余可重试。
-/// 复用 `http::get_text_with_retry` 统一重试骨架（M3），仅重试规则与错误
-/// 映射为 YouTube API 变体。
 async fn api_get_json_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -865,8 +861,7 @@ async fn api_get_videos_details(
 }
 
 /// 把 videos.list 详情应用到条目（时长/播放量/精确类型标注）。
-/// need_classify（单类型）与双类型分支共用，消除逐字复制的"应用循环"，
-/// 避免日后合并改动只改到一处导致两分支行为漂移。
+/// need_classify（单类型）与双类型分支共用，避免日后改动只改一处导致两分支行为漂移。
 fn apply_video_details(
     entries: &mut [FeedEntry],
     details: &std::collections::HashMap<String, VideoDetail>,
@@ -993,7 +988,7 @@ pub async fn resolve_channel_id(
 
 // ── SourceAdapter 实现 ─────────────────────────────────
 
-/// YouTube 监控源适配器。实现 `SourceAdapter` trait。
+/// YouTube 监控源适配器。
 pub struct YoutubeAdapter;
 
 #[async_trait::async_trait]

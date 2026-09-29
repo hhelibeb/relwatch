@@ -1,12 +1,12 @@
-// ── 聊天核心（B 域：历史加载 / RPC 流事件合帧 / 轮询 / 快照 / 滚动；
-//    C 域：提交 / 停止 / 重试）──
-// 跨域依赖全部经入参以 ref/回调注入（§4.2），不 import 其他域的模块：
-// - 提交输入（F 域 composer）：instruction / entities / skillPath / files（读 + 成功后清空）
-// - 模型（D 域）：effectiveModel（提交生效模型）、oneShotModel / modelOnce（提交后消费清空）、
+// ── 聊天核心：历史加载 / RPC 流事件合帧 / 轮询 / 快照 / 滚动；
+//    提交 / 停止 / 重试 ──
+// 依赖全部经入参以 ref/回调注入，不 import 其他模块：
+// - 提交输入（composer）：instruction / entities / skillPath / files（读 + 成功后清空）
+// - 模型：effectiveModel（提交生效模型）、oneShotModel / modelOnce（提交后消费清空）、
 //   selectedModel（重试回填 run 的模型）
-// - 用量（H 域）：usage / loadUsage（loadChat 预清 + 联动刷新，避免切换时闪现旧水位）
-// - 会话域：sessionTitle / persistSessionMeta 经编排层接线
-// - 进程指示灯（E 域）：loadRpcStatus（轮询启动 / run 收尾时顺带刷新）
+// - 用量：usage / loadUsage（loadChat 预清 + 联动刷新，避免切换时闪现旧水位）
+// - 会话：sessionTitle / persistSessionMeta 经编排层接线
+// - 进程指示灯：loadRpcStatus（轮询启动 / run 收尾时顺带刷新）
 import { computed, nextTick, onUnmounted, ref, watch, type Ref } from 'vue'
 import {
   cancelAgentRun,
@@ -42,34 +42,34 @@ import {
 export function useAgentChat(deps: {
   activeKey: Ref<string>
   showToast: (message: string) => void
-  // ── 提交输入（F 域）──
+  // ── 提交输入 ──
   instruction: Ref<string>
   entities: Ref<AgentEntityRefSeed[]>
   skillPath: Ref<string | null>
   files: Ref<string[]>
   focusAtEnd: () => void
-  // ── 模型（D 域）──
+  // ── 模型 ──
   effectiveModel: Ref<AgentModelRef | null>
   selectedModel: Ref<AgentModelRef | null>
   oneShotModel: Ref<AgentModelRef | null>
   modelOnce: Ref<boolean>
-  // ── 用量（H 域）──
+  // ── 用量 ──
   usage: Ref<AgentSessionUsage | null>
   loadUsage: () => Promise<void>
-  // ── 会话域（经编排层接线）──
+  // ── 会话（经编排层接线）──
   sessionTitle: Ref<string>
   persistSessionMeta: (key: string, title: string, model: AgentModelRef | null) => void
   // ── 菜单互斥：菜单打开时 Enter 不提交 ──
   showSkillMenu: Ref<boolean>
   showEntityMenu: Ref<boolean>
-  // ── 进程指示灯（E 域）──
+  // ── 进程指示灯 ──
   loadRpcStatus: () => Promise<void>
   // ── 实体目录（重试时校验引用实体仍然存在）──
   sources: Ref<Source[]>
   releases: Ref<ReleaseInfo[]>
   /** 各类目录是否成功加载过：未加载 ≠ 实体已删除（见 existingEntities） */
   catalogReady: Ref<{ source: boolean; release: boolean }>
-  // ── 全局队列（编排层持有：侧栏状态点 / 横幅共用，本域 loadQueue 写入）──
+  // ── 全局队列（编排层持有：侧栏状态点 / 横幅共用，此处 loadQueue 写入）──
   queueActive: Ref<AgentQueueItem[]>
 }) {
   const {
@@ -163,16 +163,15 @@ export function useAgentChat(deps: {
   // 当前会话活跃 run：优先取 running（真正占用进程执行的那条），无 running 才取
   // pending（最新排队的那条）。runs 是倒序（ORDER BY id DESC），直接 find pending/running
   // 会取到「最新排队」而非「正在执行」——若同会话异常出现多活跃 run，点「停止」会
-  // 停掉排队的、执行中的继续跑（评审 3.2）。从 runs 推导而非独立字段：切换/新建会话
+  // 停掉排队的、执行中的继续跑。从 runs 推导而非独立字段：切换/新建会话
   // 后 loadChat 即恢复停止能力，不依赖流式事件回填（无输出的 run 也能停），
   // 后端排队中的 run 同样可停。
   const activeRun = computed<AgentRunSummary | undefined>(() =>
     runs.value.find((r) => r.status === 'running') ?? runs.value.find((r) => r.status === 'pending'),
   )
-  // 提交回执兜底：run 刚创建、runs 尚未刷新时保持可停止（等价旧逻辑「run 未在列表视为运行中」）
+  // 提交回执兜底：run 刚创建、runs 尚未刷新时保持可停止
   const submittedRunId = ref<number | null>(null)
   const activeRunId = computed<number | null>(() => activeRun.value?.id ?? submittedRunId.value)
-  // 是否处于可停止状态：会话内有活跃 run（运行中或排队中）
   const canStop = computed(() => activeRunId.value !== null)
   const cancelling = ref(false)
 
@@ -181,8 +180,7 @@ export function useAgentChat(deps: {
   // 提交时刻的历史快照：流式期间显示「快照历史 + 流式内容」，
   // 保证 AI 生成中前文始终可见（与 pi GUI 一致）；终态后清空回落全量校准。
   const historySnapshot = ref<AgentChatMessage[]>([])
-  // 流式进行中 = 历史快照 + 实时流式（不再二选一丢弃历史）；
-  // 终态（agent_settled）清空流式后回落全量校准结果。
+  // 流式进行中 = 历史快照 + 实时流式；终态（agent_settled）清空流式后回落全量校准结果。
   const displayedMessages = computed(() =>
     liveMessages.value.length > 0
       ? [...historySnapshot.value, ...liveMessages.value]
@@ -207,8 +205,7 @@ export function useAgentChat(deps: {
   }
 
   /** 处理单个 pi RPC 流事件（打字机文本 / 工具状态 / 流式 bash 输出）。
-   *  事件原序逐个处理，处理逻辑与合帧前完全一致；事件含 session_key，
-   *  flush 时逐个重新校验，切会话后旧事件不会写入新会话的流式消息。 */
+   *  事件含 session_key，此处逐个校验，切会话后旧事件不会写入新会话的流式消息。 */
   function processRpcEvent(payload: { session_key: string; run_id: number; event: string }) {
     if (payload.session_key !== activeKey.value) return
     let ev: Record<string, unknown>
@@ -268,10 +265,9 @@ export function useAgentChat(deps: {
 
   // ── 流式事件合帧：pi 的 delta 事件可达每秒数十上百条，逐条触发渲染会让主线程
   // 饱和（每 delta 一次全量 Markdown 重解析 + 整组件重渲染）。事件先入队，
-  // 50ms 窗口内合并成一批处理，渲染次数从 delta 频率降到 ≤20 次/秒。
-  // 处理逻辑零改动（processRpcEvent = 原逐条处理函数），批末统一跟随滚动
-  // （替代原 deep watch —— 原地追加 text 只有深度遍历才能监听到，代价是每个
-  // delta 遍历整棵流式消息树；现在每批只滚一次）。
+  // 50ms 窗口内合并成一批处理，渲染次数从 delta 频率降到 ≤20 次/秒；
+  // 批末统一跟随滚动：原地追加 text 只有深度遍历才能监听到，逐个 delta 滚动
+  // 代价太大，改为每批只滚一次。
   const RPC_FLUSH_MS = 50
   let pendingRpcEvents: { session_key: string; run_id: number; event: string }[] = []
   let rpcFlushTimer: ReturnType<typeof setTimeout> | undefined
@@ -498,9 +494,8 @@ export function useAgentChat(deps: {
 
   /** user 消息渲染装饰（预计算）：run 对位、引用实体、主/折叠文本拆分。
    *  流式期间渲染函数每批重跑，模板内联函数（runs.find + Date 解析 + JSON.parse
-   *  + 正则拆分）会在每条 user 消息上重复十余次——并入 computed 每批每条只算一次
-   *  （同侧栏 sessionsWithState 的预计算先例）。对位口径与原内联函数完全一致：
-   *  run_id 直连（60s 邻近校验）→ 时间窗兜底。 */
+   *  + 正则拆分）会在每条 user 消息上重复十余次——并入 computed 每批每条只算一次。
+   *  对位口径：run_id 直连（60s 邻近校验）→ 时间窗兜底。 */
   const messageDecorations = computed(() => {
     const runById = new Map(runs.value.map((r) => [r.id, r]))
     const fallback = userRunMap.value
@@ -624,9 +619,9 @@ export function useAgentChat(deps: {
     nextTick(() => focusAtEnd())
   }
 
-  // ── 会话切换清空（§4.2 三处清空差异对照表，按 mode 逐条复刻、不取并集）──
+  // ── 会话切换清空（三种 mode 的清空范围不同，逐条对照、不取并集）──
   // switch：停轮询 + 丢弃合帧 + 提交/流式态复位；messages/runs 不清（loadChat 覆盖）。
-  // new：同 switch 但立即清 messages/runs；不停轮询（原实现无 stopPolling）。
+  // new：同 switch 但立即清 messages/runs；不停轮询。
   // delete：一律不动（删除后切换保留草稿/附件/提交态是现状行为）。
   function resetForSessionSwitch(mode: SessionSwitchMode) {
     if (mode === 'delete') return
@@ -648,7 +643,7 @@ export function useAgentChat(deps: {
     () => scrollToBottomIfNear(),
   )
 
-  // timer 随 composable 生命周期清理（风险 2）：合帧队列与轮询不泄漏
+  // timer 随 composable 生命周期清理：合帧队列与轮询不泄漏
   onUnmounted(() => {
     stopPolling()
     discardPendingRpcEvents()

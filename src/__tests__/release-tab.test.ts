@@ -897,7 +897,7 @@ describe('ReleaseTab 显示重要度开关', () => {
   })
 })
 
-// ── 通知定位消费（P1-1）─────────────────────────────────────────
+// ── 通知定位消费（focusTarget）─────────────────────────
 
 describe('ReleaseTab 通知定位（focusTarget）', () => {
   it('focusTarget + token 变化时重置全部筛选并切 simple 视图，调用 SimpleList 定位', async () => {

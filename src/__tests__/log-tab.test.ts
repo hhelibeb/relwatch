@@ -61,15 +61,8 @@ afterEach(() => {
 })
 
 /**
- * LogTab.vue 真实运行场景测试（真实 i18n / utils / translateError）
- *
- * 日志查询组件，提供：
- * - 挂载时自动加载
- * - 搜索（300ms 防抖）
- * - 级别筛选 dropdown
- * - 分页浏览
- * - 清空日志（确认对话框）
- * - 外部刷新（refreshKey prop）
+ * LogTab.vue 真实运行场景测试：只 mock 日志 API 与确认对话框，
+ * i18n / utils / translateError 走真实实现。
  */
 describe('LogTab.vue — 挂载与加载', () => {
   it('挂载时自动调用 searchLogs', async () => {

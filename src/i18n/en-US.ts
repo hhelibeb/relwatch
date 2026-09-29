@@ -735,7 +735,7 @@ export default {
   'aiUsage.action_summary': 'Summary',
   'aiUsage.action_detect_language': 'Language detection',
   'aiUsage.action_test': 'Connection test',
-  // ── Frontend global error fallback (V2): {error} is filled by the Rust-side
+  // ── Frontend global error fallback: {error} is filled by the Rust-side
   //    render; the toast reuses the same template (see src/api/report-error.ts) ──
   'ui.vue_error': 'Unhandled UI error (logged): {error}',
   'ui.unhandled_rejection': 'Unhandled promise rejection (logged): {error}',

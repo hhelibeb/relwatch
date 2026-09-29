@@ -5,7 +5,7 @@
  * 特异性约定：各菜单的定位覆盖规则用双类选择器（如
  * .agent-ws-menu.agent-ws-menu-rpc）抬高特异性压制本基类，级联顺序无关。 */
 
-/* 引用菜单 */
+/* 菜单基类族（各菜单共用，定位覆盖由使用方的双类选择器完成） */
 .agent-ws-menu {
   position: absolute;
   bottom: calc(100% - 8px);
@@ -90,7 +90,7 @@
   border-radius: 999px;
   background: var(--bg-subtle);
   white-space: nowrap;
-  /* 截断限制移到 .agent-ws-chip-text——之前 max-width+overflow 会把删除按钮一起裁掉 */
+  /* 截断限制放在 .agent-ws-chip-text 上——放在这里会连删除按钮一起裁掉 */
 }
 .agent-ws-chip-text {
   max-width: 170px;

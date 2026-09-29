@@ -4,8 +4,7 @@ import { getSourceTypeDef } from '../api/source-registry'
 
 /**
  * ReleaseItem 卡片与 ReleaseDetailModal 弹窗共用的展示规则。
- * 收敛了原先两处逐段复制的实现——规则一旦分叉就会出现
- * 「卡片能翻译、弹窗不能」这类不一致。
+ * 两处各自实现会分叉出「卡片能翻译、弹窗不能」这类不一致。
  */
 
 /** 展示名：release_name 非空且不同于 tag_name 时显示（YouTube/HF 源常用）。 */

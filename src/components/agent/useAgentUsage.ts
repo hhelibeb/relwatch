@@ -1,11 +1,9 @@
-// ── AgentWorkspace 会话上下文水位（H 域）──
-// 自 AgentWorkspace.vue 出仓：usage 状态 / loadUsage / 展示文案。
+// ── 会话上下文水位（usage 状态 / loadUsage / 展示文案）──
 // loadChat 的联动（预清 + 调用）经编排层把句柄传给聊天核心，本模块不反向依赖。
 //
 // 词元与窗口口径对齐 pi footer 的 `5.2% / 1.0M (auto)`：数字全部由后端
 //（agent_context.rs，复刻 pi 的 getContextUsage）算好，前端只负责展示与百分比。
-// 早先「整个会话字符数 ÷ 2」的估算与 pi 实测偏差可达 1.7 倍（8.2% vs 4.7%），
-// 已由 `context_tokens / context_window` 取代。
+// 字符数估算（÷2）只作为无上报数据时的兜底：与 pi 实测偏差可达 1.7 倍，水位一律不用它。
 import { computed, ref, type Ref } from 'vue'
 import { getAgentSessionUsage, type AgentSessionUsage } from '../../api/agent'
 import { t } from '../../i18n'

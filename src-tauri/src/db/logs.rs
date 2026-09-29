@@ -18,9 +18,9 @@ fn fallback_dir() -> PathBuf {
     }
 }
 
-/// 日志**降级通道**（V23）：DB 写入失败时把一行追加到 `logs/fallback.log`。
+/// 日志**降级通道**：DB 写入失败时把一行追加到 `logs/fallback.log`。
 ///
-/// 为什么必须降级：V2 的全局错误兜底把「看不见的失败」变成「日志页可见」，
+/// 为什么必须降级：全局错误兜底把「看不见的失败」变成「日志页可见」，
 /// 但若日志写入本身失败（DB 锁 / 文件被占 / 磁盘异常）且依然静默，兜底通道
 /// 就自毁了——用户以为「日志里一定有」，实际什么都没有。
 ///
@@ -119,7 +119,7 @@ pub fn release_log_ident(r: &crate::db::releases::ReleaseInfo) -> (String, Strin
 
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
     let now = chrono::Utc::now().to_rfc3339();
-    // 所有日志出口默认脱敏（V28）：凭据（userinfo / query 参数 / 已知 token 形状）
+    // 所有日志出口默认脱敏：凭据（userinfo / query 参数 / 已知 token 形状）
     // 不得以明文落库——日志可搜索、可导出，等同于凭据外泄。
     let message = crate::redact::redact(message);
     if let Err(e) = conn.execute(
@@ -134,7 +134,7 @@ pub fn write_log(conn: &Connection, level: &str, message: &str) {
 pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     let now = chrono::Utc::now().to_rfc3339();
 
-    // 所有日志出口默认脱敏（V28）：先把 args 过滤再渲染，使 message_args 与
+    // 所有日志出口默认脱敏：先把 args 过滤再渲染，使 message_args 与
     // rendered_message 两侧都无明文，且渲染输入与落库内容一致。
     let args = crate::redact::redact(args);
 
@@ -263,7 +263,6 @@ pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
     let locale = crate::db::settings::get_setting_str(conn, crate::db::settings::KEY_LANGUAGE, "zh-CN")
         .unwrap_or_else(|_| "zh-CN".to_string());
 
-    // 找出所有需要回填的行：有 message_key 但 rendered_message 为 NULL
     let mut stmt = conn
         .prepare(
             "SELECT id, message_key, message_args FROM logs WHERE message_key IS NOT NULL AND rendered_message IS NULL"
@@ -466,7 +465,7 @@ mod tests {
 
     // ── 错误状态码 → 日志级别映射矩阵 ─────────────────────
     //
-    // poll.rs 中 check 失败时的日志级别判定（内联闭包，出现两处）：
+    // poll.rs 中 check 失败时的日志级别判定（内联在 `Err((status, msg))` 分支）：
     //     let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
     //         "WARN"
     //     } else {
@@ -475,7 +474,7 @@ mod tests {
     //
     // 语义：临时性错误（网络 0、认证 401、限流 429、5xx 服务端）记 WARN，
     //       永久性错误（404 不存在、422 参数等 4xx）记 ERROR。
-    // 该判定目前内联无法直接测试，这里把规则作为不变量复刻并锁住，
+    // 该判定内联、无法直接测试，这里把规则作为不变量复刻并锁住，
     // 重构时若改动判定逻辑，此处必须同步——否则用户可见的日志级别会变。
 
     /// 复刻 poll.rs 中的状态码→级别判定。保持同步。
@@ -508,7 +507,7 @@ mod tests {
         assert_eq!(check_failure_log_level(500), "WARN");
     }
 
-    // ── V23：日志写入静默失败 → 降级写文件 ─────────────────────
+    // ── 日志写入静默失败 → 降级写文件 ─────────────────────
 
     /// 每个用例独立的临时目录，避免并行测试互相干扰。
     fn temp_log_dir(tag: &str) -> std::path::PathBuf {
@@ -549,9 +548,8 @@ mod tests {
 
     #[test]
     fn write_log_degrades_to_fallback_file_when_table_missing() {
-        // 无 logs 表（DB 不可用）时应降级而非 panic。
-        // 旧版只断言「不 panic」——那连「降级到底做没做」都没测到（函数体全空也绿）。
-        // 这里进一步断言降级文件确实拿到那一行。
+        // 无 logs 表（DB 不可用）时应降级而非 panic，且降级文件必须真的拿到那一行
+        // （只断言「不 panic」测不到降级是否发生，函数体写空也会绿）。
         let conn = Connection::open_in_memory().unwrap();
         let dir = fallback_dir();
         let _ = std::fs::remove_dir_all(&dir);
@@ -575,7 +573,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    // ── V28：日志出口默认脱敏 ─────────────────────────────
+    // ── 日志出口默认脱敏 ─────────────────────────────
 
     #[test]
     fn write_log_key_redacts_credentials_in_args_and_rendered() {

@@ -82,7 +82,7 @@ pub fn init_pool(
         let conn = pool.get().map_err(|e| e.to_string())?;
         apply_schema(&conn).map_err(|e| e.to_string())?;
         migrate(&conn).map_err(|e| e.to_string())?;
-        // 启动清理：上次进程遗留的 pending/running run 置 cancelled（防永久悬挂）
+        // 启动清理：上次进程遗留的 pending/running run 置终态（防永久悬挂）
         cleanup_stale_agent_runs(&conn).map_err(|e| e.to_string())?;
     }
 
@@ -324,19 +324,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         .and_then(|mut s| s.exists([]))
         .unwrap_or(false);
     if !has_rendered {
-        // 创建新列
         conn.execute_batch(
             "ALTER TABLE logs ADD COLUMN rendered_message TEXT;"
         )?;
 
-        // 一次性清理：之前错误写入的 raw template（含未替换的 {key} 占位符）
-        // 仅在首次添加列时执行，避免重复 NULL → backfill → 再次 NULL 的循环
+        // 清理历史错误写入的 raw template（含未替换的 {key} 占位符）；
+        // 仅首次加列时执行，避免重复 NULL → backfill → 再次 NULL 的循环
         let _ = conn.execute(
             "UPDATE logs SET rendered_message = NULL WHERE rendered_message LIKE '%{%}%'",
             [],
         );
 
-        // 一次性回填已有日志的 rendered_message
         match super::logs::backfill_rendered_messages(conn) {
             Ok(n) if n > 0 => {
                 log::info!("已回填 {} 条日志的 rendered_message", n);
@@ -424,7 +422,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
 
     // ── Migration 16: agent_runs 新增 `files` 列 + `unknown` 状态 ──
-    // `files`：本次提交附带的本地文件绝对路径（JSON 数组，评审「本地文件/图片附件」）。
+    // `files`：本次提交附带的本地文件绝对路径（JSON 数组）。
     // `unknown`：结果未知终态（终态事件丢失 / 应用重启时未落终态），与 failed 区分——
     // 它**可能已经执行完成**，误标 failed 会让用户以为没跑而重复提交。
     // 两者都无法用 ALTER TABLE 表达（CHECK 约束固化在表 DDL 里），故整表重建；
@@ -470,10 +468,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
         }
     }
 
-    // ── Migration 18: 脱敏存量日志/源状态中的明文凭据（V28 一次性清理）──
+    // ── Migration 18: 脱敏存量日志/源状态中的明文凭据 ──
     // 新增的日志与源状态出口已默认脱敏（`db::logs::write_log*` + `poll.rs` 的失败分支），
-    // 但历史行里仍是明文（现网实测：27 条 `check.failed` 含完整 YouTube API key，
-    // 日志留存 14 天、可搜索、可导出）。这里做一次性清洗，用 app_settings 标记避免
+    // 但历史行里仍是明文（日志留存 14 天、可搜索、可导出）。
+    // 这里做一次性清洗，用 app_settings 标记避免
     // 每次启动全表扫描；清洗失败不阻塞启动（不写标记，下次启动重试）。
     const REDACTION_MARKER: &str = "migration.log_redaction_v1";
     let already_redacted = super::settings::get_setting(conn, REDACTION_MARKER)
@@ -514,15 +512,13 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     }
 
     // ── Migration 20: sources.poll_interval_minutes 归一为「未设置」──
-    // 该列自建库起就是死字段：字段/写入/前端透传都在，但无人读，值来自建表默认值。
-    // 于是存量行里清一色是建表默认值 30，**不含任何用户意图**。而「按源间隔调度」
-    // 曾一度把它当调度依据（is_source_due），会把用户的源静默压到每 30 分钟一次、
-    // 盖掉他设的全局周期，且无日志无提示。该功能已整体撤掉（见 poll.rs::do_poll_async）。
+    // 该列自建库起就是死字段：写入与前端透传都在，但无人读，存量行的值清一色来自
+    // 建表默认值 30，**不含任何用户意图**，只会在将来重新引入按源调度时静默压掉
+    // 用户设的全局周期。
     //
     // 这里把值等于建表默认值 30 的行统一置 0，并定下约定：
     //   0 = 未设置（跟随全局周期）；>0 = 显式间隔（重新引入按源调度时必须先处理 0）。
-    // 只动等于 30 的行：其他值只可能来自开发期手动写入的显式选择，不该被这次归一化
-    // 抹掉（本功能未随任何发布版交付，正常用户库里 100% 是 30）。
+    // 只动等于 30 的行：其他值只可能来自开发期手动写入的显式选择，不该被这次归一化抹掉。
     // 用 app_settings 标记保证只跑一次；失败不写标记，下次启动重试。
     const SOURCE_INTERVAL_MARKER: &str = "migration.source_interval_follow_global_v1";
     let interval_normalized = super::settings::get_setting(conn, SOURCE_INTERVAL_MARKER)
@@ -733,14 +729,13 @@ fn rebuild_agent_runs(conn: &Connection) -> Result<()> {
 /// 调度器随进程消亡，这些 run 不会有终态写入，不清理则永远挂着。
 /// 在应用启动（init_pool）时调用一次。
 ///
-/// **两类遗留 run 的真实语义不同，分开归类（评审 3.4）**：
+/// **两类遗留 run 的真实语义不同，分开归类**：
 /// - **pending（无 started_at）**：从未被调度执行过 —— 确定没跑，置 `cancelled`。
 /// - **running（有 started_at）**：已在 pi 里跑起来了，进程被强杀时**可能已经跑完**，
 ///   只是终态没来得及落库 —— 置 `unknown`（结果未知），而非「已取消」。
 ///
-/// 此前一律置 cancelled 且文案为「未完成的提交已取消」，用户读到「已取消」会以为
-/// 任务没执行、从而重跑（重复烧词元、重复副作用）；`unknown` + 对应文案把不确定性
-/// 如实交还给用户，由他确认后再决定是否重跑。
+/// 若一律置 cancelled 并显示「已取消」，用户会以为任务没执行而重跑（重复烧词元、
+/// 重复副作用）；`unknown` + 对应文案把这份不确定性如实交还给用户，由他确认后再决定。
 pub fn cleanup_stale_agent_runs(conn: &Connection) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     // pending（未启动）→ cancelled
@@ -873,7 +868,6 @@ mod tests {
     fn test_init_memory_pool_usable() {
         let pool = init_memory_pool().unwrap();
         let conn = pool.get().unwrap();
-        // 能在生成的连接上执行查询
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM sources", [], |row| row.get(0))
             .unwrap();
@@ -1060,7 +1054,7 @@ mod tests {
             .unwrap();
         assert_eq!(hanging, 0);
     }
-    // ── Migration 18：历史明文凭据一次性清洗（V28）─────────────
+    // ── Migration 18：历史明文凭据一次性清洗 ─────────────
 
     #[test]
     fn test_redact_existing_credentials_cleans_logs_and_sources() {
@@ -1168,7 +1162,7 @@ mod tests {
         assert_eq!(notices, 0, "首次清洗无命中时不应写提示行，重扫更不应写");
     }
 
-    /// 对照：无标记时必须真的重扫（证明上一个用例的「未变」来自标记而非其他原因）。
+    /// 游标分批跨 REDACT_BATCH 边界不漏行：首、尾行各含一处明文，两行都必须被清洗。
     #[test]
     fn redact_existing_credentials_scans_in_batches_across_boundary() {
         let conn = init_memory_db().unwrap();

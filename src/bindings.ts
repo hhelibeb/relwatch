@@ -12,7 +12,7 @@ export const commands = {
 	updateSource: (id: number, enabled: boolean, pollIntervalMinutes: number, muted: boolean | null, config: string | null) => __TAURI_INVOKE<null>("update_source", { id, enabled, pollIntervalMinutes, muted, config }),
 	listSources: () => __TAURI_INVOKE<Source[]>("list_sources"),
 	/**
-	 *  版本列表数据源：**全库**目录（不再有 LIMIT 200）。
+	 *  版本列表数据源：**全库**目录（无 LIMIT）。
 	 * 
 	 *  正文为预览投影（见 `db::releases::get_release_catalog` 的契约说明）；全文由
 	 *  `get_release_detail`（详情弹窗）与 `get_release_search_bodies`（全文搜索）按需取。
@@ -38,10 +38,8 @@ export const commands = {
 	 *  用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 	 *  仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
 	 * 
-	 *  返回**真实结果**（修复「翻译失败静默吞掉 → 前端翻译中永久卡死」）：
-	 *  - 前置校验 AI 未启用 / key 缺失 → Err。此前这两项在 run_ai_job 内静默 return、
-	 *    本命令无条件 Ok(())，前端成功路径不复位 translating、唯一复位点 watch
-	 *    译文落库永不触发 → 卡片/弹窗永久禁用无法重试（AI 未启用/key 失效/断网等）
+	 *  返回**真实结果**（前端靠 Err 复位「翻译中」状态，静默 Ok 会让卡片永久禁用无法重试）：
+	 *  - 前置校验 AI 未启用 / key 缺失 → Err
 	 *  - 执行后回查：generate_translations_for_new 返回时所有任务与落库动作均已
 	 *    await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
 	 */
@@ -51,7 +49,7 @@ export const commands = {
 	checkSingleSource: (id: number) => __TAURI_INVOKE<PollResult>("check_single_source", { id }),
 	getSettings: () => __TAURI_INVOKE<AppSettings>("get_settings"),
 	/**
-	 *  设置读写共用 `AppSettings`（types.rs）：不再维护第二份与 AppSettings
+	 *  设置读写共用 `AppSettings`（types.rs）：无需维护第二份与 AppSettings
 	 *  逐字段重复的 payload 结构，新增设置项少一处同步点。
 	 */
 	updateSettings: (payload: AppSettings) => __TAURI_INVOKE<null>("update_settings", { payload }),
@@ -92,7 +90,6 @@ export const commands = {
 	 *  到事件循环，而事件循环正卡在 `WaitWithPump` 的死循环里（tao 的 WM_CLOSE
 	 *  → 事件循环处理，事件循环不动则窗口无法销毁）。改为 async 后命令体在
 	 *  async runtime（非主线程）执行，主线程消息泵保持可用。
-	 *  该缺陷自 c8d28f8「B 站登录窗 Rust 建窗」（v1.16.0 起）引入。
 	 */
 	openBilibiliLoginWindow: (title: string) => __TAURI_INVOKE<null>("open_bilibili_login_window", { title }),
 	testDeepseekConnection: (payload: {
@@ -105,12 +102,11 @@ export const commands = {
 } | null) => __TAURI_INVOKE<null>("test_deepseek_connection", { payload }),
 	searchLogs: (keyword: string, page: number, pageSize: number, level: string | null) => __TAURI_INVOKE<LogSearchResult>("search_logs", { keyword, page, pageSize, level }),
 	/**
-	 *  前端未捕获异常上报（V2 全局兜底通道）。
+	 *  前端未捕获异常上报（全局兜底通道）。
 	 * 
-	 *  背景：release 版没有控制台，`app.config.errorHandler` / `unhandledrejection` 里
-	 *  的异常原本既无提示、也无落库，用户报障时无从查起（“点了没反应且查不到”）。
-	 *  前端侧 `src/api/report-error.ts` 是唯一调用方——它负责节流（同一 key 60s 内只报一条）、
-	 *  截断（堆栈 ≤2KB）与 toast 提示；本命令只负责落库。
+	 *  背景：release 版没有控制台，`app.config.errorHandler` / `unhandledrejection` 里的
+	 *  异常若只留在前端，用户报障时无从查起。前端侧 `src/api/report-error.ts` 是唯一调用方——
+	 *  它负责节流（同一 key 60s 内只报一条）、截断（堆栈 ≤2KB）与 toast 提示；本命令只负责落库。
 	 * 
 	 *  **命名约束**：`message_key` 由前端传入，**不得以 err. 开头**。
 	 *  `src/__tests__/i18n-keys.test.ts` 会扫描 Rust 生产代码中以双引号开头的 err. 前缀
@@ -118,8 +114,8 @@ export const commands = {
 	 *  而卡住 CI（本注释特意不写出该字面量，以免自投罗网）。
 	 *  前端现用 `ui.vue_error` / `ui.unhandled_rejection` / `ui.window_error`。
 	 * 
-	 *  落库前经 `db::logs::write_log_key` 的默认脱敏（V28），无需在此重复处理；
-	 *  DB 写入失败时该函数会降级写 `logs/fallback.log`（V23）。
+	 *  落库前经 `db::logs::write_log_key` 的默认脱敏，无需在此重复处理；
+	 *  DB 写入失败时该函数会降级写 `logs/fallback.log`。
 	 */
 	reportFrontendError: (messageKey: string, detail: string, info: string | null) => __TAURI_INVOKE<null>("report_frontend_error", { messageKey, detail, info }),
 	exportBackup: () => __TAURI_INVOKE<string>("export_backup"),
@@ -136,7 +132,7 @@ export const commands = {
 	 *  前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
 	 *  返回 `Vec<u8>`，IPC 序列化为 number[]。
 	 * 
-	 *  SSRF 防护（H-2）：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
+	 *  SSRF 防护：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
 	 *  （防 DNS 重绑定）、禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
 	 */
 	fetchUrlBytes: (url: string) => __TAURI_INVOKE<number[]>("fetch_url_bytes", { url }),
@@ -161,7 +157,6 @@ export const commands = {
 	 *  `days` 提供时仅返回最近 N 天的数据（趋势窗口）。
 	 */
 	getUsageStats: (days: number | null) => __TAURI_INVOKE<UsageStatRow[]>("get_usage_stats", { days }),
-	/**  清空全部使用统计。 */
 	clearUsageStats: () => __TAURI_INVOKE<null>("clear_usage_stats"),
 	/**
 	 *  查询 AI（摘要/翻译/语言检测/连接测试）token 用量聚合：
@@ -171,10 +166,11 @@ export const commands = {
 	getAiUsageStats: (sourceId: number | null, days: number | null) => __TAURI_INVOKE<AiUsageStats>("get_ai_usage_stats", { sourceId, days }),
 	/**
 	 *  保存全局 Agent 配置。
-	 *  进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
+	 *  进程级字段（agent_type / binary / model / working_dir / skills）变化时重启常驻 RPC 进程：
 	 *  spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
-	 *  会回到 /skill: 透传失效，改 model 会静默用旧模型）；下次提交 ensure_started 自动
-	 *  重启并恢复会话。timeout / prompt_suffix / enabled 每次调度重读，无需重启。
+	 *  会回到 /skill: 透传失效，改 model 会静默用旧模型）；有 run 在跑时推迟到当前 run
+	 *  结束，下次提交 ensure_started 自动重启并恢复会话。
+	 *  timeout / prompt_suffix / enabled 每次调度重读，无需重启。
 	 */
 	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
 	/**  读取全局 Agent 配置。 */
@@ -226,7 +222,7 @@ export const commands = {
 	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
 	 * 
 	 *  对位 run_id：把 user 消息按创建顺序直连到本会话的 run 记录，前端据此把失败
-	 *  备注 / 重试入口精确挂到对应气泡（替代 60 秒时间窗猜测）。
+	 *  备注 / 重试入口精确挂到对应气泡。
 	 *  注意「一次提交 = 一个 run + 一条 user 消息」并非恒成立——存在 run 不产生消息
 	 *  的路径（排队中被取消 / 派发前失败 / RPC 启动或 prompt 失败），纯顺序对位会把
 	 *  后续消息整体错位一位。因此对位带 started_at 邻近校验（60s 窗），把未产生
@@ -343,7 +339,7 @@ export type AgentChatMessage = AgentChatMessage_Serialize | AgentChatMessage_Des
 
 /**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
 export type AgentChatMessage_Deserialize = {
-	/**  user | assistant | tool | bash | custom */
+	/**  pi 原样透传的 role（user / assistant / toolResult / bashExecution / custom 等）。 */
 	role: string,
 	blocks: AgentChatBlock[],
 	/**  ISO 时间戳（entry 级别，非 message 内嵌）。 */
@@ -359,7 +355,7 @@ export type AgentChatMessage_Deserialize = {
 
 /**  一条聊天消息（时间正序，树取当前 leaf 路径）。 */
 export type AgentChatMessage_Serialize = {
-	/**  user | assistant | tool | bash | custom */
+	/**  pi 原样透传的 role（user / assistant / toolResult / bashExecution / custom 等）。 */
 	role: string,
 	blocks: AgentChatBlock[],
 	/**  ISO 时间戳（entry 级别，非 message 内嵌）。 */
@@ -468,7 +464,7 @@ export type AgentRpcStatus = {
 	running: boolean,
 	/**  进程 pid（未运行时 None）。 */
 	pid: number | null,
-	/**  进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效（评审 3.8）。 */
+	/**  进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效。 */
 	restart_pending: boolean,
 };
 
@@ -495,7 +491,7 @@ export type AgentRunFinished = {
 
 /**
  *  一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
- *  stdout 存的是模型完整输出，列表接口最多拉 100 条，全列返回会拖慢查询与序列化。
+ *  stdout 存的是模型完整输出，列表接口按批拉取，全列返回会拖慢查询与序列化。
  */
 export type AgentRunSummary = {
 	id: number,
@@ -696,9 +692,8 @@ export type FocusRelease = number;
  *  日志表写入了新条目，前端据此刷新日志 tab。
  * 
  *  存在意义：后台 AI 批（摘要补全/翻译）是 fire-and-forget，可能在发起它的那轮
- *  轮询结束几分钟后才收尾写日志。此前只有 `PollCompleted` 会触发日志刷新，
- *  于是这些延迟到达的成功/失败日志不切走再切回就看不到——用户会误以为
- *  什么都没发生（实测：译文 524 失败已写入 DB，但日志 tab 停在打开时的快照）。
+ *  轮询结束几分钟后才收尾写日志，仅靠 `PollCompleted` 驱动刷新会漏掉这些延迟
+ *  到达的日志——用户不切走再切回日志 tab 就看不到。
  */
 export type LogAppended = null;
 

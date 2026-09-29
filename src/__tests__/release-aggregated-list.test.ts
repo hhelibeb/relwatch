@@ -37,9 +37,7 @@ beforeEach(() => {
 })
 
 /**
- * ReleaseAggregatedList.vue 行为测试（真实分组逻辑 + 注册表显示名）
- * 覆盖：空/单/多 repo 聚合、组内按发布时间降序、组间按最新版本降序、
- * 分组键含 source_type、展开/折叠/全展开、open-detail 携带组内序列。
+ * ReleaseAggregatedList.vue 行为测试（真实分组逻辑 + 注册表显示名）。
  */
 describe('ReleaseAggregatedList.vue — 分组聚合', () => {
   it('空数据：无分组，显示 empty 文案（过滤时 no_match）', () => {

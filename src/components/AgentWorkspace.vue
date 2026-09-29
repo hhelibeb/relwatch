@@ -43,10 +43,10 @@ const releases = ref<ReleaseInfo[]>([])
 // 目录没拿到 ≠ 实体已删除（详见 useAgentChat 的 existingEntities）。
 const catalogReady = ref<{ source: boolean; release: boolean }>({ source: false, release: false })
 
-// ── 全局队列（侧栏状态点 / 横幅「被谁占用」）：跨域共享，编排层持有、chat 写入 ──
+// ── 全局队列（侧栏状态点 / 横幅「被谁占用」共用）：编排层持有、useAgentChat 写入 ──
 const queueActive = ref<AgentQueueItem[]>([])
 
-// ── 引用与输入区（F 域 composable）：草稿/引用/菜单/chip 反馈由其持有 ──
+// ── 引用与输入区：草稿/引用/菜单/chip 反馈由其持有 ──
 const {
   instruction,
   entities,
@@ -96,7 +96,7 @@ function setTextareaEl(el: Element | ComponentPublicInstance | null) {
 }
 
 
-// ── 会话管理（A 域 composable）：索引/发现/重命名/⋯菜单/删除/清理/搜索/侧栏折叠 ──
+// ── 会话管理：索引/发现/重命名/⋯菜单/删除/清理/搜索/侧栏折叠 ──
 const {
   sessions,
   activeKey,
@@ -130,9 +130,8 @@ const {
 } = useAgentSessions({
   showToast,
   queueActive,
-  // 删除活跃会话后的跨域清空（原 handleDeleteSession 的 if 分支；§4.2 delete 列：
-  // 不清 files/oneShotModel/modelOnce——删除会话后草稿/附件保留是现状行为；
-  // chat 域 delete mode 不动，仅 loadChat 换新会话内容）。
+  // 删除活跃会话后的清空：不清 files/oneShotModel/modelOnce——删除会话后
+  // 草稿/附件保留是现状行为；聊天核心的 delete mode 不动，仅 loadChat 换新会话内容。
   // 闭包引用下方 useAgentChat 解构的 loadChat（异步回调执行时已初始化）。
   onActiveDeleted: async () => {
     resetComposerForSessionSwitch('delete')
@@ -144,10 +143,10 @@ const {
   },
 })
 
-// ── 会话上下文水位（H 域 composable）──
+// ── 会话上下文水位 ──
 const { usage, loadUsage, usageText, usageEstimated, usageHint } = useAgentUsage(activeKey)
 
-// ── 模型选择（D 域 composable）：会话级落库经回调转调会话域，不互相 import ──
+// ── 模型选择：会话级落库经回调转调会话管理，不互相 import ──
 const {
   availableModels,
   currentModel,
@@ -167,14 +166,14 @@ const {
   resetForSessionSwitch: resetModelsForSessionSwitch,
 } = useAgentModels({
   onPersistModel: (model) => updateModel(activeKey.value, model),
-  // 模型菜单打开时收起引用菜单（同屏互斥，原 toggleModelMenu 行为）
+  // 模型菜单打开时收起引用菜单（同屏互斥）
   onMenuOpen: () => {
     showSkillMenu.value = false
     showEntityMenu.value = false
   },
 })
 
-// ── pi 进程健康（E 域 composable）：指示灯 + 状态菜单 + 重启 ──
+// ── pi 进程健康：指示灯 + 状态菜单 + 重启 ──
 const {
   rpcStatus,
   rpcRestarting,
@@ -187,7 +186,7 @@ const {
   handleRestartRpc,
 } = useAgentRpc({
   showToast,
-  // rpc 菜单打开时收起输入区各菜单（同屏互斥，原 toggleRpcMenu 行为）
+  // rpc 菜单打开时收起输入区各菜单（同屏互斥）
   onMenuOpen: () => {
     showModelMenu.value = false
     showSkillMenu.value = false
@@ -198,9 +197,9 @@ const {
 function setRpcDotEl(el: Element | ComponentPublicInstance | null) {
   rpcDotEl.value = el as HTMLElement | null
 }
-// ── 聊天核心（B + C 域 composable）：历史/流式合帧/轮询/滚动 + 提交/停止/重试 ──
-// composer / models 的草稿与模型 ref、usage 句柄经入参注入（§4.2 ref 传递）；
-// 会话域回调（sessionTitle / persistSessionMeta）引用上方 sessions 解构变量。
+// ── 聊天核心：历史/流式合帧/轮询/滚动 + 提交/停止/重试 ──
+// composer / models 的草稿与模型 ref、usage 句柄经入参注入；
+// sessionTitle / persistSessionMeta 引用上方 sessions 解构变量。
 const {
   messages,
   messagesLoading,
@@ -255,14 +254,13 @@ function setChatScrollEl(el: Element | ComponentPublicInstance | null) {
   scrollRef.value = el as HTMLElement | null
 }
 
-/** 输入触发（textarea @input）：先收起模型菜单（原 handleInput 首句语义），
- *  再解析 @/[[ 触发词。原代码两组状态物理同域，拆分后经此包装保持行为一致。 */
+/** 输入触发（textarea @input）：先收起模型菜单，再解析 @/[[ 触发词。 */
 function handleInput() {
   showModelMenu.value = false
   parseComposerInput()
 }
 
-// ── 会话切换组合（编排层接线；各域清空清单见设计文档 §4.2，按 mode 逐条复刻）──
+// ── 会话切换组合（编排层接线：逐项调用各 composable 的清空接口）──
 function switchSession(key: string) {
   if (key === activeKey.value) return
   // 不中止原会话的 run：后端并发上限 1、其余排队执行（pending 取消只插标记不碰进程），
@@ -270,7 +268,7 @@ function switchSession(key: string) {
   switchTo(key)
   // chat：停轮询 + 丢合帧 + 提交/流式态复位（messages/runs 不清，loadChat 覆盖）
   resetChatForSessionSwitch('switch')
-  // 恢复的会话被打开过即转为普通会话（已确认，不再是异常态）；同时写回索引
+  // 模型选择按目标会话的持久化记录还原（无记录 = 跟随默认模型）
   resetModelsForSessionSwitch(
     'switch',
     sessions.value.find((s) => s.key === key)?.model ?? null,
@@ -286,22 +284,22 @@ function startNewSession() {
   // 当前已是未提交草稿且无内容 → 不重复新建
   const cur = currentMeta()
   if (cur?.draft && messages.value.length === 0 && runs.value.length === 0) return
-  // 新建即登记：立即写入索引并持久化，未提交的会话也可见、可恢复（评审 1.2）
+  // 新建即登记：立即写入索引并持久化，未提交的会话也可见、可恢复
   registerNew()
   resetComposerForSessionSwitch('new')
   resetModelsForSessionSwitch('new', null)
   resetSessionsForSessionSwitch('new')
-  // chat：立即清 messages/runs + 流式/提交态复位（new 不停轮询，原实现即如此）
+  // chat：立即清 messages/runs + 流式/提交态复位（new 不停轮询）
   resetChatForSessionSwitch('new')
   void loadChat()
   nextTick(() => focusComposer())
 }
 
 
-// ── 运行历史面板（评审 P1：耗时 / 模型 / 状态 / 引用实体）──
+// ── 运行历史面板（耗时 / 模型 / 状态 / 引用实体）──
 const historyOpen = ref(false)
 
-// ── 超时引导（评审 P1：行动建议 + 就地调时长）──
+// ── 超时引导（行动建议 + 就地调时长）──
 const timeoutSecs = ref(300)
 const adjustingTimeout = ref(false)
 const timeoutInput = ref('')
@@ -346,9 +344,8 @@ let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * 拉取实体目录（监控源 + 版本）并写入名称映射。
  *
- * 两个请求各自结算（allSettled 而非 all）：此前用 Promise.all，任一失败即整体
- * 抛出，被 catch 吞掉后 sources/releases 双双保持原值——首次加载时就是双空，
- * 整个面板生命周期内所有 chip 都退化成 `#id`。
+ * 两个请求各自结算（allSettled 而非 all）：任一失败若整体抛出，sources/releases
+ * 双双保持原值——首次加载时就是双空，整个面板生命周期内所有 chip 都退化成 `#id`。
  */
 async function refreshEntityCatalog() {
   const [srcs, rels] = await Promise.allSettled([listSources(), getReleaseCatalog()])
@@ -390,7 +387,7 @@ function ensureEntityKnown(entity: AgentEntityRefSeed) {
 }
 
 async function loadCatalog() {
-  // 技能列表 / 超时配置与实体目录解耦：任一失败都不再连带丢另一份
+  // 技能列表 / 超时配置与实体目录解耦：任一失败都不连带丢另一份
   try {
     const cfg = await getAgentConfig()
     skills.value = cfg.skills
@@ -421,7 +418,7 @@ async function loadModels() {
 }
 
 
-// ── 运行操作（终端恢复，高级功能保留）──
+// ── 运行操作（终端恢复）──
 async function handleOpenSession(run: AgentRunSummary) {
   if (!run.session_path) return
   try {
@@ -444,8 +441,8 @@ async function handleCopySessionCommand(run: AgentRunSummary) {
 
 /** 点菜单及其触发控件之外任意区域 → 收起当前打开的菜单（下拉菜单通用行为）。 */
 function onDocumentPointerDown(e: MouseEvent | PointerEvent) {
-  // 通过捕获期触发，确保在菜单项 @click 之前执行；只判断是否点到了「菜单或触发控件」内部，
-  // 是则交由原逻辑（切换/选择）处理，否则一律收起，实现点击空白区域收起。
+  // 通过捕获期触发，确保在菜单项 @click 之前执行；点中的若是菜单或触发控件本身，
+  // 交由其自身逻辑（切换/选择）处理，其余一律收起。
   const t = e.target as EventTarget | null
   if (!(t instanceof Element)) return
   if (t.closest('.agent-ws-menu')) return
@@ -454,8 +451,7 @@ function onDocumentPointerDown(e: MouseEvent | PointerEvent) {
   if (t.closest('.agent-ws-session-more')) return // 会话 ⋯ 触发按钮，交给 toggleSessionMenu
   if (t.closest('.agent-ws-rpc-wrap')) return // pi 状态菜单及其触发灯，交给 toggleRpcMenu
   // 点输入框：技能/实体菜单跟随输入（显隐由输入框自身事件管理），保持不动；
-  // 但与输入无关的模型菜单 / pi 状态菜单 / 会话菜单仍应收起——
-  // 此前无条件 return 把它们一并豁免，导致点输入框时这些菜单悬而不收
+  // 但与输入无关的模型菜单 / pi 状态菜单 / 会话菜单仍应收起
   const inTextarea = t.closest('.agent-ws-textarea') !== null
   if (showModelMenu.value) showModelMenu.value = false
   // composer.closeMenus(excludeTextarea)：点输入框不收 skill/entity 菜单的豁免语义
@@ -467,7 +463,7 @@ function onDocumentPointerDown(e: MouseEvent | PointerEvent) {
 }
 
 
-// ── 子组件接线（props/emits 面较宽，对象展开收敛模板宽度；§4.4 接线宽度成本）──
+// ── 子组件接线（props/emits 面较宽，对象展开收敛模板宽度）──
 // reactive 自动解包内部 ref/computed，与逐个 :prop 传值等价
 // AgentRunBanner：状态横幅 + 推迟生效提示 + 历史面板
 const runBannerProps = reactive({
@@ -778,9 +774,9 @@ onMounted(async () => {
   unlistenRpcStream = await events.agentRpcStream.listen((e) => {
     handleRpcStream(e.payload)
   })
-  // 实体目录跟随 release 状态变更刷新：主列表（App.vue）订阅同一事件保持实时，
-  // 工作区此前一次性拉取，快照停在打开那一刻——新采集的版本在主列表可拖、
-  // 在这里却解析不出名字（chip 退化成 `#id`），重试还会误剔引用。
+  // 实体目录跟随 release 状态变更刷新：目录若停在面板打开那一刻的快照，
+  // 新采集的版本在主列表可拖、在这里却解析不出名字（chip 退化成 `#id`），
+  // 重试还会误剔引用。
   unlistenReleaseState = await events.releaseStateChanged.listen(() => {
     scheduleCatalogRefresh()
   })

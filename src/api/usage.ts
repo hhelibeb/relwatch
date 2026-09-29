@@ -16,7 +16,6 @@ export async function getUsageStats(days?: number): Promise<UsageStatRow[]> {
   return invokeI18nFn(() => commands.getUsageStats(days ?? null))
 }
 
-/** 清空全部统计。 */
 export async function clearUsageStats(): Promise<void> {
   await invokeI18nFn(commands.clearUsageStats)
 }

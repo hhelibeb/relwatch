@@ -138,7 +138,7 @@ mod platform {
         fn GetLastError() -> u32;
     }
 
-    /// 生成目标名称：使用统一前缀，与 keyring crate 的服务名一致
+    /// Windows 凭据管理器的目标名；与 keyring 路径的 relwatch/master-key 是两套独立存储
     const TARGET_NAME: &str = "RelWatch_MasterKey";
 
     pub fn load_or_generate() -> Result<[u8; 32], String> {
@@ -230,7 +230,7 @@ mod platform {
             },
             credential_blob_size: data.len() as u32,
             credential_blob: data.as_ptr() as *mut u8,
-            persist: CRED_PERSIST_LOCAL_MACHINE, // ← 关键修复
+            persist: CRED_PERSIST_LOCAL_MACHINE, // ← 关键：只有 LOCAL_MACHINE 才跨重启保留
             attribute_count: 0,
             attributes: ptr::null_mut(),
             target_alias: ptr::null_mut(),
@@ -279,7 +279,6 @@ pub fn verify_master_key_consistency(conn: &rusqlite::Connection) -> Vec<&'stati
     for &key_name in keys_to_check {
         if let Ok(Some(val)) = crate::db::settings::get_setting(conn, key_name) {
             if val.starts_with(V2_PREFIX) && decrypt_inner(&val).is_none() {
-                // 无法解密，清空该设置项
                 let _ = crate::db::settings::set_setting(conn, key_name, "");
                 cleared.push(key_name);
                 eprintln!(
@@ -381,12 +380,10 @@ pub fn decrypt(encoded: &str) -> Option<String> {
 /// 若输入已是 v2 格式，`new_encoded` 为 `None`。
 pub fn decrypt_with_migration(encoded: &str) -> Option<(String, Option<String>)> {
     if let Some(stripped) = encoded.strip_prefix(V2_PREFIX) {
-        // 已是 v2，无需迁移
         let plain = decrypt_with_key(stripped, get_master_key())?;
         return Some((plain, None));
     }
 
-    // v1 → 尝试 fallback 解密
     let v1_key = v1_derive_key();
     let plain = decrypt_with_key(encoded, &v1_key)?;
 

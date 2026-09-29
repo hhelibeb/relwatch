@@ -1,7 +1,6 @@
 //! pi RPC 常驻进程管理 —— 工作区对话的驱动核心。
 //!
-//! 相比旧的「每次提交 spawn 一个 `pi -p` 一次性进程」模型，RPC 模式是
-//! **一个常驻子进程**（`pi --mode rpc`，JSON 协议 over stdin/stdout）：
+//! 一个常驻子进程（`pi --mode rpc`，JSON 协议 over stdin/stdout），命令映射：
 //!
 //! - 提交 = `prompt` 命令（stdin 写一行 JSON），事件流从 stdout 实时返回
 //! - 停止 = `abort` 命令（**不杀进程**：会话上下文留在进程内存 + JSONL 文件，
@@ -146,7 +145,7 @@ pub struct RpcManager {
     /// pi settings.json 的 enabledModels 变化不会自动生效（spawn 时经 --models
     /// 传入一次），检测到与当前不一致时重启进程使新配置生效。
     spawned_models: Mutex<Option<Vec<String>>>,
-    /// 延迟重启标记（H-6）：进程级配置变更时若有 running run，先置位不打断生成，
+    /// 延迟重启标记：进程级配置变更时若有 running run，先置位不打断生成，
     /// 当前 run 结束（dispatch_run 收尾 restart_if_pending）后再 kill 重启生效。
     pending_restart: AtomicBool,
 }
@@ -192,7 +191,7 @@ impl RpcManager {
         .unwrap_or(true)
     }
 
-    /// 请求重启常驻进程（进程级配置变更后调用，H-6）：有正在执行的 run 时
+    /// 请求重启常驻进程（进程级配置变更后调用）：有正在执行的 run 时
     /// **不打断**生成（kill 会以 rpc_exited 中断当前 run、记 failed 烧掉 token），
     /// 置延迟标记，由 dispatch_run 收尾的 restart_if_pending 在 run 结束后重启；
     /// 空闲时立即重启。与 sync_scoped_models 的 running 守卫语义一致。
@@ -459,7 +458,6 @@ impl RpcManager {
                 let _ = tx.send(json!({"type": "response", "success": false, "error": "err.agent.rpc_exited"}));
             }
             // 广播合成事件：正在等待事件流的 executor 立即失败返回，而不是干等超时
-            // （此前崩溃场景 run 会挂到 deadline 才以 timeout 收敛，前端期间看不到进展）
             let _ = events.send(json!({"type": "rpc_exited"}));
         });
 
@@ -488,8 +486,7 @@ impl RpcManager {
     /// 进程级配置变更是否正处于「推迟生效」状态（等当前 run 结束后重启）。
     ///
     /// 用户改了 pi 路径 / 模型 / skill 后，若有 run 正在生成，重启会被推迟以避免
-    /// 打断生成（烧掉已产生的词元）。此前这段时间 UI 无任何提示，用户以为改了没生效
-    /// （评审 3.8）；现在把它暴露出来，前端可在设置保存后提示「将在当前任务结束后生效」。
+    /// 打断生成（烧掉已产生的词元）；前端据此提示「将在当前任务结束后生效」。
     pub fn restart_pending(&self) -> bool {
         self.pending_restart.load(Ordering::SeqCst)
     }
@@ -791,8 +788,8 @@ mod tests {
 
     /// JobObject 生命周期域：句柄释放时作业内进程应被内核终止。
     ///
-    /// 这段是本次改动里唯一的 unsafe FFI，且失败是静默的（日志 warn 后降级），
-    /// 必须有运行时验证——否则「纳管失败」与「纳管成功但标志无效」都无人察觉。
+    /// 这里的 unsafe FFI 失败是静默的（日志 warn 后降级），必须有运行时验证
+    /// ——否则「纳管失败」与「纳管成功但标志无效」都无人察觉。
     #[cfg(windows)]
     #[test]
     fn process_scope_terminates_child_on_drop() {

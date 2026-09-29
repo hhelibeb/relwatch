@@ -139,7 +139,7 @@ const { biliLoginBusy, handleBilibiliLogin, handleClearBilibiliCookie } = useBil
 })
 
 // ── 软件更新（about tab 展示型分组：无持久化设置项，不入 TAB_SETTING_KEYS /
-//    dirty 徽标；设计稿 §4.3）。代理复用既有 proxy_mode/proxy_url（取已持久化的
+//    dirty 徽标）。代理复用既有 proxy_mode/proxy_url（取已持久化的
 //    props.settings，而非表单未保存值——更新行为不应受未保存修改影响）。
 const {
   status: updateStatus,
@@ -162,9 +162,9 @@ const {
 } = useAppUpdate(() => ({ mode: props.settings.proxy_mode, url: props.settings.proxy_url.trim() }), () => emit('updateLogWritten'))
 
 // dev 构建置灰：插件不区分 debug/release，dev 下 check() 会真实访问线上 endpoint
-// 并允许把正式版装进开发版（设计稿 §4.3 开发构建保护）
+// 并允许把正式版装进开发版
 const isDevBuild = import.meta.env.DEV
-// error 态兜底动作（§4.5 错误表）：network/generic → 重试；no_release → 重试（「检查失败」，重跑 check 自救）；signature/targets/format/mount/unsupported → 无动作
+// error 态兜底动作：network/generic → 重试；no_release → 重试（「检查失败」，重跑 check 自救）；signature/targets/format/mount/unsupported → 无动作
 // 注：no_release 是 updater 插件对「endpoint 拿不到合法 release JSON」（404/403/500/JSON 解析失败）的统一归类，
 // 语义上是检查失败而非「没有更新」——真正的无更新走 upToDate（绿色 ✓）。
 const showUpdateRetry = computed(() =>
@@ -272,7 +272,6 @@ async function handleSave() {
   track('settings.save')
   try {
     const s = form
-    // 验证提示词
     if (s.deepseek_prompt && !s.deepseek_prompt.includes('{}')) {
       showToast(t('settings.deepseek_prompt_validate_failed'))
       savingSettings.value = false
@@ -314,7 +313,6 @@ async function handleSave() {
     })
     // 主设置持久化成功后再写凭据；若凭据写入失败，走外层 catch 提示 save_failed，
     // 此时主设置已存、凭据未存，用户可重试凭据。
-    // 四个 set_* 命令已合并为 setCredential(kind, value)（M2）。
     if (deepseekApiKey.value) {
       await setCredential('deepseek_api_key', deepseekApiKey.value)
       deepseekApiKey.value = ''
@@ -370,8 +368,7 @@ async function handleSave() {
 }
 
 // ── 脏标记 ────────────────────────────────────────────
-// 通用比对：遍历 form 全部键（即 AppSettings 全部字段），不再手工维护
-// trackedKeys 清单——新增设置项自动纳入脏检查（M2）。
+// 通用比对：遍历 form 全部键（即 AppSettings 全部字段），新增设置项自动纳入脏检查。
 // tab → 设置字段清单（dirty 徽标按 tab 聚合；accounts 为凭据输入键）：
 // 新增设置项若属已有 tab，需在此登记；属新 tab 时新增一行。
 const TAB_SETTING_KEYS: Record<'general' | 'accounts' | 'appearance' | 'ai', readonly string[]> = {
@@ -984,7 +981,6 @@ async function handleImportBackup() {
   </section>
 </template>
 <style scoped>
-/* 设置 */
 .settings-layout {
   display: flex;
   gap: 16px;

@@ -58,10 +58,11 @@ pub fn get_agent_config(state: tauri::State<'_, AppState>) -> Result<AgentConfig
 }
 
 /// 保存全局 Agent 配置。
-/// 进程级字段（agent_type / binary / model / skills）变化时强杀常驻 RPC 进程：
+/// 进程级字段（agent_type / binary / model / working_dir / skills）变化时重启常驻 RPC 进程：
 /// spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
-/// 会回到 /skill: 透传失效，改 model 会静默用旧模型）；下次提交 ensure_started 自动
-/// 重启并恢复会话。timeout / prompt_suffix / enabled 每次调度重读，无需重启。
+/// 会回到 /skill: 透传失效，改 model 会静默用旧模型）；有 run 在跑时推迟到当前 run
+/// 结束，下次提交 ensure_started 自动重启并恢复会话。
+/// timeout / prompt_suffix / enabled 每次调度重读，无需重启。
 #[tauri::command]
 #[specta::specta]
 #[allow(clippy::needless_pass_by_value)]
@@ -86,8 +87,8 @@ pub async fn save_agent_config(
         &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
     );
     if agent_process_level_changed(&old, &config) {
-        // H-6 修复：不直接 kill_now——正在生成的 run 会被 rpc_exited 中断、记 failed
-        // 且 token 作废。request_restart 带 running 守卫：空闲立即重启生效，
+        // 不直接 kill_now——正在生成的 run 会被 rpc_exited 中断、记 failed 且 token 作废；
+        // request_restart 带 running 守卫：空闲立即重启生效，
         // 有 running run 时延迟到当前 run 结束（dispatch_run 收尾 restart_if_pending）。
         log::info!("agent config process-level fields changed, requesting RPC process restart");
         state.agent_rpc.request_restart().await;
@@ -145,7 +146,7 @@ pub struct AgentJobInput {
     pub files: Option<Vec<String>>,
 }
 
-// ---- 本地文件附件校验（评审「本地文件/图片附件」）----
+// ---- 本地文件附件校验 ----
 
 /// 单次提交最多附加的本地文件数。
 /// 每个文件都要进 prompt、并可能被 pi 逐个读取，放开数量会撑爆上下文；
@@ -271,7 +272,7 @@ pub async fn run_agent_job(
         .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
         .transpose()?;
 
-    // 提交前模型预检（评审 3.7）：显式选择的模型若不在 pi 当前可用列表里
+    // 提交前模型预检：显式选择的模型若不在 pi 当前可用列表里
     // （provider 未配置鉴权 / 在 pi 侧被 /scoped-models 禁用 / 进程重启后配置变了），
     // 直接拒绝——否则要等排队、启动、set_model、发 prompt 之后才以
     // err.agent.model_error 失败，用户白等一轮且拿到的还是泛化报错。
@@ -280,7 +281,7 @@ pub async fn run_agent_job(
         verify_model_available(&state, m).await?;
     }
 
-    // 同会话守卫 + 建 run 放进 BEGIN IMMEDIATE 事务（评审 3.2 追加，P2）：
+    // 同会话守卫 + 建 run 放进 BEGIN IMMEDIATE 事务：
     // count 检查与 INSERT 之间若不加锁，两个并发提交可同时读到 0 再各自插入
     // （TOCTOU）——前端 submitting 锁挡住了 UI 途径，但 DevTools / 未来多客户端
     // 直接调命令仍可触发。BEGIN IMMEDIATE 立即拿写锁，并发请求串行化：
@@ -308,7 +309,7 @@ pub async fn run_agent_job(
     Ok(run_id)
 }
 
-/// 校验显式选择的模型在 pi 侧确实可用（提交前预检，评审 3.7）。
+/// 校验显式选择的模型在 pi 侧确实可用（提交前预检）。
 ///
 /// 匹配口径与 `set_model` 一致（provider + modelId 双字段精确匹配）：
 /// pi 的 model id 可能自带 provider 前缀（如 `cline-pass/deepseek-v4-flash`），
@@ -459,7 +460,7 @@ pub fn get_agent_session_usage(
 /// 会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
 ///
 /// 对位 run_id：把 user 消息按创建顺序直连到本会话的 run 记录，前端据此把失败
-/// 备注 / 重试入口精确挂到对应气泡（替代 60 秒时间窗猜测）。
+/// 备注 / 重试入口精确挂到对应气泡。
 /// 注意「一次提交 = 一个 run + 一条 user 消息」并非恒成立——存在 run 不产生消息
 /// 的路径（排队中被取消 / 派发前失败 / RPC 启动或 prompt 失败），纯顺序对位会把
 /// 后续消息整体错位一位。因此对位带 started_at 邻近校验（60s 窗），把未产生
@@ -689,9 +690,8 @@ pub async fn delete_agent_session(
     // 仅取第一条会遗留 pending run：调度执行时重建已删的会话文件、向已删记录
     // 写终态（静默 no-op）、发事件——「删除=停止」承诺被打破，会话“复活”。
     //
-    // 按状态直接查询（评审 3.9）：此前是「取最近 50 条摘要再筛状态」，理论上存在
-    // 活跃 run 落到第 51 条之后被漏掉的窗口；这类窗口的概率再低，也不该由一个
-    // 「漏一个就破坏承诺」的操作来承担，故换成无 LIMIT 的状态查询。
+    // 按状态无 LIMIT 查询：摘要查询的 LIMIT 会漏掉更早的活跃 run，而删除会话这类
+    // 「漏一个就破坏承诺」的操作不该依赖概率。
     for run_id in agent::active_runs_for_session(&conn, &session_key)? {
         cancel_run_inner(&state, run_id).await?;
     }
@@ -709,7 +709,7 @@ pub struct AgentRpcStatus {
     pub running: bool,
     /// 进程 pid（未运行时 None）。
     pub pid: Option<u32>,
-    /// 进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效（评审 3.8）。
+    /// 进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效。
     pub restart_pending: bool,
 }
 

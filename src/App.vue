@@ -137,7 +137,6 @@ async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
       // 最大化：窗口尺寸固定，只能压缩面板到窗口内可容纳的宽度（主界面保 710 下限）
       agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW)
     } else if (canFitPanelInside(windowW)) {
-      // 窗口足够宽：内部弹出，不加宽窗口
       agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW)
     } else {
       // 窄窗口：加宽窗口，主界面宽度不变（clamp 上限按加宽后的窗口计算，
@@ -155,7 +154,6 @@ async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
   }
 }
 
-// 切换开合：标题栏按钮用（已打开则收回，未打开则展开）
 async function toggleAgentWorkspace() {
   if (agentPanelOpen.value) {
     track('release.collapse_agent_workspace')
@@ -231,11 +229,9 @@ function toastDuration(message: string): number {
   return Math.min(TOAST_MAX_DURATION, Math.max(TOAST_MIN_DURATION, 1200 + n * 175))
 }
 
-// Toast 是视口 fixed 定位，Agent 面板打开时窗口右下角正好是面板的输入区（发送/附件按钮）。
-// 曾尝试用 pointer-events: none 让点击穿透，但那是错的：按钮在视觉上仍被盖住，
-// 用户得"越过一个看得见的浮层去点一个看不见的按钮"，而且 Toast 里的错误信息、
-// 导出路径从此无法选中复制。正解是让 Toast 整块左移到面板左侧——既不压按钮，
-// 又完整保留 hover 暂停与文本选择。面板宽度可拖拽，故用响应式状态算而非硬编码。
+// Toast 是视口 fixed 定位，Agent 面板打开时窗口右下角正好是面板的输入区（发送/附件按钮），
+// 故面板可见时整块左移到面板左侧。不能用 pointer-events: none 穿透：按钮视觉上仍被盖住，
+// 且 Toast 里的错误信息、导出路径会无法选中复制。面板宽度可拖拽，故宽度用响应式状态算而非硬编码。
 const TOAST_GAP = 20
 const AGENT_DIVIDER_WIDTH = 5
 const toastStyle = computed(() => {
@@ -381,7 +377,7 @@ function dismissCurrentToast() {
 }
 
 provide(ShowToastKey, showToast)
-// 全局错误兜底（V2）的 toast 出口：main.ts 的处理器不在组件树内，拿不到 provide/inject
+// 全局错误兜底的 toast 出口：main.ts 的处理器不在组件树内，拿不到 provide/inject
 setErrorToastSink(showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
 // 「显示重要度」开关：仅控制版本卡片/详情/筛选的 UI 展示（设置页 AI 分组）
@@ -394,9 +390,9 @@ provide(AgentToggleKey, toggleAgentWorkspace)
 // 诊断统计开关：跟随设置项启停（关闭时 track() no-op + 丢弃未上报计数）
 watch(() => settings.value.enable_usage_stats, v => setUsageTrackingEnabled(v), { immediate: true })
 
-// 面板悬空修复：设置页关掉 Agent 总开关时，面板组件被 v-if 卸载但 agentPanelOpen
-// 仍为 true → 窗口保持加宽且无法经面板收回。监听配置变化，enabled 变 false 且
-// 面板开着时自动收回（closeAgentPanel 内部有 panelBusy 防重入）。
+// 设置页关掉 Agent 总开关时，面板组件被 v-if 卸载但 agentPanelOpen 仍为 true →
+// 窗口保持加宽且无法经面板收回。监听配置变化，enabled 变 false 且面板开着时
+// 自动收回（closeAgentPanel 内部有 panelBusy 防重入）。
 watch(
   () => agentConfig.value?.enabled,
   (enabled) => {
@@ -563,12 +559,10 @@ function openSourceReleases(query: string) {
 }
 
 /** 点击通知主体：切到版本列表并定位到该条 release。
- *  与旧「回填 owner/repo 搜索词」方案相比，当前实现把「重置筛选 + 定位滚动」下沉到
- *  ReleaseTab（持有 source/importance/flag/version 等筛选与视图模式的内部状态），
- *  App.vue 只负责通知目标（事件入口）：
- *  下发 focusTarget（目标 id）+ 递增 focusReleaseToken，并监听 focus-consumed/
- *  focus-not-found 反馈——目标缺失 / 列表视图下找不到时以 Toast 提示。
- *  同仓库存在多条 release 时能唯一定位到被点击的那一条（评审 P1-1 修复）。 */
+ *  源/重要度/旗标/版本等筛选与视图模式状态都持有在 ReleaseTab，「重置筛选 + 定位滚动」
+ *  也在其中；App.vue 只负责下发 focusTarget（目标 id）+ 递增 focusReleaseToken，
+ *  并监听 focus-consumed/focus-not-found 反馈——目标缺失 / 列表视图下找不到时
+ *  以 Toast 提示。同仓库存在多条 release 时能唯一定位到被点击的那一条。 */
 function focusReleaseById(id: number) {
   focusTarget.value = id
   focusReleaseToken.value++
@@ -696,7 +690,6 @@ onUnmounted(() => {
     unlisten()
   }
   unlisteners.length = 0
-  // 宽度保存定时器
   if (panelWidthSaveTimer) {
     clearTimeout(panelWidthSaveTimer)
     panelWidthSaveTimer = null
@@ -835,7 +828,6 @@ onUnmounted(() => {
   gap: 14px;
 }
 
-/* 两组操作间的竖直分隔线 */
 .header-actions-divider {
   width: 1px;
   height: 16px;
@@ -862,7 +854,6 @@ onUnmounted(() => {
   inset: 0 -3px;
 }
 
-/* Toast */
 .toast {
   position: fixed;
   bottom: 20px;

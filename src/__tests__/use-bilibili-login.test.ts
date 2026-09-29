@@ -105,11 +105,9 @@ describe('useBilibiliLogin — 登录状态机', () => {
   })
 
   it('建窗命令报成功但窗口实际未建成：探活失败即解锁按钮，不卡在等待登录', async () => {
-    // 复现真实缺陷：tauri-runtime-wry 事件循环对 webview 创建失败只 log::error!
-    // 且不回传，build() 仍返回 Ok → 窗口闪退、但命令 resolve。此前前端据此转入
-    // 轮询，两个定时器都未归位（轮询遇 window_missing 才重置 busy，而探活已证明
-    // 窗口不在）→ 按钮永久显示“等待登录”，无法重试。
-    // 建窗命令始终 resolve；随后任何一次读取都报窗口缺失。
+    // tauri-runtime-wry 对 webview 创建失败只 log::error! 不回传，build() 仍返回
+    // Ok：建窗命令 resolve 不代表窗口存在。这里模拟该情形——命令始终 resolve，
+    // 随后任何一次读取都报窗口缺失。
     readBilibiliLoginCookieMock.mockRejectedValue(
       new InvokeI18nError('err.bili_login_window_missing', [], 'window missing'),
     )

@@ -1,7 +1,7 @@
-<!-- 消息区（B/C 域展示层）：三种气泡形态（user / assistant / toolResult/bash）+
+<!-- 消息区：三种气泡形态（user / assistant / toolResult/bash）+
      messageDecorations（实体 chip / skill 徽章 / 失败备注 + 重试 / 超时引导）。
      状态与动作由编排层持有，本组件纯 props/emit 展示；滚动容器经
-     scrollRef prop 回填（useAgentChat 的滚动逻辑用）。 -->
+     setScrollEl prop 回填（useAgentChat 的滚动逻辑用）。 -->
 <script setup lang="ts">
 import { t } from '../../i18n'
 import MarkdownContent from '../common/MarkdownContent.vue'
@@ -34,7 +34,7 @@ defineProps<{
   displayedMessages: AgentChatMessage[]
   messageDecorations: (MessageDecoration | null)[]
   isLiveMessage: (msg: AgentChatMessage) => boolean
-  /** 实体 chip 悬浮提示 + 名称映射（composer 域函数经编排层注入） */
+  /** 实体 chip 悬浮提示 + 名称映射（useAgentComposer 提供，经编排层注入） */
   entityKindLabel: (kind: string) => string
   entityLabel: (e: AgentEntityRefSeed) => string
   handleChipEnter: (e: MouseEvent, text: string) => void
@@ -44,7 +44,7 @@ defineProps<{
   runFailedNote: (run: AgentRunSummary | undefined) => string | null
   retry: (run: AgentRunSummary) => void
   retryEdit: (run: AgentRunSummary) => void
-  /** 超时引导（评审 3.6）：输入状态与保存动作在编排层（I 域超时引导） */
+  /** 超时引导：输入状态与保存动作在编排层 */
   adjustingTimeout: boolean
   timeoutInput: string
 }>()
@@ -122,7 +122,7 @@ function toolArgsSummary(args: string): string {
               {{ runFailedNote(messageDecorations[idx]?.run) || runStatusLabel(messageDecorations[idx]!.run!.status, t) }}
             </span>
             <!-- 结果未知（终态事件丢失）：与真失败区分——任务可能已经跑完，
-                 直接重跑会重复烧词元、重复副作用（评审 3.1） -->
+                 直接重跑会重复烧词元、重复副作用 -->
             <span v-if="messageDecorations[idx]!.run!.status === 'unknown'" class="agent-ws-run-advice">{{ t('agent.unknown_advice') }}</span>
             <span class="agent-ws-run-failed-actions">
               <button class="btn-sm" :title="t('agent.retry')" @click="retry(messageDecorations[idx]!.run!)">
@@ -132,7 +132,7 @@ function toolArgsSummary(args: string): string {
                 {{ t('agent.retry_edit') }}
               </button>
             </span>
-            <!-- 超时引导（评审 3.6）：行动建议 + 就地调时长（timeout 每次调度重读，无需重启进程） -->
+            <!-- 超时引导：行动建议 + 就地调时长（timeout 每次调度重读，无需重启进程） -->
             <template v-if="isTimeoutRun(messageDecorations[idx]?.run)">
               <span class="agent-ws-run-advice">{{ t('agent.timeout_advice') }}</span>
               <span v-if="!adjustingTimeout" class="agent-ws-run-advice-actions">
@@ -328,7 +328,7 @@ function toolArgsSummary(args: string): string {
   padding: 1px 7px;
   font-size: 11px;
 }
-/* 超时引导（评审 3.6）：行动建议独占一行 + 就地调时长 */
+/* 超时引导：行动建议独占一行 + 就地调时长 */
 .agent-ws-run-advice {
   flex-basis: 100%;
   color: var(--text-muted);

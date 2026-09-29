@@ -315,7 +315,6 @@ function handleNextMonth() {
   opacity: 0.75;
 }
 
-/* 热力图例 */
 .calendar-legend {
   display: flex;
   align-items: center;

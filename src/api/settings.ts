@@ -5,7 +5,7 @@ import type { AppSettings } from '../bindings'
 // 类型由 tauri-specta 从 Rust 生成（src/bindings.ts），此处 re-export 保持调用方路径不变
 export type { AppSettings } from '../bindings'
 
-/** 凭据 kind：与后端 `CREDENTIAL_KINDS` 注册表一一对应（M2）。 */
+/** 凭据 kind：与后端 `CREDENTIAL_KINDS` 注册表一一对应。 */
 export type CredentialKind = 'deepseek_api_key' | 'github_token' | 'youtube_api_key' | 'bilibili_cookie'
 
 export async function getSettings(): Promise<AppSettings> {
@@ -16,7 +16,7 @@ export async function updateSettings(payload: AppSettings): Promise<void> {
   await invokeI18nFn(() => commands.updateSettings(payload))
 }
 
-/** 设置/更新单个加密凭据：空值清除，非空值加密存储（后端 set_credential，M2）。 */
+/** 设置/更新单个加密凭据：空值清除，非空值加密存储（后端 set_credential）。 */
 export async function setCredential(kind: CredentialKind, value: string): Promise<void> {
   await invokeI18nFn(() => commands.setCredential(kind, value))
 }

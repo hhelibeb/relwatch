@@ -1,9 +1,9 @@
-<!-- 输入区（F/D/H 域展示层）：chips 行 + textarea + 模型/附件/发送 + 三个菜单
+<!-- 输入区：chips 行 + textarea + 模型/附件/发送 + 三个菜单
      （模型 / @ Skill / [[ 实体）+ 会话上下文水位。
      状态由编排层的 useAgentComposer / useAgentModels / useAgentUsage 持有，
      本组件纯 props/emit 展示：名称映射/悬浮提示等函数经 props 注入，
      textarea 元素经 setTextareaEl 回填（composable 的 focus()/replaceTrigger
-     需要），菜单索引回写经 emit 上抛（键盘导航 K 在编排层读写同一 ref）。 -->
+     需要），菜单索引回写经 emit 上抛（键盘导航在编排层读写同一 ref）。 -->
 <script setup lang="ts">
 import type { ComponentPublicInstance } from 'vue'
 import { t } from '../../i18n'
@@ -16,7 +16,7 @@ import type { AgentEntityRefSeed } from '../../injection-keys'
 defineProps<{
   /** textarea 元素回填（useAgentComposer.textareaRef 在编排层） */
   setTextareaEl: (el: Element | ComponentPublicInstance | null) => void
-  // ── F 域状态（引用与输入）──
+  // ── 引用与输入状态 ──
   entities: AgentEntityRefSeed[]
   files: string[]
   instruction: string
@@ -34,20 +34,20 @@ defineProps<{
   filteredSourcesCount: number
   filteredReleasesCount: number
   entityMenuHasMatch: boolean
-  // ── D 域状态（模型选择）──
+  // ── 模型选择状态 ──
   showModelMenu: boolean
   availableModels: RpcAvailableModel[]
   effectiveModel: AgentModelRef | null
   modelOnce: boolean
   activeModelLabel: string
   modelDefaultSub: string
-  // ── C 域状态（提交/停止）──
+  // ── 提交/停止状态 ──
   submitting: boolean
   canStop: boolean
   cancelling: boolean
-  // ── 引用 chip 全文悬浮提示（跟随鼠标，仅文本截断时显示；composer 域状态）──
+  // ── 引用 chip 全文悬浮提示（跟随鼠标，仅文本截断时显示）──
   chipTooltip: { x: number; y: number; text: string } | null
-  // ── H 域状态（会话上下文水位）──
+  // ── 会话上下文水位状态 ──
   usageText: string | null
   usageEstimated: boolean
   usageHint: string | undefined
@@ -56,13 +56,13 @@ defineProps<{
   /** 模型菜单项文案与选中态（models.modelLabel / modelKey 语义） */
   modelLabel: (m: RpcAvailableModel) => string
   isModelSelected: (m: RpcAvailableModel) => boolean
-  /** 实体/文件/源/版本的名称映射（composer 域函数） */
+  /** 实体/文件/源/版本的名称映射（useAgentComposer 提供） */
   entityLabel: (e: AgentEntityRefSeed) => string
   entityKindLabel: (kind: string) => string
   fileDisplayName: (path: string) => string
   sourceDisplayName: (s: Source) => string
   releaseDisplayName: (r: ReleaseInfo) => string
-  /** chip 悬浮提示（composer 域函数） */
+  /** chip 悬浮提示（useAgentComposer 提供） */
   handleChipEnter: (e: MouseEvent, text: string) => void
   handleChipMove: (e: MouseEvent) => void
   hideChipTooltip: () => void
@@ -94,8 +94,8 @@ const emit = defineEmits<{
 <template>
   <footer class="agent-ws-input">
     <div class="agent-ws-input-meta">
-      <!-- 引用变更不再走 Toast（会遮挡发送按钮），改由 chip 高亮就地反馈；
-           屏幕阅读器由下方 live region 播报，Toast 的告知作用不丢失 -->
+      <!-- 引用变更的就地反馈：chip 高亮（不走 Toast——它会遮挡发送按钮）；
+           屏幕阅读器由下方 live region 播报 -->
       <span
         v-for="(e, i) in entities"
         :key="`${e.kind}:${e.id}`"
@@ -144,7 +144,6 @@ const emit = defineEmits<{
         @keydown="emit('keydown', $event)"
       ></textarea>
     </div>
-    <!-- 底部操作行：模型选择（最左）+ 附件/发送（右侧成组），共占一行 -->
     <div class="agent-ws-input-actions">
       <button class="agent-ws-model-btn" :class="{ open: showModelMenu }" :title="t('agent.model_pick')" @click="emit('toggleModelMenu')">
         <svg class="agent-ws-model-icon" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>
@@ -166,7 +165,6 @@ const emit = defineEmits<{
         </button>
       </div>
 
-      <!-- 模型选择菜单：定位在操作行上方（bottom:100%），紧贴左侧模型按钮弹出 -->
       <div v-if="showModelMenu" class="agent-ws-menu agent-ws-menu-model">
         <div class="agent-ws-menu-title">{{ t('agent.model_pick') }}</div>
         <!-- 单次覆盖开关：开启后选择只作用于下一次提交，不改会话长期模型 -->
@@ -204,7 +202,7 @@ const emit = defineEmits<{
     </div>
 
     <!-- 会话上下文水位（对齐 pi footer 的 `5.2% / 1.0M (auto)`）：放在输入框下方，
-         对齐主流 chat 应用惯例，顶部不再堆叠「状态横幅 + 水位条」两条。
+         对齐主流 chat 应用惯例。
          词元与窗口由后端算（agent_context.rs 复刻 pi 的 getContextUsage） -->
     <div v-if="usageText" class="agent-ws-usage">
       <span class="agent-ws-usage-text" :title="usageHint">{{ usageText }}</span>
@@ -292,9 +290,8 @@ const emit = defineEmits<{
   margin-bottom: 6px;
   min-height: 18px;
 }
-/* 引用加入的就地高亮——替代原先压在发送按钮上的 Toast。
-   只做描边/底色 + 光晕，不改尺寸位移，避免 chip 换行引起输入区抖动。
-   动画时长须与脚本里的 FLASH_DURATION（1200ms）保持一致 */
+/* 引用加入的就地高亮。只做描边/底色 + 光晕，不改尺寸位移，
+   避免 chip 换行引起输入区抖动。动画时长须与脚本里的 FLASH_DURATION（1200ms）保持一致 */
 .agent-ws-chip-attached.is-new {
   border-color: var(--accent, #2e6fd0);
   background: rgba(46, 111, 208, 0.14);
@@ -318,8 +315,8 @@ const emit = defineEmits<{
     animation: none;
   }
 }
-/* 屏幕阅读器专用（视觉不可见）：承接 Toast 原先的告知作用。
-   absolute 定位使其脱离 flex 流，不会给 chip 行挤进额外间距 */
+/* 屏幕阅读器专用（视觉不可见）：absolute 定位使其脱离 flex 流，
+   不会给 chip 行挤进额外间距 */
 .agent-ws-sr-only {
   position: absolute;
   width: 1px;
@@ -491,8 +488,7 @@ const emit = defineEmits<{
   color: #2e6fd0;
 }
 
-/* 会话上下文水位：移至输入框下方（对齐主流 chat 应用惯例），顶部不再堆叠
- * 「状态横幅 + 水位条」两条；数字由后端按 pi footer 同口径算好 */
+/* 会话上下文水位（数字由后端按 pi footer 同口径算好） */
 .agent-ws-usage {
   display: flex;
   align-items: center;

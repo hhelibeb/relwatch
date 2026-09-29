@@ -307,9 +307,8 @@ describe('useAppUpdate 下载安装', () => {
     await c.checkForUpdate()
     const v = c.pendingUpdate.value
     expect(v).not.toBeNull()
-    // shallowRef 读出的就是构造实例本身，原型链完整（深度 reactive 会包 Proxy 并保留原型，
-    // 但用 isProxy 能直接区分；此处兼容两种实现，重点在调用不抛错）
-    // 真正回归点：downloadAndInstall 能正常执行（内部若访问私有字段，Proxy 会抛错）
+    // 真正回归点：downloadAndInstall 能正常执行——实例被深度 reactive 包成 Proxy 时，
+    // 方法内访问私有字段（#metadata 等）会抛错。
     await expect(c.downloadAndInstall()).resolves.toBeUndefined()
   })
 
@@ -398,7 +397,7 @@ describe('useAppUpdate 下载安装', () => {
 })
 
 describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
-  /** 挂载并切到「关于」tab（软件更新分组已从常规设置迁移至关于） */
+  /** 挂载并切到「关于」tab（软件更新分组位于该 tab） */
   async function mountSettingsTabOnAbout() {
     const wrapper = mount(SettingsTab, {
       props: { settings: { ...defaultSettings } },
@@ -466,7 +465,7 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
 
     expect(wrapper.text()).toContain(t('update.error.signature'))
     expect(wrapper.text()).not.toContain(t('update.error.network'))
-    // 签名错误无「重试」按钮，只有「前往下载页」（§4.5 错误表）
+    // 签名错误无「重试」按钮，只有「前往下载页」
     expect(wrapper.text()).not.toContain(t('update.retry'))
     expect(wrapper.text()).toContain(t('update.open_download_page'))
     wrapper.unmount()

@@ -1,12 +1,8 @@
 //! 网络出口的统一代理策略：三态判定唯一来源。
 //!
-//! ## 为什么需要这个模块
-//!
-//! `proxy_mode` / `proxy_url` 的语义曾经散落多处：`http.rs::build_http_client`
-//! 内联一份 match，`commands/updater.rs` 又复制一份 `resolve_proxy`（为绕开
-//! tauri-updater 插件默认 `auto_sys_proxy` 的静默失效），两侧靠注释维持一致性。
-//! 同一病因复发两次后，把「三态 → 决策」收敛到这里，新增网络出口一律消费
-//! `ProxyPolicy::resolve`，从「需要人记住」变成「类型/接口上绕不开」。
+//! 新增网络出口（含 tauri-updater 这类插件自己造的 reqwest client）一律消费
+//! `ProxyPolicy::resolve`，不得各处内联一份 match——否则三态语义会漂移
+//! （如 `none` 直连会被插件的 `auto_sys_proxy` 默认行为静默改写成系统代理）。
 //!
 //! ## 三态语义（对系统代理/环境变量的统一约定）
 //!
@@ -17,7 +13,7 @@
 //!   追加系统代理。
 //!
 //! 未知值归入 `System` 而非直接报错：数据库里若残留脏值，走系统代理比静默
-//! 直连更接近用户预期（与 updater.rs 既有行为一致）。
+//! 直连更接近用户预期。
 
 /// 一次代理决策的类别化结果。
 #[derive(Debug)]
@@ -86,7 +82,7 @@ mod tests {
 
     #[test]
     fn proxy_custom_with_empty_url_is_no_proxy() {
-        // 与 http.rs::build_http_client 对齐：custom + 空 url → 直连，不落入系统代理
+        // custom + 空 url → 直连，不落入系统代理
         assert_eq!(decision_kind("custom", ""), "no_proxy");
         assert_eq!(decision_kind("custom", "   "), "no_proxy");
     }

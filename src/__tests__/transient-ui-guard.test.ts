@@ -12,9 +12,8 @@ import { useTransientUiGuard } from '../composables/useTransientUiGuard'
 /**
  * useTransientUiGuard — 窗口隐藏/失焦后的瞬态 UI 守卫
  *
- * 复现来源：悬浮摘要 → 左键点一下（元素获得焦点）→ 鼠标移开 → 关到托盘 →
- * 托盘图标重新打开。实测 Chromium 在隐藏时只补 blur/visibilitychange，
- * 重新显示时重放隐藏前的 focus，导致摘要提示自己冒出来。
+ * 原因：Chromium 在隐藏时只补 blur/visibilitychange，重新显示时重放隐藏前的
+ * focus，悬浮摘要等瞬态层会自己冒出来。
  */
 
 type FocusHandler = (event: { payload: boolean }) => void

@@ -510,8 +510,8 @@ describe('AgentWorkspace 冒烟', () => {
   })
 
   it('GitHub 版本/源的可读名用 owner/repo，仓库描述不当名称显示', async () => {
-    // GitHub 源的 description 存的是仓库描述文字（后端检查成功后刷新），不是名称——
-    // 回归：chip 与 [[ 菜单曾把它当频道名用，显示成「仓库描述 · tag」
+    // GitHub 源的 description 存的是仓库描述文字（后端检查成功后刷新），不是名称：
+    // 用例防「把仓库描述当频道名显示成『仓库描述 · tag』」的回归
     vi.mocked(listSources).mockResolvedValue([
       {
         id: 1,
@@ -607,7 +607,7 @@ describe('AgentWorkspace 冒烟', () => {
       dataTransfer: dragDataTransfer({ kind: 'release', id: 7 }),
     })
     await flushPromises()
-    // 已切换为新建的草稿会话（新建即登记，评审 1.2）+ 引用 chip 放入
+    // 已切换为新建的草稿会话（新建即登记）+ 引用 chip 放入
     expect(wrapper.find('.agent-ws-session-item.draft').exists()).toBe(true)
     expect(wrapper.findAll('.agent-ws-chip-attached').length).toBe(1)
     // 不再弹 Toast（右下角 Toast 会压住发送/附件按钮并吞点击），改为 chip 高亮就地反馈
@@ -655,7 +655,7 @@ describe('AgentWorkspace 冒烟', () => {
 
   // ── 非实体拖拽必须放行给原生（回归守卫）──
   // 拖动选中的对话文本拖入输入框，本应由 textarea 原生行为插入；若落区不判类型
-  // 一律 preventDefault，会把这层原生能力取消（曾发生的回归）。
+  // 一律 preventDefault，就会把这层原生能力取消。
   it('拖动选中文本经过工作区：不拦截默认行为、不弹实体提示', async () => {
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
@@ -722,10 +722,8 @@ describe('AgentWorkspace 冒烟', () => {
   })
 
   // ── 实体目录时效性（回归）──
-  // 目录原为「面板打开时拉一次」的快照，而主列表（App.vue）订阅 release-state-changed
-  // 实时刷新——于是面板开着时轮询刚采到的版本在主列表可见可拖，在工作区却查不到：
-  // chip 退化成 `release #124741`（用户读成「版本号」，认不出是哪个 release），
-  // 重试还会误判为「已删除」把引用静默剔除。
+  // 目录若只在面板打开时拉一次快照，主列表却实时刷新，面板开着时刚采到的版本
+  // 就会解析不出可读名：chip 退化成 `release #124741`，重试还会误判为已删除把引用静默剔除。
   it('面板打开后新采集的版本：release-state-changed 刷新目录，chip 从 #id 变为可读名', async () => {
     // 打开面板时该版本尚未入库（模拟「面板已开着，随后轮询才采到」）
     vi.mocked(getReleaseCatalog).mockResolvedValue([])
@@ -780,7 +778,7 @@ describe('AgentWorkspace 冒烟', () => {
   })
 
   it('目录刷新部分失败：源列表拉取失败不清空已到手的版本名称映射', async () => {
-    // Promise.all 时代：任一请求失败即整体抛出，两侧名称映射双双保持空值
+    // 两条请求独立处理：源列表拉取失败不得清空已到手的版本名称映射
     vi.mocked(listSources).mockRejectedValue(new Error('db busy'))
     vi.mocked(getReleaseCatalog).mockResolvedValue([makeRelease()])
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
@@ -973,7 +971,7 @@ describe('AgentWorkspace 冒烟', () => {
     const banner = wrapper.find('.agent-ws-banner')
     expect(banner.exists()).toBe(true)
     expect(banner.text()).toContain(t('agent.status_pending'))
-    // 评审 1.3：横幅显示占用者（一键「前往停止」），替代笼统的「其他会话正在执行」
+    // 横幅显示占用者（一键「前往停止」），替代笼统的「其他会话正在执行」
     const occupied = t('agent.queue_occupied_by', t('agent.session_untitled'))
     expect(banner.text()).toContain(occupied)
     const queue = wrapper.find('.agent-ws-banner-queue')

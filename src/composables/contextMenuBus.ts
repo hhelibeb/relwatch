@@ -32,7 +32,6 @@ export function unregisterCloser(closer: Closer) {
   if (idx !== -1) closers.splice(idx, 1)
 }
 
-/** 关闭所有已注册的右键菜单 */
 export function closeAllContextMenus() {
   // 拷贝一份再遍历，避免迭代过程中被修改
   for (const closer of [...closers]) {

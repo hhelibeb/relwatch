@@ -99,7 +99,6 @@ describe('invokeI18n', () => {
     expect(err).toBeInstanceOf(InvokeI18nError)
     expect(err.key).toBe('err.repo_verify_failed')
     expect(err.args).toEqual(['microsoft/vscode'])
-    // 保留原始错误调用堆栈
     expect(err.stack).toBe(original.stack)
   })
 

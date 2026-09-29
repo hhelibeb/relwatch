@@ -1,7 +1,7 @@
 //! 跨进程事件类型（tauri-specta 类型化事件）。
 //!
 //! 事件名默认取结构体名的 kebab-case（`ReleaseStateChanged` → `release-state-changed`），
-//! 与历史事件名保持一致，前端经 `src/bindings.ts` 的 `events` 对象类型化监听。
+//! 前端经 `src/bindings.ts` 的 `events` 对象类型化监听——**改名会静默断链**。
 
 use serde::Serialize;
 use specta::Type;
@@ -18,9 +18,8 @@ pub struct PollCompleted;
 /// 日志表写入了新条目，前端据此刷新日志 tab。
 ///
 /// 存在意义：后台 AI 批（摘要补全/翻译）是 fire-and-forget，可能在发起它的那轮
-/// 轮询结束几分钟后才收尾写日志。此前只有 `PollCompleted` 会触发日志刷新，
-/// 于是这些延迟到达的成功/失败日志不切走再切回就看不到——用户会误以为
-/// 什么都没发生（实测：译文 524 失败已写入 DB，但日志 tab 停在打开时的快照）。
+/// 轮询结束几分钟后才收尾写日志，仅靠 `PollCompleted` 驱动刷新会漏掉这些延迟
+/// 到达的日志——用户不切走再切回日志 tab 就看不到。
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct LogAppended;
 
@@ -75,7 +74,7 @@ mod tests {
         assert_eq!(<FocusRelease as tauri_specta::Event>::NAME, "focus-release");
     }
 
-    /// 对照：既有事件的命名规则未受影响。
+    /// 对照：其它事件同样按 kebab-case 推导。
     #[test]
     fn navigate_event_name_unchanged() {
         assert_eq!(<Navigate as tauri_specta::Event>::NAME, "navigate");

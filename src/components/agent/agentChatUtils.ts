@@ -1,5 +1,5 @@
 // ── AgentWorkspace 聊天区纯函数（模块级，无组件状态）──
-// 自 AgentWorkspace.vue 出仓：消息块拆分 / 工具卡片文案 / run 记录解析。
+// 消息块拆分 / 工具卡片文案 / run 记录解析。
 // 依赖 i18n 文案的函数（runErrorText / runModelLabel / runDurationText）以 `t`
 // 为参注入（调用点传入），不直接 import i18n 实例——保持模块纯函数性质与单测便利。
 import type { AgentChatBlock, AgentChatMessage, AgentModelRef, AgentRunSummary } from '../../bindings'
@@ -60,7 +60,7 @@ export function stripSkillBlock(text: string): string {
  * - main：<用户指令> 标签内的用户真实指令（skill 块已剥离）
  * - folded：标签外的模板脚手架（订阅说明 / 外部数据区 / 不可信声明等）
  * 首轮完整模板不再整段刷屏，折叠为可展开的详情块，完整上下文仍可见；
- * 无标签（旧格式 / 多轮精简）时整段作为主文本，行为不变。 */
+ * 无标签（旧格式 / 多轮精简）时整段作为主文本。 */
 export function splitUserBlocks(blocks: AgentChatBlock[]): { main: string; folded: string | null } {
   const text = blocks
     .filter((b) => b.kind === 'text')
@@ -158,7 +158,7 @@ export function runDurationText(run: AgentRunSummary, t: TranslateFn): string {
   const end = new Date(run.finished_at).getTime()
   if (!Number.isFinite(start) || !Number.isFinite(end)) return '—'
   const secs = Math.max(0, Math.round((end - start) / 1000))
-  // 耗时文案走 i18n（英文界面不再漏中文）
+  // 耗时文案走 i18n（避免英文界面漏中文）
   if (secs < 60) return t('agent.duration_secs', String(secs))
   const mins = Math.floor(secs / 60)
   if (mins < 60) return secs % 60 > 0 ? t('agent.duration_min_secs', String(mins), String(secs % 60)) : t('agent.duration_min', String(mins))

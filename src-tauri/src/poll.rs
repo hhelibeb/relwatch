@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tauri::Manager;
 use tauri_specta::Event;
 
-/// 连续失败超过此次数后自动禁用监控源，防止无限重试
+/// 连续失败达到此次数后自动禁用监控源，防止无限重试
 const MAX_CONSECUTIVE_FAILURES: i64 = 3;
 
 use crate::db;
@@ -26,7 +26,7 @@ static POLL_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const MAX_CONCURRENCY: usize = 10;
 /// 单源网络拉取超时（秒）：约束每个源的 fetch（含适配器内部重试）总耗时，
 /// 防止某源接口异常（如 B 站 offset 死循环的兜底）无限挂起、占用信号量 permit
-/// 拖住整轮轮询（F5）。超时按临时故障处理：记 check.failed 后跳过本轮，下轮重试。
+/// 拖住整轮轮询。超时按临时故障处理：记 check.failed 后跳过本轮，下轮重试。
 const SOURCE_FETCH_TIMEOUT_SECS: u64 = 300;
 
 pub fn is_poll_running() -> bool {
@@ -170,8 +170,7 @@ fn mark_older_as_read(conn: &rusqlite::Connection, source_id: i64, saved: &[(i64
 }
 
 /// Post-save 事务性步骤：mark_older_as_read → record_check_success → 返回 (ids, saved)。
-/// 从 `poll_all_sources_async` 和 `check_single_source` 的 spawn_blocking 闭包中提取，
-/// 便于直接测试真实代码路径，消除 `simulate_fetch_save_mark_record` 等价副本。
+/// 抽成独立函数，便于测试直接跑真实代码路径（两条调用路径共用）。
 fn post_save_mark_record(
     conn: &rusqlite::Connection,
     source_id: i64,
@@ -212,9 +211,6 @@ async fn filter_ai_eligible(
     if saved.is_empty() {
         return Ok(vec![]);
     }
-    // 按注册表能力枚举不参与 AI 摘要/翻译的源类型（当前：youtube/bilibili），
-    // 新增源类型在 list_adapters 登记并声明 ai_eligible=false 后自动生效，
-    // 无需在 DB 层或此处逐个 source_type 特判。
     let ineligible_types: Vec<&'static str> = ai_excluded_types();
     if ineligible_types.is_empty() {
         return Ok(saved.to_vec());
@@ -239,11 +235,9 @@ async fn filter_ai_eligible(
 /// 检查 / 定时轮询），不重复派发——直接跳过本轮，批在跑期间新到的待办由
 /// **下一轮轮询**兜底（`get_releases_without_translation` 重读 DB 一并覆盖）。
 ///
-/// 曾实现过「跟随批」：撞上在跑时注册一个 `Notify::notified().await` 等收尾
-/// 续跑。但 `Notify` 不带状态——`notify_one()` 只唤醒**此刻已注册**的等待者，
-/// 跟随批 spawn 后不保证先注册再被 notify，信号会永久丢失（挂起的任务泄漏）。
-/// 而轮询兜底已保证新待办最迟下一轮被翻，跟随批只把延迟从「一轮」缩到
-/// 「批收尾」，收益配不上这份复杂度与风险，故删掉、与摘要侧保持同一套简单语义。
+/// 不用 `Notify` 注册「跟随批」等收尾续跑：`Notify` 不带状态，`notify_one()` 只
+/// 唤醒**此刻已注册**的等待者，spawn 后不保证先注册再被 notify，信号会永久丢失
+/// （挂起的任务泄漏）。轮询兜底已保证新待办最迟下一轮被翻，不值得这份复杂度。
 static TRANSLATION_BATCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// 后台批门控的复位守卫：构造即视为「批在跑」（flag 由调用方抢执行权时置位），
@@ -283,7 +277,7 @@ impl Drop for BatchGuard {
 /// 从 DB 读取「未完成翻译的 release」（= 本轮新入库 + 历史失败重试，两者在
 /// fetch→save 后均已入库，`get_releases_without_translation` 一并覆盖），
 /// 交给后台任务翻译；**调用方不等待**，检查/通知/轮询节奏不被翻译的最长
-/// ~300s 超时拖累（此前同步等待把轮询间隔拉长、手动检查卡到分钟级）。
+/// ~300s 超时拖累。
 ///
 /// 批次并发由 `generate_translations_for_new` 内部按 release spawn + 信号量
 /// 限流；失败/超时条目在批内最多试一次，留待下一轮轮询的后台批重读待办续跑
@@ -437,9 +431,8 @@ static SUMMARY_BATCH_RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// 后台补全「历史失败/未完成的 AI 摘要」（fire-and-forget）。
 ///
-/// 背景：原 do_poll_core 端部 retry 段会同步重试无摘要的 release；摘要改异步后
-/// 若没有后台补全，一次失败的摘要将永久空缺。此函数把「无摘要」的历史待办
-/// （get_releases_without_summary，retry<5 封顶）交给后台任务补全。
+/// 不做补全的话，一次失败的摘要将永久空缺（`get_releases_without_summary`
+/// 自带 retry<5 封顶，反复补全不会无限重试）。
 ///
 /// 与新 release 的顺序：新 release 的摘要在 do_poll_core 内同步生成（通知带重要
 /// 度），此补全只处理**已入库的历史** release，不产生新通知，无顺序冲突。
@@ -501,7 +494,8 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
     do_trigger_poll_async(app).await
 }
 
-/// 两个 do_*_poll_async 函数的公共核心：拉取所有源 → AI 摘要 → 通知 → 重试失败摘要
+/// 两个 do_*_poll_async 函数的公共核心：拉取所有源 → AI 摘要 → 通知 →
+/// 派发后台翻译/摘要补全批
 async fn do_poll_core(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
@@ -535,7 +529,7 @@ async fn do_poll_core(
 
     // 译文后台批（fire-and-forget）：读 DB 中全部未完成翻译的 release
     // （= 本轮新入库 + 历史失败重试，两者此时均已入库），交给后台任务翻译，
-    // 本轮回立即结束——不再像旧版那样同步等翻译（曾把单轮拖到 60s+ 超时）。
+    // 本轮回立即结束，不被翻译的最长 ~300s 超时拖累。
     // 译文成功落库后经 emitter 逐条 emit release-state-changed 刷新前端。
     schedule_translations_background(db_pool, deepseek_semaphore, emitter);
 
@@ -653,11 +647,11 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
     match fetch_result {
         Ok(releases) => {
             // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异。
-            // H-4 修复：save 阶段同样纳入 SOURCE_FETCH_TIMEOUT_SECS 整体超时——
-            // HF 源 save 会并发拉取新模型的 README（Semaphore(8)），大组织首扫
-            // 可达数千请求，此前无超时保护会无限占用 POLL_LOCK：手动检查一直
-            // 报 in_progress、定时轮询静默跳过。超时按本轮保存不完整处理（已
-            // insert 的 release 仍在库中，body 留空，下轮正常轮询继续增量）。
+            // save 阶段同样纳入 SOURCE_FETCH_TIMEOUT_SECS 整体超时：HF 源 save 会
+            // 并发拉取新模型的 README（Semaphore(8)），大组织首扫可达数千请求，
+            // 无超时保护会无限占用 POLL_LOCK（手动检查一直报 in_progress、定时
+            // 轮询静默跳过）。超时按本轮保存不完整处理（已 insert 的 release 仍
+            // 在库中，body 留空，下轮正常轮询继续增量）。
             let saved = match tokio::time::timeout(
                 std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
                 ctx.adapter.save(ctx.db_pool, source, &releases, max_count.unwrap_or(usize::MAX), ctx.client),
@@ -709,7 +703,7 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
             }
         }
         Err((status, msg)) => {
-            // 凭据脱敏（V28）：适配器错误文本会回显完整 URL（如 `…&key=AIzaSy…`），
+            // 凭据脱敏：适配器错误文本会回显完整 URL（如 `…&key=AIzaSy…`），
             // 此处的 msg 有**三个去向**，逐个出口处理不现实，故在源头脱敏：
             // ① logs（`write_log_key` 也默认脱敏，此处是二道保险）；
             // ② `sources.last_check_message`（`record_check_failure` 同样默认脱敏）；
@@ -776,8 +770,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         &source_obj.repo,
         source_obj.description.as_deref(),
     );
-    // source 分发收敛为 trait 调用；token 按适配器声明的 auth_kind 选取
-    // （YouTube → Data API Key，GitHub → PAT，HF → None），无需逐个 source_type 特判。
+    // token 按适配器声明的 auth_kind 选取（YouTube → Data API Key，GitHub → PAT，
+    // HF → None），无需逐个 source_type 特判。
     let adapter = match source::get_adapter(&source_obj.source_type) {
         Ok(a) => a,
         Err((_, msg)) => return Err(msg),
@@ -970,15 +964,6 @@ async fn do_poll_async(app: tauri::AppHandle) {
     }
 
     // 调度只读全局周期（`KEY_POLL_INTERVAL`）：每轮检查**全部**启用源。
-    //
-    // 曾经短暂引入过「按源间隔过滤」（`is_source_due` 读 `sources.poll_interval_minutes`），
-    // 已整体撤掉，原因有两条：
-    // - 该列自建库起就是死字段（写回的都是原值），存量行的值必然来自建表默认值 30，
-    //   不含任何用户意图 —— 一旦当调度依据用，会把源静默压到每 30 分钟一次，
-    //   用户设的全局周期（如 10 分钟）被无视，且无日志无提示。
-    // - tick 周期恒等于全局周期，按源间隔只能做减法（源永不可能比全局更勤），
-    //   收益不抵复杂度。
-    // 该列的「未设置」约定与存量归一化见 `db::init` 的 Migration 20。
     {
         let state = app.state::<AppState>();
         let db_pool = state.db.clone();
@@ -1062,9 +1047,8 @@ async fn poll_all_sources_async(
         let source_id = source.id;
         let source = source.clone();
         let db_pool = pool.clone();
-        // source 分发收敛为 trait 调用；token 按适配器声明的 auth_kind 选取
-        // （YouTube → Data API Key，GitHub → PAT，HF → None）。
-        // spawn 需要 'static，先克隆为 owned。
+        // token 按适配器声明的 auth_kind 选取（YouTube → Data API Key，
+        // GitHub → PAT，HF → None）。spawn 需要 'static，先克隆为 owned。
         let adapter = match source::get_adapter(&source.source_type) {
             Ok(a) => a,
             Err((_, msg)) => {
@@ -1076,7 +1060,7 @@ async fn poll_all_sources_async(
             .map(|s| s.to_string());
 
         handles.push(tokio::spawn(async move {
-            // 背压信号量获取改为 graceful：不再 expect 后被 handle.await 静默吞掉
+            // 背压信号量用 graceful 等待获取：失败若直接 panic，会被 handle.await 静默吞掉
             let _permit = match sem.acquire_owned().await {
                 Ok(p) => p,
                 Err(e) => {
@@ -1150,10 +1134,10 @@ const MASS_FAILURE_MIN_SOURCES: usize = 2;
 /// 本轮 ≥[`MASS_FAILURE_PERCENT`]% 的源同时失败时，判定为网络/代理层抖动，
 /// 回退本轮给每个失败源累加的 `consecutive_failures`。
 ///
-/// 为何这样改：现网实测过「整轮同时失败」——10 个源在同一秒报同一个
-/// `err.source_timeout|300`（`logs` 表可查），那是链路抖一下全挂，不是 10 个源同时坏。
-/// 照旧累加的话，连续 3 轮抖动就把所有源逐个自动禁掉，而用户看到的现象只是
-/// 「这些源怎么不更新了」，需手动逐个重开。
+/// 依据：整轮同时失败通常是链路抖一下全挂（实测 10 个源在同一秒报同一个
+/// `err.source_timeout|300`），不是这些源同时坏；照旧累加的话，连续 3 轮抖动就
+/// 会把所有源逐个自动禁掉，而用户看到的现象只是「这些源怎么不更新了」，需手动
+/// 逐个重开。
 ///
 /// 实现上「先累加、整轮汇总后回退」而非「检查时就决定不累加」：失败记录发生在单源
 /// 检查内部，早于整轮汇总，而每轮每源最多累加 1，回退 1 就等价于本轮不计入。
@@ -1194,7 +1178,7 @@ async fn collect_pending_and_notify(
     new_ids: &[i64],
     is_manual: bool,
 ) -> (Vec<db::releases::ReleaseInfo>, Vec<db::releases::ReleaseInfo>) {
-    // 一次性取连接：读 pending + muted，并把本轮 pending 批量标记已通知。
+    // 读 pending + muted 并把本轮 pending 批量标记已通知，收在同一次取连接里；
     // 同步 DB 调用收笼进 spawn_blocking，避免在 async 上下文阻塞 tokio worker。
     let pool = db_pool.clone();
     let (pending, muted_source_ids): (
@@ -1330,10 +1314,8 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
         loop {
             // 等待到下一个轮询点。**分段重算，而非一次睡到底**：tokio 的 sleep 基于
             // 单调时钟（Windows 为 QPC），而系统休眠期间单调时钟不推进 —— 一次睡到底时，
-            // 唤醒后仍要「补等」休眠前剩余的时长（实测：9/12 那轮本来到点还差 36.6 分钟，
-            // 07:38 唤醒后到 08:12 才恢复检查；9/19 长休眠唤醒后推算得等到 19:46:55，
-            // 即唤醒后再空等 23 分钟）。分段后每片醒来都用挂钟重算，休眠唤醒后最多
-            // 一个分片（`POLL_WAIT_SLICE`）内就会立即检查。
+            // 唤醒后仍要「补等」休眠前剩余的时长。分段后每片醒来都用挂钟重算，休眠
+            // 唤醒后最多一个分片（`POLL_WAIT_SLICE`）内就会立即检查。
             //
             // `is_poll_running` 放在内层循环开头：`stop_poll()` 也是经 `POLL_WAKE`
             // 唤醒的，必须让它能在一段分片内就退出，而不是先白等到本轮到点。
@@ -1597,7 +1579,7 @@ mod tests {
 
     #[test]
     fn test_acquire_lock_succeeds_and_fails() {
-        // Bug #2 相关：验证 pub(crate) acquire_lock API
+        // 验证 pub(crate) acquire_lock API
         POLL_LOCK.store(false, Ordering::Release);
 
         // 第一次获取应成功
@@ -1710,7 +1692,7 @@ mod tests {
         assert!(paginate);
     }
 
-    // --- credential 读取（凭据管道收敛后经 credential::read_credential）---
+    // --- credential 读取（经 credential::read_credential）---
 
     #[test]
     fn test_get_github_token_no_key_returns_none() {
@@ -1839,7 +1821,7 @@ mod tests {
         assert_eq!(r2_state.notification_status, "clicked", "有更新版本时所有 saved release 都应标记");
     }
 
-    // ── source 分发测试（原 save_for_source / fetch_for_source_async 分发）──
+    // ── source 分发测试 ──
 
     fn gh_release(tag: &str, date: &str, body: Option<&str>) -> serde_json::Value {
         serde_json::json!({
@@ -1853,7 +1835,7 @@ mod tests {
     }
 
     /// github 入库逻辑由 `github::save_releases` 覆盖（trait 实现内部调它）。
-    /// 此测试验证 max_count 行为保持。
+    /// 此测试验证 max_count 截断行为。
     #[test]
     fn test_github_save_respects_max_count() {
         let conn = init_memory_db().unwrap();
@@ -1874,8 +1856,7 @@ mod tests {
         assert_eq!(saved[1].1.as_deref(), Some("v2"));
     }
 
-    /// 不支持的 source_type：`get_adapter` 返回 `err.unsupported_source` 错误，
-    /// 取代原 `save_for_source`/`fetch_for_source_async` 的 noop/error 分支。
+    /// 不支持的 source_type：`get_adapter` 返回 `err.unsupported_source`。
     #[test]
     fn test_get_adapter_unsupported_type_errors() {
         match source::get_adapter("gitlab") {
@@ -1896,21 +1877,18 @@ mod tests {
 
     // ── 编排链路集成测试：fetch→save→mark_read→record ──────
     //
-    // 这是 poll_all_sources_async / check_single_source 内联的核心链路。
-    // 在重构抽取公共逻辑前，先把这条链路用真实的 github fetch + db 层串起来锁住行为。
-    // 重构后这些测试应保持不变地通过，从而验证行为等价性。
+    // 用真实的 github fetch + db 层串起两条调用路径共用的核心链路
+    // （post_save_mark_record），锁住其行为。
 
     fn make_source(conn: &rusqlite::Connection, owner: &str, repo: &str) -> db::sources::Source {
         let id = db::sources::add_source(conn, "github", owner, repo, "").unwrap();
         db::sources::get_source(conn, id).unwrap().unwrap()
     }
 
-    // 说明：`sources.poll_interval_minutes` 是死字段（无读取方），调度只读全局周期。
-    // 曾短暂引入过按源间隔调度（`is_source_due`），因「存量值全是建表默认值 30，
-    // 一旦当调度依据用会静默降频」而整体撤掉，故此处**刻意没有**相关用例 ——
-    // 重新引入前请先看 `db::init` Migration 20 与 `do_poll_async` 的说明。
+    // 说明：`sources.poll_interval_minutes` 是死字段（无读取方），调度只读全局周期，
+    // 故此处**刻意没有**按源间隔调度的用例（「未设置」约定见 `db::init` Migration 20）。
 
-    // ── 断路器误伤修复：不计入分类 + 整轮回退 ─────────────────
+    // ── 断路器：不计入失败分类 + 整轮回退 ─────────────────
 
     #[test]
     fn is_uncounted_failure_matches_account_level_errors() {
@@ -2101,11 +2079,10 @@ mod tests {
         assert!(db::releases::get_releases_with_state(&conn).unwrap().is_empty());
     }
 
-    // ── collect_pending_and_notify 编排链路注入式测试（Phase 3 / S3）──
+    // ── collect_pending_and_notify 编排链路注入式测试 ──
     //
     // 直接测真实的私有 async fn collect_pending_and_notify，注入 NoopEmitter
     // + init_memory_pool，覆盖「通知派发次数 / muted 源跳过 / new_ids 过滤」状态机。
-    // 这条链路原先无法被 CI 触达（S3），至此消除“测试副本”假象。
 
     /// 单条 pending release：通知派发 1 次，new_releases 含该条。
     #[tokio::test]
@@ -2340,16 +2317,15 @@ mod tests {
 
     // ── 后台翻译批（schedule_translations_background）──
     //
-    // 行为契约（本次异步化改造新增）：
+    // 行为契约：
     // - 派发后调用方不等待（fire-and-forget），译文在后台任务中落库；
     // - 成功落库的 release 会触发 emitter.emit_release_state_changed（前端刷新）；
     // - AI/翻译未启用时不派发（不 spawn、不请求、不写库）。
     //
     // TRANSLATION_BATCH_RUNNING 是进程级全局门控：操纵它的测试必须互斥执行，
-    // 否则并行测试间互相干扰（实测全量 cargo test：A 置 true 期间 B 的
-    // schedule 被门控跳过，5s 等待落空；反向交错时 B 抢到执行权又派发批）。
-    // --lib 单跑测试数少、时序不同才没暴露。此锁串行化所有动该门控的测试；
-    // 不动它的测试无需拿锁。
+    // 否则并行测试互相干扰（全量 cargo test 下会出现「门控被他人置 true →
+    // schedule 被跳过」与「他人抢到执行权 → 意外派发批」两种假失败）。
+    // 此锁串行化所有动该门控的测试；不动它的测试无需拿锁。
     static TRANSLATION_GATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// 构造已启用 AI+翻译的 memory pool，并插入一条有 body 的 release。
@@ -2543,8 +2519,8 @@ mod tests {
 
     // ── 摘要后台补全批（schedule_summaries_background）──
     //
-    // 行为契约：历史无摘要的 release 由后台任务补摘要（原 do_poll_core retry 段
-    // 语义的异步化），补全不触发任何 UI emit（无新通知，仅落库）。
+    // 行为契约：历史无摘要的 release 由后台任务补摘要，补全不触发任何 UI emit
+    // （无新通知，仅落库）。
 
     /// 构造已启用 AI 的 memory pool，插入一条有 body 但无摘要的 release。
     fn setup_summary_pool(base_url: &str) -> r2d2::Pool<r2d2_sqlite::SqliteConnectionManager> {

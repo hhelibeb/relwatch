@@ -1,8 +1,8 @@
-// ── 引用与输入区（F 域：@skill / [[实体 菜单 / 附件 / chip 悬浮提示 / flash 反馈）──
-// 自 AgentWorkspace.vue 出仓。指令草稿（instruction）与引用 chips（entities /
-// skillPath / files）由本模块持有；会话切换时的清空经编排层调 resetForSessionSwitch。
+// ── 引用与输入区（@skill / [[实体 菜单 / 附件 / chip 悬浮提示 / flash 反馈）──
+// 指令草稿（instruction）与引用 chips（entities / skillPath / files）由本模块持有；
+// 会话切换时的清空经编排层调 resetForSessionSwitch。
 // 跨域互斥（模型菜单 / rpc 菜单）不反向依赖：菜单显隐状态与选择动作暴露给编排层，
-// 由编排层的键盘导航分发（K）与全局收起逻辑接线。
+// 由编排层的键盘导航分发与全局收起逻辑接线。
 import { computed, nextTick, onUnmounted, ref, type Ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { Source } from '../../api/sources'
@@ -17,9 +17,8 @@ const SKILL_TRIGGER = /@([\w\-.\\/]*)$/
 const ENTITY_TRIGGER = /\[\[([^\]]*)$/
 
 // 引用变更的就地反馈：chip 短暂高亮 + 无障碍播报。
-// 此前这里弹的是全局 Toast，而 Toast 是 fixed 右下角、正好压在发送/附件按钮上——
-// 既挡视线又吞点击，鼠标停在按钮上还会触发它的悬浮暂停而永不消失。
-// 拖入的视觉焦点本就在落点（输入区），反馈放回落点即可，无需再去右下角播报一次。
+// 不用全局 Toast：它固定在右下角，正好压在发送/附件按钮上——既挡视线又吞点击。
+// 拖入的视觉焦点本就在落点（输入区），反馈放回落点即可。
 const FLASH_DURATION = 1200
 
 export function useAgentComposer(deps: {
@@ -38,7 +37,7 @@ export function useAgentComposer(deps: {
   const skillPath = ref<string | null>(null)
   const textareaRef = ref<HTMLTextAreaElement | null>(null)
 
-  // ── 本地文件附件（评审「本地文件/图片附件」）──
+  // ── 本地文件附件 ──
   // 应用内实体（监控源/版本）之外，真实任务常要看本地日志 / 截图。
   // 只传绝对路径、不读内容：内容由 pi 自己的工具按需读取（避免把大文件塞进上下文），
   // 路径走 prompt 的权威指令区，不进不可信外部数据区。
@@ -91,8 +90,8 @@ export function useAgentComposer(deps: {
 
   const flashKey = ref<string | null>(null)
   let flashTimer: ReturnType<typeof setTimeout> | null = null
-  // 屏幕阅读器播报（视觉上不可见）：补回 Toast 原先承担的告知作用。
-  // 注意别与上方流式消息集合 liveMessages（差一个 s，语义完全无关）混淆
+  // 屏幕阅读器播报（视觉上不可见）。
+  // 注意别与聊天域的流式消息集合 liveMessages（差一个 s，语义完全无关）混淆
   const attachAnnouncement = ref('')
 
   function flashEntity(e: AgentEntityRefSeed, added: boolean) {
@@ -119,13 +118,13 @@ export function useAgentComposer(deps: {
   }
 
   // 实体 id → 目录项索引（chip 可读名查询 O(1)化：流式期间渲染函数每批重跑，
-  // 原逐 chip 的 sources/releases 线性扫描会随目录规模线性放大）
+  // 逐 chip 线性扫描目录会随目录规模放大）
   const sourceById = computed(() => new Map(sources.value.map((s) => [s.id, s])))
   const releaseById = computed(() => new Map(releases.value.map((r) => [r.id, r])))
 
   /** chip / 菜单里的引用可读名；目录里查不到时回退 i18n 文案（含 id）。
    *  回退**不写成裸 `release #124741`**：那串数字在 chip 上读起来就像「版本号」，
-   *  用户无从判断是哪个 release（曾据此误报为「拖入显示成了版本号」）。
+   *  用户无从判断是哪个 release。
    *  目录为何会缺项见 AgentWorkspace 的 refreshEntityCatalog / ensureEntityKnown。 */
   function entityLabel(e: AgentEntityRefSeed): string {
     if (e.kind === 'source') {
@@ -272,9 +271,8 @@ export function useAgentComposer(deps: {
     skillPath.value = null
   }
 
-  /** 会话切换清空（§4.2 三处清空差异对照表，按 mode 逐条复刻）：
-   *  引用/指令/技能三种 mode 都清；附件 files 只在 switch / new 清
-   *  （delete 后切换保留附件是现状行为）。菜单显隐不清（原实现即如此）。 */
+  /** 会话切换清空：引用/指令/技能三种 mode 都清；附件 files 只在 switch / new 清
+   *  （delete 后切换保留附件是现状行为）。菜单显隐不清。 */
   function resetForSessionSwitch(mode: SessionSwitchMode) {
     entities.value = []
     skillPath.value = null

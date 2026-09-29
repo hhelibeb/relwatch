@@ -268,8 +268,7 @@ pub fn run() {
             deepseek_semaphore,
             agent_semaphore,
         })
-        // 命令清单单一来源：invoke_handler 从同一个 specta Builder 生成，
-        // 与 collect_commands! 共用一份清单，不再存在第二份手工副本。
+        // 命令清单单一来源：invoke_handler 从同一个 specta Builder 生成，与 collect_commands! 共用一份清单。
         .invoke_handler(specta_builder().invoke_handler())
         // media 图片网关：前端把远程图片改写为 http://media.localhost/<url>，
         // 此处拦截并用已按 ProxyPolicy 构建的 reqwest client 下载返回（继承应用代理）。
@@ -294,9 +293,8 @@ pub fn run() {
             });
         })
         .setup(|app| {
-            // 主窗口改为 Rust 建窗（原 tauri.conf.json 静态配置逐项迁至此）：
-            // on_navigation 导航守卫只能在 builder 上挂载。这是 M-1 的纵深防御——
-            // 主 webview 的五重防线（useExternalLinkGuard / DOMPurify / CSP /
+            // 主窗口在 Rust 侧建窗：on_navigation 导航守卫只能在 builder 上挂载。
+            // 这是纵深防御——主 webview 的五重防线（useExternalLinkGuard / DOMPurify / CSP /
             // wry 新窗拒绝 / 禁拖放）全在前端层，这道 Rust 层守卫把「任意内容
             // 成为主窗口文档」从根源排除：只放行自家 origin，http(s) 外链交给
             // 系统浏览器（与前端 useExternalLinkGuard 行为一致），其余（media
@@ -429,7 +427,7 @@ pub fn run() {
                     // 一个优雅收尾窗口，不会有孤儿进程残留。
                     //
                     // 留痕走降级文件而不是 DB：退出路径不该为了记一行日志去同步取
-                    // DB 连接（那正是本次要消除的阻塞面，且此刻进程即将终止）。
+                    // DB 连接（那正是这条退出路径要避免的阻塞面，且此刻进程即将终止）。
                     // 持久化记录是必要的 —— release 版无控制台、tauri_plugin_log 也
                     // 未挂载（见 setup 的 debug_assertions 分支），`eprintln!` 只对
                     // dev 构建可见，不落文件就什么都留不下。

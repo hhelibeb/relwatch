@@ -194,10 +194,8 @@ pub struct SettingSpec {
 }
 
 /// 可更新设置项注册表：(key, 默认值, 日志 label)。
-/// `update_settings` 按此注册表驱动「读旧值 → 比较 → 写入」，不再手写
-/// 逐个 old 变量与元组表；新增可更新设置项只需：AppSettings 加字段 +
-/// 此处加一行（key/default/label 集中一处，无需再同步 KEY/DEFAULT 常量
-/// 之外的第三份清单）。
+/// `update_settings` 按它驱动「读旧值 → 比较 → 写入」；新增可更新设置项只需：
+/// AppSettings 加字段 + 此处加一行（key/default/label 集中一处）。
 ///
 /// 注意：注册表不覆盖 `*_set` 派生只读字段（凭据是否已设置，不入库）。
 pub const SETTING_SPECS: &[SettingSpec] = &[
@@ -231,8 +229,8 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
 /// 返回 (轮询周期是否发生变化, 变更描述列表)。
 ///
 /// `interval_changed` 的判定看**任意**一项 key == KEY_POLL_INTERVAL 的设置发生变化，
-/// 而非“第一个变更项”是否为轮询周期——旧实现依赖调用方把 poll_interval 放在数组第一位，
-/// 一旦其它项同时变更，轮询周期变更会被吞掉， leading to 不重算 next_poll_at。
+/// 而非“第一个变更项”是否为轮询周期：否则调用方把 poll_interval 放在数组后面时，
+/// 任何其它项同时变更都会把轮询周期变更吞掉，导致不重算 next_poll_at。
 pub fn apply_settings(
     conn: &Connection,
     items: &[(&str, &str, &str, &str)],
@@ -379,8 +377,8 @@ mod tests {
         assert_eq!(changes.len(), 1);
     }
 
-    /// 问题4 回归测试：轮询周期变更但不是数组中第一个变更项时，interval_changed 仍应为 true。
-    /// 旧实现只看“第一个变更项”，会把被前面其它项掩盖的 poll_interval 变更吞掉。
+    /// 回归：轮询周期变更但不是数组中第一个变更项时，interval_changed 仍应为 true
+    /// （只看“第一个变更项”会把被前面其它项掩盖的 poll_interval 变更吞掉）。
     #[test]
     fn test_apply_settings_interval_not_first_still_triggers_flag() {
         let conn = init_memory_db().unwrap();
@@ -389,8 +387,8 @@ mod tests {
 
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
-        // proxy_url 放在 poll_interval 之前且也变更——旧实现会因“第一个变更项是 proxy”
-        // 而错报 interval_changed=false。
+        // proxy_url 放在 poll_interval 之前且也变更：只看“第一个变更项”会错报
+        // interval_changed=false。
         let (changed, changes) = apply_settings(
             &conn,
             &[

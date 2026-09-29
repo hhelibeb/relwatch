@@ -75,7 +75,7 @@ use serde_json::json;
     })
 }
 
-/// 设置读写共用 `AppSettings`（types.rs）：不再维护第二份与 AppSettings
+/// 设置读写共用 `AppSettings`（types.rs）：无需维护第二份与 AppSettings
 /// 逐字段重复的 payload 结构，新增设置项少一处同步点。
 #[tauri::command]
 
@@ -83,7 +83,7 @@ use serde_json::json;
     app: tauri::AppHandle,
     payload: AppSettings,
 ) -> Result<(), String> {
-    // 边界 clamp（保持原有行为）与 prompt 后缀剥离在写入前统一处理
+    // 写入前统一处理：边界 clamp + prompt 后缀剥离
     let payload = AppSettings {
         poll_interval_minutes: payload.poll_interval_minutes.clamp(
             crate::poll::MIN_POLL_INTERVAL_MINUTES,
@@ -107,10 +107,9 @@ use serde_json::json;
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let conn = pool.get().map_err(|e| e.to_string())?;
 
-        // 注册表驱动（M2）：payload 序列化为 (字段名 → JSON 值) 映射，字段名与
-        // DB key 同名（snake_case）；按 SETTING_SPECS 统一「读旧值 → 比较 → 写入」，
-        // 不再手写 20 个 old 变量与 20 行元组表。新增设置项只需改 AppSettings +
-        // SETTING_SPECS 一处，此处代码无需变动。
+        // 注册表驱动：payload 序列化为 (字段名 → JSON 值) 映射，字段名与 DB key 同名
+        // （snake_case）；按 SETTING_SPECS 统一「读旧值 → 比较 → 写入」。
+        // 新增设置项只需改 AppSettings + SETTING_SPECS，此处代码无需变动。
         let payload_map = serde_json::to_value(&payload)
             .map_err(|e| format!("err.settings_serialize|{}", e))?
             .as_object()
@@ -176,9 +175,8 @@ use serde_json::json;
 }
 
 /// 凭据 kind → (DB key, 日志 label) 注册表。
-/// 四个 `set_deepseek_api_key` / `set_github_token` / `set_youtube_api_key` /
-/// `set_bilibili_cookie` 命令除 key 名外逐字相同（M2），合并为单个
-/// `set_credential(kind, value)`：新增凭据只需在此登记一行。
+/// 设置页的凭据写入都走单个 `set_credential(kind, value)` 命令：新增一种凭据只需在此登记一行。
+/// （例外：B 站登录窗读到的 cookie 由 `bilibili_login.rs` 直接加密入库，不经此命令。）
 const CREDENTIAL_KINDS: &[(&str, &str, &str)] = &[
     ("deepseek_api_key", KEY_DEEPSEEK_API_KEY, "setting.deepseek_key_updated"),
     ("github_token", KEY_GITHUB_TOKEN, "setting.github_token_updated"),
@@ -187,7 +185,7 @@ const CREDENTIAL_KINDS: &[(&str, &str, &str)] = &[
 ];
 
 /// 把 payload JSON 值序列化为 DB 存储字符串：bool → "true"/"false"、
-/// 数字 → 十进制、字符串 → 原样（M2 注册表驱动的序列化规则）。
+/// 数字 → 十进制、字符串 → 原样。
 fn json_setting_value(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::Bool(b) => b.to_string(),
@@ -295,7 +293,7 @@ pub struct TestDeepseekPayload {
         "max_tokens": 10,
         "temperature": 0.0
     });
-    // 复用 deepseek::chat_completion 的 POST 模板（连接测试不再自写第 4 份）
+    // 复用 deepseek::chat_completion 的 POST 模板，避免与其它调用点各写一份
     let outcome = deepseek::chat_completion(&client, &base_url, &body)
         .await
         .map_err(|(status, msg)| {
@@ -521,7 +519,7 @@ mod tests {
     }
 
     /// 确保所有可更新设置都被 apply_settings 覆盖。
-    /// 新增配置项时，必须同步更新此测试中的 settings_items。
+    /// 新增配置项时，必须同步更新本测试的 old_values / new_values 列表。
     #[test]
     fn test_apply_settings_covers_all_keys() {
         let state = test_state();
@@ -591,7 +589,7 @@ mod tests {
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
         assert_eq!(items.len(), 22,
-            "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 UpdateSettingsPayload 结构体。"
+            "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 AppSettings 结构体。"
         );
 
         // 验证每个新值都已写入
@@ -699,7 +697,7 @@ mod tests {
         assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, true).unwrap());
     }
 
-    /// M2 防线：SETTING_SPECS 注册表与 AppSettings 字段一一对应，
+    /// SETTING_SPECS 注册表必须与 AppSettings 字段一一对应：
     /// 新增设置项漏改任一侧都会在此失败。
     #[test]
     fn test_setting_specs_cover_all_app_settings_fields() {
@@ -752,7 +750,7 @@ mod tests {
         );
     }
 
-    /// M2 防线：payload JSON 值 → DB 字符串的序列化规则。
+    /// payload JSON 值 → DB 字符串的序列化规则。
     #[test]
     fn test_json_setting_value_serialization() {
         assert_eq!(json_setting_value(&serde_json::json!(true)), "true");
@@ -766,7 +764,7 @@ mod tests {
         assert_eq!(json_setting_value(&serde_json::json!([1])), "");
     }
 
-    /// M2：set_credential 未知 kind 拒绝，空值清除，非空加密存储。
+    /// set_credential：未知 kind 拒绝，空值清除，非空加密存储。
     #[test]
     fn test_set_credential_encrypts_and_clears() {
         crate::crypto::set_test_master_key();

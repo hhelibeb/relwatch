@@ -64,7 +64,6 @@ function mountSourceTab(
 function addInput(wrapper: ReturnType<typeof mountSourceTab>['wrapper']) {
   return wrapper.get(`input[placeholder="${t('source.placeholder')}"]`)
 }
-// 搜索模式输入框
 function searchInput(wrapper: ReturnType<typeof mountSourceTab>['wrapper']) {
   return wrapper.get(`input[placeholder="${t('source.search')}"]`)
 }
@@ -1146,9 +1145,7 @@ describe('SourceTab — YouTube 源显示名', () => {
 })
 
 // ============ 源设置（更多面板：按源开关）============
-// 单源「检查间隔」已撤掉：调度只读全局轮询周期，而该列的存量值全是建表默认值
-// （30），一旦当调度依据用会把源静默降频到每 30 分钟一次（见 Migration 20）。
-// 这里锁住「面板里不再有间隔输入框」，防止它被无意识地加回来。
+// 面板内不应再有单源「检查间隔」输入框：调度只读全局轮询周期，该列存量值均为建表默认值。
 
 describe('SourceTab — 源设置', () => {
   async function openMore(wrapper: ReturnType<typeof mountSourceTab>['wrapper']) {

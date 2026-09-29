@@ -3,7 +3,7 @@ import { commands } from '../bindings'
 import { t } from '../i18n'
 
 /**
- * 前端全局错误兜底（V2）。
+ * 前端全局错误兜底。
  *
  * ## 为什么需要它
  *
@@ -15,7 +15,7 @@ import { t } from '../i18n'
  *
  * - 前端（本模块）：捕获 → 节流 → 截断 → toast → 调 Rust 命令落库；
  * - 后端（`commands::report_frontend_error`）：写入 `logs` 表（经 `db::logs::write_log_key`
- *   默认脱敏，DB 失败时降级写 `logs/fallback.log`，见 V23/V28）。
+ *   默认脱敏，DB 失败时降级写 `logs/fallback.log`）。
  *
  * ## 命名约束（勿改）
  *
@@ -105,7 +105,7 @@ export async function reportFrontendError(
       info ? truncate(info, MAX_INFO_LEN) : null,
     )
   } catch {
-    // 上报失败不得递归；DB 侧失败还有 fallback.log 兜底（V23）
+    // 上报失败不得递归；DB 侧失败还有 fallback.log 兜底
   }
 }
 
@@ -128,7 +128,7 @@ export function installGlobalErrorHandlers(app: App): void {
     // 而 `logError` 在 dev 下正是负责 `warn('Unhandled error during execution of ...')`
     // 与 `throw err`（默认 `throwInDev=true`，让 dev 直接崩出来、堆栈落在 devtools）的那个函数。
     // 二者都被跳过 ⇒ 仅 toast + 日志页可查，**dev 控制台再无堆栈**——对正在自调试的人
-    // 是实打实的退化（本次差点带着这个回归合并）。故显式补一条 console.error。
+    // 是实打实的退化。故显式补一条 console.error。
     //
     // 只限 DEV：`console.error` 本就在 prod 无控制台可看，且不希望在 release 里多一份输出。
     if (import.meta.env.DEV) {

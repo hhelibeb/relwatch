@@ -6,8 +6,7 @@ use crate::source::SourceAdapter;
 
 const GH_API_BASE: &str = "https://api.github.com";
 
-/// GitHub 监控源适配器。实现 `SourceAdapter` trait，
-/// 把 fetch / save / verify 收敛到统一接口。
+/// GitHub 监控源适配器。
 pub struct GithubAdapter;
 
 #[async_trait::async_trait]
@@ -20,7 +19,6 @@ impl SourceAdapter for GithubAdapter {
         crate::source::AuthKind::GitHubToken
     }
 
-    /// GitHub 检查成功后刷新仓库描述。
     fn refresh_description_after_check(&self) -> bool {
         true
     }
@@ -53,8 +51,7 @@ impl SourceAdapter for GithubAdapter {
         max_count: usize,
         _client: &reqwest::Client,
     ) -> Vec<(i64, Option<String>)> {
-        // github save 是同步的，用 spawn_blocking 转包避免在 async 上下文阻塞
-        // （与 Phase 2 的 spawn_blocking 改造顺接）。
+        // github save 是同步的，用 spawn_blocking 转包避免在 async 上下文阻塞 tokio worker。
         let db = db.clone();
         let source_id = source.id;
         let data = data.to_vec();
@@ -206,7 +203,7 @@ pub fn save_releases(
 
     // 行为收敛到 db::save::save_entries_generic：按 published_at 降序排列，
     // max_count=1 遇到已入库记录立即返回空；历史模式跳过已存在记录继续。
-    // prerelease 未开启时在投影阶段跳过（不参与 max_count 早退计数，与原实现一致）。
+    // prerelease 未开启时在投影阶段跳过（不参与 max_count 早退计数）。
     let entries: Vec<crate::db::save::SaveEntry> = gh_releases
         .iter()
         .filter_map(|rel| {

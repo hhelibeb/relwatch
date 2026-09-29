@@ -21,7 +21,6 @@ const levelFilter = ref('all')
 const pageInput = ref('')
 const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
-// 级别过滤下拉
 const openFilter = ref(false)
 const levelDropdown = useDropdown({
   openState: openFilter,
@@ -43,7 +42,6 @@ async function loadData() {
   loading.value = true
   try {
     const result = await searchLogs(searchKeyword.value, currentPage.value, pageSize, levelFilter.value === 'all' ? undefined : levelFilter.value)
-    // 并发场景下若已有更新的调用发起，丢弃本次陈旧响应
     if (id !== loadId) return
     logs.value = result.entries
     totalLogs.value = result.total

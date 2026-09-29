@@ -1,8 +1,7 @@
 /**
  * 主题应用单例：`dark` / `light` / `system`（跟随系统 prefers-color-scheme）。
  *
- * 收敛了原先 App.vue `applyTheme` 与 SettingsTab 主题预览/恢复（setThemePreview /
- * clearThemePreview）中逐段复制的同一分支逻辑——主题判定只有这一份实现。
+ * 主题判定只有这一份实现：App.vue 启动/重载与 SettingsTab 选中、预览、恢复都调这里。
  */
 export function applyTheme(theme: string): void {
   if (theme === 'dark') {

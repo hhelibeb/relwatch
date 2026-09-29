@@ -9,19 +9,16 @@
 
 use std::path::PathBuf;
 
-/// 获取当前可执行文件路径
 fn get_exe_path() -> PathBuf {
     std::env::current_exe().unwrap_or_else(|_| PathBuf::from("relwatch"))
 }
 
-/// 获取带有 --autostart 参数的命令行字符串
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn get_autostart_command() -> String {
     format_autostart_command(&get_exe_path().to_string_lossy())
 }
 
-/// 根据可执行文件路径格式化 autostart 命令行。
-/// 如果路径包含空格，自动用双引号包裹。
+/// 路径含空格时必须用双引号包裹（该命令行由注册表 Run 值 / .desktop 文件按 shell 规则解析）。
 #[allow(dead_code)]
 fn format_autostart_command(exe_path: &str) -> String {
     if exe_path.contains(' ') {
@@ -31,7 +28,6 @@ fn format_autostart_command(exe_path: &str) -> String {
     }
 }
 
-/// 启用开机自启动
 pub fn enable() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -57,7 +53,6 @@ pub fn enable() -> Result<(), String> {
     Ok(())
 }
 
-/// 禁用开机自启动
 pub fn disable() -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
@@ -225,7 +220,6 @@ fn enable_macos() -> Result<(), String> {
     std::fs::write(&plist_path, &plist_content)
         .map_err(|e| format!("无法写入 plist 文件 {}: {}", plist_path.display(), e))?;
 
-    // 加载到 launchd
     let status = std::process::Command::new("launchctl")
         .args(["load", plist_path.to_str().unwrap_or("")])
         .status()
@@ -247,12 +241,10 @@ fn disable_macos() -> Result<(), String> {
         return Ok(());
     }
 
-    // 从 launchd 卸载
     let _ = std::process::Command::new("launchctl")
         .args(["unload", plist_path.to_str().unwrap_or("")])
         .status();
 
-    // 删除 plist 文件
     std::fs::remove_file(&plist_path)
         .map_err(|e| format!("无法移除 plist 文件: {}", e))?;
 

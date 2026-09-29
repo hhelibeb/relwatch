@@ -1,4 +1,4 @@
-<!-- 会话侧栏（A 域展示层）：搜索 / 列表 / 重命名输入 / ⋯菜单（Teleport 到 body）。
+<!-- 会话侧栏：搜索 / 列表 / 重命名输入 / ⋯菜单（Teleport 到 body）。
      状态与动作由编排层的 useAgentSessions 持有，本组件纯 props/emit 展示。 -->
 <script setup lang="ts">
 import { t } from '../../i18n'
@@ -11,7 +11,7 @@ interface SidebarSession extends SessionMeta {
 }
 
 defineProps<{
-  /** 侧栏折叠状态（class 透传给多根模板无根可落，改为显式 prop） */
+  /** 侧栏折叠状态（模板为多根，class 无法透传，故用显式 prop） */
   sidebarOpen: boolean
   sessions: SessionMeta[]
   visibleSessions: SidebarSession[]
@@ -21,7 +21,7 @@ defineProps<{
   renameInput: string
   openMenuKey: string | null
   sessionMenuStyle: { left: string; top: string }
-  /** 重命名输入框 / ⋯按钮元素回填（composable 的 renameEl / sessionMoreEl 锚点），
+  /** 重命名输入框 / ⋯按钮元素回填（composable 的 renameEl / sessionMoreEls 锚点），
    *  key 标识属于哪个会话。用普通函数 ref 形式从子组件模板回填。 */
   setRenameEl: (el: Element | ComponentPublicInstance | null, key: string) => void
   setSessionMoreEl: (el: Element | ComponentPublicInstance | null, key: string) => void
@@ -66,7 +66,6 @@ const emit = defineEmits<{
         :title="s.title"
         @click="emit('switch', s.key)"
       >
-        <!-- 重命名编辑态：Enter 提交 / Esc 取消 / 失焦提交 -->
         <!-- data-esc-local：Esc 由本控件独占（取消重命名），全局逐层退出跳过它。
              否则全局捕获期的 blur 会先触发 @blur 提交、再走 @keydown.esc 取消，语义自相矛盾。 -->
         <input
@@ -86,7 +85,7 @@ const emit = defineEmits<{
         <template v-else>
           <span class="agent-ws-session-name">
             {{ s.title }}
-            <!-- 运行状态点：执行中（蓝）/ 排队第 N 位（橙）——全局队列驱动（评审 1.3） -->
+            <!-- 运行状态点：执行中（蓝）/ 排队第 N 位（橙）——全局队列驱动 -->
             <span
               v-if="s.state"
               class="agent-ws-session-dot"
@@ -118,9 +117,8 @@ const emit = defineEmits<{
     </button>
   </aside>
 
-  <!-- 会话 ⋯ 菜单：Teleport 到 body 后以 ⋯ 按钮为锚 fixed 定位。
-       侧边栏仅 140px 宽且 overflow:hidden，absolute 定位的菜单超宽部分会被裁剪看不到；
-       脱离文档流浮在聊天区上层完整展示（与 RPC 状态菜单同一策略，z-index 对齐 10002）。 -->
+  <!-- 会话 ⋯ 菜单：Teleport 到 body 后以 ⋯ 按钮为锚 fixed 定位
+       （侧边栏仅 140px 宽且 overflow:hidden，absolute 定位会被裁剪，须脱离文档流盖在上层）。 -->
   <Teleport to="body">
     <div v-if="openMenuKey" class="agent-ws-menu agent-ws-session-menu" :style="sessionMenuStyle" @click.stop>
       <button class="agent-ws-menu-item" @click="emit('rename', openMenuKey!)">
@@ -206,12 +204,12 @@ const emit = defineEmits<{
   text-overflow: ellipsis;
   padding-right: 16px;
 }
-/* 未提交草稿会话（新建即登记，评审 1.2）：弱化样式以示「还没对话」 */
+/* 未提交草稿会话（新建即登记）：弱化样式以示「还没对话」 */
 .agent-ws-session-item.draft .agent-ws-session-name {
   opacity: 0.65;
   font-style: italic;
 }
-/* 运行状态点：执行中（蓝）/ 排队第 N 位（橙），全局队列驱动（评审 1.3） */
+/* 运行状态点：执行中（蓝）/ 排队第 N 位（橙），全局队列驱动 */
 .agent-ws-session-dot {
   display: inline-block;
   margin-left: 4px;

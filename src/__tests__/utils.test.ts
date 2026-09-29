@@ -134,8 +134,8 @@ describe('releaseMatchesSearch — 词元 AND', () => {
     expect(releaseMatchesSearch(gh('b'.repeat(1000)), 'bbb', ['b'.repeat(1000), ''])).toBe(true)
   })
   it('【回归】Tier1 判定跟随注册表能力位（运行时覆写后自动生效）', () => {
-    // 搜索分层不再镜像类型集合：把 github 临时标为 aiSummary:false，其 body 应即时进 Tier1；
-    // 还原后回落 Tier2。对应 syncSourceCapabilities() 依后端 ai_eligible 覆写的场景。
+    // 把 github 临时标为 aiSummary:false，其 body 应即时进 Tier1；还原后回落 Tier2。
+    // 对应 syncSourceCapabilities() 依后端 ai_eligible 覆写注册表能力位的场景。
     const gh = sourceTypeDefs.find(d => d.type === 'github')!
     const before = gh.aiSummary
     try {

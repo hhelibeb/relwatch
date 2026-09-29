@@ -1,4 +1,4 @@
-// ── 模型选择（D 域：scope model + 当前激活模型 + 单次覆盖 + 下拉菜单）──
+// ── 模型选择（会话级选择 + 当前激活模型 + 单次覆盖 + 下拉菜单）──
 // selectedModel 按会话记住（存 SessionMeta.model，经 onPersistModel 回调由编排层
 // 落库，模型域不直接 import 会话域）；null =「默认 - 跟随 pi 当前」。
 // oneShotModel 只作用于下一次提交，提交后即清空、自动回落会话默认（消费在提交路径）。
@@ -10,14 +10,14 @@ import type { SessionSwitchMode } from './useAgentSessions'
 export function useAgentModels(deps: {
   /** 会话级选择落库（写 SessionMeta.model 并持久化）；由编排层转调会话域 */
   onPersistModel: (model: AgentModelRef | null) => void
-  /** 模型菜单打开时收起 skill / entity 菜单（同屏互斥，原 toggleModelMenu 行为） */
+  /** 模型菜单打开时收起 skill / entity 菜单（同屏互斥） */
   onMenuOpen?: () => void
 }) {
   const availableModels = ref<RpcAvailableModel[]>([])
   const currentModel = ref<RpcAvailableModel | null>(null)
   const selectedModel = ref<AgentModelRef | null>(null)
 
-  // ── 单次模型覆盖（评审「单次模型覆盖」）──
+  // ── 单次模型覆盖 ──
   // 会话级选模型的语义是「这个会话以后都用 X」，改一次会连带影响后续所有轮次；
   // 而真实需求常常只是「这条用便宜模型试一下」。
   // oneShotModel 只作用于下一次提交，提交后即清空、自动回落会话默认——
@@ -101,8 +101,7 @@ export function useAgentModels(deps: {
     if (!modelOnce.value) oneShotModel.value = null
   }
 
-  /** 会话切换清空（§4.2 三处清空差异对照表，按 mode 逐条复刻）：
-   *  selectedModel 由编排层按 mode 查好传入——switch / delete 读目标会话 meta，
+  /** 会话切换清空：selectedModel 由编排层按 mode 查好传入——switch / delete 读目标会话 meta，
    *  new 硬置 null（新会话无历史选择）；一次性覆盖只属于「这一轮的输入」，
    *  switch / new 清空，delete 后切换保留（现状行为）。 */
   function resetForSessionSwitch(mode: SessionSwitchMode, selected: AgentModelRef | null) {

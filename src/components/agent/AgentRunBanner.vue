@@ -1,4 +1,4 @@
-<!-- 最近 run 状态横幅 + 配置推迟生效提示 + 运行历史面板（B 域展示层）。
+<!-- 最近 run 状态横幅 + 配置推迟生效提示 + 运行历史面板。
      状态由编排层的 useAgentChat（latestRun/queueHint/runs）与 useAgentRpc
      （rpcRestartPending）持有，本组件纯 props/emit 展示。 -->
 <script setup lang="ts">
@@ -35,7 +35,6 @@ const emit = defineEmits<{
   'update:actionsExpanded': [value: boolean]
 }>()
 
-/** 历史面板引用实体数。 */
 function runEntityCount(run: AgentRunSummary): number {
   return runEntities(run).length
 }
@@ -80,7 +79,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   </div>
 
   <!-- 配置推迟生效提示：改了 pi 路径/模型/skill 后有 run 在跑，
-       重启被推迟到当前任务结束——不提示的话用户会以为改了没生效（评审 3.8） -->
+       重启被推迟到当前任务结束——不提示的话用户会以为改了没生效 -->
   <div v-if="rpcRestartPending" class="agent-ws-pending-restart">
     <span class="agent-ws-pending-restart-icon" aria-hidden="true"></span>
     <span class="agent-ws-pending-restart-text">{{ t('agent.config_pending_restart') }}</span>
@@ -204,7 +203,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   to { transform: rotate(360deg); }
 }
 
-/* 配置推迟生效提示（评审 3.8）*/
+/* 配置推迟生效提示 */
 .agent-ws-pending-restart {
   display: flex;
   align-items: center;

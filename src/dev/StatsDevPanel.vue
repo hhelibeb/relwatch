@@ -142,7 +142,6 @@ onUnmounted(() => {
   unregisterOverlay?.()
 })
 
-// Esc 关闭面板；覆盖层活跃状态由 contextMenuBus 注册表维护，面板打开时 Esc 不会冒泡成最小化到托盘。
 function handleKeydown(e: KeyboardEvent) {
   if (e.defaultPrevented) return
   if (e.key === 'Escape') emit('close')

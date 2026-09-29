@@ -45,7 +45,7 @@ const emit = defineEmits<{
 
 // ========== 筛选下拉状态 ==========
 // 状态/漏斗/视图共享一个 open 状态：hover 打开互斥，点击打开的不会被 hover 移出自动关闭
-// （来源筛选只在漏斗面板中：低频维度，栏上重复入口已移除，激活态由 chips + 漏斗计数展示）
+// （来源筛选只在漏斗面板中：低频维度，激活态由 chips + 漏斗计数展示）
 const openFilter = ref<'status' | 'more' | 'view' | null>(null)
 const filterDropdown = useDropdown({
   openState: openFilter,
@@ -87,14 +87,13 @@ const sourceDisplayText = computed(() => {
   return def ? t(def.titleKey) : t('release.filter_all')
 })
 
-// 视图切换显示（折叠为下拉后沿用类型名文案）
 const viewDisplayText = computed(() => {
   if (props.viewMode === 'aggregated') return t('release.view_aggregated')
   if (props.viewMode === 'calendar') return t('release.view_calendar')
   return t('release.view_simple')
 })
 
-// 视图图标：与旧按钮组同源（list/grid/calendar），触发按钮与下拉选项共用
+// 视图图标：list/grid/calendar 各自一枚，触发按钮与下拉选项共用
 const viewIconHref = computed(() => {
   if (props.viewMode === 'aggregated') return '/icons.svg#grid-icon'
   if (props.viewMode === 'calendar') return '/icons.svg#calendar-icon'
@@ -211,7 +210,6 @@ const moreGroups = computed<MoreGroup[]>(() => [
   },
 ])
 
-// 「显示重要度」关闭时漏斗面板移除重要度分组
 const visibleGroups = computed<MoreGroup[]>(() =>
   moreGroups.value.filter(group => showImportance.value || group.key !== 'importance'))
 
@@ -609,7 +607,6 @@ function clearAllFilters() {
   color: var(--primary-soft-text);
 }
 
-/* 激活筛选 chips 行 */
 .filter-chips-row {
   display: flex;
   flex-wrap: wrap;

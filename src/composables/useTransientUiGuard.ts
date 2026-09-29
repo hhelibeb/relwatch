@@ -5,15 +5,13 @@ import { endTransientUiInvalidation, invalidateTransientUi, isTransientUiInvalid
 /**
  * 窗口级瞬态 UI 守卫——「窗口走了再回来」不该把悬浮提示带回来
  *
- * 背景（实测 Edge/Chromium，WebView2 同内核；复现步骤：悬浮摘要 → 左键点一下 →
- * 鼠标移开 → 关到托盘 → 托盘图标重新打开）：
+ * 背景（实测 Edge/Chromium，WebView2 同内核）：
  *
  * 1. 关到托盘是 `window.hide()`（Win32 `SW_HIDE`），webview 与 DOM 都不销毁：
  *    组件状态、`document.activeElement` 全部原样保留。
  * 2. 隐藏瞬间 Chromium 只补 `blur` + `visibilitychange(hidden)`，
  *    **不补** `mouseleave`/`mouseout`（鼠标没有「离开」过，窗口直接不见了）。
- * 3. 重新显示时反过来会把「隐藏前获得焦点的元素」重放一次 `focus`
- *    （实测 SW_HIDE → SW_SHOW 后收到 WINDOW focus + target focus），
+ * 3. 重新显示时反过来会把「隐藏前获得焦点的元素」重放一次 `focus`，
  *    且不伴随任何鼠标事件、坐标也停在旧位置。
  *
  * 于是 `ReleaseItem` 的摘要提示（`@focus` 驱动、用元素 rect 定位）会在窗口重新出现时

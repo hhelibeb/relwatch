@@ -36,10 +36,9 @@ pub struct ReleaseInfo {
 #[allow(clippy::too_many_arguments)]
 /// 插入一条 release；已存在（UNIQUE(source_id, tag_name) 去重命中）返回 0。
 ///
-/// releases 与 notification_state 两条写入在**同一事务**内完成（H-1 修复）：
-/// 此前无事务时第二条 INSERT 失败会让 release 缺失 state 行，而查询层
-/// `COALESCE(ns.status, 'pending')` 仍会选中它、`set_last_notified_at` 纯 UPDATE
-/// 又落空，导致该 release 每轮轮询都被重复通知。
+/// releases 与 notification_state 两条写入必须在**同一事务**内完成：拆成两条独立语句时，
+/// 第二条失败会留下缺 state 行的 release（查询层靠 `COALESCE(ns.status, 'pending')`
+/// 兜底成 pending，但那是脏数据）。
 pub fn insert_release(
     conn: &Connection,
     source_id: i64,
@@ -75,9 +74,9 @@ pub fn insert_release(
             params![release_id, now],
         )
         .map_err(|e| e.to_string())?;
-        // version_bump 不在单条插入事务内逐条全链重算（原实现）：
-        // 单条插入就拉全链 SELECT + 逐行 UPDATE，历史模式批量插入退化为 O(N²)。
-        // 改由批量保存循环（save_entries_generic / insert_new_models）结束后统一重算一次。
+        // version_bump 不在此处逐条全链重算：单条插入就拉全链 SELECT + 逐行 UPDATE
+        // 会让历史模式批量插入退化为 O(N²)，改由批量保存循环
+        // （save_entries_generic / insert_new_models）结束后统一重算一次。
     }
 
     tx.commit().map_err(|e| e.to_string())?;
@@ -222,8 +221,7 @@ fn exclusion_clause<'a>(
     (sql, params)
 }
 
-/// Returns (id, body) tuples for releases where AI summary generation is missing.
-/// Used by the poll cycle to retry failed summaries.
+/// 待生成 AI 摘要的 release (id, body) 列表（供轮询周期重试失败的摘要）。
 ///
 /// `excluded_types`：不参与 AI 摘要的源类型集合（如 youtube/bilibili），
 /// 由 poll 编排层从 `list_adapters()` 的能力声明动态收集，
@@ -425,11 +423,11 @@ pub fn set_notification_state(
     Ok(())
 }
 
-/// 标记 release 已通知（H-1 修复）：改为 **upsert**，不再依赖 state 行已存在。
+/// 标记 release 已通知：**upsert**，不依赖 state 行已存在。
 ///
-/// 此前是纯 UPDATE：当 notification_state 行缺失（历史脏数据 / 插入失败遗留）时
-/// 影响 0 行却返回 Ok，`get_pending_releases` 里 `last_notified_at IS NULL` 条件
-/// 永远命中，release 每轮都被重复通知。upsert 保证任何情况下都能落标记。
+/// 若写成纯 UPDATE，state 行缺失（历史脏数据 / 插入失败遗留）时影响 0 行却返回 Ok，
+/// `get_pending_releases` 里 `last_notified_at IS NULL` 条件永远命中，release 每轮
+/// 都被重复通知。upsert 保证任何情况下都能落标记。
 pub fn set_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -566,11 +564,11 @@ pub enum BodyProjection {
     Excerpt(i64),
 }
 
-/// 统一的 release 读取实现：`projection` 决定正文投影，**不再有 LIMIT**。
+/// 统一的 release 读取实现：`projection` 决定正文投影，**不得加 LIMIT**。
 ///
-/// 历史上这里硬编码 `LIMIT 200`，导致第 201 条及更早的版本在应用内完全不可见
-/// （列表、日历、聚合视图、来源计数全部只覆盖最新 200 条）。列表分页不上移到 SQL，
-/// 而是由 `get_release_catalog` 一次性下发目录，前端在全量数据上筛选/聚合/日历。
+/// 列表分页不放 SQL：由 `get_release_catalog` 一次性下发全量目录，前端在全量数据上
+/// 筛选/聚合/日历。加了 LIMIT 会让越界的历史版本在应用内（列表、日历、聚合视图、
+/// 来源计数）完全不可见。
 fn query_releases(conn: &Connection, projection: BodyProjection) -> Result<Vec<ReleaseInfo>, String> {
     // 正文投影：Tier1 源类型集合来自适配器能力位（source::tier1_body_source_types），
     // 与前端 isSummaryBodySource 同源，避免两边判据漂移。
@@ -600,8 +598,8 @@ fn query_releases(conn: &Connection, projection: BodyProjection) -> Result<Vec<R
          JOIN sources s ON r.source_id = s.id
          LEFT JOIN notification_state ns ON r.id = ns.release_id
          ORDER BY CASE
-             -- published_at 异常（0 时间戳/1970 脏数据）时按检测时间兑底，
-             -- 避免被 LIMIT 截断后完全不可见（如 bilibili pub_ts 解析失败历史数据）
+             -- published_at 异常（0 时间戳/1970 脏数据）时按检测时间兜底排序，
+             -- 否则它们会沉到列表最底部（如 bilibili pub_ts 解析失败的历史数据）
              WHEN r.published_at LIKE '1970%' THEN r.detected_at
              ELSE r.published_at
          END DESC, r.id DESC"
@@ -1111,8 +1109,8 @@ mod tests {
 
     #[test]
     fn test_set_last_notified_at_upserts_when_state_missing() {
-        // H-1 修复验证：state 行缺失（历史脏数据/插入失败遗留）时，
-        // set_last_notified_at 必须 upsert 落标记，否则 release 每轮都被重复通知
+        // state 行缺失（历史脏数据 / 插入失败遗留）时也必须落标记，
+        // 否则 release 每轮都被重复通知
         let conn = init_memory_db().unwrap();
         let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
@@ -1133,7 +1131,7 @@ mod tests {
 
     #[test]
     fn test_insert_release_transaction_creates_state_row() {
-        // H-1 修复验证：insert_release 两语句在同一事务内，成功时必带 state 行
+        // 两条写入同事务：成功时必带 state 行
         let conn = init_memory_db().unwrap();
         let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(&conn, sid, "v1.0", "R1", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
@@ -1248,8 +1246,8 @@ mod tests {
 
     #[test]
     fn test_pending_after_notified_then_reset() {
-        // Bug #3 修复验证：将已通知的 release 从 clicked 改回 pending，
-        // last_notified_at 应被清空，release 应重新出现在 pending 列表中
+        // 已通知的 release 从 clicked 改回 pending 时：last_notified_at 应被清空，
+        // release 应重新出现在 pending 列表中
         let conn = init_memory_db().unwrap();
         let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(
@@ -1277,8 +1275,7 @@ mod tests {
 
     #[test]
     fn test_pending_after_ignored_then_reset() {
-        // Bug #3 修复验证：将已忽略的 release 改回 pending，
-        // last_notified_at 应被清空
+        // 已忽略的 release 改回 pending 时：last_notified_at 应被清空
         let conn = init_memory_db().unwrap();
         let sid = sources::add_source(&conn, "github", "test", "repo", "").unwrap();
         let rid = insert_release(
@@ -1465,7 +1462,7 @@ mod tests {
         assert!(ids.contains(&gh_id) && ids.contains(&yt_id) && ids.contains(&bl_id));
     }
 
-    /// 旧辅助：只关心 github/youtube 的测试仍可用（内部复用新 seed）。
+    /// github / youtube 两源用例的便捷 seed（内部复用 seed_gh_yt_bili_releases）。
     fn seed_gh_and_yt_releases(conn: &rusqlite::Connection) -> (i64, i64) {
         let (gh_id, yt_id, _) = seed_gh_yt_bili_releases(conn);
         (gh_id, yt_id)
@@ -1550,9 +1547,9 @@ mod tests {
         let conn = init_memory_db().unwrap();
         let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
         // 乱序插入（先新后旧，等价 save_entries_generic 历史模式的进库顺序）。
-        // 注意：insert_release 不再自动维护 version_bump（评审优化：逐条全链重算
-        // 退化为 O(N²)），改由批量保存入口（save_entries_generic / insert_new_models）
-        // 在循环收尾时统一 recompute 一次。此测试模拟该收尾语义：插入完成后调用一次
+        // 注意：insert_release 不自动维护 version_bump（逐条全链重算会退化为 O(N²)），
+        // 改由批量保存入口（save_entries_generic / insert_new_models）在循环收尾时统一
+        // recompute 一次。此测试模拟该收尾语义：插入完成后调用一次
         // recompute_version_bumps，验证全链推导结果。
         insert_release(&conn, sid, "v1.2.1", "R3", "https://x", "2024-01-03T00:00:00Z", false, None).unwrap();
         insert_release(&conn, sid, "v1.2.0", "R2", "https://x", "2024-01-02T00:00:00Z", false, None).unwrap();
@@ -1608,7 +1605,7 @@ mod tests {
 
     // ── 目录投影（get_release_catalog）与正文分块（get_release_search_bodies）──
 
-    /// 目录不再有 LIMIT 200：第 201 条及更早的版本必须可见。
+    /// 目录必须回全库：第 201 条及更早的版本同样可见（防 LIMIT 回归）。
     #[test]
     fn test_release_catalog_returns_all_rows_without_limit() {
         let conn = init_memory_db().unwrap();

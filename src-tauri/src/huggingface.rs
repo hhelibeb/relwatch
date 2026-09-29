@@ -2,7 +2,7 @@
 //!
 //! 对接 HuggingFace Hub 公开 API（`https://huggingface.co/api/models`），
 //! 按 `createdAt` 降序拉取组织下的模型列表，映射为 `releases` 表记录。
-//! 公开模型读取无需认证；HF Token 为可选设置（见设计文档 §2）。
+//! 公开模型读取无需认证（适配器声明 `AuthKind::None`，不携带任何鉴权 header）。
 
 use rusqlite::Connection;
 
@@ -14,8 +14,7 @@ use crate::source::SourceAdapter;
 
 const HF_API_BASE: &str = "https://huggingface.co";
 
-/// HuggingFace 监控源适配器。实现 `SourceAdapter` trait，
-/// 把 fetch / save / verify 收敛到统一接口。
+/// HuggingFace 监控源适配器。
 ///
 /// `save` 为异步三阶段（insert→fetch_readmes→finalize），吸收与 github 同步保存的差异。
 pub struct HuggingFaceAdapter;
@@ -124,9 +123,6 @@ impl HfModel {
     }
 }
 
-// 重试与 parse_next_link 已下沉到 `http.rs`（`fetch_page_with_retry` / `parse_next_link`），
-// 消除与 github.rs 的逐字符重复。
-
 /// 获取单页模型列表，返回 (models, 下一页 URL)。
 async fn fetch_models_page(
     client: &reqwest::Client,
@@ -148,8 +144,6 @@ fn build_page_url(org: &str, limit: usize) -> String {
 /// 1. insert_new_models（持 conn，同步）
 /// 2. fetch_readmes（不持 conn，异步并行拉取 README）
 /// 3. finalize_models（重新获取 conn，同步回填 body+extra_metadata）
-///
-/// 从 `&Pool` 取连接，取代原 `&AppHandle` 签名，使编排层不再关心取连接方式。
 async fn save_huggingface_models(
     db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     source: &db::sources::Source,
@@ -183,8 +177,6 @@ async fn save_huggingface_models(
 }
 
 /// 获取组织的模型列表（单页，按 createdAt 降序）。
-///
-/// 供 HuggingFaceAdapter 的 fetch 流程调用的单页拉取入口。
 pub async fn fetch_org_models(
     client: &reqwest::Client,
     org: &str,
@@ -198,7 +190,6 @@ pub async fn fetch_org_models(
 /// 首次全量分页拉取（fetch_history 开启时）。
 ///
 /// 复用 `http::paginated_fetch` 的 Link header 翻页模式，按 createdAt 降序翻页直到达到 `max_count` 或无下一页。
-/// 供 HuggingFaceAdapter 首次全量分页拉取（fetch_history 开启时）使用。
 pub async fn fetch_all_org_models_with_limit(
     client: &reqwest::Client,
     org: &str,
@@ -239,7 +230,7 @@ pub async fn verify_org_exists(
 }
 
 /// README（model card）上限：正常 model card 远小于此，上限只用于把恶意超大响应
-/// 降级为「README 缺失」而非内存耗尽（M-2）。
+/// 降级为「README 缺失」而非内存耗尽。
 const MAX_README_BYTES: usize = 4 * 1024 * 1024;
 
 /// 获取单个模型的 README（model card）作为人类可读内容。
@@ -253,7 +244,7 @@ async fn fetch_readme(client: &reqwest::Client, url: &str) -> Option<String> {
         log::warn!("获取 HF README 失败: 状态={}", resp.status());
         return None;
     }
-    // 流式累加 + 超限中断（M-2）：此前 text() 无上限，chunked 无限流会吃满内存
+    // 流式累加 + 超限中断：避免 chunked 无限流响应吃满内存
     let bytes = crate::http::read_body_limited(resp, MAX_README_BYTES).await.ok()?;
     let text = String::from_utf8_lossy(&bytes).into_owned();
     if text.is_empty() {
@@ -297,9 +288,9 @@ pub fn insert_new_models(
     let mut inserted = Vec::new();
     let inserted_any = std::cell::Cell::new(false);
     // 循环任意出口统一收尾：本轮确有新插入时对该 source 全链重算一次 version_bump
-    // （原实现由 insert_release 内部逐条重算，历史模式首拉 N 条退化为 O(N²)；
-    // 此处改为批量结束一次，最终态等价）。version_bump 只依赖 tag/published_at，
-    // 在阶段 1（README 回填前）即可重算，无需等 finalize_models。
+    // （批量收尾一次，避免逐条重算在历史模式首拉 N 条时退化为 O(N²)；最终态等价）。
+    // version_bump 只依赖 tag/published_at，在阶段 1（README 回填前）即可重算，
+    // 无需等 finalize_models。
     // 失败仅记日志不回滚插入：派生列留 NULL，待该 source 下次有新插入时由收尾重算
     // 覆写（全去重命中的轮次不补，边界与取舍见 db/save.rs 同处注释）。
     let finalize = || {
@@ -357,9 +348,7 @@ pub fn insert_new_models(
 
 /// 阶段 2（异步）：并行拉取各模型的 README（model card）。
 ///
-/// HF 模型仓库根目录的 `README.md` 即 model card，作用等同于 GitHub Release 的 release note。
-/// 通过 `/raw/main/README.md` 获取。拉取失败返回 None（body 留空，译文/原文视图不显示）。
-/// 并发度限制为 8，避免对 HF API 造成突发压力。
+/// 拉取失败返回 None（body 留空）；并发度限制为 8，避免对 HF API 造成突发压力。
 pub async fn fetch_readmes(
     client: &reqwest::Client,
     new_models: &[NewModel],
@@ -479,7 +468,7 @@ mod tests {
         assert!(parsed["tags"].is_array());
     }
 
-    // ── parse_next_link 测试已移至 http.rs（函数下沉后归属处）──
+    // ── parse_next_link 测试见 http.rs ──
 
     // ── insert_new_models + finalize_models 测试 ──
     // 用 helper 模拟三阶段但不拉取 README（readmes 传 None），聚焦入库与去重逻辑。
@@ -782,10 +771,8 @@ mod tests {
             .mount(&mock)
             .await;
 
-        // fetch_readmes 内部用 readme_url() 构造真实 huggingface.co URL，
-        // 测试无法重定向。这里直接验证并发拉取逻辑：用 mock URL 通过手动构造 NewModel
-        // 并调用 fetch_readmes 不行（它内部用 readme_url）。改为验证 fetch_readme 并发安全性
-        // 通过单独并发调用 fetch_readme。
+        // fetch_readmes 内部用 readme_url() 构造真实 huggingface.co URL，测试无法重定向；
+        // 这里改为并发调用 fetch_readme，验证并发拉取逻辑。
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let url1 = format!("{}/org/m1/raw/main/README.md", mock.uri());
         let url2 = format!("{}/org/m2/raw/main/README.md", mock.uri());

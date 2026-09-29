@@ -22,13 +22,13 @@ pub trait Emitter: Send + Sync {
     fn emit_release_state_changed(&self, _release_id: i64) {}
 
     /// 通知前端刷新日志 tab（后台 AI 批写日志后调用）。
-    /// 后台批可能远晚于发起它的那轮轮询才收尾，此时无人触发日志刷新，
+    /// 后台批可能远晚于发起它的那轮轮询才收尾，此时无人触发日志刷新，故需本事件。
     /// 默认空实现：测试或纯逻辑场景无需刷新 UI 时不必实现。
     fn emit_log_appended(&self) {}
 }
 
-/// `Emitter::notify_release` 的参数载体：把原先 8 个位置参数收敛为结构体，
-/// 既消除 `clippy::too_many_arguments` 警告，也便于未来扩展通知字段。
+/// `Emitter::notify_release` 的参数载体：结构体形式既消除
+/// `clippy::too_many_arguments` 警告，也便于扩展通知字段。
 #[derive(Clone)]
 pub struct ReleaseNotifyParams {
     pub release_id: i64,
@@ -61,7 +61,7 @@ impl Emitter for tauri::AppHandle {
             );
         }) {
             // 派发失败（主线程已退出等）意味着通知根本没人发：同样要留痕 + 允许重试，
-            // 不能像以前那样 `let _ =` 默默丢掉（release 版连 log 都不落）。
+            // 不能 `let _ =` 静默丢掉（release 版连 log 都不落）。
             crate::notify::handle_send_failure(&fallback_app, release_id, &e.to_string());
         }
     }
@@ -135,7 +135,7 @@ pub struct AppState {
     pub db: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     pub next_poll_at: std::sync::Arc<AtomicI64>,
     pub deepseek_semaphore: std::sync::Arc<Semaphore>,
-    /// 无头 Agent 子进程并发上限（Agent 进程较重，限制同时运行数量）。
+    /// Agent 提交的并发上限（固定为 1：受 RpcManager 单常驻进程模型约束，见 `lib.rs`）。
     pub agent_semaphore: std::sync::Arc<Semaphore>,
     /// pi RPC 常驻进程管理器（工作区对话驱动核心）。
     pub agent_rpc: std::sync::Arc<crate::agent_rpc::RpcManager>,

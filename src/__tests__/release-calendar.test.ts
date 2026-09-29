@@ -6,9 +6,9 @@ import { t, setLocale } from '../i18n'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
 
-// 阶段 2-1：月历网格（ReleaseCalendar.vue）专项测试（真实 i18n，语言切换走 setLocale）。
-// 覆盖：月历 4-6 行网格、周一起始（zh-CN）/周日起始（en-US）、
-// 跨月前后填充、闰年 2 月、12 月跨年、空数据与同日多版本计数。
+// 月历网格（ReleaseCalendar.vue）专项测试（真实 i18n，语言切换走 setLocale）：
+// 月历 4-6 行网格、周一起始（zh-CN）/周日起始（en-US）、跨月前后填充、
+// 闰年 2 月、12 月跨年、空数据与同日多版本计数。
 //
 // 注：网格结构通过 DOM 断言（单元格数量/日期文本/current-month class）。
 

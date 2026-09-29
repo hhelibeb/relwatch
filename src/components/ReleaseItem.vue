@@ -34,7 +34,7 @@ const snoozeMinutes = 24 * 60
 const isUpdating = ref(false)
 
 // ========== 卡片内容预览：摘要 > 译文 > 原文 ==========
-// 卡片不再提供内容标签：摘要/译文/原文的切换集中在详情弹窗内进行，
+// 摘要/译文/原文的切换集中在详情弹窗内进行，
 // 点击正文预览或「阅读全文」按钮一步直达弹窗阅读全文。
 const { translating, handleTranslateRelease } = useReleaseTranslate({
   release: () => props.release,
@@ -148,15 +148,15 @@ function closeMenus() {
 }
 
 const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
-// 「翻译」选项仅在：有原文、无译文、非 youtube 源、AI 已启用 时出现
+// 「翻译」选项仅在：有原文、无译文、源类型支持 AI（视频源除外）、AI 已启用 时出现
 const canTranslate = computed(() => canTranslateRelease(props.release, aiEnabled.value))
-// 使用 computed 保证语言切换后右键菜单 label 实时更新
 // 「发送到 Agent」：Agent 启用时唤起工作区并预置当前版本引用
 function sendToAgentItem(): ContextMenuItem | null {
   if (!agentEnabled.value) return null
   return { id: 'sendToAgent', label: t('agent.send_to') }
 }
 
+// 使用 computed 保证语言切换后右键菜单 label 实时更新
 const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = []
   if (canOpenDetail.value) {
@@ -191,7 +191,7 @@ const flagTitle = computed(() => {
 })
 
 const releaseMenuItems = computed<ContextMenuItem[]>(() => {
-  // 旗标颜色选择已移至旗标按钮的右键专属菜单（flagMenuItems），此处仅保留链接与通用操作
+  // 此处仅保留链接与通用操作；旗标颜色选择在旗标按钮的右键专属菜单（flagMenuItems）
   const items: ContextMenuItem[] = [
     { id: 'openLink', label: t('context.open') },
     { id: 'copyLink', label: t('context.copy_link') },
@@ -616,9 +616,8 @@ const youtubeViewTitle = computed(() =>
         <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" :title="hfTooltip ? undefined : release.tag_name" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
         <!-- 用户旗标（Outlook 式贴纸）贴在版本号后：不打断「仓库名 + 版本号」的连贯语义，颜色即语义 -->
         <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
-        <!-- 版本固有属性：仅保留重要性做追加提示（预发布不再占一席——版本号
-             自身（-rc/-beta/-alpha）已能看出，文字徒占宽度）；状态（圆点+文字）
-             跟在后面自成一体，避免圆点被误读为重要性指示 -->
+        <!-- 版本固有属性：只追加重要性提示（预发布由版本号自身（-rc/-beta/-alpha）表达）；
+             状态（圆点+文字）跟在后面自成一体，避免圆点被误读为重要性指示 -->
         <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
         <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
       </div>
@@ -724,7 +723,6 @@ const youtubeViewTitle = computed(() =>
   <ContextMenu v-if="flagMenu" :x="flagMenu.x" :y="flagMenu.y" :items="flagMenuItems" @action="handleFlagMenuAction" @close="closeMenus" />
   <ContextMenu v-if="summaryContextMenu" :x="summaryContextMenu.x" :y="summaryContextMenu.y" :items="summaryMenuItems" @action="handleSummaryMenuAction" @close="closeMenus" />
 
-  <!-- 摘要悬浮提示 -->
   <div
     v-if="summaryTooltip"
     class="release-summary-tooltip"
@@ -733,7 +731,6 @@ const youtubeViewTitle = computed(() =>
     {{ summaryTooltip.text }}
   </div>
 
-  <!-- HF 模型元数据悬浮提示 -->
   <div
     v-if="hfHoverTooltip?.visible && hfTooltip"
     class="release-summary-tooltip release-hf-tooltip"
@@ -743,7 +740,6 @@ const youtubeViewTitle = computed(() =>
   </div>
 </template>
 <style scoped>
-/* 版本列表 */
 .release-item {
   position: relative;
   padding: 12px 14px;
@@ -814,9 +810,8 @@ const youtubeViewTitle = computed(() =>
   white-space: nowrap;
 }
 
-/* 版本号：长 tag（dsh-v0.1.7-rc.2 这类前缀+语义版本+rc 后缀）曾是 flex-shrink: 0，
-   会把仓库名挤到只剩十几个字符，而自己从不省略。现在与仓库名等权收缩，
-   两边都不会被对方单独饿死；完整值由 title 与详情弹窗兜底（同样不设 min-width）。 */
+/* 版本号：与仓库名等权收缩（谁长谁让得多），两边都不会被对方单独饿死；
+   完整值由 title 与详情弹窗兜底（同样不设 min-width）。 */
 .release-tag {
   font-weight: 600;
   font-size: 14px;
@@ -872,7 +867,7 @@ const youtubeViewTitle = computed(() =>
   margin-top: 4px;
 }
 
-/* 阅读全文按钮恒定右对齐（无播放量时也保持右侧，不再回退左对齐） */
+/* 阅读全文按钮恒定右对齐（无播放量时也保持右侧） */
 .yt-footer-row .release-expand-btn {
   margin-top: 0;
   margin-left: auto;

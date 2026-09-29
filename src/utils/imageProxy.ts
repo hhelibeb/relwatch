@@ -1,7 +1,7 @@
 /**
  * 图片 URL → media 网关地址的改写器（纯函数）。
  *
- * 背景：CSP `img-src` 只放行 media 协议来源（不再放行任意 https:）。WebView 里
+ * 背景：CSP `img-src` 只放行 media 协议来源（不放行任意 https:）。WebView 里
  * 直接指向远程 https 图片的 `<img>` 会被 CSP 拦截（显式失败，而非静默走系统代理）。
  * 所有远程图片必须改写为 `http://media.localhost/<encodeURIComponent(原始URL)>`，
  * 由 Rust 端 media 网关按应用代理设置下载后返回。

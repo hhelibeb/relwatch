@@ -106,8 +106,7 @@ fn has_unread_badge(unread: &[crate::db::releases::ReleaseInfo], muted_ids: &Has
     unread.iter().any(|r| !muted_ids.contains(&r.source_id))
 }
 
-/// 从数据库读取未读集合与静音源集合，判定是否应亮托盘红点。
-/// 独立成纯 DB 读取 + 判定，便于单测锁住"静音源→红点消失 / 取消→恢复"整条链路；
+/// 判定是否应亮托盘红点：独立成纯 DB 读取 + 判定，便于单测锁住"静音源→红点消失 / 取消→恢复"整条链路；
 /// update_tray_badge 只做"图标选择 + set_icon"，判定逻辑不依赖 AppHandle 也能测。
 fn should_show_badge(conn: &rusqlite::Connection) -> bool {
     let unread = crate::db::releases::get_unread_releases(conn).unwrap_or_default();
@@ -118,8 +117,6 @@ fn should_show_badge(conn: &rusqlite::Connection) -> bool {
     has_unread_badge(&unread, &muted_ids)
 }
 
-/// 根据未读版本数量更新托盘图标
-/// 有未读（且不属于静音源）release 时显示带小红点的图标，否则显示原始图标
 pub fn update_tray_badge(app: &tauri::AppHandle) {
     if let Some(tray) = app.tray_by_id("main-tray") {
         let state = app.state::<AppState>();

@@ -7,12 +7,11 @@
 //! 设计要点：
 //! - `save` 设计为 async，吸收 github（同步 `&Connection`）与 huggingface（异步三阶段
 //!   insert→fetch_readmes→finalize）的差异。github 实现内部用 `spawn_blocking` 包同步
-//!   `save_releases`（与 Phase 2 的 spawn_blocking 改造顺接）。
+//!   `save_releases`，避免在 async 上下文阻塞。
 //! - `save` 接收 `&Pool` 而非 `&Connection` 或 `&AppHandle`，由 trait 实现内部取连接，
 //!   编排层不再关心两种取连接方式。
-//! - `fetch` / `fetch_all` 对应原来的单页 / 翻页两种拉取模式。
-//! - `verify_and_describe` 对应 `commands/source.rs::add_source` 中的
-//!   verify + description 分支，消除第三处字符串匹配。
+//! - `verify_and_describe` 供 `commands/source.rs::add_source` 的
+//!   verify + description 分支调用。
 
 use async_trait::async_trait;
 use std::sync::OnceLock;
@@ -220,9 +219,8 @@ pub trait SourceAdapter: Send + Sync {
 
 /// 根据 source_type 字符串取得对应适配器。
 ///
-/// 把原先散落在 `poll.rs`(2 处) / `commands/source.rs`(1 处) 的字符串匹配
-/// 收敛为这一处分发；新增 source 类型只需在 `ADAPTERS` 注册表登记并实现
-/// `SourceAdapter`。
+/// 新增 source 类型只需在 `ADAPTERS` 注册表登记并实现 `SourceAdapter`，
+/// 编排层无需再按 source_type 字符串逐处匹配。
 pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, String)> {
     adapters()
         .iter()
@@ -235,8 +233,7 @@ pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, St
 mod tests {
     use super::*;
 
-    /// 能力位覆盖由 `test_list_adapters_capabilities`（按列枚举断言）兜底，
-    /// 不再维护与实现逐行拷贝的元组快照（实现即事实）。
+    /// 能力位覆盖由 `test_list_adapters_capabilities`（按列枚举断言）兜底。
     #[test]
     fn test_auth_kind_as_str() {
         assert_eq!(AuthKind::None.as_str(), "none");

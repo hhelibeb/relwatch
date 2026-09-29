@@ -129,7 +129,6 @@ pub(crate) fn notification_title(owner: &str, repo: &str) -> String {
 
 /// 通知正文：`tag - name`；tag 为空（视频源 videoId/bvid 对用户无意义，标题即正文）时
 /// 仅显示 name。带重要度时追加中文 label（后端 ai_importance 存中文枚举）。
-/// 此前 Windows/Linux/macOS 三份实现各复制一份，语义漂移风险高（见阶段 2-2）。
 pub(crate) fn notification_body(tag: &str, name: &str, importance: Option<&str>) -> String {
     let base = if tag.is_empty() {
         name.to_string()
@@ -159,7 +158,7 @@ pub(crate) enum WinNotificationAction {
     Snooze,
 }
 
-/// 解析 Windows 按钮动作字符串；rid 解析失败回退 0（与原 `unwrap_or(0)` 行为一致）。
+/// 解析 Windows 按钮动作字符串；rid 解析失败回退 0。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn parse_win_action(action: &str) -> Option<(WinNotificationAction, i64)> {
     let (kind, rest) = if let Some(rest) = action.strip_prefix("go:") {
@@ -748,7 +747,6 @@ mod tests {
 
     #[test]
     fn parse_win_action_invalid_rid_falls_back_to_zero() {
-        // 与原 strip_prefix + unwrap_or(0) 行为一致
         assert_eq!(
             parse_win_action("go:abc"),
             Some((WinNotificationAction::Go, 0))
@@ -769,7 +767,7 @@ mod tests {
         assert_eq!(parse_win_action("go:-1"), Some((WinNotificationAction::Go, -1)));
     }
 
-    /// AUMID 与 `tauri.conf.json` 的 `identifier` 必须一致（风险 R5）：
+    /// AUMID 与 `tauri.conf.json` 的 `identifier` 必须一致：
     /// NSIS 安装器用 identifier 写快捷方式的 AUMID，进程侧用本常量声明，
     /// 二者漂移会导致通知归属与点击激活静默失效。
     #[test]

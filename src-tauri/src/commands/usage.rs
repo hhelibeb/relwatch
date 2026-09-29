@@ -35,7 +35,6 @@ fn record_usage_inner(conn: &rusqlite::Connection, events: &[(String, u32)]) -> 
     db::usage::get_usage_stats(&conn, days)
 }
 
-/// 清空全部使用统计。
 #[tauri::command]
 
 #[specta::specta]pub fn clear_usage_stats(state: tauri::State<AppState>) -> Result<(), String> {

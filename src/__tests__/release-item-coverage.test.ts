@@ -18,7 +18,7 @@ vi.mock('../api/client', () => ({
 }))
 
 // 仅替换 formatDate（jsdom 无时区/本地化渲染）；isUnreadStatus/statusClass/statusLabel
-// 必须引用 utils 真实实现——曾在此处复制实现，utils 语义变化时测试按旧语义放行（见阶段 2-4）
+// 必须引用 utils 真实实现——在本文件复制实现会让测试按旧语义放行
 vi.mock('../utils', async importOriginal => {
   const actual = await importOriginal<typeof import('../utils')>()
   return {
@@ -88,13 +88,7 @@ beforeEach(() => {
 })
 
 /**
- * ReleaseItem.vue 补充测试 — 覆盖真实使用场景:
- * - 右键菜单交互(复制链接/打开链接/删除版本)
- * - 摘要悬浮提示(mouseenter/focus/move)
- * - 摘要右键菜单(复制摘要)
- * - 状态操作成功消息(snooze/ignore)
- * - 删除失败处理
- * - 组件卸载清理(document 事件)
+ * ReleaseItem.vue 补充测试：右键菜单、摘要悬浮提示、状态操作 Toast、卸载清理等真实使用场景。
  */
 
 describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
@@ -105,7 +99,6 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
     await linkBtn.trigger('contextmenu', { clientX: 100, clientY: 200 })
 
     expect(closeAllContextMenus).toHaveBeenCalled()
-    // 应该渲染 ContextMenu 组件
     expect(wrapper.findComponent({ name: 'ContextMenu' }).exists()).toBe(true)
   })
 
@@ -191,7 +184,6 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
     const ctxMenu = wrapper.findComponent({ name: 'ContextMenu' })
     await ctxMenu.vm.$emit('close')
 
-    // 菜单应该关闭(组件不再渲染)
     expect(wrapper.findComponent({ name: 'ContextMenu' }).exists()).toBe(false)
   })
 })
@@ -204,7 +196,6 @@ describe('ReleaseItem.vue — 右键菜单: 摘要复制', () => {
     await summaryEl.trigger('contextmenu', { clientX: 150, clientY: 250 })
 
     expect(closeAllContextMenus).toHaveBeenCalled()
-    // 应该有 ContextMenu 组件
     expect(wrapper.findComponent({ name: 'ContextMenu' }).exists()).toBe(true)
   })
 
@@ -239,7 +230,6 @@ describe('ReleaseItem.vue — 右键菜单: 摘要复制', () => {
   it('无摘要时右键不触发菜单', async () => {
     const wrapper = mountRelease(createRelease({ ai_summary: null }))
 
-    // 没有摘要行
     expect(wrapper.find('.release-summary-text').exists()).toBe(false)
   })
 })
@@ -256,7 +246,6 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
 
     await summaryEl.trigger('mouseenter', { clientX: 200, clientY: 300 })
 
-    // 应该显示 tooltip
     expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
     expect(wrapper.find('.release-summary-tooltip').text()).toContain('很长的摘要内容')
   })
@@ -478,7 +467,6 @@ describe('ReleaseItem.vue — 操作按钮状态', () => {
     wrapper.find('.btn-danger-soft').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
 
-    // 所有按钮应该被禁用
     const buttons = wrapper.findAll('button')
     for (const btn of buttons) {
       expect((btn.element as HTMLButtonElement).disabled).toBe(true)

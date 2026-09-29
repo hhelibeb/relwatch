@@ -18,7 +18,7 @@ import type { ReleaseContentMode } from './releaseTypes'
 import { getSourceTypeDef } from '../api/source-registry'
 
 // 版本详情弹窗：卡片只展示单一预览（摘要 > 译文 > 原文），点击后进入弹窗完整阅读，
-// 摘要/译文/原文的内容切换集中在弹窗内进行（卡片不再提供标签）。
+// 摘要/译文/原文的内容切换集中在弹窗内进行。
 const props = defineProps<{
   release: ReleaseInfo
   position: number // 1-based，在当前过滤序列中的位置
@@ -50,8 +50,7 @@ const resizeDirs: ResizeDir[] = ['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw']
 
 // ========== 正文右键菜单 ==========
 // 应用全局的 contextmenu 处理对弹窗无效（全局菜单层级低于弹窗 overlay，会被遮挡），
-// 弹窗自行提供：链接 → 打开/复制链接；图片 → 复制图片/复制图片链接/打开；
-// 有选区 → 复制；否则 → 复制内容。
+// 弹窗自行提供一套：按右键落点区分链接 / 图片 / 文本选区。
 type BodyMenuState = {
   x: number
   y: number
@@ -187,10 +186,7 @@ function resolveMode(mode: ViewMode | null | undefined): ViewMode {
 const viewMode = ref<ViewMode>(defaultViewMode())
 const bodyEl = ref<HTMLElement | null>(null)
 
-// 翻译状态机（与 ReleaseItem 卡片共用同一实现）：
-// - 开始时切到译文视图（显示「翻译中」占位）
-// - 成功后 emit update 刷新列表；失败回退全文视图
-// - body_translated 从无到有时自动切到译文视图（onTranslated）
+// 翻译状态机（与 ReleaseItem 卡片共用同一实现）
 const { translating, handleTranslateRelease } = useReleaseTranslate({
   release: () => props.release,
   showToast,
@@ -386,7 +382,6 @@ async function applyFlag(flag: number) {
           <div v-if="currentContent" class="release-detail-markdown">
             <MarkdownContent :content="currentContent" />
           </div>
-          <!-- 翻译中占位 -->
           <div v-else-if="translating && viewMode === 'translated'" class="release-detail-translating">
             {{ t('release.translating_hint') }}
           </div>

@@ -2,10 +2,10 @@
  * 前后端源类型注册表对拍测试（防漂移兜底）。
  *
  * 前端 `sourceTypeDefs`（src/api/source-registry.ts）与后端 `ADAPTERS`
- * （src-tauri/src/source.rs）是两份独立清单。本测试直接读取 Rust 源码文本，
- * 静态提取后端注册表内容，与前端注册表对比类型集合（新增源漏登记任一侧即失败）。
+ * （src-tauri/src/source.rs）是两份独立清单：本测试直接读取 Rust 源码文本，
+ * 静态提取后端注册表内容与前端对比类型集合（新增源漏登记任一侧即失败）。
  *
- * 能力位不再静态对拍：aiSummary 由运行时同步 `syncSourceCapabilities` 从后端
+ * 能力位不在此静态对拍：`aiSummary` 由运行时 `syncSourceCapabilities` 从
  * 只读命令 `list_source_types`（ADAPTERS 动态枚举）下发，实现即事实。
  */
 import { describe, expect, it } from 'vitest'

@@ -1,7 +1,7 @@
 // 应用内检查更新（tauri-plugin-updater）：
 // - 仅手动触发（设置页 about tab「软件更新」分组），无自动检查、无持久化设置项
 // - 静态 JSON endpoint（GitHub Releases latest.json），Ed25519 签名验证不可关闭
-// - 代理策略（设计稿 §4.3）：复用既有 proxy_mode/proxy_url——
+// - 代理策略：复用既有 proxy_mode/proxy_url——
 //   none → 直连；system → 走系统代理；custom → 显式走 proxy_url。
 //
 // 检查走自建的 `updater_check` 命令（src-tauri/src/commands/updater.rs），
@@ -30,7 +30,7 @@ export type UpdateStatus =
   | 'installing'
   | 'error'
 
-/** §4.5 错误归类 kind（决定文案 key 与兜底动作按钮） */
+/** 错误归类 kind（决定文案 key 与兜底动作按钮） */
 export type UpdateErrorKind =
   | 'network'
   | 'no_release'
@@ -45,7 +45,7 @@ const CHECK_TIMEOUT_MS = 30_000
 const DOWNLOAD_PAGE_URL = 'https://github.com/hhelibeb/relwatch/releases/latest'
 
 /**
- * 插件错误 Display 文案锚点表（设计稿 §4.5）。
+ * 插件错误 Display 文案锚点表。
  * 锚点按 tauri-plugin-updater 2.10.1 的 error.rs Display 字符串与
  * minisign-verify 0.2.5 的 Display 实现逐一核对（签名错误来自
  * minisign 透明错误 + SignatureUtf8，锚点统一取 "signature"/"minisign"）。
@@ -87,8 +87,6 @@ export function classifyUpdateError(raw: string): UpdateErrorKind {
   return 'generic'
 }
 
-/** total 单独存 ref：插件只在 Started 事件给一次 contentLength，
- * Progress 事件只有 chunkLength——不要把 total 传成 undefined 冲掉它（设计稿 §4.3）。 */
 /**
  * @param onLogWritten 更新链路每次写完操作日志后回调（落库在 Rust 端，前端 fire-and-forget
  *   触发）——宿主用它重拉日志列表，否则日志页是 v-show 常驻的，看不到新写的日志。
@@ -108,6 +106,8 @@ export function useAppUpdate(
   /** generic 类错误透传的原始消息（update.error.generic 的 {message}） */
   const errorDetail = ref('')
   const done = ref(0)
+  /** total 单独存 ref：插件只在 Started 事件给一次 contentLength，
+   * Progress 事件只有 chunkLength——不要把 total 传成 undefined 冲掉它。 */
   const total = ref<number | undefined>(undefined)
   /** error 态的重试去向：检查失败 → 重跑 check；下载失败 → 回 available */
   const retryTarget = ref<'check' | 'download'>('check')
@@ -130,7 +130,7 @@ export function useAppUpdate(
     return Math.min(100, Math.round((done.value / total.value) * 100))
   })
 
-  /** 下载状态行：total 已知时带百分比与总量，未知时只报已下载（不显示百分比，§8） */
+  /** 下载状态行：total 已知时带百分比与总量，未知时只报已下载（不显示百分比） */
   const downloadText = computed(() => {
     const doneStr = formatBytes(done.value)
     if (total.value !== undefined && total.value > 0) {
@@ -213,7 +213,7 @@ export function useAppUpdate(
   async function downloadAndInstall(): Promise<void> {
     const u = pendingUpdate.value
     if (!u || busy.value) return
-    // Agent 任务守卫（设计稿 §4.3）：安装会硬杀进程，运行中任务与已消耗词元会实际丢失。
+    // Agent 任务守卫：安装会硬杀进程，运行中任务与已消耗词元会实际丢失。
     // 队列查询失败时降级放行（后端不可用不该堵死更新路径）
     try {
       const queue = await commands.getAgentQueue()
@@ -237,7 +237,7 @@ export function useAppUpdate(
       // proxy 随 updater_check 时构建的 Update 资源生效，下载阶段不重复传（见文件头说明）
       await u.downloadAndInstall(onProgress)
       // Windows：NSIS 安装器 ShellExecuteW 成功后进程 exit(0) 接管，不会执行到这里；
-      // 到达此处的仅 Linux/macOS：先优雅关闭 pi RPC（失败不阻塞重启），再 relaunch（§6）
+      // 到达此处的仅 Linux/macOS：先优雅关闭 pi RPC（失败不阻塞重启），再 relaunch
       status.value = 'installing'
       commands.updaterInstallStarted(u.version).catch(() => null).finally(() => onLogWritten?.())
       await commands.agentShutdownForUpdate().catch(() => null)
@@ -250,7 +250,7 @@ export function useAppUpdate(
     }
   }
 
-  /** error 态重试：检查失败 → 重跑 check；下载失败 → 回 available（保留 Update 对象，§4.3 状态机） */
+  /** error 态重试：检查失败 → 重跑 check；下载失败 → 回 available（保留 Update 对象） */
   function retry(): void {
     if (retryTarget.value === 'check') {
       void checkForUpdate()
@@ -265,8 +265,9 @@ export function useAppUpdate(
 
   /** 弹窗内展示的 Release Note（latest.json 的 notes）；无 body 时为 null（不弹窗） */
   const notesBody = computed(() => pendingUpdate.value?.body ?? null)
-  /** 新版本的构建日期（latest.json 的 pub_date），可能为空 */
+  /** 新版本号（latest.json 的 version），可能为空 */
   const notesVersion = computed(() => pendingUpdate.value?.version ?? '')
+  /** 新版本的构建日期（latest.json 的 pub_date），可能为空 */
   const notesDate = computed(() => pendingUpdate.value?.date ?? null)
 
   /** 浏览器打开 GitHub Release 页：带安装包、commit 与历史版本，

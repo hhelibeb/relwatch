@@ -21,10 +21,10 @@ pub struct SaveEntry {
 }
 
 /// 通用保存循环：按 published 降序逐条 insert，新条目计入 saved 并触发
-/// `on_inserted`；去重命中触发 `on_duplicate`。插入错误记录日志（H-1），
-/// 不再被当作去重命中吞掉。
+/// `on_inserted`；去重命中触发 `on_duplicate`。真正的 DB 错误只记日志，
+/// 不当作去重命中吞掉。
 ///
-/// 语义与历史实现逐字节对齐（youtube/bilibili/github 三份 save 的原行为）：
+/// 模式语义（youtube/bilibili/github 三份 save 共用）：
 /// - 普通模式（max_count=1）遇到已入库记录立即返回空
 /// - 历史模式（max_count>1）跳过已存在记录继续找更新内容
 /// - `max_count=0` 表示不设上限
@@ -42,14 +42,12 @@ pub fn save_entries_generic(
     let mut saved = Vec::new();
     let inserted_any = std::cell::Cell::new(false);
     // 循环以任意方式结束（耗尽 / max_count 早退 / 普通模式遇已存在）后统一收尾：
-    // 本轮确有新插入时对该 source 全链重算一次 version_bump。
-    // 原实现是每条 insert_release 内部各自全链重算（历史模式首拉 N 条 → O(N²)）；
-    // 改为批量结束一次，语义最终态等价。
+    // 本轮确有新插入时对该 source 全链重算一次 version_bump
+    // （逐条全链重算会退化为 O(N²)，改成批量结束一次、最终态等价）。
     let finalize = || {
         if inserted_any.get() {
             // 重算失败仅记日志、不回滚已提交的插入：version_bump 是派生列（可重算），
-            // 留 NULL 不影响 release 本身。相比旧实现（recompute 在 insert_release 事务内，
-            // 失败连带回滚整条 release），此处失败不会丢数据，属有意取舍。
+            // 留 NULL 不影响 release 本身，属有意取舍（失败不丢数据）。
             //
             // 「补算」的边界（勿高估自愈）：本收尾由 inserted_any 门控，只有该 source
             // 本轮**确有新插入**才重算，全去重命中的轮次不补。因此重算失败、或
@@ -91,13 +89,12 @@ pub fn save_entries_generic(
             Ok(0) => {
                 on_duplicate(conn, source_id, entry);
             }
-            // 理论不可达（insert_release 返回值非负）；防御性按去重命中处理保持原语义
+            // 理论不可达（insert_release 返回值非负）；防御性按去重命中处理
             Ok(_) => {
                 on_duplicate(conn, source_id, entry);
             }
-            // 真正的 DB 错误：不再吞成「去重命中」（H-1）。记录日志，普通模式
-            // 与去重命中同样中断本轮（保持原流程控制），但不再触发 on_duplicate
-            // 把故障误当已存在去刷写元数据，便于从日志定位根因。
+            // 真正的 DB 错误：记日志，普通模式与去重命中同样中断本轮，但不触发
+            // on_duplicate（否则会把故障误当已存在去刷写元数据），便于从日志定位根因。
             Err(e) => {
                 log::error!("insert_release failed (source_id={}, tag={}): {}", source_id, entry.tag, e);
             }

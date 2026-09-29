@@ -1,10 +1,9 @@
-// ── 锚点 fixed 定位菜单三件套（Teleport 浮层通用件）──
-// 收敛 AgentWorkspace 两处同构实现：会话 ⋯ 菜单（148，右对齐锚点右缘）与
-// pi 状态菜单（216，左对齐锚点左缘）——锚元素 rect → 视口钳制 → fixed 定位。
-// 定位语义与既有实现逐行对齐，不"顺手改进"；唯一的新增行为是 §2.3 B1：
-// 内部统一 registerOverlayActive() + document 级 Esc 监听关闭菜单。
+// ── 锚点 fixed 定位菜单（Teleport 浮层通用件）──
+// 收敛两处同构实现：会话 ⋯ 菜单（148，右对齐锚点右缘）与 pi 状态菜单
+// （216，左对齐锚点左缘）——锚元素 rect → 视口钳制 → fixed 定位。
+// 打开期间统一 registerOverlayActive() + document 级 Esc 监听关闭菜单。
 //
-// B1 落地要点（防误触最小化到托盘）：
+// Esc 关闭的实现要点（Esc 应关菜单而非最小化到托盘）：
 // - Esc 监听必须挂 document 级 keydown（打开时注册、关闭/卸载时注销）。菜单
 //   Teleport 到 body、焦点通常留在触发按钮上，挂在菜单元素上的 @keydown 永远
 //   不会触发；只注册覆盖层而不挂监听，结果是「Esc 无反应」而非「Esc 关菜单」
@@ -20,7 +19,7 @@ export interface AnchoredMenuOptions {
   width: number
   /** 'right' = 菜单右对齐锚点右缘；'left' = 菜单左对齐锚点左缘 */
   align: 'left' | 'right'
-  /** 视口左右安全边距（现有两处实现均为 8） */
+  /** 视口左右安全边距（默认 8） */
   margin?: number
   /** 菜单打开状态（调用方持有：rpcMenuOpen / computed(openMenuKey !== null)） */
   isOpen: Ref<boolean>
@@ -37,7 +36,7 @@ export function useAnchoredMenu(options: AnchoredMenuOptions) {
   // 最近一次定位的锚元素：Esc 关闭后焦点回归触发按钮
   let anchorEl: HTMLElement | null = null
 
-  /** 以锚元素定位菜单。rect 取不到时保持原位置（与既有实现的 if (rect) 分支一致）。 */
+  /** 以锚元素定位菜单。rect 取不到时保持原位置。 */
   function place(anchor: HTMLElement | null) {
     anchorEl = anchor
     const rect = anchor?.getBoundingClientRect()
@@ -49,7 +48,7 @@ export function useAnchoredMenu(options: AnchoredMenuOptions) {
     pos.value = { x, y: rect.bottom + 4 }
   }
 
-  // 打开期间向覆盖层总线注册：Esc 应优先关菜单而非最小化到托盘（§2.3 B1）
+  // 打开期间向覆盖层总线注册：Esc 应优先关菜单而非最小化到托盘
   const unregisterOverlay = registerOverlayActive(() => isOpen.value)
 
   function handleDocumentKeydown(e: KeyboardEvent) {

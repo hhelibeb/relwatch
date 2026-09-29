@@ -168,7 +168,6 @@ describe('parseBilibiliUrl', () => {
     expect(parseBilibiliUrl('https://space.bilibili.com/476599099/video')).toBe('476599099')
     expect(parseBilibiliUrl('space.bilibili.com/476599099?from=search')).toBe('476599099')
     expect(parseBilibiliUrl('https://bilibili.com/space/546195')).toBe('546195')
-    // 16 位新式 UID 空间链接
     expect(parseBilibiliUrl('https://space.bilibili.com/3546715770588065')).toBe('3546715770588065')
   })
 
@@ -287,7 +286,6 @@ describe('translateError', () => {
   })
 
   it('不以 "err." 开头时返回去除 Error: 前缀后的消息', () => {
-    // translateError 移除 Error: 前缀后，非 err. 前缀返回 msg
     expect(translateError('Error: something went wrong')).toBe('something went wrong')
   })
 
@@ -296,7 +294,6 @@ describe('translateError', () => {
   })
 
   it('仅 "Error: " 前缀无内容返回空字符串', () => {
-    // 移除 Error: 前缀后为空，非 err. 前缀返回 ""
     expect(translateError('Error: ')).toBe('')
   })
 

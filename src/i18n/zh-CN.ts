@@ -738,7 +738,7 @@ export default {
   'aiUsage.action_summary': '摘要',
   'aiUsage.action_detect_language': '语言检测',
   'aiUsage.action_test': '连接测试',
-  // ── 前端全局错误兜底（V2）：模板中的 {error} 由 Rust 侧 render 填充，
+  // ── 前端全局错误兜底：模板中的 {error} 由 Rust 侧 render 填充，
   //    前端 toast 用同一模板做同样的替换（见 src/api/report-error.ts）──
   'ui.vue_error': '界面出现未处理异常（已记录到日志）: {error}',
   'ui.unhandled_rejection': '未处理的异步异常（已记录到日志）: {error}',

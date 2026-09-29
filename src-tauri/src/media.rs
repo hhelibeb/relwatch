@@ -1,12 +1,9 @@
 //! media 图片网关：让 WebView 里的远程图片经 Rust 的 reqwest 下载，继承应用代理。
 //!
-//! ## 背景
-//!
-//! 封面 / release 正文图片原本由 `<img>` 直接指向远程 URL，请求由 Chromium 网络栈
-//! 发出，只认系统代理，与应用 `proxy_mode` 设置零关联（代理脱管问题）。修复思路：
-//! 前端把远程图片 URL 改写成本应用的 `http://media.localhost/<url>`，注册本协议，
-//! 由 Rust 端用**已按 ProxyPolicy 构建的 client** 下载后返回给 Chromium。
-//! 磁盘缓存避免同一图片反复滚动时重复回源下载。
+//! 前端把远程图片 URL 改写成本应用的 `http://media.localhost/<url>`：`<img>` 直接指向
+//! 远程 URL 时请求由 Chromium 网络栈发出，只认系统代理，与应用 `proxy_mode` 设置零
+//! 关联；改走本协议后由 Rust 端用**已按 ProxyPolicy 构建的 client** 下载再返回给
+//! Chromium。磁盘缓存避免同一图片反复滚动时重复回源下载。
 //!
 //! ## 平台差异
 //!
@@ -252,7 +249,7 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
     };
     let (bytes, content_type) =
         http::fetch_public_with_headers(&config, &url, MAX_MEDIA_BYTES).await?;
-    // Content-Type 白名单（M-1）：media 是被 Tauri 判定为本地源的自定义协议，
+    // Content-Type 白名单：media 是被 Tauri 判定为本地源的自定义协议，
     // 透传远端 Content-Type 意味着 text/html 可成为可导航文档；只放行真正的
     // 媒体类型，其余一律 octet-stream（nosniff 下不会被执行/渲染为 HTML）。
     // SVG 不在白名单（可含脚本）。缓存的 content_type 一并白名单化，保证缓存与响应一致。
@@ -303,7 +300,7 @@ fn read_proxy_settings(app: &AppHandle) -> Result<(String, String), String> {
 pub async fn handle_media_request(app: &AppHandle, path: &str) -> Response<Vec<u8>> {
     match fetch_or_cache(app, path).await {
         Ok((bytes, content_type)) => {
-            // M-1 加固：nosniff 防 MIME 嗅探；CSP `default-src 'none'` + `sandbox`
+            // nosniff 防 MIME 嗅探；CSP `default-src 'none'` + `sandbox`
             // 使该响应即使被浏览器当文档打开也无可执行资源、无同源能力。
             // （CSP 由 Tauri 只注入自家 tauri:// 协议，自定义协议必须自带头。）
             Response::builder()

@@ -1,5 +1,5 @@
-// ── 会话管理（A 域：索引持久化 / 磁盘发现 / 重命名 / ⋯菜单 / 删除 / 清理 / 搜索 / 侧栏折叠）──
-// 自 AgentWorkspace.vue 出仓。跨域动作不直接 import 其他域：
+// ── 会话管理（索引持久化 / 磁盘发现 / 重命名 / ⋯菜单 / 删除 / 清理 / 搜索 / 侧栏折叠）──
+// 跨域动作不直接 import 其他域：
 // - 删除活跃会话后的跨域清空经 onActiveDeleted 回调由编排层接线；
 // - pickModel 的会话模型落库经 updateModel 暴露给编排层转调；
 // - 侧栏运行状态点接收全局队列 queueActive 只读 ref（由聊天核心刷新）。
@@ -45,7 +45,7 @@ export function useAgentSessions(deps: {
   showToast: (msg: string) => void
   /** 全局队列（侧栏运行状态点数据源；由聊天核心 loadQueue 刷新） */
   queueActive: Ref<AgentQueueItem[]>
-  /** 删除活跃会话后的跨域清空 + loadChat（编排层接线，替代原 handleDeleteSession 的 if 分支） */
+  /** 删除活跃会话后的跨域清空 + loadChat（编排层接线） */
   onActiveDeleted: () => Promise<void>
 }) {
   const { showToast, queueActive } = deps
@@ -129,13 +129,13 @@ export function useAgentSessions(deps: {
   }
 
   /** 切换激活会话的会话域部分（activeKey 赋值 + 恢复标记清除）；
-   * 各域状态清空与 loadChat 由编排层按 mode 组合（§4.2 三处清空差异表）。 */
+   * 各域状态清空与 loadChat 由编排层按 mode 组合。 */
   function switchTo(key: string) {
     activeKey.value = key
     clearRecoveredFlag(key)
   }
 
-  /** 新建即登记：立即写入索引并持久化、切换 activeKey，未提交的会话也可见、可恢复（评审 1.2）。 */
+  /** 新建即登记：立即写入索引并持久化、切换 activeKey，未提交的会话也可见、可恢复。 */
   function registerNew(): string {
     const key = newSessionKey()
     sessions.value.unshift({ key, title: t('agent.session_new'), updatedAt: Date.now(), draft: true })
@@ -150,7 +150,7 @@ export function useAgentSessions(deps: {
   }
 
   /** 会话切换时会话域自己的清空：switch / new 收起重命名与 ⋯ 菜单；
-   * delete 后切换不清（原实现即如此，§4.2 三处清空差异表）。 */
+   * delete 后切换不清。 */
   function resetForSessionSwitch(mode: SessionSwitchMode) {
     if (mode === 'delete') return
     renamingKey.value = null
@@ -159,7 +159,7 @@ export function useAgentSessions(deps: {
 
   // ── 会话搜索（标题模糊匹配）──
   // 会话上限 200 条，标题又自动取首条指令前 40 字（往往高度相似），
-  // 没有搜索就只能靠「清理旧会话」一刀切（评审「会话重命名 / 搜索」）。
+  // 没有搜索就只能靠「清理旧会话」一刀切。
   const sessionQuery = ref('')
 
   // ── 会话重命名 / 导出（侧栏 ⋯ 菜单）──
@@ -221,7 +221,6 @@ export function useAgentSessions(deps: {
     // 重命名与菜单互斥：同时开着会互相遮挡（菜单浮层盖住输入框）
     if (openMenuKey.value) {
       renamingKey.value = null
-      // 以 ⋯ 按钮为锚往下弹
       sessionMenu.place(sessionMoreEls.get(key) ?? null)
     }
   }
@@ -231,8 +230,7 @@ export function useAgentSessions(deps: {
     if (openMenuKey.value) openMenuKey.value = null
   }
 
-  /** 删除入口：先取 key 再关菜单。菜单浮层移到 Teleport 后模板无法像原来那样
-   * 「先置 null 再传循环变量」，这里保证取到的 key 在关闭菜单前仍有效。 */
+  /** 删除入口：先取 key 再关菜单（关菜单即清空 openMenuKey）。 */
   function handleDeleteFromMenu() {
     const key = openMenuKey.value
     openMenuKey.value = null
@@ -282,7 +280,7 @@ export function useAgentSessions(deps: {
 
   /** 删除会话（确认对话框 + 后端删除 + 索引维护）。删除的是活跃会话时先把
    *  activeKey 切到剩余第一个（空则登记新草稿），再经 onActiveDeleted 回调让
-   *  编排层做跨域清空与 loadChat（原 handleDeleteSession 的 if (key === activeKey) 分支）。 */
+   *  编排层做跨域清空与 loadChat。 */
   async function deleteSession(key: string, onActiveDeleted: () => Promise<void>) {
     // 检查该会话是否有活跃 run（pending/running）：删除 = 移除会话文件 + 全部 run 记录，
     // 若正在运行，pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后静默丢弃。

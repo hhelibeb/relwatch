@@ -670,7 +670,7 @@ describe('App.vue — 版本统计 computed', () => {
   })
 
   it('目录含 300 条时计数等于全量（不再被 200 条上限截断）', async () => {
-    // 300 条同源：历史实现只下发最新 200 条，计数会停在 200
+    // 300 条同源：计数必须等于全量（不被 200 条上限截断）
     vi.mocked(getReleaseCatalog).mockResolvedValue(
       Array.from({ length: 300 }, (_, i) => ({
         id: i + 1,
@@ -970,7 +970,7 @@ describe('App.vue — Tauri 事件处理', () => {
     await new Promise((resolve) => setTimeout(resolve, 60))
     await flushPromises()
 
-    // 双路径合帧去重：50ms 窗口内只重拉一次全量（此前是两次）
+    // 双路径合帧去重：50ms 窗口内只重拉一次全量
     expect(getReleaseCatalog).toHaveBeenCalledTimes(1)
   })
 
@@ -1395,7 +1395,7 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
   })
 })
 
-// ── V2 全局错误兜底：App 把 showToast 注册为上报出口，异常必须能被用户看见 ──
+// ── 全局错误兜底：App 把 showToast 注册为上报出口，异常必须能被用户看见 ──
 describe('App.vue — 全局错误兜底的 toast 出口（V2）', () => {
   it('reportFrontendError 弹出 toast 并把同一明细落库', async () => {
     const wrapper = await mountRealApp()

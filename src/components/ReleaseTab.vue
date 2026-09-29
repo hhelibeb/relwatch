@@ -14,7 +14,7 @@ import { releaseFlagged } from '../utils/releaseFlag'
 import { track } from '../composables/useUsageTracking'
 import { ShowImportanceKey } from '../injection-keys'
 
-// 通知定位（App.vue focus-release 事件）下钻到单条 release（评审 P1-1 修复）：
+// 通知定位（App.vue focus-release 事件）下钻到单条 release：
 // - focusTarget：目标 release id（App 在收到通知点击时设置，供本组件消费）；
 // - focusToken：递增令牌。App 与 release 列表的数据刷新（轮询/标记/删除…）解耦，
 //   本组件在“可能使列表就绪/内容变化”的时机统一检查 token 是否变化并消费（只消费最新一次）。
@@ -68,7 +68,7 @@ const calendarMonth = ref(new Date().getMonth() + 1)
 const simpleList = ref<ReleaseSimpleListHandle | null>(null)
 const aggregatedList = ref<AggregatedListInstance | null>(null)
 
-// ── 通知定位消费（P1-1）──────────────
+// ── 通知定位消费 ──────────────
 // 只消费**最新一次**目标：lastConsumedToken 记录已成功处理的 token，重复触发不会重复滚动/高亮。
 let lastConsumedToken = -1
 
@@ -122,7 +122,6 @@ async function doFocusTarget(targetId: number) {
 }
 
 // 定位时机：目标 token 变化 / 数据（releases 引用）变化都可能使“目标可定位”。
-// 消费幂等（只处理最新 token，成功才记录），重复触发不会重复滚动/高亮。
 function consumeFocusIfPending() {
   const target = props.focusTarget
   if (target === null || props.focusToken <= lastConsumedToken) return
@@ -206,10 +205,10 @@ const TIER2_CHUNK_CHARS = 512 * 1024   // 单次请求正文预算（后端另�
 // 首次游标：大于任何真实 release id（id 是 SQLite 自增 i64，远小于 2^53-1）
 const BODY_CURSOR_START = Number.MAX_SAFE_INTEGER
 
-const deepSearch = ref(false)              // 是否处于深度搜索态
+const deepSearch = ref(false)
 const bodyIndex = shallowRef<BodyIndex>(new Map())
 const deepSearching = ref(false)           // 取正文 / 维护索引期间的 loading 态
-const coversAllBodies = ref(false)         // 水位是否已覆盖全库正文
+const coversAllBodies = ref(false)
 const bodyFillDone = ref(false)            // 首次预取是否已有定论（预取中不闪越界提示）
 /** 能力边界：水位没覆盖全库正文（且预取已告一段落）。 */
 const bodyTruncated = computed(() => bodyFillDone.value && !coversAllBodies.value)
@@ -253,7 +252,6 @@ function yieldFrame(): Promise<void> {
   )
 }
 
-/** 把一块正文并入索引，并累计字符水位。 */
 function applyChunk(chunk: readonly ReleaseSearchBody[]) {
   if (chunk.length === 0) return
   bodyIndex.value = mergeBodyIndex(bodyIndex.value, chunk)
@@ -402,7 +400,7 @@ function scheduleBodyIndexSync() {
   })
 }
 
-// 目录引用变化（轮询 / 标记 / 删除后重拉）不再清空索引，只做增量维护。
+// 目录引用变化（轮询 / 标记 / 删除后重拉）只做增量维护，不清空索引。
 watch(() => props.releases, () => {
   if (deepSearch.value) scheduleBodyIndexSync()
 })

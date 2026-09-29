@@ -1,13 +1,10 @@
 <script setup lang="ts">
 // 应用内更新：新版本 Release Note 弹窗。
 //
-// 为什么不复用 ReleaseDetailModal：那个组件的 props 是 ReleaseInfo，内部深度耦合
-// 了翻译（调 translateRelease(release.id)）、上下版导航、通知状态徽标、拖拽 resize
-// 持久化、右键菜单等业务。更新检查拿到的只是 {version, date, body} 三元组，
-// 喂一个假 ReleaseInfo（id 用 -1）会触发一堆分支——「翻译」按钮由 canTranslateRelease
-// 只看 aiEnabled 判定，点下去会拿假 id 打后端；导航按钮要逐个 v-if 关掉。纯靠补丁
-// 反而把组件搞脏且容易漏。这里只复用 MarkdownContent（props 仅 content，
-// marked + DOMPurify 清洗，无业务耦合），其余自绘约 100 行。
+// 不复用 ReleaseDetailModal：那个组件的 props 是 ReleaseInfo，内部深度耦合了翻译、
+// 上下版导航、通知状态徽标、拖拽 resize 持久化、右键菜单等业务，而更新检查拿到的
+// 只是 {version, date, body} 三元组。这里只复用 MarkdownContent（marked + DOMPurify
+// 清洗，无业务耦合），其余自绘约 100 行。
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { openReleaseUrl } from '../api/client'

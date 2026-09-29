@@ -989,7 +989,6 @@ function hideHealthTooltip() {
   font-weight: 500;
 }
 
-/* 监控源列表 */
 .source-list {
   display: flex;
   flex-direction: column;
@@ -1220,7 +1219,6 @@ function hideHealthTooltip() {
   flex-shrink: 0;
 }
 
-/* 更多按钮下拉容器 */
 .dropdown-more {
   position: relative;
   display: inline-flex;
@@ -1279,7 +1277,6 @@ function hideHealthTooltip() {
   background: var(--danger-soft-bg);
 }
 
-/* 新增源高亮动画 */
 .source-highlight {
   animation: highlight-pulse 2s ease-out;
 }
@@ -1540,7 +1537,6 @@ function hideHealthTooltip() {
   border-radius: 4px;
 }
 
-/* 选择模式复选框 */
 .source-checkbox {
   display: flex;
   align-items: center;
@@ -1555,7 +1551,6 @@ function hideHealthTooltip() {
   accent-color: var(--primary);
 }
 
-/* 批量操作栏 */
 .bulk-bar {
   display: flex;
   gap: 6px;

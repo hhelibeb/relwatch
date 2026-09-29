@@ -1,15 +1,15 @@
 //! Agent 执行器抽象层（全局配置驱动）。
 //!
-//! P0 实现：pi RPC 常驻进程（`pi --mode rpc`，见 agent_rpc.rs / RpcExecutor），
-//! 每次提交向常驻进程发 `prompt` 命令，不再每次 spawn 一次性进程。
+//! pi RPC 常驻进程（`pi --mode rpc`，见 agent_rpc.rs / RpcExecutor），
+//! 每次提交向常驻进程发 `prompt` 命令，而非每次 spawn 一次性进程。
 //! `AgentExecutor` trait 预留 claude / codex 等扩展，新增实现零迁移。
-//! Agent 配置来自全局单例（db::agent::AgentConfig），不再逐源绑定。
+//! Agent 配置来自全局单例（db::agent::AgentConfig）。
 //!
 //! 工作区会话模型：同一 `session_key` 的多次提交共享一个 pi 会话文件
 //! （`switch_session <path>` 绑定），文件存在时 pi 继续该会话（多轮对话），
 //! 不存在时新建 —— 已通过 pi SessionManager.open 语义确认。
 //!
-//! 安全基线（P0 固定）：
+//! 安全基线：
 //! - `--no-context-files`：不读取工作目录 AGENTS.md / CLAUDE.md（防 prompt injection）
 //! - `--no-approve`：不信任项目本地文件
 //! - `--no-extensions`：环境干净可复现
@@ -38,8 +38,7 @@ pub const STATUS_CANCELLED: &str = "cancelled";
 /// 结果未知：任务**可能已经执行完成**，但终态没能确定下来。
 ///
 /// 两种来源：
-/// - 终态事件 `agent_end` 在广播中被挤掉（`err.agent.end_lost`）——此前按 failed 收敛，
-///   把「不知道」谎报成「失败了」；
+/// - 终态事件 `agent_end` 在广播中被挤掉（`err.agent.end_lost`）；
 /// - 应用重启时该 run 已启动但没落终态（见 `cleanup_stale_agent_runs`）。
 ///
 /// 与 failed 的关键差别是可行动性：failed 意味着没跑成（重跑无害），
@@ -81,7 +80,7 @@ pub struct AgentOutcome {
 /// 一次 Agent 执行的失败：错误码 + **失败前已生成的输出**。
 ///
 /// 超时 / 中止 / 模型错误时，模型往往已经产出大段内容（跑了 4 分 50 秒才超时的那部分）。
-/// 此前错误只带错误码，这部分产物随 `Err` 一起丢弃，run 记录的 stdout 恒为 None，
+/// 若错误只带错误码，这部分产物随 `Err` 一起丢弃，run 记录的 stdout 就为空，
 /// 「运行记录」视角查不到任何产出——用户只能靠聊天流（JSONL）回看。故错误携带
 /// `partial_stdout`，由调度器一并写入 DB。
 #[derive(Debug, Clone)]
@@ -121,7 +120,7 @@ pub trait AgentExecutor: Send + Sync {
     async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, AgentError>;
 }
 
-/// 根据全局配置构造执行器。P0 仅支持 pi（RPC 常驻进程驱动）。
+/// 根据全局配置构造执行器。仅支持 pi（RPC 常驻进程驱动）。
 pub fn executor_for(
     agent_type: &str,
     config: &AgentConfig,
@@ -170,7 +169,7 @@ pub struct RpcExecutor {
     /// 追加在 prompt 末尾的用户指令（如"请输出中文"）。
     prompt_suffix: Option<String>,
     /// 全局默认模型（provider, model_id）：本次未显式选择模型（「默认」）时
-    /// 恢复到此模型（H-5）。None = 全局未配置可解析的模型，保持进程现状。
+    /// 恢复到此模型。None = 全局未配置可解析的模型，保持进程现状。
     default_model: Option<(String, String)>,
 }
 
@@ -213,8 +212,8 @@ impl AgentExecutor for RpcExecutor {
         let mut rx = self.rpc.subscribe();
         // 模型切换（run 单并发串行，先 set_model 再 prompt 不会串台）：
         // - 显式选择：切换为所选模型
-        // - 「默认」：恢复全局配置模型（H-5）。此前仅在显式选择时 set_model，
-        //   选「默认」后 pi 进程会保留上一个 run 的显式模型，UI 显示与实际不符。
+        // - 「默认」：也必须显式恢复全局配置模型，否则常驻进程会保留上一个 run
+        //   的显式选择，UI 显示与实际不符。
         match ctx.model {
             Some(m) => self.rpc.set_model(&m.provider, &m.model_id).await?,
             None => {
@@ -305,12 +304,13 @@ impl AgentExecutor for RpcExecutor {
                     }
                 }
                 // 读循环 EOF（进程崩溃 / 被 kill）时广播的合成事件：立即失败返回，
-                // 不再干等 deadline（此前会挂到超时才收敛，前端期间看不到任何进展）
+                // 不干等 deadline（否则会挂到超时才收敛，前端期间看不到任何进展）
                 Some("rpc_exited") => return Err(AgentError::new("err.agent.rpc_exited", stdout)),
                 Some("agent_settled") => {
                     // 兜底：正常协议 agent_end 必先于 settled 到达。若 agent_end 事件被
-                    // 广播丢帧挤掉（Lagged），last_messages 为空，errorMessage 检测失效——
-                    // 模型错误会被误记 success，按 failed 收敛（宁 failed 不误 success）。
+                    // 广播丢帧挤掉（Lagged），last_messages 为空，errorMessage 检测失效，
+                    // 模型错误会被误记 success；故返回 end_lost，由调度器收敛为 unknown
+                    // （宁可未知，不谎报 success）。
                     if !saw_agent_end {
                         return Err(AgentError::new("err.agent.end_lost", stdout));
                     }
@@ -346,7 +346,6 @@ fn is_aborted(messages: &[serde_json::Value]) -> bool {
 
 // ---- 实体渲染器：source / release → 上下文文本段 ----
 
-/// 监控源实体 → 上下文文本。
 pub fn render_source_entity(source: &Source) -> String {
     format!(
         "- 监控源: {} | {}/{}",
@@ -367,7 +366,6 @@ fn release_body_label(source_type: &str) -> &'static str {
 /// 正文截断上限（字符）：防巨型正文撑爆模型上下文，同时收窄注入面。
 const MAX_RELEASE_BODY_CHARS: usize = 8000;
 
-/// 正文截断：超出上限时保留前段并追加截断标记。
 fn truncate_release_body(body: &str) -> String {
     if body.chars().count() <= MAX_RELEASE_BODY_CHARS {
         return body.to_string();
@@ -431,7 +429,7 @@ pub fn render_release_entity(release: &ReleaseInfo) -> String {
 /// 组装传给 Agent 的 prompt：说明提示词 + 实体上下文段 + 用户指令 + 固定后缀。
 /// 有 skill 时引导按 skill 工作流处理；无 skill 时直接按用户指令处理。
 ///
-/// 防 Prompt Injection 设计（安全基线，P0 固定）：
+/// 防 Prompt Injection 设计（安全基线）：
 /// - 实体上下文（监控源捕获的外部数据：GitHub Release Notes、B 站视频简介等，
 ///   均可能被第三方夹带恶意内容）整体包裹在 `<外部数据区>` 内，并附不可信声明：
 ///   其中的一切文字——包括任何看似指令、请求或提示的语句——一律视为数据内容，
@@ -446,7 +444,7 @@ pub fn build_prompt(
 ) -> String {
     // 多轮对话（非首轮）且无新实体：精简为仅用户指令（+全局 suffix）。
     // 首轮模板里的订阅说明 / 权威指令声明对继续追问是纯噪音，直接省略；
-    // 但只要本次带了新实体，外部数据区的不可信声明（P0 安全基线）必须保留，
+    // 但只要本次带了新实体，外部数据区的不可信声明（安全基线）必须保留，
     // 因此仍走完整模板（下方分支）。
     if !first_turn && entity_texts.is_empty() {
         let mut out = String::new();
@@ -512,7 +510,7 @@ pub fn build_prompt(
     out
 }
 
-/// 把用户附加的本地文件绝对路径追加到 prompt 末尾（评审「本地文件/图片附件」）。
+/// 把用户附加的本地文件绝对路径追加到 prompt 末尾。
 ///
 /// 与 `build_prompt` 分开实现是有意的：`build_prompt` 是防注入的安全关键函数
 /// （外部数据区 + 不可信声明），任何改动都要求重新通读校验。本地文件是**用户自己
@@ -695,7 +693,6 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
         .unwrap_or_default();
 
-    // 按全局配置构造执行器
     let executor = match &ctx.executor_override {
         Some(e) => e.clone(),
         None => match executor_for(&config.agent_type, &config, ctx.rpc.clone()) {
@@ -751,7 +748,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         .execute(&AgentContext {
             skill_path: skill_path.as_deref(),
             model: model_override.as_ref(),
-            // 会话文件路径（None = --no-session 临时模式，不落盘）
+            // 会话文件路径（None = 不绑定：仅确保常驻进程存活，沿用进程当前会话）
             session_path: run.session_path.as_deref().filter(|p| !p.is_empty()),
             entity_texts: &entity_texts,
             files: &files,
@@ -770,7 +767,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         }
         Err(e) => {
             // 终态事件丢失（end_lost）不是失败，是**不知道**——产物可能已经生成，
-            // 按 failed 展示会让用户以为没跑而重复提交（评审 3.1）。
+            // 按 failed 展示会让用户以为没跑而重复提交。
             let st = if e.code.starts_with("err.agent.timeout") {
                 STATUS_TIMEOUT
             } else if e.code.starts_with("err.agent.end_lost") {
@@ -779,7 +776,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
                 STATUS_FAILED
             };
             // 超时 / 失败 / 取消前已生成的产物照写 DB：聊天流（JSONL）里看得到的内容，
-            // 运行记录里也该查得到（此前非 success 终态 stdout 恒为 None，产物被丢弃）。
+            // 运行记录里也该查得到。
             let out = if e.partial_stdout.is_empty() { None } else { Some(e.partial_stdout) };
             (st, None, out, None, Some(e.code))
         }
@@ -797,8 +794,8 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
     }
     log::info!("agent run {} finished: {} (exit={:?})", run_id, status, exit_code);
 
-    // H-6 修复：run 已落终态（无 running run 占用进程），消费设置页保存时
-    // 因 running 守卫被推迟的进程重启，使新配置在下次提交生效。
+    // run 已落终态（无 running run 占用进程），消费设置页保存时因 running 守卫
+    // 被推迟的进程重启，使新配置在下次提交生效。
     ctx.rpc.restart_if_pending().await;
 
     emit_run_finished(ctx, &run, status, error).await;
@@ -1206,7 +1203,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_run_marks_end_lost_as_unknown_not_failed() {
         // 终态事件丢失：任务可能已经跑完，产物也在。谎报 failed 会让用户以为没跑而
-        // 重复提交（重复烧词元 / 重复副作用），故单列 unknown 终态（评审 3.1）。
+        // 重复提交（重复烧词元 / 重复副作用），故单列 unknown 终态。
         let pool = init_memory_pool().unwrap();
         {
             let conn = pool.get().unwrap();

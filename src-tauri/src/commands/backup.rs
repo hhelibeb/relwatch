@@ -32,12 +32,11 @@ fn sibling_temp_path(target: &Path) -> PathBuf {
 ///
 /// ## 用绑定参数而非字符串拼接
 ///
-/// `VACUUM INTO ?1` 的参数是一个**表达式**，实测绑定参数可用，于是不再需要手工转义。
-/// 原实现拼 `.replace('\'', "''").replace('\\', "\\\\")`，其中把反斜杠加倍是
-/// **没有意义的**（SQLite 字符串字面量不处理 `\` 转义，也不会把它还原成单个）——
-/// 实测它在 Windows 上不造成故障，只是因为系统会宽容归并重复的路径分隔符（写出的仍是
-/// 预期的 `backup.db`），**并非因为转义正确**。改用参数绑定后不再依赖这个巧合，
-/// 也避开了「路径含单引号时拼串是否可靠」这类只能靠人推的细节。
+/// `VACUUM INTO ?1` 的参数是一个**表达式**，实测绑定参数可用，无需手工转义。
+/// 手工拼串时把反斜杠加倍是**没有意义的**（SQLite 字符串字面量不处理 `\` 转义，
+/// 也不会把它还原成单个）——实测它在 Windows 上不造成故障，只是因为系统会宽容
+/// 归并重复的路径分隔符（写出的仍是预期的 `backup.db`），**并非因为转义正确**；
+/// 参数绑定不依赖这个巧合，也避开了「路径含单引号时拼串是否可靠」这类只能靠人推的细节。
 fn vacuum_into(conn: &Connection, target: &Path) -> Result<(), String> {
     let tmp = sibling_temp_path(target);
     // 上次异常退出可能留下同名临时文件——VACUUM INTO 同样不接受已存在的文件
@@ -142,10 +141,8 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
     let _poll_guard = crate::poll::acquire_lock()
         .map_err(|_| "err.backup_import_busy".to_string())?;
 
-    // 验证文件是有效的 SQLite 数据库
     validate_sqlite_file(&path_str)?;
 
-    // 打开备份文件作为源连接（source）
     let src_conn = rusqlite::Connection::open(&path_str)
         .map_err(|e| format!("err.backup_open_failed|{}", e))?;
 
@@ -257,10 +254,8 @@ mod tests {
 
     /// 每个用例独立的临时目录（名带 pid + 标签），用完即删。
     ///
-    /// 回归背景：旧用例把目标写成 `temp_dir()/test_export_<pid>.db`——
-    /// ① 直接落在系统 temp 根目录且不保证清理，已累积大量残留；
-    /// ② pid 会被复用，一旦撞上旧残留文件，`VACUUM INTO` 就报
-    ///    `file is not a database`，使 CI 随机变红。
+    /// 名字里必须同时带 pid 与标签：pid 会被复用，若与其他用例的残留目录重名，
+    /// `VACUUM INTO` 会撞上已存在的文件并报 `file is not a database`，CI 随机变红。
     fn unique_temp_dir(tag: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("relwatch-test-{}-{}", std::process::id(), tag));
         let _ = std::fs::remove_dir_all(&dir);
@@ -271,11 +266,9 @@ mod tests {
     /// 临时目录卫兵：Drop 时删除目录。
     ///
     /// 用例里**不能**只写一句 `remove_dir_all` 就完事：Windows 不允许删除仍被打开的文件
-    /// 所在目录，而用例还持有 `Connection::open(备份文件)`——在 `restored` 仍存活时清理
-    /// 会**静默失败**（`let _ =` 吞掉），留下残留目录（实测 `export_valid` /
-    /// `export_overwrite` 各留一堆）。用卫兵即可：局部变量按声明逆序析构，卫兵声明在最前
+    /// 所在目录，而用例可能还持有 `Connection::open(备份文件)`，此时清理会**静默失败**
+    /// （`let _ =` 吞掉）留下残留。用卫兵即可：局部变量按声明逆序析构，卫兵声明在最前
     /// ⇒ 最后析构，届时连接已全部关闭；断言失败/panic 展开时同样会走到 Drop。
-    /// 顺带把「结尾手动清理」这个容易漏写的约定收口成一种写法。
     struct TempDirGuard(PathBuf);
 
     impl TempDirGuard {
@@ -310,8 +303,8 @@ mod tests {
         let backup_path = dir.path().join("backup.db");
         let conn = seed_db();
 
-        // 调生产同一份实现（不再在测试里另拄一遍 VACUUM INTO——旧写法是
-        // 「测试副本」：它既测不到生产的转义/覆盖处理，自身又引入了 temp 残留 flake）
+        // 调生产同一份实现：测试里另写一遍 VACUUM INTO 既测不到生产的转义/覆盖处理，
+        // 自身又会引入 temp 残留 flake
         vacuum_into(&conn, &backup_path).unwrap();
 
         assert!(backup_path.exists(), "应创建备份文件");
@@ -454,9 +447,7 @@ mod tests {
              INSERT INTO t VALUES (2, 'extra');"
         ).unwrap();
 
-        // 注意：生产代码 import_backup 不再预先 DELETE（Backup API 页级整库覆盖，
-        // DELETE 是死代码且制造数据丢失窗口）。这里仅验证 Backup 覆盖后脏数据被替换。
-        // 从备份恢复（整库覆盖）
+        // 仅验证 Backup 页级整库覆盖后脏数据被替换（生产代码不预先 DELETE，见 import_backup）
         {
             let src_conn = rusqlite::Connection::open(&backup_path).unwrap();
             let backup = rusqlite::backup::Backup::new(&src_conn, &mut dst).unwrap();
@@ -476,9 +467,9 @@ mod tests {
         let _ = std::fs::remove_file(&backup_path);
     }
 
-    /// 问题2 回归测试：导入旧版本 schema 的备份（缺 ai_summary 等 ALTER 后新增的列）
-    /// 后，Backup API 整库覆盖会把目标库 schema 退回旧版；不补列会让引用新列的
-    /// 查询立即报错。此处验证 import_backup 修复后的链路：覆盖 → apply_schema → migrate → 查询新列成功。
+    /// 回归：导入旧版本 schema 的备份（缺 ai_summary 等 ALTER 后新增的列）后，
+    /// Backup API 整库覆盖会把目标库 schema 退回旧版；不补列会让引用新列的
+    /// 查询立即报错。此处验证 import_backup 的恢复链路：覆盖 → apply_schema → migrate → 查询新列成功。
     #[test]
     fn test_import_old_schema_backup_then_migrate_restores_columns() {
         use crate::db::init::{apply_schema, migrate};

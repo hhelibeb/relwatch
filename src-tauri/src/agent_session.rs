@@ -41,7 +41,7 @@ pub enum AgentChatBlock {
 /// 一条聊天消息（时间正序，树取当前 leaf 路径）。
 #[derive(Debug, Clone, Serialize, Deserialize, Type, PartialEq)]
 pub struct AgentChatMessage {
-    /// user | assistant | tool | bash | custom
+    /// pi 原样透传的 role（user / assistant / toolResult / bashExecution / custom 等）。
     pub role: String,
     pub blocks: Vec<AgentChatBlock>,
     /// ISO 时间戳（entry 级别，非 message 内嵌）。
@@ -54,7 +54,7 @@ pub struct AgentChatMessage {
     pub run_id: Option<i64>,
 }
 
-/// 解析会话文件。文件不存在 / 为空 → 空列表。
+/// 解析会话文件。文件为空 → 空列表；读取失败 → Err（文件是否存在由调用方判断）。
 pub fn parse_session_file(path: &Path) -> Result<Vec<AgentChatMessage>, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("err.agent.read_session|{}", e))?;
@@ -278,13 +278,11 @@ fn convert_generic_blocks(msg: &serde_json::Value) -> Vec<AgentChatBlock> {
     }
 }
 
-// ---- 会话标题重建（磁盘发现：localStorage 索引丢失后找回「数据到意义的映射」）----
+// ---- 会话标题重建（磁盘发现：localStorage 索引丢失后从文件重建）----
 
 /// 标题取首条用户指令的字符上限（与前端 `SessionMeta.title` 的 40 字截断对齐）。
 pub const SESSION_TITLE_MAX_CHARS: usize = 40;
 
-/// 只读取会话文件头部这么多字节来重建标题。
-///
 /// 首条 user 消息位于文件开头（紧随 `type:session` 行之后），无需读全文件；
 /// 会话文件可能累积到数 MB，逐会话全量读取会让会话列表启动变慢。
 const TITLE_SCAN_BYTES: u64 = 64 * 1024;
@@ -342,7 +340,7 @@ pub fn session_title_from_jsonl(content: &str) -> Option<String> {
 
 /// 剥离 pi 展开 Skill 时注入的 `<skill name=…>…</skill>` 全文块。
 ///
-/// 与前端 `stripSkillBlock`（AgentWorkspace.vue）同语义：不剥离的话，用了 Skill 的
+/// 与前端 `stripSkillBlock`（agentChatUtils.ts）同语义：不剥离的话，用了 Skill 的
 /// 会话标题会变成 Skill 正文的前 40 字，而不是用户的真实指令。
 fn strip_skill_block(text: &str) -> String {
     let start = match text.find("<skill") {
@@ -389,7 +387,6 @@ fn extract_user_instruction(text: &str) -> String {
     text.trim().to_string()
 }
 
-/// 拼接 content 数组中的所有文本块。
 fn collect_text(content: &serde_json::Value) -> String {
     let items = match content {
         serde_json::Value::Array(items) => items,

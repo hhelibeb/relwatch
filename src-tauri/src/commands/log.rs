@@ -41,12 +41,11 @@ use serde_json::json;
     .map_err(|e| format!("err.task_failed|clear_logs|{}", e))?
 }
 
-/// 前端未捕获异常上报（V2 全局兜底通道）。
+/// 前端未捕获异常上报（全局兜底通道）。
 ///
-/// 背景：release 版没有控制台，`app.config.errorHandler` / `unhandledrejection` 里
-/// 的异常原本既无提示、也无落库，用户报障时无从查起（“点了没反应且查不到”）。
-/// 前端侧 `src/api/report-error.ts` 是唯一调用方——它负责节流（同一 key 60s 内只报一条）、
-/// 截断（堆栈 ≤2KB）与 toast 提示；本命令只负责落库。
+/// 背景：release 版没有控制台，`app.config.errorHandler` / `unhandledrejection` 里的
+/// 异常若只留在前端，用户报障时无从查起。前端侧 `src/api/report-error.ts` 是唯一调用方——
+/// 它负责节流（同一 key 60s 内只报一条）、截断（堆栈 ≤2KB）与 toast 提示；本命令只负责落库。
 ///
 /// **命名约束**：`message_key` 由前端传入，**不得以 err. 开头**。
 /// `src/__tests__/i18n-keys.test.ts` 会扫描 Rust 生产代码中以双引号开头的 err. 前缀
@@ -54,8 +53,8 @@ use serde_json::json;
 /// 而卡住 CI（本注释特意不写出该字面量，以免自投罗网）。
 /// 前端现用 `ui.vue_error` / `ui.unhandled_rejection` / `ui.window_error`。
 ///
-/// 落库前经 `db::logs::write_log_key` 的默认脱敏（V28），无需在此重复处理；
-/// DB 写入失败时该函数会降级写 `logs/fallback.log`（V23）。
+/// 落库前经 `db::logs::write_log_key` 的默认脱敏，无需在此重复处理；
+/// DB 写入失败时该函数会降级写 `logs/fallback.log`。
 #[tauri::command]
 
 #[specta::specta]pub async fn report_frontend_error(
@@ -95,7 +94,7 @@ mod tests {
         assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("test.warn")));
     }
 
-    /// `report_frontend_error` 的 args 形状与可搜索性（V2）。
+    /// `report_frontend_error` 的 args 形状与可搜索性。
     /// 命令体需要 tauri State，无法在单测里直接调用；这里复刻其 args 构造，
     /// 锁住「日志页搜错误关键词能命中」这一用户可见契约。
     #[test]
@@ -136,7 +135,6 @@ mod tests {
         db::logs::clear_logs(&conn).unwrap();
         db::logs::write_log_key(&conn, "INFO", "log.cleared", "{}");
 
-        // After clear, only the "log.cleared" entry should exist
         let logs = db::logs::get_logs(&conn, 10).unwrap();
         assert_eq!(logs.len(), 1);
         assert_eq!(logs[0].message_key.as_deref(), Some("log.cleared"));

@@ -9,12 +9,7 @@ beforeEach(() => {
 })
 
 /**
- * ContextMenu.vue 真实运行场景测试
- *
- * 固定定位右键菜单，支持：
- * - 按 items 渲染按钮（items 为必填 prop）
- * - 挂载后自动聚焦第一个按钮
- * - 键盘导航：ArrowDown/ArrowUp（循环）、Escape → close
+ * ContextMenu.vue：固定定位右键菜单的渲染、键盘导航与聚焦行为。
  */
 describe('ContextMenu.vue — 渲染', () => {
   function mountMenu(props: Record<string, unknown> = {}) {

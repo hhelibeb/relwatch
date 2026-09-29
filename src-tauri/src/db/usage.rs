@@ -263,7 +263,6 @@ mod tests {
         assert_eq!(get_usage_stats(&conn, None).unwrap().len(), 1);
         clear_usage_stats(&conn).unwrap();
         assert!(get_usage_stats(&conn, None).unwrap().is_empty());
-        // 清空后仍可继续记录
         record_usage(&conn, &[("source.add".into(), 1)]).unwrap();
         assert_eq!(get_usage_stats(&conn, None).unwrap().len(), 1);
     }

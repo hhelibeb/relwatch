@@ -1,8 +1,7 @@
 //! 凭据读取统一管道：读取 → 解密 → v1→v2 迁移回写。
 //!
-//! 原先 poll.rs（3 份）、commands/source.rs（3 份）、deepseek.rs（1 份）各自内联
-//! 同一段「get_setting → 判空 → decrypt_with_migration → 回写」逻辑，仅 key 不同。
-//! 收敛为本模块唯一实现，调用方只需传入 settings key 常量。
+//! **唯一**实现：所有需要读凭据的地方都走 `read_credential`，调用方只需传入
+//! settings key 常量，不得再各自内联「get_setting → 判空 → decrypt → 回写」。
 
 use rusqlite::Connection;
 

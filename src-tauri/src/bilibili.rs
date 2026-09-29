@@ -167,8 +167,6 @@ fn sign_wbi_query(params: &HashMap<String, String>, mixin_key: &str, wts: i64) -
 /// 风控相关错误（412/403/429/400）不重试，其余（网络抖动、5xx）重试。
 /// `referer`：B 站校验 Referer 来源，动态接口应传具体用户空间页（`space.bilibili.com/{mid}`），
 /// 其它接口传 `https://www.bilibili.com/`（实测缺头/通用 Referer 易触发风控）。
-/// 复用 `http::get_text_with_retry` 统一封装（M3）：仅 header 注入、412 映射与
-/// 重试规则为 B 站变体，「send → 状态映射 → text」与重试骨架不再各自重写。
 async fn bili_get(
     client: &reqwest::Client,
     url: &str,
@@ -345,7 +343,7 @@ impl BiliWbiCache {
 /// 全局 B 站 cookie 缓存。buvid cookie 与具体监控源无关，多个 bilibili 源、多次检查共享，
 /// 避免每次检查重复请求主页/spi/ticket。
 ///
-/// cookie 与 WBI 密钥拆分为**两把独立锁**（F4）：cookie 初始化含主页 + spi + ticket 3 段网络
+/// cookie 与 WBI 密钥拆分为**两把独立锁**：cookie 初始化含主页 + spi + ticket 3 段网络
 /// 往返，若与 WBI 共用一把锁，一个源的 cookie 未命中会阻塞另一源纯缓存命中的 WBI 读取，
 /// 全局串行化。拆分后两个状态各自并发，跨 await 持锁仍保证 check-then-act 安全
 /// （防 thundering herd）。
@@ -536,9 +534,8 @@ async fn fetch_dynamic_page(
             .as_str()
             .unwrap_or("")
             .to_string();
-        // 动态发布时间即视频投稿时间；pub_ts 解析失败（字段缺失/类型异常）时
-        // 以当前时间兜底，杜绝 1970-01-01 脏数据（此前会导致版本列表按时间
-        // 排序被 LIMIT 截断而完全不可见）。
+        // 动态发布时间即视频投稿时间；pub_ts 解析失败（字段缺失/类型异常）时以当前时间兜底，
+        // 杜绝 1970-01-01 脏数据（0 时间戳会让版本列表按时间排序被 LIMIT 截断而不可见）。
         let published = match parse_pub_ts(it) {
             Some(ts) => chrono::DateTime::from_timestamp(ts, 0)
                 .map(|d| d.to_rfc3339())
@@ -573,7 +570,7 @@ fn parse_pub_ts(item: &serde_json::Value) -> Option<i64> {
 }
 
 /// 解析用户输入为 UID：
-/// - 纯数字 UID（2~16 位：旧式 6~10 位、新式 16 位均可）
+/// - 纯数字 UID（至多 16 位：旧式 6~10 位、新式 16 位均可）
 /// - `space.bilibili.com/{uid}` / `bilibili.com/space/{uid}` 链接
 /// - `bilibili.com/{uid}`（B 站新版空间跳转）
 fn extract_uid(input: &str) -> Option<String> {
@@ -804,7 +801,7 @@ impl SourceAdapter for BilibiliAdapter {
         loop {
             // 页数上限保护：max_count=None（fetch_history_count=0 全量拉取）时
             // 唯一终止条件本是响应 offset 为空；若 B 站异常重复返回同一非空 offset，
-            // 这里强制在 MAX_FETCH_ALL_PAGES 页后停止，避免无限循环挂住轮询（F5）。
+            // 这里强制在 MAX_FETCH_ALL_PAGES 页后停止，避免无限循环挂住轮询。
             if pages >= MAX_FETCH_ALL_PAGES {
                 log::warn!(
                     "bilibili {} 翻页达到上限 {} 页，停止拉取（已获 {} 条）",

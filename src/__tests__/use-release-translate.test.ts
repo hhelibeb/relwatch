@@ -10,7 +10,7 @@ vi.mock('../api/releases', () => ({
   translateRelease: vi.fn(),
 }))
 
-// useUsageTracking 内部直接使用真实实现（track 为 no-op 亦可，避免额外 mock）
+// 用量埋点与断言无关：track mock 为 no-op，避免真实实现的定时器与写入干扰
 vi.mock('../composables/useUsageTracking', () => ({
   track: vi.fn(),
 }))

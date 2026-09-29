@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { toDateKey, parseDateKey } from '../utils/dateKey'
 
-// 阶段 2-1：日历分组键（src/utils/dateKey.ts）专项测试。
+// 日历分组键（src/utils/dateKey.ts）专项测试。
 // 日历视图（ReleaseCalendar.vue）以该键做按天分组，闰年/跨月/跨年边界
-// 是"最易错边界计算"之一，补上独立测试钉住行为。
+// 是"最易错边界计算"之一，用独立测试钉住行为。
 
 describe('toDateKey', () => {
   it('常规日期格式化为 YYYY-MM-DD', () => {

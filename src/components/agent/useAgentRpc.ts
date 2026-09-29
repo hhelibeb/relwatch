@@ -1,11 +1,9 @@
-// ── pi 常驻进程健康（E 域：指示灯 + 状态菜单 + 重启 + 推迟生效提示）──
-// pi 是常驻 RPC 子进程，挂了/卡了 UI 此前毫无感知：提交失败时用户分不清是
-// 配置写错还是进程挂了，只能盲改设置重试。指示灯把「进程在不在」变成可见状态，
-// 重启入口给出一条不依赖排障知识的自救路径。
+// ── pi 常驻进程健康（指示灯 + 状态菜单 + 重启 + 推迟生效提示）──
+// pi 是常驻 RPC 子进程，挂了/卡了时提交失败，用户分不清是配置写错还是进程挂了。
+// 指示灯把「进程在不在」变成可见状态，重启入口给出一条不依赖排障知识的自救路径。
 //
 // 交互形态：点状态灯弹出菜单（状态详情 + 重启项），而非「点灯即重启」——
-// 灯的语义是状态展示，重启是低频排障操作，混在一个 8px 热区里既看不懂也易误触
-// （未运行时点击更无从「重启」，此前会静默 no-op 并 toast 谎报已重启）。
+// 灯的语义是状态展示，重启是低频排障操作，混在一个 8px 热区里既看不懂也易误触。
 // 重启项仅在运行中渲染：未运行时首次提交会自动拉起，无需也没有可重启的对象。
 import { computed, ref } from 'vue'
 import { getAgentRpcStatus, restartAgentRpc, type AgentRpcStatus } from '../../api/agent'
@@ -14,7 +12,7 @@ import { useAnchoredMenu } from './useAnchoredMenu'
 
 export function useAgentRpc(deps: {
   showToast: (msg: string) => void
-  /** 状态菜单打开时收起输入区各菜单（同屏叠开会互相遮挡，原 toggleRpcMenu 行为） */
+  /** 状态菜单打开时收起输入区各菜单（同屏叠开会互相遮挡） */
   onMenuOpen?: () => void
 }) {
   const { showToast } = deps
@@ -46,7 +44,6 @@ export function useAgentRpc(deps: {
   function toggleRpcMenu() {
     rpcMenuOpen.value = !rpcMenuOpen.value
     if (rpcMenuOpen.value) {
-      // 以灯为锚往下弹
       rpcMenu.place(rpcDotEl.value)
       void loadRpcStatus()
       // 与其他弹出层互斥：输入区菜单与 rpc 菜单同屏叠开会被此遮彼挡
@@ -54,8 +51,8 @@ export function useAgentRpc(deps: {
     }
   }
 
-  /** 配置推迟生效提示（评审 3.8）：改了 pi 路径/模型/skill 后有 run 在跑，
-   *  重启被推迟到当前任务结束——此前这段时间 UI 无任何提示，用户以为改了没生效。 */
+  /** 配置推迟生效提示：改了 pi 路径/模型/skill 后有 run 在跑，
+   *  重启被推迟到当前任务结束——不提示的话用户会以为改了没生效。 */
   const rpcRestartPending = computed<boolean>(() => rpcStatus.value?.restart_pending === true)
 
   async function handleRestartRpc() {

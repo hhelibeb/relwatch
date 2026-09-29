@@ -4,7 +4,8 @@
 //! - Agent 配置为**全局单例**，存 app_settings 键值（不走 SETTING_SPECS 注册表，
 //!   因其含 JSON 数组字段，与注册表的标量序列化规则不符）：
 //!   `agent_enabled` / `agent_type` / `agent_binary` / `agent_model` /
-//!   `agent_prompt_suffix` / `agent_timeout_seconds` / `agent_skills`（JSON 数组）。
+//!   `agent_prompt_suffix` / `agent_timeout_seconds` / `agent_skills`（JSON 数组）/
+//!   `agent_working_dir` / `agent_ws_width`。
 //! - `agent_runs`：一次工作区提交的运行记录。同一 `session_key`（前端 UUID）的多次
 //!   提交共享一个 pi 会话文件（`pi --session <path>` 继续），构成多轮对话；
 //!   `entities` 固化本次提交引用的实体（JSON: `[{"kind":"source"|"release","id":N}]`）。
@@ -274,7 +275,7 @@ pub fn get_run(conn: &Connection, run_id: i64) -> Result<Option<AgentRun>, Strin
 }
 
 /// 一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
-/// stdout 存的是模型完整输出，列表接口最多拉 100 条，全列返回会拖慢查询与序列化。
+/// stdout 存的是模型完整输出，列表接口按批拉取，全列返回会拖慢查询与序列化。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct AgentRunSummary {
     pub id: i64,
@@ -445,10 +446,8 @@ pub fn agent_queue(conn: &Connection) -> Result<Vec<AgentQueueItem>, String> {
 
 /// 某会话**全部**活跃 run 的 id（pending / running，按创建顺序升序）。
 ///
-/// 替代此前「拉最近 50 条摘要再筛状态」的做法（评审 3.9）：摘要查询带
-/// `ORDER BY id DESC LIMIT 50`，理论上存在「活跃 run 落到第 51 条之后被漏掉」的窗口
-/// ——全局单并发下极难触发，但按状态直接查询成本更低且**从定义上无窗口**，
-/// 删除会话这类「漏一个就破坏承诺」的场景不该依赖概率。
+/// 不用「拉最近 N 条摘要再筛状态」：摘要查询的 LIMIT 会漏掉更早的活跃 run，
+/// 而删除会话这类「漏一个就破坏承诺」的场景不该依赖概率（按状态查询从定义上无窗口）。
 pub fn active_runs_for_session(conn: &Connection, session_key: &str) -> Result<Vec<i64>, String> {
     let mut stmt = conn
         .prepare(
@@ -478,7 +477,7 @@ pub fn active_run_count_for_session(conn: &Connection, session_key: &str) -> Res
 /// 一个会话在 DB 侧的运行摘要（磁盘发现时用于关联 last status / 最后提交时间）。
 #[derive(Debug, Clone, Default)]
 pub struct SessionRunDigest {
-    /// 最近一次提交的状态（pending / running / success / failed / timeout / cancelled）。
+    /// 最近一次提交的状态（pending / running / success / failed / timeout / cancelled / unknown）。
     pub last_status: Option<String>,
     /// 最近一次提交的创建时间（RFC3339）。
     pub last_created_at: Option<String>,

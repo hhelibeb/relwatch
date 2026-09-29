@@ -32,7 +32,7 @@ const BILI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537
                        (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 /// 登录页地址（Rust 建窗加载）。
 const BILI_LOGIN_URL: &str = "https://passport.bilibili.com/login";
-/// 登录窗口尺寸（与前端旧建窗参数一致）。
+/// 登录窗口尺寸。
 const BILI_LOGIN_WIDTH: f64 = 460.0;
 const BILI_LOGIN_HEIGHT: f64 = 640.0;
 
@@ -85,7 +85,6 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
         .get_webview_window(&window_label)
         .ok_or("err.bili_login_window_missing".to_string())?;
 
-    // 1) 读 webview cookie（同步 API）
     let url = tauri::Url::from_str(BILI_COOKIE_DOMAIN)
         .map_err(|e| format!("err.parse_failed|{}", e))?;
     let cookies = win
@@ -98,8 +97,8 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
         .filter(|v| !v.is_empty())
         .ok_or("err.bili_login_not_logged_in".to_string())?;
 
-    // 2) 验证登录态（nav isLogin），避免无效/过期 cookie 入库
-    //    先从 settings 取代理配置构建 client（与轮询链路一致）
+    // 验证登录态（nav isLogin），避免无效/过期 cookie 入库；
+    // 先从 settings 取代理配置构建 client（与轮询链路一致）
     let (proxy_url, proxy_mode) = {
         let conn = state
             .db
@@ -141,7 +140,6 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
         return Err("err.bili_login_not_logged_in".to_string());
     }
 
-    // 3) 加密存储
     let conn = state
         .db
         .get()
@@ -175,7 +173,6 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
 /// 到事件循环，而事件循环正卡在 `WaitWithPump` 的死循环里（tao 的 WM_CLOSE
 /// → 事件循环处理，事件循环不动则窗口无法销毁）。改为 async 后命令体在
 /// async runtime（非主线程）执行，主线程消息泵保持可用。
-/// 该缺陷自 c8d28f8「B 站登录窗 Rust 建窗」（v1.16.0 起）引入。
 #[tauri::command]
 
 #[specta::specta]pub async fn open_bilibili_login_window(
@@ -227,14 +224,11 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
     // builder 必须在闭包内部从 `AppHandle` 构建：`WebviewWindowBuilder` 借用
     // `&'a Manager`，拿不到 `'static` 生命周期，无法先建后移入线程。
     let app_for_build = app.clone();
-    // 独立 WebView2 用户数据目录：Windows 下 WebView2 要求「同一 user data
-    // folder 上运行中的实例，其 CoreWebView2EnvironmentOptions 必须一致」
-    // （wry::WebContext 文档 + MS 文档同口径）。主窗口无代理、本窗口按设置可能
-    // 注入 `--proxy-server`，两者选项不同却共用 Tauri 默认填的
-    // `%LOCALAPPDATA%\<identifier>`，会导致 WebView 创建失败——而失败在
-    // tauri-runtime-wry 里只 `log::error!` 且**不回传**，build() 仍返回 Ok，
-    // 结果是窗口闪一下即消失（create_webview 失败令局部 window 被 drop）、
-    // 命令却报成功，前端转入轮询把按钮锁死。给登录窗口单独一个子目录即可避开。
+    // 独立 WebView2 用户数据目录：Windows 下 WebView2 要求同一 user data folder 上
+    // 运行中实例的 CoreWebView2EnvironmentOptions 一致，而主窗口无代理、本窗口按设置
+    // 可能注入 `--proxy-server`——共用 Tauri 默认填的 `%LOCALAPPDATA%\<identifier>`
+    // 会导致 WebView 创建失败（失败在 tauri-runtime-wry 里只 `log::error!` 且不回传，
+    // build() 仍返回 Ok，表现为窗口闪一下即消失而命令报成功）。详见 BILI_LOGIN_DATA_DIR。
     // 用 AppLocalData + 子目录（而非 LocalData）以保持与 manager 自动填的
     // `%LOCALAPPDATA%\<identifier>` 同根。
     let login_data_dir = app_for_build
@@ -252,11 +246,11 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
         .inner_size(BILI_LOGIN_WIDTH, BILI_LOGIN_HEIGHT)
         .center()
         .resizable(false)
-        // 顶层导航白名单（M-1 加固）：该窗口加载第三方远程站点，且不具备主窗口的
-        // 五重防线（useExternalLinkGuard / DOMPurify / CSP / wry 新窗拒绝 / 禁拖放），
+        // 顶层导航白名单：该窗口加载第三方远程站点，且不具备主窗口的五重防线
+        // （useExternalLinkGuard / DOMPurify / CSP / wry 新窗拒绝 / 禁拖放），
         // 远程页面可自行 `location.href` 导航到 `http://media.localhost/...`——media
         // 是 app 级注册的协议、被 Tauri 判定为本地源，一旦导航成功，窗口就变成
-        // 「本地 origin + 继承全部 IPC 能力」的文档（审计报告 §M-1 环节 5）。
+        // 「本地 origin + 继承全部 IPC 能力」的文档。
         // 只放行 B 站系域（hdslb.com 为 B 站 CDN）；media 协议与其余一律拦截。
         .on_navigation(|url| {
             let host = url.host_str().unwrap_or_default();

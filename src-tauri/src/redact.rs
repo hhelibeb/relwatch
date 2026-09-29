@@ -1,13 +1,10 @@
-//! 凭据脱敏：日志与源健康状态的**唯一**出口过滤器（V28）。
+//! 凭据脱敏：日志与源健康状态的**唯一**出口过滤器。
 //!
-//! 背景：`check.failed` 曾把 reqwest 的原始错误文本整段落库，其中含
-//! `…&key=AIzaSy…`（YouTube Data API key）——日志留存 14 天、可搜索、可导出，
-//! 等于凭据明文外泄。原实现 `redact_url_credentials` 只剥离 URL userinfo
-//! （`user:pass@`），**不覆盖 query 参数**，而 `?key=` / `?token=` 恰是主流形式。
-//!
-//! 因此这里把脱敏提到公共位置并覆盖三类载体：
-//! 1. URL userinfo（原实现，行为保持不变）；
-//! 2. URL query 参数中名字敏感的项（`key` / `token` / `api_key` / `secret` …）；
+//! 日志留存 14 天、可搜索、可导出，错误文本里回显的 URL / 密钥等于凭据明文外泄，
+//! 故脱敏必须在公共位置一次做完，覆盖三类载体：
+//! 1. URL userinfo（`user:pass@`）；
+//! 2. URL query 参数中名字敏感的项（`key` / `token` / `api_key` / `secret` …）——
+//!    `?key=` / `?token=` 与 `user:pass@` 一样是主流泄露形式，不可只处理后者；
 //! 3. 已知形状的凭据字面量（`AIza…` / `ghp_…` / `sk-…`），用于「错误文本里
 //!    只回显了密钥本身、没有 URL 包裹」的情况。
 //!
@@ -214,7 +211,7 @@ pub fn redact(text: &str) -> String {
 mod tests {
     use super::*;
 
-    // ── userinfo（原 redact_url_credentials 的行为，迁移后必须保持）──
+    // ── userinfo 脱敏（原有行为必须保持不变）──
 
     #[test]
     fn redact_strips_userinfo_from_url() {
@@ -240,7 +237,7 @@ mod tests {
     #[test]
     fn redact_handles_url_wrapped_in_parentheses() {
         // 回归：reqwest 的错误文本形如 `... for url (http://...)`。
-        // 早期实现把 `)` 当 authority 边界，导致带 `)` 的口令被截断、凭据漏网。
+        // `)` 不能当 authority 边界，否则带 `)` 的口令会被截断、凭据漏网。
         assert_eq!(
             redact("error sending request for url (http://u:p@h:8080)"),
             "error sending request for url (http://***:***@h:8080)"
@@ -273,7 +270,7 @@ mod tests {
         assert_eq!(redact("http://@host"), "http://@host");
     }
 
-    // ── query 参数（V28 的核心缺口：key/token 以 query 形式出现）──
+    // ── query 参数（key/token 以 query 形式出现）──
 
     #[test]
     fn redact_strips_query_api_key() {

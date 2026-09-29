@@ -3,7 +3,7 @@ import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { toMediaUrl } from '../../utils/imageProxy'
 
-// marked 配置：关闭 mangle/escaping 由 DOMPurify 统一清洗
+// marked 配置（渲染产物统一由 DOMPurify 清洗）
 marked.setOptions({
   breaks: true,      // 单换行转 <br>，符合 release note 阅读习惯
   gfm: true,         // GitHub Flavored Markdown

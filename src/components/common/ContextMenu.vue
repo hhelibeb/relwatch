@@ -83,7 +83,6 @@ onUnmounted(() => {
   unregisterOverlay = null
 })
 
-// 键盘导航
 function handleKeydown(e: KeyboardEvent) {
   const buttons = Array.from(menuRef.value?.querySelectorAll('button') || []) as HTMLButtonElement[]
   const currentIndex = buttons.findIndex(btn => btn === document.activeElement)

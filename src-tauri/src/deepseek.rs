@@ -13,7 +13,7 @@ use crate::db::settings::{
     DEEPSEEK_PROMPT_FIXED_SUFFIX,
 };
 
-/// DeepSeek 配置聚合（替代原 5 元组按位置取值，消除索引魔法）。
+/// DeepSeek 配置聚合（避免按位置取值的元组）。
 #[derive(Debug, Clone)]
 pub struct DeepSeekConfig {
     pub enabled: bool,
@@ -70,7 +70,7 @@ pub fn read_translate_config(conn: &Connection) -> (bool, String) {
 }
 
 /// 读取 DeepSeek 网络配置（proxy 直连/自定义 + 连接测试专用 bypass 开关）。
-/// 摘要与翻译两个入口共用，避免逐字重复。
+/// 摘要与翻译两个入口共用。
 /// 返回 (proxy_url, proxy_mode)，bypass 时强制直连。
 pub fn load_ai_network_config(conn: &Connection) -> (String, String) {
     let bypass = db::settings::get_setting(conn, KEY_DEEPSEEK_PROXY_BYPASS)
@@ -96,7 +96,7 @@ pub fn load_ai_network_config(conn: &Connection) -> (String, String) {
 
 /// 把用户填写的 base_url 归一到 chat/completions 的完整 POST 端点。
 ///
-/// 兼容三类填法（OpenAI 兼容生态常见），避免像旧版那样无条件追加 `/v1/chat/completions`：
+/// 兼容三类填法（OpenAI 兼容生态常见），不能无条件追加 `/v1/chat/completions`：
 /// - 根地址（DeepSeek 官方式）：`https://api.deepseek.com` → `.../v1/chat/completions`
 /// - 带 /api/v1 前缀（Cline/中转官方式）：`https://api.cline.bot/api/v1` → `.../api/v1/chat/completions`
 /// - 完整端点（含 /chat/completions）：`https://host/api/v1/chat/completions` → 原样返回
@@ -171,12 +171,11 @@ pub(crate) fn count_prompt_chars(body_json: &serde_json::Value) -> usize {
 
 /// DeepSeek 单次请求的总超时（秒）。reqwest `.timeout()` 覆盖建连→发请求→读完响应体全程，
 /// 中转网关往往等到上游生成完才回响应头，故耗时主要由 token 数与网关排队决定。
-/// - 翻译（max_tokens=20000 + 正文截 20000 字符）最重：原先写死 60s，曾在
-///   commandcode 网关实测间歇超时（用户日志 "error sending request"），放宽到
-///   300s。翻译已改为后台异步批（fire-and-forget，不阻塞轮询/手动检查），
-///   长耗时对前端无感，故取值偏向「宁可等完也别中途放弃」——一次成功好过
-///   超时后重排下一轮再等一遍。
-/// - 摘要（max_tokens=800）多数秒回，但同样受网关排队牵连、偶发撞 60s，放宽到 120s。
+/// - 翻译（max_tokens=20000 + 正文截 20000 字符）最重，取 300s：网关排队时 60s
+///   会间歇超时（表现为笼统的 "error sending request"）。翻译走后台异步批
+///   （fire-and-forget，不阻塞轮询/手动检查），长耗时对前端无感，故取值
+///   偏向「宁可等完也别中途放弃」——一次成功好过超时后重排下一轮再等一遍。
+/// - 摘要（max_tokens=800）多数秒回，但同样受网关排队牵连，取 120s。
 /// - 连接测试仍用 60s：只发一小段探测请求，且要快速失败，不让用户在设置页久等。
 pub const DEEPSEEK_TIMEOUT_SECS_SUMMARY: u64 = 120;
 pub const DEEPSEEK_TIMEOUT_SECS_TRANSLATE: u64 = 300;
@@ -186,7 +185,7 @@ pub const DEEPSEEK_TIMEOUT_SECS_TEST: u64 = 60;
 ///
 /// 与输入截断 `DEEPSEEK_TRANSLATE_TRUNCATE_CHARS` 必须保持同量级：中英互译
 /// 时输出字符数与输入相当，输出上限若显著小于输入长度，译文会在句子中间被
-/// 硬性截断（实测 v2.0.10 结尾停在半个 URL）。改动其中一个时请一并核对另一个。
+/// 硬性截断。改动其中一个时请一并核对另一个。
 pub const DEEPSEEK_TRANSLATE_MAX_TOKENS: u32 = 20000;
 /// 翻译请求的正文截断上限（字符）：输入侧上限，见上常量说明。
 pub const DEEPSEEK_TRANSLATE_TRUNCATE_CHARS: usize = 20000;
@@ -225,8 +224,7 @@ pub(crate) async fn chat_completion(
     let body = body_json.to_owned().clone();
     // 网络层错误（未收到 HTTP 响应）。reqwest 的 Display 只打顶层文案
     // （"error sending request for url (...)"），真正的失败原因（连接超时/
-    // 连接被重置/DNS 等）藏在 source 链里——此前不展开导致日志只能看到
-    // 笼统的 url，无法区分是网关超时还是本机断网。逐层展开 source 拼入。
+    // 连接被重置/DNS 等）藏在 source 链里，故逐层展开 source 拼入。
     let started = std::time::Instant::now();
     let resp = client
         .post(&endpoint)
@@ -241,7 +239,7 @@ pub(crate) async fn chat_completion(
         .await
         .map_err(|e| (0, format!("请求失败: {}", describe_reqwest_error(&e))))?;
     if resp.status().is_success() {
-        // 流式累加 + 超限中断（M-2）；错误文案保持本模块中文风格，不走
+        // 流式累加 + 超限中断；错误文案保持本模块中文风格，不走
         // read_json_limited 的 err. 前缀格式
         let bytes = crate::http::read_body_limited(resp, crate::http::MAX_JSON_BYTES)
             .await
@@ -261,7 +259,7 @@ pub(crate) async fn chat_completion(
         });
     }
     let status = resp.status().as_u16();
-    // 错误体同样限流（M-2 同源收口）：错误文本会进日志与 toast，超限时以占位
+    // 错误体同样限流：错误文本会进日志与 toast，超限时以占位
     // 文本替代完整 body
     const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
     let text = match crate::http::read_body_limited(resp, MAX_ERROR_BODY_BYTES).await {
@@ -320,8 +318,8 @@ fn has_translation(conn: &Connection, release_id: i64) -> bool {
 }
 
 /// 把 chat/completions 调用链的 `(status, msg)` 错误映射为展示串。
-/// 三个 call_*（摘要/语言检测/翻译）共用，此前各有实现、格式曾漂移
-/// （detect/translate 曾以重复 status 参数拼出与 summary 相同的输出）。
+/// 三个 call_*（摘要/语言检测/翻译）共用同一展示格式（`status` 重复一次
+/// 属既定格式，勿改）。
 fn format_chat_error(status: u16, msg: &str) -> String {
     if status > 0 {
         format!("[{}] AI API 返回错误 {}: {}", status, status, msg)
@@ -334,21 +332,17 @@ fn format_chat_error(status: u16, msg: &str) -> String {
 ///
 /// 可重试：
 /// - `429` 限流（退避后通常能过）；
-/// - `status == 0` 网络层/空内容错误。status 0 是本地约定的「未拿到 HTTP 响应」
-///   标记（见 `chat_completion` 的 `map_err`），涵盖连接超时、连接被重置、
-///   DNS 失败，以及模型返回空内容——这些都是瞬时故障，实测近 3 天 12 次译文
-///   失败里有 3 次是空内容，全部一次即判死、未重试。
+/// - `status == 0`：本地约定的「未拿到 HTTP 响应」标记（见 `chat_completion` 的
+///   `map_err`），涵盖连接超时、连接被重置、DNS 失败，以及模型返回空内容——
+///   都是瞬时故障，不能一次即判死。
 /// - `520` / `524` 网关上游故障。Cloudflare 52x 系的语义是「网关与上游之间的
-///   连接层故障」，而非上游应用自身回应的 5xx。commandcode 网关对同一故障
-///   消息体 `Upstream model provider is temporarily unavailable. Please try
-///   again in a moment.` 实测会随机返回 520 或 524（长正文探针三次：
-///   520/524/524，各等 7~127s）——只白名单 524 会把撞上 520 的那次长等待
-///   白白作废。网关明确在请你重试；此时请求往往已被上游接收但结果作废，
-///   不重试则白白浪费一次长等待（翻译批长达 300s）。
+///   连接层故障」，而非上游应用自身回应的 5xx；网关对同一故障会随机返回 520 或
+///   524，只白名单 524 会把撞上 520 的那次长等待白白作废。网关明确在请调用方
+///   重试，且此时请求往往已被上游接收但结果作废，不重试则白费一次长等待
+///   （翻译批长达 300s）。
 ///
 /// 不重试：其余 HTTP 状态码（400 参数错、401/403 鉴权错、404，以及 500/502/503/
-/// 504 等）。（按用户要求，52x 已纳入可重试；其余 5xx 仍不重试——上游过载时
-/// 退避重试会雪上加霜，且这类错误通常需要人工介入而非自动重试。）
+/// 504 等）——上游过载时退避重试会雪上加霜，且这类错误通常需要人工介入而非自动重试。
 fn is_retryable(e: &(u16, String)) -> bool {
     if e.0 == 429 {
         log::warn!("DeepSeek 限流(429), 将重试");
@@ -523,7 +517,7 @@ async fn call_translate(
 }
 
 /// 写 AI 任务结果日志：统一"成功/失败 × 有/无 release 行"四种组合。
-/// 摘要与翻译共用，收敛了原 4 份逐字复制的日志块。
+/// 摘要与翻译共用。
 /// - `ok=true`：`{action}已生成: {owner}/{repo} {tag}[ {detail}]`
 /// - `ok=false`：`{action}生成失败: {owner}/{repo} {tag}: {detail}`
 ///
@@ -562,9 +556,7 @@ enum TranslateOutcome {
 
 /// AI 任务公共流水线：读配置 → 建 client → 并发调度 → 结果/失败分别落库。
 ///
-/// 摘要与翻译两条流水线共用此骨架，收敛了原先整段平行的
-/// for/spawn/信号量/spawn_blocking 结构（此前并发/日志语义的修改需同步改
-/// 2 处，事实上"语言检测短路"就曾只存在于翻译一侧）。差异点以参数注入：
+/// 摘要与翻译两条流水线共用此骨架，差异点以参数注入：
 /// - `job`：控制台日志文案（"摘要"/"译文"）
 /// - `truncate_chars`：正文截断上限（摘要 4000 / 翻译见
 ///   `DEEPSEEK_TRANSLATE_TRUNCATE_CHARS`，须与 `DEEPSEEK_TRANSLATE_MAX_TOKENS` 同量级）
@@ -579,8 +571,7 @@ enum TranslateOutcome {
 ///   待办名单是批启动时一次性读取的快照，批内任务并发跑（翻译批可长达 300s），
 ///   期间同一条可能已被另一路径写入（手动单条翻译、上一批收尾、用户删除重建
 ///   后重新检查）。不复查会对已完成的条目重复发请求，白白烧 token；更糟的是
-///   重复请求若返回空内容，会走 on_err 把本已成功的 retry 计数加 1——实测
-///   v2.0.11 译文已落库后又被判失败（translate_retry_count=1）即此场景。
+///   重复请求若返回空内容，会走 on_err 把本已成功的 retry 计数加 1。
 #[allow(clippy::too_many_arguments)]
 async fn run_ai_job<T, F, Fut>(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
@@ -633,8 +624,8 @@ async fn run_ai_job<T, F, Fut>(
             let msg = format!("创建 DeepSeek 客户端失败: {}", e);
             log::error!("{}", msg);
             // 同时写 DB：log 插件仅在 debug 构建启用，release 版用户看不到
-            // log::error!，只打 console 会让「批静默不发请求」无法定位（实测
-            // 待办非空、开关全开、retry 计数 = 0 却无任何可见错误即此分支）。
+            // log::error!，只打 console 会让「批静默不发请求」（待办非空、开关
+            // 全开、retry 计数 = 0 却无任何可见错误）无法定位。
             // 写入后由调用方（后台批收尾）emit LogAppended 刷新日志 tab。
             if let Ok(conn) = db_pool.get() {
                 db::logs::write_log(&conn, "ERROR", &msg);
@@ -825,13 +816,12 @@ pub async fn generate_translations_for_new(
         deepseek_semaphore,
         saved,
         "译文",
-        // 翻译全文比摘要耗 token 多，截断上限与 max_tokens 同步放宽到 20000：
-        // 此前 12000 字符输入 + 8000 token 输出，中英互译后输出装不下输入，
-        // 长 release note 的译文在句子中间被硬截断（实测 v2.0.10/2.0.9 结尾
-        // 都是半个 URL / 半个贡献者名）。二者对齐到同一量级，避免输出侧饥饿。
+        // 翻译全文比摘要耗 token 多：截断上限（20000 字符）与 max_tokens（20000）
+        // 必须对齐到同一量级——中英互译后输出装不下输入时，长 release note 的
+        // 译文会在句子中间被硬截断。
         DEEPSEEK_TRANSLATE_TRUNCATE_CHARS,
-        // 翻译超时 300s：max_tokens=20000 的长生成中转可能等到上游出完才回
-        // 响应头，原先写死的 60s 曾在 commandcode 网关实测间歇超时
+        // 翻译超时 300s：max_tokens=20000 的长生成，中转要等上游出完才回
+        // 响应头，60s 会在网关排队时超时
         DEEPSEEK_TIMEOUT_SECS_TRANSLATE,
         // 翻译开关：force 绕过 translate_enabled（手动单条场景）
         move |conn| read_translate_config(conn).0 || force,
@@ -1206,7 +1196,6 @@ mod tests {
     // 注入 init_memory_pool + wiremock，直接驱动真实的公开编排函数，覆盖
     // enabled / api_key / 成功写摘要 / 失败重试计数 / 空体跳过 /
     // 翻译 force 绕过开关 / 语言检测短路写原文 / 翻译失败重试 等编排分支。
-    // 这条链路原先无测试覆盖（CI 不可达），至此补齐。
 
     fn enable_deepseek(conn: &rusqlite::Connection, base_url: &str) {
         crate::crypto::set_test_master_key();
@@ -1442,7 +1431,7 @@ mod tests {
 
     /// describe_reqwest_error：真实请求超时路径。client 总超时 300ms + wiremock
     /// 延迟 2s 响应 → .send() 报超时错误；断言 chat_completion 的错误文案包含
-    /// 明确的「请求超时」前缀（此前只有笼统的 "error sending request for url"）。
+    /// 明确的「请求超时」前缀（而非笼统的 "error sending request for url"）。
     #[tokio::test]
     async fn test_chat_completion_timeout_reports_timeout() {
         use wiremock::matchers::{method, path};
@@ -1486,8 +1475,8 @@ mod tests {
 
     // ── 重试判定 is_retryable ──
     //
-    // 契约：瞬时故障（429 限流、status=0 网络层/空内容）重试；
-    // 确定性错误（400/401/404/5xx）不重试——5xx 时上游可能已过载，退避重试雪上加霜。
+    // 契约：瞬时故障（429 限流、status=0 网络层/空内容、520/524 网关上游故障）重试；
+    // 确定性错误（400/401/404 及 500/502/503/504）不重试——上游过载时退避重试雪上加霜。
 
     #[test]
     fn test_is_retryable_covers_transient_and_rejects_permanent() {
@@ -1502,10 +1491,10 @@ mod tests {
             is_retryable(&(0, "请求失败: error sending request".into())),
             "网络层错误应重试"
         );
-        // 可重试：52x 网关上游故障。网关（api.commandcode.ai）对同一故障消息
+        // 可重试：52x 网关上游故障。网关对同一故障消息
         // "Upstream model provider is temporarily unavailable. Please try again
-        // in a moment." 实测随机返回 520 或 524（长正文探针三次：520/524/524）。
-        // 语义就是请调用方重试，且此时已白等一整次长请求，放弃太亏。
+        // in a moment." 会随机返回 520 或 524，语义就是请调用方重试，且此时
+        // 已白等一整次长请求，放弃太亏。
         for status in [520u16, 524] {
             assert!(
                 is_retryable(&(
@@ -1577,7 +1566,7 @@ mod tests {
     }
 
     /// 空内容重试的端到端验证：前两次返回空 choices，第三次给正常译文 →
-    /// 重试链路应救回这次请求（此前 status=0 不重试，一次即失败）。
+    /// 重试链路应救回这次请求。
     ///
     /// 用 detect 短路把链路收敛到单次 translate 调用，避免 detect 的重试
     /// 与 translate 的重试叠加导致 mock 次数难以推断。
@@ -1712,8 +1701,8 @@ mod tests {
     }
 
     /// `build_client` 失败必须写 DB 日志：log 插件仅 debug 构建启用，只打
-    /// log::error! 对 release 版用户完全不可见——曾因此无法定位「待办非空、
-    /// 开关全开、retry 计数 = 0 却无任何可见错误」的静默不发请求故障。
+    /// log::error! 对 release 版用户完全不可见，「待办非空、开关全开、
+    /// retry 计数 = 0 却无任何可见错误」这类静默不发请求故障将无法定位。
     /// 用带换行的非法 API key 触发 build_client 确定性失败，断言：
     /// 零请求 + DB 出现 ERROR 日志 + retry 计数不动（失败发生在发请求之前）。
     #[tokio::test]

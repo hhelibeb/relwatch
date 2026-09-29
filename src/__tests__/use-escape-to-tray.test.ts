@@ -176,8 +176,8 @@ describe('useEscapeToTray · 逐层退出', () => {
   it('contenteditable：第一按只失焦', () => {
     const wrapper = mountHarness()
     const div = document.createElement('div')
-    // 用特性而非属性：jsdom 实现了 contentEditable 反射但 contentEditable 的
-    // isContentEditable 恒为 undefined，设特性更接近真实 DOM 形态
+    // jsdom 的 contentEditable 反射不可靠（isContentEditable 恒为 undefined），
+    // 直接设 contenteditable 属性更接近真实 DOM 形态
     div.setAttribute('contenteditable', 'true')
     mountFocused(div)
 

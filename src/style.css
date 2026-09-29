@@ -81,7 +81,6 @@
   --flag-5: #0f6cbd;
   --flag-6: #8661c5;
 
-  /* 其他 */
   --focus-ring: 0 0 0 3px rgba(62, 99, 221, 0.20);
   --accent-prerelease: #71717a;
   --accent-medium: #a16207;
@@ -691,9 +690,8 @@ html {
   top: calc(-1 * var(--app-padding-y, 16px));
 }
 
-/* ── 发布徽标 / 状态灯（ReleaseItem 与 ReleaseDetailModal 共用） ──
-   原为两份 scoped 逐字副本（scoped 不共享，曾靠注释互相提醒同步），
-   收敛至此避免改一处漏一处。 */
+/* ── 发布徽标 / 状态灯（ReleaseItem 与 ReleaseDetailModal 共用，
+   scoped 不共享故收敛至此，避免改一处漏一处） ── */
 .pre-release-badge {
   display: inline-block;
   padding: 0 5px;

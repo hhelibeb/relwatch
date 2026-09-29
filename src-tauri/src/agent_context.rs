@@ -1,9 +1,8 @@
 //! 上下文水位：对齐 pi footer 的 `5.2% / 1.0M (auto)`。
 //!
 //! relwatch 侧不做会话长度治理（依赖 pi 自身管理），但要**按 pi 的口径**把水位
-//! 暴露给用户。此前用的是「整个会话字符数 ÷ 2」，与 pi 显示的数字偏差可达 1.7 倍
-//! （实测：某会话 relwatch 8.2% vs pi 4.7%）——pi 的水位是「最后一次请求的真实
-//! prompt + 其后零碎消息」，不是全历史字符数。
+//! 暴露给用户：pi 的水位是「最后一次请求的真实 prompt + 其后零碎消息」，不是
+//! 全历史字符数，按后者估算会与 pi footer 显示的数字明显不符。
 //!
 //! 本模块复刻 pi 的两段逻辑（逐条对位，改动前先去看源码）：
 //! - 词元：`dist/core/compaction/compaction.js` 的 `estimateProjectedContextTokens`
@@ -57,7 +56,8 @@ pub fn context_tokens(content: &str) -> ContextTokens {
     let mut base_index: Option<usize> = None;
     let mut last_compaction: Option<usize> = None;
     let mut last_invalidating: Option<usize> = None;
-    // 条目序号：含非 message 条目，保证 compression/usage 的先后比较与文件顺序一致
+    // 条目序号：含非 message 条目，保证 compaction / context_edit 与 usage 的先后
+    // 比较与文件顺序一致
     let mut index = 0usize;
 
     for line in content.lines() {
