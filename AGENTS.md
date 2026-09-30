@@ -14,6 +14,7 @@
   - 后端：`src-tauri/src/agent.rs`、`src-tauri/src/agent_rpc.rs`、`src-tauri/src/db/agent.rs`
   - 数据：SQLite `agent_runs` 表；会话文件 `%APPDATA%\RelWatch\agent-sessions\ws-<session_key>.jsonl`
   - 超时：`app_settings.agent_timeout_seconds`（默认 300 秒），超时记 run 为 timeout（error=`err.agent.timeout|<秒>`）
+  - 并发：`app_settings.agent_max_concurrency`（默认 3，范围 1..8）。1 = 排队串行；N > 1 时最多 N 个会话并行。`agent_rpc.rs` 用「1 个常驻进程 + 最多 N-1 个用完即关的临时进程」的池承载：每个 run 独占一个**进程租约**（会话绑定、模型切换、prompt、abort 全在租约内），事件流按进程隔离（不共用 channel）。同一会话仍然串行（`err.agent.session_busy`）。
 - **"Agent 会话"**：同一 session_key 的多次提交共享一个会话文件（多轮对话）。
 
 若指外部 Agent 工具功能（如 pi 的 subagent / Agent 面板 / worktree / watchdog），会明确说明。排查问题优先查 relwatch 代码与 `%APPDATA%\RelWatch\` 数据。
@@ -27,3 +28,6 @@
 
 换算规则：**本地 = UTC + 8 小时；UTC = 本地 − 8 小时**。示例：`2026-08-20T11:43:02Z`（UTC）对应本地 `2026-08-20 19:43:02`。
 
+# 注释规则
+
+解释为什么，而不需要解释做什么，让代码自解释做了什么。不要把注释当做笔记使用。
