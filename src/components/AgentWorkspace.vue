@@ -263,10 +263,11 @@ function handleInput() {
 // ── 会话切换组合（编排层接线：逐项调用各 composable 的清空接口）──
 function switchSession(key: string) {
   if (key === activeKey.value) return
-  // 不中止原会话的 run：后端并发上限 1、其余排队执行（pending 取消只插标记不碰进程），
-  // 切回会话时由 loadChat 从 runs 推导恢复停止按钮——各会话独立启停，互不误杀
+  // 不中止原会话的 run：各会话在各自进程里独立执行（并发上限内并行、超出则排队），
+  // pending 取消只插标记不碰进程；切回会话时由 loadChat 从 runs 推导恢复停止按钮
+  // ——各会话独立启停，互不误杀。
   switchTo(key)
-  // chat：停轮询 + 丢合帧 + 提交/流式态复位（messages/runs 不清，loadChat 覆盖）
+  // chat：只停轮询（各会话状态分片存放，切走即不可见、切回还在，无需清）
   resetChatForSessionSwitch('switch')
   // 模型选择按目标会话的持久化记录还原（无记录 = 跟随默认模型）
   resetModelsForSessionSwitch(
@@ -768,8 +769,8 @@ onMounted(async () => {
   // 补入的会话不打断当前激活会话（仅侧栏可见）
   const recovered = await discoverSessions()
   if (recovered > 0) showToast(t('agent.sessions_recovered', String(recovered)))
-  unlistenRunFinished = await events.agentRunFinished.listen(() => {
-    void onRunFinished()
+  unlistenRunFinished = await events.agentRunFinished.listen((e) => {
+    void onRunFinished(e.payload.session_key)
   })
   unlistenRpcStream = await events.agentRpcStream.listen((e) => {
     handleRpcStream(e.payload)

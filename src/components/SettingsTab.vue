@@ -52,6 +52,8 @@ const agentModel = ref('')
 const agentWorkingDir = ref('')
 const agentPromptSuffix = ref('')
 const agentTimeout = ref(300)
+/** 并发会话数上限（1 = 排队串行；>1 时不同会话并行，各占一个 pi 进程）。 */
+const agentMaxConcurrency = ref(3)
 const agentSkills = ref<string[]>([])
 const newAgentSkill = ref('')
 
@@ -65,6 +67,7 @@ async function loadAgentConfig() {
     agentWorkingDir.value = cfg.working_dir ?? ''
     agentPromptSuffix.value = cfg.prompt_suffix ?? ''
     agentTimeout.value = cfg.timeout_seconds
+    agentMaxConcurrency.value = cfg.max_concurrency
     agentSkills.value = [...cfg.skills]
     // 刷新已保存基线（脏点判定基准）
     agentSavedSnapshot.value = agentSnapshot()
@@ -80,6 +83,17 @@ function normalizedAgentTimeout(): number {
   return Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1
 }
 
+/** 并发会话数上限（与后端 db::agent::MAX_AGENT_CONCURRENCY 对齐）。 */
+const AGENT_MAX_CONCURRENCY_LIMIT = 8
+
+/** 并发上限归一化：同 timeout 的 NaN 问题；再夹到 [1, 上限]——后端也会 clamp，
+ *  但前端先收口才能让输入框显示值与实际生效值一致。 */
+function normalizedAgentMaxConcurrency(): number {
+  const v = agentMaxConcurrency.value
+  if (!Number.isFinite(v)) return 1
+  return Math.min(AGENT_MAX_CONCURRENCY_LIMIT, Math.max(1, Math.floor(v)))
+}
+
 /** Agent 分区当前表单的快照（与「保存设置」提交值对齐）。 */
 function agentSnapshot(): string {
   return JSON.stringify({
@@ -90,6 +104,7 @@ function agentSnapshot(): string {
     wd: agentWorkingDir.value.trim() || null,
     suffix: agentPromptSuffix.value.trim() || null,
     timeout: normalizedAgentTimeout(),
+    maxConcurrency: normalizedAgentMaxConcurrency(),
     skills: agentSkills.value,
   })
 }
@@ -344,6 +359,7 @@ async function handleSave() {
         working_dir: agentWorkingDir.value.trim() || null,
         prompt_suffix: agentPromptSuffix.value.trim() || null,
         timeout_seconds: normalizedAgentTimeout(),
+        max_concurrency: normalizedAgentMaxConcurrency(),
         skills: agentSkills.value,
       })
       await loadAgentConfig() // 刷新脏点基线
@@ -801,6 +817,19 @@ async function handleImportBackup() {
               style="width:calc(8ch * 1.25)"
             />
           </label>
+          <label class="setting-row">
+            <span class="setting-label">{{ t('agent.max_concurrency') }}</span>
+            <input
+              type="number"
+              v-model.number="agentMaxConcurrency"
+              min="1"
+              :max="AGENT_MAX_CONCURRENCY_LIMIT"
+              class="setting-input setting-input-narrow"
+              style="width:calc(8ch * 1.25)"
+              :title="t('agent.max_concurrency_hint')"
+            />
+          </label>
+          <p class="setting-section-desc" style="margin-top:-4px">{{ t('agent.max_concurrency_hint') }}</p>
           <div class="setting-row setting-row-skills">
             <span class="setting-label">{{ t('agent.skill_path') }}</span>
             <div class="agent-skill-list">

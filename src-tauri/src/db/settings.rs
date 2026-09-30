@@ -45,6 +45,9 @@ pub const KEY_AGENT_WORKING_DIR: &str = "agent_working_dir";
 pub const KEY_AGENT_PROMPT_SUFFIX: &str = "agent_prompt_suffix";
 pub const KEY_AGENT_TIMEOUT_SECONDS: &str = "agent_timeout_seconds";
 pub const KEY_AGENT_SKILLS: &str = "agent_skills";
+/// Agent 提交的并发上限（1 = 串行排队；N = 最多 N 个会话同时执行）。
+/// N > 1 时 RpcManager 启用「1 个常驻进程 + 最多 N-1 个一次性临时进程」池模型。
+pub const KEY_AGENT_MAX_CONCURRENCY: &str = "agent_max_concurrency";
 /// Agent 工作区面板宽度（逻辑 px；未设置时前端回退默认 440）。
 pub const KEY_AGENT_WS_WIDTH: &str = "agent_ws_width";
 

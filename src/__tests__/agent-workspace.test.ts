@@ -30,17 +30,17 @@ vi.mock('../api/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/agent')>()
   return {
     ...actual,
-    getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, working_dir: null, prompt_suffix: null, timeout_seconds: 300, skills: [] }),
+    getAgentConfig: vi.fn().mockResolvedValue({ enabled: true, agent_type: 'pi', binary: null, model: null, working_dir: null, prompt_suffix: null, timeout_seconds: 300, skills: [], max_concurrency: 3 }),
     listAgentRuns: vi.fn().mockResolvedValue([]),
     listAgentMessages: vi.fn().mockResolvedValue([]),
     listAgentSessions: vi.fn().mockResolvedValue([]),
-    getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [] }),
+    getAgentQueueStatus: vi.fn().mockResolvedValue({ position: null, other_running: false, running_sessions: [], max_concurrency: 1, running_count: 0 }),
     getAgentQueue: vi.fn().mockResolvedValue([]),
     getAgentSessionUsage: vi
       .fn()
       .mockResolvedValue({ message_count: 0, total_chars: 0, file_bytes: 0, input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, total_tokens: 0, cost_micros: 0, has_usage: false }),
     // pi 进程健康指示：默认「未运行」（多数用例不关心，个别用例内覆盖）
-    getAgentRpcStatus: vi.fn().mockResolvedValue({ running: false, pid: null, restart_pending: false }),
+    getAgentRpcStatus: vi.fn().mockResolvedValue({ running: false, pid: null, process_count: 0, restart_pending: false }),
     restartAgentRpc: vi.fn().mockResolvedValue(true),
     exportAgentSession: vi.fn().mockResolvedValue('C:/tmp/export.md'),
     getAgentAvailableModels: vi.fn().mockResolvedValue({
@@ -231,6 +231,7 @@ function agentConfig(skills: string[] = []) {
     working_dir: null,
     prompt_suffix: null,
     timeout_seconds: 300,
+    max_concurrency: 3,
     skills,
   }
 }
@@ -965,6 +966,8 @@ describe('AgentWorkspace 冒烟', () => {
       position: 2,
       other_running: true,
       running_sessions: ['ws-other'],
+      max_concurrency: 1,
+      running_count: 1,
     })
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
@@ -1292,8 +1295,8 @@ describe('AgentWorkspace P2 打磨', () => {
     // 关键：listAgentRuns 的 mockResolvedValue 会跨用例残留。上一个用例若留下
     // running/pending run，canStop 为真 → Enter 被「请先停止」拦下，提交永不发生。
     vi.mocked(listAgentRuns).mockResolvedValue([])
-    vi.mocked(getAgentQueueStatus).mockResolvedValue({ position: null, other_running: false, running_sessions: [] })
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, restart_pending: false })
+    vi.mocked(getAgentQueueStatus).mockResolvedValue({ position: null, other_running: false, running_sessions: [], max_concurrency: 1, running_count: 0 })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, process_count: 0, restart_pending: false })
     vi.mocked(getAgentSessionUsage).mockResolvedValue({
       message_count: 0,
       total_chars: 0,
@@ -1564,7 +1567,7 @@ describe('AgentWorkspace P2 打磨', () => {
   })
 
   it('pi 进程指示灯：点灯弹菜单展示状态与 pid，菜单内重启', async () => {
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 4321, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 4321, process_count: 1, restart_pending: false })
     vi.mocked(restartAgentRpc).mockResolvedValue(true)
     const showToast = vi.fn()
     const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
@@ -1592,7 +1595,7 @@ describe('AgentWorkspace P2 打磨', () => {
   })
 
   it('未运行时菜单只显状态详情，无重启项（无物可重启，杜绝假重启）', async () => {
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, process_count: 0, restart_pending: false })
     const showToast = vi.fn()
     const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
     await flushPromises()
@@ -1610,7 +1613,7 @@ describe('AgentWorkspace P2 打磨', () => {
   })
 
   it('点空白处收起 pi 状态菜单', async () => {
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, process_count: 1, restart_pending: false })
     // attachTo：outside-click 监听挂在 document（捕获阶段），游离容器的事件传播不经过它
     const wrapper = mount(AgentWorkspace, { attachTo: document.body, global: { provide: {} } })
     await flushPromises()
@@ -1624,7 +1627,7 @@ describe('AgentWorkspace P2 打磨', () => {
   })
 
   it('有任务在跑时重启被拒：提示「请先停止」而非谎报成功', async () => {
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 1, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 1, process_count: 1, restart_pending: false })
     vi.mocked(restartAgentRpc).mockResolvedValue(false)
     const showToast = vi.fn()
     const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
@@ -1638,7 +1641,7 @@ describe('AgentWorkspace P2 打磨', () => {
   })
 
   it('配置推迟生效提示：restart_pending 为真时显示横幅', async () => {
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, restart_pending: true })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, process_count: 1, restart_pending: true })
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
     expect(wrapper.find('.agent-ws-pending-restart').exists()).toBe(true)

@@ -166,10 +166,12 @@ export const commands = {
 	getAiUsageStats: (sourceId: number | null, days: number | null) => __TAURI_INVOKE<AiUsageStats>("get_ai_usage_stats", { sourceId, days }),
 	/**
 	 *  保存全局 Agent 配置。
-	 *  进程级字段（agent_type / binary / model / working_dir / skills）变化时重启常驻 RPC 进程：
+	 *  进程级字段（agent_type / binary / model / working_dir / skills）变化时重启 RPC 进程池：
 	 *  spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
 	 *  会回到 /skill: 透传失效，改 model 会静默用旧模型）；有 run 在跑时推迟到当前 run
-	 *  结束，下次提交 ensure_started 自动重启并恢复会话。
+	 *  结束，下次提交自动重建。
+	 *  max_concurrency 变化不重启进程，只调调度层闸门：抬高立即多出执行位，压低则等
+	 *  正在跑的 run 收尾归还执行位后到位。
 	 *  timeout / prompt_suffix / enabled 每次调度重读，无需重启。
 	 */
 	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
@@ -197,16 +199,18 @@ export const commands = {
 	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRunSummary[]>("list_agent_runs", { sessionKey, limit }),
 	/**
 	 *  查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
-	 *  「排队中」提示的数据源：调度器全局单并发（Semaphore::new(1)），
-	 *  本会话 pending 说明有其他 run 占用执行位，前端据此提示「其他会话执行中」。
+	 *  「排队中」提示的数据源：pending 说明已达并发上限（`agent_max_concurrency`），
+	 *  前端据此提示「等待空闲执行位」并展示占用者。
+	 *  注意并发上限 > 1 时，其他会话正在跑不等于本会话被阻塞（还有空闲位就直接上）。
 	 */
 	getAgentQueueStatus: (sessionKey: string) => __TAURI_INVOKE<AgentQueueStatus>("get_agent_queue_status", { sessionKey }),
 	/**
 	 *  查询全局队列（全部活跃 run，按执行顺序升序）。
 	 * 
-	 *  会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：调度器全局单并发，
-	 *  活跃 run 即执行队列，前端据此给每个会话画运行状态（执行中 / 排队第 N 位），
-	 *  并定位「哪个会话的 run 正在执行」以便横幅一键跳转。
+	 *  会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：活跃 run
+	 *  （pending / running）即执行队列，前端据此给每个会话画运行状态
+	 *  （执行中 / 排队第 N 位），并定位「哪些会话的 run 正在执行」以便横幅一键跳转。
+	 *  并发上限 > 1 时前 `max_concurrency` 个可能同时在跑，位置只表示创建顺序。
 	 */
 	getAgentQueue: () => __TAURI_INVOKE<AgentQueueItem[]>("get_agent_queue"),
 	/**
@@ -257,18 +261,18 @@ export const commands = {
 	/**  在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。 */
 	openAgentSession: (runId: number) => __TAURI_INVOKE<null>("open_agent_session", { runId }),
 	/**
-	 *  查询 pi 常驻进程状态（健康指示 + 配置推迟提示）。
+	 *  查询 pi RPC 进程池状态（健康指示 + 配置推迟提示）。
 	 * 
 	 *  惰性设计：不主动拉起进程——进程未启动属正常（首次提交时才 spawn），
 	 *  指示灯显示「未运行」即可，不该为了让灯变绿而白白起一个 node 进程。
 	 */
 	getAgentRpcStatus: () => __TAURI_INVOKE<AgentRpcStatus>("get_agent_rpc_status"),
 	/**
-	 *  手动重启 pi 常驻进程（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
+	 *  手动重启 pi RPC 进程池（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
 	 * 
-	 *  有正在执行的 run 时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
+	 *  有 run 在跑时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
 	 *  已产生的词元全部作废）；返回 false 表示被拒绝，前端据此提示「当前有任务在跑」。
-	 *  返回 true 表示已重启（下次提交时 ensure_started 惰性重新拉起）。
+	 *  返回 true 表示已清空进程池（下次提交时惰性重建）。
 	 */
 	restartAgentRpc: () => __TAURI_INVOKE<boolean>("restart_agent_rpc"),
 	/**
@@ -388,6 +392,11 @@ export type AgentConfig = {
 	prompt_suffix: string | null,
 	/**  子进程超时秒数（超时 kill）。 */
 	timeout_seconds: number,
+	/**
+	 *  同时执行的会话数上限（1 = 串行排队，与单进程模型等价；
+	 *  N > 1 = 最多 N 个会话并行，RpcManager 按需起临时进程）。
+	 */
+	max_concurrency: number,
 	/**  全局 skill 备选列表（`@` 菜单数据源；运行前校验存在性）。 */
 	skills: string[],
 };
@@ -456,14 +465,20 @@ export type AgentQueueStatus = {
 	other_running: boolean,
 	/**  其他会话 running run 的 session_key（前端可映射为会话标题）。 */
 	running_sessions: string[],
+	/**  全局并发上限（1 = 串行排队；>1 = 并行执行，仅达上限才排队）。 */
+	max_concurrency: number,
+	/**  全局 running run 总数（含本会话）。≥ max_concurrency 时 pending 才是真排队。 */
+	running_count: number,
 };
 
-/**  pi 常驻进程的健康状态（工作区头部指示灯数据源）。 */
+/**  pi RPC 进程池的健康状态（工作区头部指示灯数据源）。 */
 export type AgentRpcStatus = {
-	/**  进程是否存活（`pi --mode rpc` 常驻进程）。 */
+	/**  池中是否有存活进程（`pi --mode rpc`）。 */
 	running: boolean,
-	/**  进程 pid（未运行时 None）。 */
+	/**  常驻进程 pid（未运行时 None）；临时进程 pid 不在此暴露，总数见 process_count。 */
 	pid: number | null,
+	/**  存活进程数（1 = 仅常驻；>1 = 有会话正在并行，各占一个 pi 进程）。 */
+	process_count: number,
 	/**  进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效。 */
 	restart_pending: boolean,
 };

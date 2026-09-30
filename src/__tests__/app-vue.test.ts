@@ -43,6 +43,7 @@ vi.mock('../api/agent', async (importOriginal) => {
       prompt_suffix: null,
       timeout_seconds: 300,
       skills: [],
+      max_concurrency: 3,
     }),
   }
 })

@@ -23,6 +23,7 @@ mod media;
 mod redact;
 pub mod agent;
 pub mod agent_context;
+pub mod agent_gate;
 pub mod agent_rpc;
 pub mod agent_session;
 
@@ -225,11 +226,18 @@ pub fn run() {
     }
     let next_poll = Arc::new(AtomicI64::new(next_poll_val));
     let deepseek_semaphore = Arc::new(tokio::sync::Semaphore::new(50));
-    // Agent 子进程并发上限：RpcManager 是「单常驻进程」模型——
-    // 1) ensure_session 与 prompt 是两次独立加锁操作，并发提交会互相切走会话（A 切完 B 切走，A 的 prompt 落进 B 的会话文件）；
-    // 2) 事件流是全局 broadcast 且不带 run 标识，并行 run 会互收对方的 delta/settled/agent_end，串流且可能误判终态。
-    // 因此并发上限必须为 1（多个会话的提交排队串行执行）；如需并行，中期方案是事件按 run_id 打标或一会话一进程。
-    let agent_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    // Agent 提交的并发上限（= 同时执行的会话数），取自设置页 agent_max_concurrency。
+    // 保存配置 / 导入备份后由 ConcurrencyGate 就地调整，无需重启应用。
+    //
+    // 与 RpcManager 进程池的分工：闸门在这里（pending→running 的语义边界），
+    // 池只管进程生命周期（1 个常驻 + 最多 N-1 个用完即关的临时进程）。
+    let agent_max_concurrency = {
+        let conn = pool.get().expect("Failed to get db connection");
+        db::agent::load_agent_config(&conn)
+            .map(|c| c.max_concurrency)
+            .unwrap_or(db::agent::DEFAULT_AGENT_MAX_CONCURRENCY)
+    };
+    let agent_gate = crate::agent_gate::ConcurrencyGate::new(agent_max_concurrency);
 
     // 开发/测试构建时把最新 TS 绑定写入前端（CI 亦可通过 cargo test 触发）
     #[cfg(debug_assertions)]
@@ -266,7 +274,7 @@ pub fn run() {
             db: pool,
             next_poll_at: next_poll.clone(),
             deepseek_semaphore,
-            agent_semaphore,
+            agent_gate,
         })
         // 命令清单单一来源：invoke_handler 从同一个 specta Builder 生成，与 collect_commands! 共用一份清单。
         .invoke_handler(specta_builder().invoke_handler())

@@ -7,7 +7,7 @@
 // - 用量：usage / loadUsage（loadChat 预清 + 联动刷新，避免切换时闪现旧水位）
 // - 会话：sessionTitle / persistSessionMeta 经编排层接线
 // - 进程指示灯：loadRpcStatus（轮询启动 / run 收尾时顺带刷新）
-import { computed, nextTick, onUnmounted, ref, watch, type Ref } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, watch, type Ref } from 'vue'
 import {
   cancelAgentRun,
   getAgentQueue,
@@ -38,6 +38,34 @@ import {
   splitUserBlocks,
   timeAdjacent,
 } from './agentChatUtils'
+
+/** 单个工作区会话的聊天状态。
+ *
+ * 并行执行后同一个前端实例要同时承载多个会话：后台会话跑着的时候，它的流式
+ * 内容与运行记录必须落在自己的分片里，否则切回去只剩全量读盘的结果（打字机、
+ * 工具状态全部丢失）。 */
+interface SessionChatState {
+  messages: AgentChatMessage[]
+  messagesLoading: boolean
+  submitting: boolean
+  runs: AgentRunSummary[]
+  /** 全局队列状态（本会话 pending 的队列位置 + 占用情况）。 */
+  queueInfo: AgentQueueStatus | null
+  /** RPC 事件实时追加的流式消息（终态后由全量校准取代）。 */
+  liveMessages: AgentChatMessage[]
+  /** 流式开始时刻的历史快照：流式期间显示「快照 + 流式」，终态后清空。 */
+  historySnapshot: AgentChatMessage[]
+  /** 提交回执兜底：run 刚创建、runs 尚未刷新时保持可停止。 */
+  submittedRunId: number | null
+  cancelling: boolean
+}
+
+/** 同时保留的会话分片上限。
+ *
+ * 切过的会话都要留一份状态（切回去要立刻有内容），但不设限会随使用时长线性
+ * 增长——每个分片带着完整消息历史。超出时回收「非当前且无活跃 run」的最早分片；
+ * 正在跑的后台会话**不能**回收（它的流式内容只存在于分片里）。 */
+const MAX_SESSION_STATES = 12
 
 export function useAgentChat(deps: {
   activeKey: Ref<string>
@@ -97,21 +125,103 @@ export function useAgentChat(deps: {
     queueActive,
   } = deps
 
-  // ── 聊天状态 ──
-  const messages = ref<AgentChatMessage[]>([])
-  const messagesLoading = ref(false)
-  const submitting = ref(false)
-  const runs = ref<AgentRunSummary[]>([])
+  // ── 聊天状态：按会话分片 ──
+  //
+  // 并行执行后同一个前端实例要同时承载多个会话：后台会话跑着的时候，它的 delta /
+  // 工具状态必须写进**它自己的**分片（切回去要看得见，不能只剩全量读盘的干巴巴
+  // 结果）。因此原来的一组单例 ref 变成 Map<session_key, 分片>，对外仍以
+  // 「当前会话」的只读视图导出——模板与编排层不用改。
+  const states = reactive(new Map<string, SessionChatState>())
+
+  function createSessionState(): SessionChatState {
+    return {
+      messages: [],
+      messagesLoading: false,
+      submitting: false,
+      runs: [],
+      queueInfo: null,
+      liveMessages: [],
+      historySnapshot: [],
+      submittedRunId: null,
+      cancelling: false,
+    }
+  }
+
+  /** 取（或惰性创建）某会话的分片。
+   *
+   *  **必须返回 map 里的值（响应式代理），不能返回刚 set 进去的裸对象**：
+   *  裸对象的属性读写不进响应式系统，依赖它的 computed（messages / runs …）
+   *  首次求值后就永久缓存——表现为「后端已加载完，界面还是空的」。 */
+  function stateOf(key: string): SessionChatState {
+    if (!states.has(key)) {
+      states.set(key, createSessionState())
+    }
+    return states.get(key) as SessionChatState
+  }
+
+  /** 当前活跃会话的分片（所有对外视图的唯一读取入口）。 */
+  const cur = computed(() => stateOf(activeKey.value))
+  // ── 对外视图（原单例 ref 的等价物）──
+  //
+  // 可读也可写，写入作用于**当前会话的分片**：模板/编排层乃至测试铺场景的
+  // 写法（`liveMessages.value = [...]`）全部保持原样，无需知道分片的存在。
+  const messages = computed({
+    get: () => cur.value.messages,
+    set: (v: AgentChatMessage[]) => { cur.value.messages = v },
+  })
+  const messagesLoading = computed({
+    get: () => cur.value.messagesLoading,
+    set: (v: boolean) => { cur.value.messagesLoading = v },
+  })
+  const submitting = computed({
+    get: () => cur.value.submitting,
+    set: (v: boolean) => { cur.value.submitting = v },
+  })
+  const runs = computed({
+    get: () => cur.value.runs,
+    set: (v: AgentRunSummary[]) => { cur.value.runs = v },
+  })
+  const queueInfo = computed({
+    get: () => cur.value.queueInfo,
+    set: (v: AgentQueueStatus | null) => { cur.value.queueInfo = v },
+  })
+  const liveMessages = computed({
+    get: () => cur.value.liveMessages,
+    set: (v: AgentChatMessage[]) => { cur.value.liveMessages = v },
+  })
+  const historySnapshot = computed({
+    get: () => cur.value.historySnapshot,
+    set: (v: AgentChatMessage[]) => { cur.value.historySnapshot = v },
+  })
+  const submittedRunId = computed({
+    get: () => cur.value.submittedRunId,
+    set: (v: number | null) => { cur.value.submittedRunId = v },
+  })
+  const cancelling = computed({
+    get: () => cur.value.cancelling,
+    set: (v: boolean) => { cur.value.cancelling = v },
+  })
+
   const scrollRef = ref<HTMLElement | null>(null)
 
-  // ── 全局队列状态（「排队中」提示：其他会话占用 + 队列位置）──
-  const queueInfo = ref<AgentQueueStatus | null>(null)
+  /** 回收多余分片（切会话时调用）：只收非当前且无活跃 run 的最早分片。 */
+  function pruneSessionStates() {
+    if (states.size <= MAX_SESSION_STATES) return
+    for (const [key, st] of [...states]) {
+      if (states.size <= MAX_SESSION_STATES) break
+      if (key === activeKey.value) continue
+      // 活跃 run（含排队中）或流式内容存在 → 分片是活的，丢了就丢数据
+      if (st.submittedRunId !== null || st.liveMessages.length > 0) continue
+      if (st.runs.some((r) => r.status === 'running' || r.status === 'pending')) continue
+      states.delete(key)
+    }
+  }
 
-  async function loadQueueInfo() {
+  async function loadQueueInfo(key: string = activeKey.value) {
     try {
-      queueInfo.value = await getAgentQueueStatus(activeKey.value)
+      stateOf(key).queueInfo = await getAgentQueueStatus(key)
     } catch {
-      queueInfo.value = null
+      stateOf(key).queueInfo = null
     }
   }
 
@@ -123,41 +233,59 @@ export function useAgentChat(deps: {
     }
   }
 
-  // ── 加载：会话记录 + 聊天消息 ──
-  async function loadRuns() {
+  // ── 加载：会话记录 + 聊天消息（按 key 写各自分片）──
+  async function loadRuns(key: string = activeKey.value) {
+    const st = stateOf(key)
     try {
-      runs.value = await listAgentRuns(activeKey.value, 50)
+      st.runs = await listAgentRuns(key, 50)
     } catch {
-      runs.value = []
+      st.runs = []
     }
   }
 
-  async function loadMessages() {
+  async function loadMessages(key: string = activeKey.value) {
+    const st = stateOf(key)
     try {
-      messages.value = await listAgentMessages(activeKey.value)
+      st.messages = await listAgentMessages(key)
     } catch {
       // 会话文件读取失败不阻塞（新会话为空）
     }
   }
 
-  async function loadChat() {
-    messagesLoading.value = true
-    // 切会话时先清旧水位：loadUsage 异步返回前，避免闪现上一会话的水位条 / 橙色告警
-    usage.value = null
+  /** 全量校准一个会话：runs / messages / 队列状态（用量只对当前会话拉）。
+   *  后台会话跑完时也调它——切回去必须是准确状态，不能停在流式残留上。 */
+  async function loadChatFor(key: string) {
+    const st = stateOf(key)
+    const isActive = key === activeKey.value
+    if (isActive) {
+      st.messagesLoading = true
+      // 切会话时先清旧水位：loadUsage 异步返回前，避免闪现上一会话的水位条 / 橙色告警
+      usage.value = null
+    }
     try {
-      await Promise.all([loadRuns(), loadMessages(), loadQueueInfo(), loadQueue(), loadUsage()])
+      const tasks: Promise<void>[] = [loadRuns(key), loadMessages(key), loadQueueInfo(key), loadQueue()]
+      if (isActive) tasks.push(loadUsage())
+      await Promise.all(tasks)
       // runs 已刷新：提交兜底使命结束，活跃 run 由 activeRun 推导接管
-      submittedRunId.value = null
+      st.submittedRunId = null
       // 切回正在运行的会话：把已加载的历史冻结进快照，
       // 新 delta 到达时 displayedMessages = [历史快照, ...流式]，不吞历史。
       // 提交路径（liveMessages 已有回显）与终态路径（activeRun 已消失）不受影响。
-      if (activeRun.value && liveMessages.value.length === 0) {
-        historySnapshot.value = [...messages.value]
+      const hasActive = st.runs.some((r) => r.status === 'running' || r.status === 'pending')
+      if (hasActive && st.liveMessages.length === 0) {
+        st.historySnapshot = [...st.messages]
       }
     } finally {
-      messagesLoading.value = false
-      scrollToBottom()
+      if (isActive) {
+        st.messagesLoading = false
+        scrollToBottom()
+      }
     }
+  }
+
+  /** 当前会话的全量校准（编排层入口）。 */
+  function loadChat() {
+    return loadChatFor(activeKey.value)
   }
 
   // 当前会话活跃 run：优先取 running（真正占用进程执行的那条），无 running 才取
@@ -167,19 +295,12 @@ export function useAgentChat(deps: {
   // 后 loadChat 即恢复停止能力，不依赖流式事件回填（无输出的 run 也能停），
   // 后端排队中的 run 同样可停。
   const activeRun = computed<AgentRunSummary | undefined>(() =>
-    runs.value.find((r) => r.status === 'running') ?? runs.value.find((r) => r.status === 'pending'),
+    cur.value.runs.find((r) => r.status === 'running') ?? cur.value.runs.find((r) => r.status === 'pending'),
   )
   // 提交回执兜底：run 刚创建、runs 尚未刷新时保持可停止
-  const submittedRunId = ref<number | null>(null)
-  const activeRunId = computed<number | null>(() => activeRun.value?.id ?? submittedRunId.value)
+  const activeRunId = computed<number | null>(() => activeRun.value?.id ?? cur.value.submittedRunId)
   const canStop = computed(() => activeRunId.value !== null)
-  const cancelling = ref(false)
 
-  // ── 流式渲染：RPC 事件实时追加的消息（终态后 loadChat 全量校准）──
-  const liveMessages = ref<AgentChatMessage[]>([])
-  // 提交时刻的历史快照：流式期间显示「快照历史 + 流式内容」，
-  // 保证 AI 生成中前文始终可见（与 pi GUI 一致）；终态后清空回落全量校准。
-  const historySnapshot = ref<AgentChatMessage[]>([])
   // 流式进行中 = 历史快照 + 实时流式；终态（agent_settled）清空流式后回落全量校准结果。
   const displayedMessages = computed(() =>
     liveMessages.value.length > 0
@@ -194,20 +315,23 @@ export function useAgentChat(deps: {
     return liveMessages.value.indexOf(msg) >= 0
   }
 
-  /** 当前流式 assistant 消息（没有则创建一条）。 */
-  function liveAssistant(): AgentChatMessage {
-    let cur = liveMessages.value[liveMessages.value.length - 1]
-    if (!cur || cur.role !== 'assistant') {
-      cur = { role: 'assistant', blocks: [], timestamp: new Date().toISOString(), model: null }
-      liveMessages.value.push(cur)
+  /** 指定会话的流式 assistant 消息（没有则创建一条）。
+   *  收分片参数而非读「当前会话」：后台会话的 delta 也要落到它自己的流式消息上。 */
+  function liveAssistantFor(st: SessionChatState): AgentChatMessage {
+    let msg = st.liveMessages[st.liveMessages.length - 1]
+    if (!msg || msg.role !== 'assistant') {
+      msg = { role: 'assistant', blocks: [], timestamp: new Date().toISOString(), model: null }
+      st.liveMessages.push(msg)
     }
-    return cur
+    return msg
   }
 
   /** 处理单个 pi RPC 流事件（打字机文本 / 工具状态 / 流式 bash 输出）。
-   *  事件含 session_key，此处逐个校验，切会话后旧事件不会写入新会话的流式消息。 */
+   *
+   *  按 payload.session_key 写入**对应会话的分片**——并行执行时后台会话也在产出，
+   *  它的实时输出必须落到自己的分片。旧实现是「非当前会话就 return」，等于把
+   *  后台会话的流式内容全丢掉，切回去只能靠全量读盘（打字机效果荡然无存）。 */
   function processRpcEvent(payload: { session_key: string; run_id: number; event: string }) {
-    if (payload.session_key !== activeKey.value) return
     let ev: Record<string, unknown>
     try {
       ev = JSON.parse(payload.event) as Record<string, unknown>
@@ -216,29 +340,30 @@ export function useAgentChat(deps: {
     }
     if (!ev || typeof ev.type !== 'string') return
     const type = ev.type
+    const st = stateOf(payload.session_key)
 
     if (type === 'message_update') {
       const ae = ev.assistantMessageEvent as { type?: string; delta?: string } | undefined
       if (!ae?.delta) return
-      const cur = liveAssistant()
+      const msg = liveAssistantFor(st)
       if (ae.type === 'text_delta') {
-        const last = cur.blocks[cur.blocks.length - 1]
+        const last = msg.blocks[msg.blocks.length - 1]
         if (last && last.kind === 'text') {
           ;(last as { kind: 'text'; text: string }).text += ae.delta
         } else {
-          cur.blocks.push({ kind: 'text', text: ae.delta })
+          msg.blocks.push({ kind: 'text', text: ae.delta })
         }
       } else if (ae.type === 'thinking_delta') {
-        const last = cur.blocks[cur.blocks.length - 1]
+        const last = msg.blocks[msg.blocks.length - 1]
         if (last && last.kind === 'thinking') {
           ;(last as { kind: 'thinking'; text: string }).text += ae.delta
         } else {
-          cur.blocks.push({ kind: 'thinking', text: ae.delta })
+          msg.blocks.push({ kind: 'thinking', text: ae.delta })
         }
       }
     } else if (type === 'tool_execution_start') {
-      const cur = liveAssistant()
-      cur.blocks.push({
+      const msg = liveAssistantFor(st)
+      msg.blocks.push({
         kind: 'toolCall',
         id: String(ev.toolCallId ?? ''),
         name: String(ev.toolName ?? ''),
@@ -247,19 +372,20 @@ export function useAgentChat(deps: {
     } else if (type === 'bash_execution_update') {
       const delta = typeof ev.delta === 'string' ? ev.delta : ''
       if (!delta) return
-      const cur = liveAssistant()
-      const last = cur.blocks[cur.blocks.length - 1]
+      const msg = liveAssistantFor(st)
+      const last = msg.blocks[msg.blocks.length - 1]
       if (last && last.kind === 'bash') {
         ;(last as { kind: 'bash'; output: string }).output += delta
       } else {
-        cur.blocks.push({ kind: 'bash', command: '', output: delta, exit_code: null, truncated: false })
+        msg.blocks.push({ kind: 'bash', command: '', output: delta, exit_code: null, truncated: false })
       }
     } else if (type === 'agent_settled') {
-      // 整轮完成：停轮询 + 清流式/快照 + 全量校准（与 JSONL 一致）
-      stopPolling()
-      liveMessages.value = []
-      historySnapshot.value = []
-      void loadChat()
+      // 整轮完成：停轮询（仅当前会话）+ 清流式/快照 + 全量校准（与 JSONL 一致）。
+      // 后台会话也走全量校准：切回去看到的是权威状态，而非停在中途的流式残留。
+      if (payload.session_key === activeKey.value) stopPolling()
+      st.liveMessages = []
+      st.historySnapshot = []
+      void loadChatFor(payload.session_key)
     }
   }
 
@@ -272,16 +398,27 @@ export function useAgentChat(deps: {
   let pendingRpcEvents: { session_key: string; run_id: number; event: string }[] = []
   let rpcFlushTimer: ReturnType<typeof setTimeout> | undefined
 
-  /** 丢弃未处理的流式事件（切会话 / run 终态 / 卸载时调用）：
+  /** 丢弃未处理的流式事件（run 终态 / 卸载时调用）：
    *  终态后 UI 以 loadChat 全量校准为准，残留的流式 delta 已无意义；
    *  特别是 run 终态（onRunFinished）可能先于队列 flush 到达，不清队列
-   *  会让旧 delta 在清空 liveMessages 后又重建出幽灵流式消息。 */
-  function discardPendingRpcEvents() {
-    if (rpcFlushTimer !== undefined) {
+   *  会让旧 delta 在清空 liveMessages 后又重建出幽灵流式消息。
+   *
+   *  传 sessionKey 时只丢该会话的事件：并行下别的会话仍在产出，
+   *  全清会让它们的打字机凭空卡一拍（已入队未 flush 的那批直接蒸发）。 */
+  function discardPendingRpcEvents(sessionKey?: string) {
+    if (sessionKey === undefined) {
+      if (rpcFlushTimer !== undefined) {
+        clearTimeout(rpcFlushTimer)
+        rpcFlushTimer = undefined
+      }
+      pendingRpcEvents = []
+      return
+    }
+    pendingRpcEvents = pendingRpcEvents.filter((e) => e.session_key !== sessionKey)
+    if (pendingRpcEvents.length === 0 && rpcFlushTimer !== undefined) {
       clearTimeout(rpcFlushTimer)
       rpcFlushTimer = undefined
     }
-    pendingRpcEvents = []
   }
 
   /** 事件监听回调：入队并调度合帧 flush。 */
@@ -374,6 +511,8 @@ export function useAgentChat(deps: {
   async function handleSubmit() {
     // 菜单打开时 Enter 用于选择菜单项，不触发提交
     if (showSkillMenu.value || showEntityMenu.value) return
+    const key = activeKey.value
+    const st = stateOf(key)
     const { entities: inline, cleaned } = parseInlineRefs(instruction.value)
     const all = [...entities.value, ...inline]
     const merged: AgentEntityRefSeed[] = []
@@ -385,13 +524,13 @@ export function useAgentChat(deps: {
       showToast(t('agent.empty_job'))
       return
     }
-    submitting.value = true
+    st.submitting = true
     try {
       // 新 run 开始：冻结历史快照 + 本地回显用户消息（pi 落盘有延迟），
       // 流式期间界面显示「历史 + 用户消息 + AI 实时输出」；
       // 终态由 agent_settled 统一清流式并全量校准（与 JSONL 一致）。
-      historySnapshot.value = [...messages.value]
-      liveMessages.value = [
+      st.historySnapshot = [...st.messages]
+      st.liveMessages = [
         {
           role: 'user',
           blocks: [{ kind: 'text', text: cleaned.trim() }],
@@ -400,14 +539,14 @@ export function useAgentChat(deps: {
         },
       ]
       const runId = await runAgentJob({
-        sessionKey: activeKey.value,
+        sessionKey: key,
         entities: merged,
         skillPath: skillPath.value,
         instruction: cleaned.trim(),
         model: effectiveModel.value,
         files: files.value.length > 0 ? [...files.value] : null,
       })
-      submittedRunId.value = runId
+      st.submittedRunId = runId
       track('agent.submit')
       instruction.value = ''
       // 单次覆盖已消费：清掉一次性选择与附件，回落会话默认（不写 SessionMeta）
@@ -424,52 +563,58 @@ export function useAgentChat(deps: {
       // （新建即登记后 key 恒在索引中；draft 清除 = 已提交，不再是「新会话」）
       // 注意固化的是 selectedModel（会话长期选择），一次性覆盖不落库。
       const title = cleaned.trim() ? [...cleaned.trim()].slice(0, 40).join('') : sessionTitle.value
-      persistSessionMeta(activeKey.value, title, selectedModel.value)
+      persistSessionMeta(key, title, selectedModel.value)
       await loadChat()
       startPolling()
     } catch (e) {
       showToast(String(e))
       // 提交被拒（未创建 run，不会有 AgentRunFinished 事件兜底）：
       // 清掉本地回显与历史快照，避免失败消息永久滞留成「幽灵消息」
-      discardPendingRpcEvents()
-      liveMessages.value = []
-      historySnapshot.value = []
+      discardPendingRpcEvents(key)
+      st.liveMessages = []
+      st.historySnapshot = []
     } finally {
-      submitting.value = false
+      st.submitting = false
     }
   }
 
-  // ── 停止：中断当前 run（kill 子进程树，终态 cancelled）──
+  // ── 停止：中断当前 run（后端按 run_id 定位承载进程 abort，终态 cancelled）──
   async function handleCancel() {
-    if (activeRunId.value === null || cancelling.value) return
-    cancelling.value = true
+    const st = cur.value
+    if (activeRunId.value === null || st.cancelling) return
+    st.cancelling = true
     try {
       await cancelAgentRun(activeRunId.value)
       showToast(t('agent.cancelling'))
       startPolling() // 等终态事件刷新；事件丢失时轮询兜底
     } catch (e) {
       showToast(String(e))
-      cancelling.value = false
+      st.cancelling = false
     }
   }
 
   // ── 事件 ──
-  async function onRunFinished() {
-    // 不按 session_key 过滤：当前会话若有活跃 run（pending/running），任意会话的
-    // run 结束都可能影响它（其他会话结束 → 本会话排队 run 开始执行；本会话结束 →
-    // 横幅/停止按钮收尾）。统一刷新，保证「排队中」横幅在别的会话结束后自动更新。
-    if (activeRunId.value === null) return
-    stopPolling()
-    cancelling.value = false
-    // 兜底清理：正常路径 agent_settled 已清；abort / 超时 / 模型错误等
-    // 场景下 agent_settled 可能不达，run 终态事件统一收尾。
-    // 同时丢弃合帧队列：终态可能先于队列 flush 到达，残留 delta 会在
-    // 清空后重建出幽灵流式消息（loadChat 全量校准才是权威）。
-    discardPendingRpcEvents()
-    liveMessages.value = []
-    historySnapshot.value = []
-    // run 收尾：进程可能刚重启过、推迟标记也刚被消费，指示灯需同步
-    await Promise.all([loadChat(), loadRpcStatus()])
+  /** 一次 run 结束（事件带 session_key）：只收尾**该会话**的分片，
+   *  再顺带刷新全局队列（其他会话结束会腾出并发位，影响当前会话的排队提示）。 */
+  async function onRunFinished(sessionKey: string) {
+    const st = states.get(sessionKey)
+    if (st) {
+      if (sessionKey === activeKey.value) stopPolling()
+      st.cancelling = false
+      // 兜底清理：正常路径 agent_settled 已清；abort / 超时 / 模型错误等
+      // 场景下 agent_settled 可能不达，run 终态事件统一收尾。
+      // 同时丢弃合帧队列：终态可能先于队列 flush 到达，残留 delta 会在
+      // 清空后重建出幽灵流式消息（loadChat 全量校准才是权威）。
+      discardPendingRpcEvents(sessionKey)
+      st.liveMessages = []
+      st.historySnapshot = []
+      await loadChatFor(sessionKey)
+    }
+    // 其他会话结束 → 并发位释放，当前会话的排队位置 / 占用者可能已变
+    await loadQueue()
+    if (states.has(activeKey.value)) await loadQueueInfo(activeKey.value)
+    // run 收尾：进程池可能刚重启过、推迟标记也刚被消费，指示灯需同步
+    await loadRpcStatus()
   }
 
   // ── 消息渲染辅助 ──
@@ -522,18 +667,30 @@ export function useAgentChat(deps: {
   /** 最近一次 run（状态横幅用）。 */
   const latestRun = computed<AgentRunSummary | undefined>(() => runs.value[0])
 
-  /** 占用执行位的其他会话 key（本会话 pending 且其他会话 running）：横幅可点击跳转。 */
+  /** 占用执行位的其他会话 key（本会话 pending 且已达并发上限）：横幅可点击跳转。 */
   const queueOccupiedBy = computed<string | null>(() => {
     const q = queueInfo.value
     if (!q?.other_running || latestRun.value?.status !== 'pending') return null
+    // 并发上限 > 1 且仍有空闲位：本会话马上就会被调度，不存在「被谁挡住」
+    if (q.max_concurrency > 1 && q.running_count < q.max_concurrency) return null
     const key = q.running_sessions[0]
     return key && key !== activeKey.value ? key : null
   })
 
-  /** 横幅「排队中」补充提示：其他会话执行中 / 队列位置。 */
+  /** 横幅「排队中」补充提示：等待空闲执行位 / 队列位置。
+   *
+   *  并发上限 1（串行）：保持原有「其他会话正在执行」文案（此时占用者唯一且明确）。
+   *  并发上限 > 1：只有已达上限才是真排队（running_count ≥ max_concurrency），
+   *  否则本会话的 pending 只是调度延迟，不该说「被别会话挡住」。 */
   const queueHint = computed<string | null>(() => {
     const q = queueInfo.value
     if (!q || latestRun.value?.status !== 'pending') return null
+    if (q.max_concurrency > 1) {
+      if (q.running_count < q.max_concurrency) return null
+      return q.position && q.position > 1
+        ? t('agent.queue_limit_reached_pos', String(q.position))
+        : t('agent.queue_limit_reached')
+    }
     if (q.other_running) {
       return q.position && q.position > 1
         ? t('agent.queue_other_running_pos', String(q.position))
@@ -620,21 +777,24 @@ export function useAgentChat(deps: {
   }
 
   // ── 会话切换清空（三种 mode 的清空范围不同，逐条对照、不取并集）──
-  // switch：停轮询 + 丢弃合帧 + 提交/流式态复位；messages/runs 不清（loadChat 覆盖）。
-  // new：同 switch 但立即清 messages/runs；不停轮询。
+  // switch：只停轮询。会话状态都在各自分片（states.get(session_key)）里：切走即不可见、
+  //   切回还在，无需清；清目标分片反而会把后台会话干到一半的流式内容抹掉。合帧队列
+  //   同理各自归位（按 session_key 落分片），不需要也不该丢。
+  // new：目标分片清空（刚登记的空白会话）；不停轮询。
   // delete：一律不动（删除后切换保留草稿/附件/提交态是现状行为）。
   function resetForSessionSwitch(mode: SessionSwitchMode) {
     if (mode === 'delete') return
-    if (mode === 'switch') stopPolling()
-    discardPendingRpcEvents()
-    submittedRunId.value = null
-    cancelling.value = false
-    liveMessages.value = []
-    historySnapshot.value = []
-    if (mode === 'new') {
-      messages.value = []
-      runs.value = []
+    if (mode === 'switch') {
+      stopPolling()
+      return
     }
+    const st = stateOf(activeKey.value)
+    st.submittedRunId = null
+    st.cancelling = false
+    st.liveMessages = []
+    st.historySnapshot = []
+    st.messages = []
+    st.runs = []
   }
 
   // 新消息到达时自动滚动（用户接近底部时）
@@ -642,6 +802,9 @@ export function useAgentChat(deps: {
     () => messages.value.length,
     () => scrollToBottomIfNear(),
   )
+
+  // 切会话时回收多余分片（上限与回收条件见 MAX_SESSION_STATES）
+  watch(activeKey, () => pruneSessionStates())
 
   // timer 随 composable 生命周期清理：合帧队列与轮询不泄漏
   onUnmounted(() => {

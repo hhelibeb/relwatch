@@ -135,9 +135,10 @@ pub struct AppState {
     pub db: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     pub next_poll_at: std::sync::Arc<AtomicI64>,
     pub deepseek_semaphore: std::sync::Arc<Semaphore>,
-    /// Agent 提交的并发上限（固定为 1：受 RpcManager 单常驻进程模型约束，见 `lib.rs`）。
-    pub agent_semaphore: std::sync::Arc<Semaphore>,
-    /// pi RPC 常驻进程管理器（工作区对话驱动核心）。
+    /// Agent 提交的并发闸门（值来自设置页 `agent_max_concurrency`；保存配置 /
+    /// 导入备份后就地调整，无需重启应用。实现见 `agent_gate.rs`）。
+    pub agent_gate: std::sync::Arc<crate::agent_gate::ConcurrencyGate>,
+    /// Agent RPC 进程池管理器（1 常驻 + 最多 N-1 个临时进程）。
     pub agent_rpc: std::sync::Arc<crate::agent_rpc::RpcManager>,
     /// 用户请求取消的 run 集合（dispatch 结束写入 cancelled 状态）。
     pub agent_cancelled: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<i64>>>,

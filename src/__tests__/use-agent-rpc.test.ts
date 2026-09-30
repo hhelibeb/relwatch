@@ -9,7 +9,7 @@ vi.mock('../api/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/agent')>()
   return {
     ...actual,
-    getAgentRpcStatus: vi.fn().mockResolvedValue({ running: false, pid: null, restart_pending: false }),
+    getAgentRpcStatus: vi.fn().mockResolvedValue({ running: false, pid: null, process_count: 0, restart_pending: false }),
     restartAgentRpc: vi.fn().mockResolvedValue(true),
   }
 })
@@ -29,16 +29,16 @@ function setup(deps: { showToast?: (m: string) => void; onMenuOpen?: () => void 
 }
 
 beforeEach(() => {
-  vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, restart_pending: false })
+  vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, process_count: 0, restart_pending: false })
   vi.mocked(restartAgentRpc).mockResolvedValue(true)
 })
 
 describe('useAgentRpc', () => {
   it('loadRpcStatus：成功写入 / 失败置 null', async () => {
     const { api } = setup()
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 4321, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 4321, process_count: 1, restart_pending: false })
     await api.loadRpcStatus()
-    expect(api.rpcStatus.value).toEqual({ running: true, pid: 4321, restart_pending: false })
+    expect(api.rpcStatus.value).toEqual({ running: true, pid: 4321, process_count: 1, restart_pending: false })
 
     vi.mocked(getAgentRpcStatus).mockRejectedValue(new Error('boom'))
     await api.loadRpcStatus()
@@ -64,7 +64,7 @@ describe('useAgentRpc', () => {
     const { api } = setup({ showToast })
     api.rpcMenuOpen.value = true
 
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 1, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 1, process_count: 1, restart_pending: false })
     vi.mocked(restartAgentRpc).mockResolvedValue(true)
     await api.handleRestartRpc()
     expect(showToast).toHaveBeenCalledWith(t('agent.rpc_restart_done'))
@@ -89,11 +89,11 @@ describe('useAgentRpc', () => {
 
   it('rpcRestartPending：restart_pending 为真时提示推迟生效', async () => {
     const { api } = setup()
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, restart_pending: true })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, process_count: 1, restart_pending: true })
     await api.loadRpcStatus()
     expect(api.rpcRestartPending.value).toBe(true)
 
-    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, restart_pending: false })
+    vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 7, process_count: 1, restart_pending: false })
     await api.loadRpcStatus()
     expect(api.rpcRestartPending.value).toBe(false)
   })

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { computed, defineComponent, ref } from 'vue'
+import { computed, defineComponent, nextTick, ref } from 'vue'
 import type { Ref } from 'vue'
 import { t } from '../i18n'
 import { useAgentChat } from '../components/agent/useAgentChat'
@@ -127,7 +127,7 @@ beforeEach(() => {
   // clearAllMocks 不清实现：逐个重设默认值，防止上一用例的 mockResolvedValue 泄漏
   vi.mocked(listAgentRuns).mockResolvedValue([])
   vi.mocked(listAgentMessages).mockResolvedValue([])
-  vi.mocked(getAgentQueueStatus).mockResolvedValue({ position: null, other_running: false, running_sessions: [] })
+  vi.mocked(getAgentQueueStatus).mockResolvedValue({ position: null, other_running: false, running_sessions: [], max_concurrency: 1, running_count: 0 })
   vi.mocked(getAgentQueue).mockResolvedValue([])
   vi.mocked(runAgentJob).mockResolvedValue(101)
   vi.mocked(cancelAgentRun).mockResolvedValue(undefined)
@@ -182,9 +182,9 @@ describe('useAgentChat 加载与合帧', () => {
     expect(api.displayedMessages.value).toEqual([...api.messages.value, ...api.liveMessages.value])
   })
 
-  it('合帧：他session 事件丢弃；agent_settled 停轮询 + 清流式/快照 + 全量校准', async () => {
+  it('合帧：他 session 的事件写入它自己的分片（不串到当前会话）；settled 只清自己的', async () => {
     const { api, d } = setup()
-    api.handleRpcStream(rpc('other', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '串台' } })))
+    api.handleRpcStream(rpc('other', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '后台产出' } })))
     api.startPolling() // 供 agent_settled 停掉；同时验证启动即刷新指示灯
     expect(d.loadRpcStatus).toHaveBeenCalledTimes(1)
     api.liveMessages.value = [{ role: 'assistant', blocks: [], timestamp: 't', model: null }]
@@ -193,10 +193,14 @@ describe('useAgentChat 加载与合帧', () => {
     api.handleRpcStream(rpc('s1', ev({ type: 'agent_settled' })))
     await vi.advanceTimersByTimeAsync(50)
 
-    // 串台事件未写入；settled 清空流式与快照并触发 loadChat 全量校准
+    // 当前会话（s1）：settled 清空流式与快照并触发 loadChat 全量校准；other 的 delta 未串进来
     expect(api.liveMessages.value).toEqual([])
     expect(api.historySnapshot.value).toEqual([])
     expect(vi.mocked(listAgentMessages).mock.calls.length).toBe(1)
+    // 后台会话的流式内容留在它自己的分片里（切回去要看得见）
+    d.activeKey.value = 'other'
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: '后台产出' }])
+    d.activeKey.value = 's1'
     // 轮询已停：advance 一个周期后队列不再被拉取
     // （取样在 flush 后：settled 触发的 loadChat 自身已拉过一次队列）
     const queueCalls = vi.mocked(getAgentQueue).mock.calls.length
@@ -432,46 +436,73 @@ describe('useAgentChat 会话切换清空（§4.2 三 mode 逐状态复刻）', 
     api.historySnapshot.value = [userMsg('snap')]
   }
 
-  it('switch：停轮询 + 丢帧 + 提交/流式态复位；messages/runs 不清（loadChat 覆盖）', async () => {
-    const { api } = setup()
+  it('switch：只停轮询；离开的会话状态（含在途 delta）留在它自己的分片里，切回即恢复', async () => {
+    const { api, d } = setup() // activeKey = s1
     api.messages.value = [userMsg('m')]
     api.runs.value = [makeRun()]
-    seed(api)
+    seed(api) // s1：轮询中 + 一条待 flush 的 delta + 提交/流式态脏值
 
+    // 真实序列：AgentWorkspace.switchSession 先切 activeKey，再调复位
+    d.activeKey.value = 's2'
     api.resetForSessionSwitch('switch')
 
-    expect(api.submittedRunId.value).toBeNull()
-    expect(api.cancelling.value).toBe(false)
+    // 目标会话是空白分片：不受影响（无需清，也不该被清）
+    expect(api.messages.value).toEqual([])
     expect(api.liveMessages.value).toEqual([])
-    expect(api.historySnapshot.value).toEqual([])
-    expect(api.messages.value.length).toBe(1)
-    expect(api.runs.value.length).toBe(1)
     // 停轮询：advance 一个周期不再拉队列
     const queueCalls = vi.mocked(getAgentQueue).mock.calls.length
     await vi.advanceTimersByTimeAsync(1600)
     expect(vi.mocked(getAgentQueue).mock.calls.length).toBe(queueCalls)
-    // 丢帧：合帧 timer 已清，残留 delta 永不写入（无幽灵流式消息）
-    expect(api.liveMessages.value).toEqual([])
+    // 切回 s1：提交兜底 / 流式残留 / 快照都还在（它们本就是 s1 的状态）
+    d.activeKey.value = 's1'
+    expect(api.submittedRunId.value).toBe(9)
+    expect(api.cancelling.value).toBe(true)
+    expect(api.historySnapshot.value).toEqual([userMsg('snap')])
+    expect(api.messages.value.length).toBe(1)
+    expect(api.runs.value.length).toBe(1)
+    // 在途 delta 未被丢弃：替自己的会话写进流式消息（后台会话的打字机不断档）
+    await vi.advanceTimersByTimeAsync(50)
+    expect(api.liveMessages.value.length).toBe(1)
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: 'X' }])
   })
 
-  it('new：同 switch 但立即清 messages/runs，且不停轮询（原实现即如此）', async () => {
-    const { api } = setup()
+  it('切回正在后台跑的会话：它的流式内容不被复位清掉（清它 = 把后台输出抹了）', async () => {
+    const { api, d } = setup() // activeKey = s1
+    api.handleRpcStream(rpc('s2', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '后台' } })))
+    api.handleRpcStream(rpc('s2', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '产出' } })))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(api.liveMessages.value).toEqual([]) // 当前是 s1，看不到 s2 的流式
+
+    d.activeKey.value = 's2'
+    api.resetForSessionSwitch('switch')
+
+    // 切进来即可看到后台已产出的内容（新 delta 会接着往下追加，不是从头重建）
+    expect(api.liveMessages.value.length).toBe(1)
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: '后台产出' }])
+  })
+
+  it('new：目标（空白会话）立即清空、不停轮询；离开的会话在途 delta 不被牵连', async () => {
+    const { api, d } = setup()
     api.messages.value = [userMsg('m')]
     api.runs.value = [makeRun()]
-    seed(api)
+    seed(api) // s1 脏值
 
+    d.activeKey.value = 's-new' // registerNew 的实际效果：activeKey 换到新 key
     api.resetForSessionSwitch('new')
 
     expect(api.messages.value).toEqual([])
     expect(api.runs.value).toEqual([])
     expect(api.submittedRunId.value).toBeNull()
     expect(api.historySnapshot.value).toEqual([])
+    expect(api.liveMessages.value).toEqual([])
     // 轮询仍活：advance 一个周期队列照常拉取
     const queueCalls = vi.mocked(getAgentQueue).mock.calls.length
     await vi.advanceTimersByTimeAsync(1600)
     expect(vi.mocked(getAgentQueue).mock.calls.length).toBeGreaterThan(queueCalls)
-    // 丢帧照旧（discardPendingRpcEvents 在 new mode 也执行）
-    expect(api.liveMessages.value).toEqual([])
+    // 离开的会话状态原样：在途 delta 仍在它自己的分片里 flush
+    d.activeKey.value = 's1'
+    expect(api.submittedRunId.value).toBe(9)
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: 'X' }])
   })
 
   it('delete：一律不动（草稿/提交态/流式残留保留，残留 delta 照常 flush）', async () => {
@@ -494,21 +525,111 @@ describe('useAgentChat 会话切换清空（§4.2 三 mode 逐状态复刻）', 
   })
 })
 
+describe('useAgentChat 并行会话分片（多会话同时运行）', () => {
+  it('后台会话的流式事件写入自己的分片，切回后内容仍在（旧实现直接丢弃）', async () => {
+    const { api, d } = setup() // activeKey = s1
+    api.handleRpcStream(rpc('s2', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '后台' } })))
+    api.handleRpcStream(rpc('s2', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '产出' } })))
+    await vi.advanceTimersByTimeAsync(50)
+
+    // 当前会话视图不受影响（不串台）
+    expect(api.liveMessages.value).toEqual([])
+    // 切到 s2：后台期间的流式内容完整保留
+    d.activeKey.value = 's2'
+    expect(api.liveMessages.value.length).toBe(1)
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: '后台产出' }])
+  })
+
+  it('agent_settled 只清自己的分片，其他会话进行中的流式不受牵连', async () => {
+    const { api } = setup()
+    api.handleRpcStream(rpc('s1', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'A' } })))
+    api.handleRpcStream(rpc('s2', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'B' } })))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: 'A' }])
+
+    // s2 先结束：只清 s2 的分片，s1 的流式照旧
+    api.handleRpcStream(rpc('s2', ev({ type: 'agent_settled' })))
+    await vi.advanceTimersByTimeAsync(50)
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: 'A' }])
+  })
+
+  it('onRunFinished 只收尾该会话的分片，顺带刷新全局队列与进程状态', async () => {
+    const { api, d } = setup()
+    api.handleRpcStream(rpc('s1', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'A' } })))
+    api.handleRpcStream(rpc('s2', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'B' } })))
+    await vi.advanceTimersByTimeAsync(50)
+
+    const queueCalls = vi.mocked(getAgentQueue).mock.calls.length
+    await api.onRunFinished('s2')
+
+    // 只对该会话做全量校准
+    expect(vi.mocked(listAgentMessages)).toHaveBeenCalledWith('s2')
+    d.activeKey.value = 's2'
+    expect(api.liveMessages.value).toEqual([])
+    d.activeKey.value = 's1'
+    expect(api.liveMessages.value[0].blocks).toEqual([{ kind: 'text', text: 'A' }])
+    // 队列与指示灯顺带刷新（其他会话结束会腾出并发位）
+    expect(vi.mocked(getAgentQueue).mock.calls.length).toBeGreaterThan(queueCalls)
+    expect(d.loadRpcStatus).toHaveBeenCalled()
+  })
+
+  it('分片回收：超出上限时丢非当前且无活跃 run 的最早分片，正在跑的后台会话保留', async () => {
+    const { api, d } = setup()
+    // s1 用「已结束的 run」当分片存活探针：它不阻止回收，但分片若还在就一定看得见
+    // （全返回空列表的话，「已回收」与「分片还在但本来就是空的」无法区分）。
+    vi.mocked(listAgentRuns).mockImplementation(async (key: string) => {
+      if (key === 's2') return [makeRun({ session_key: 's2', status: 'running' })]
+      if (key === 's1') return [makeRun({ session_key: 's1', status: 'success' })]
+      return []
+    })
+    // 造 14 个会话分片（上限 12），其中 s2 持有活跃 run
+    for (const k of ['s1', 's2', ...Array.from({ length: 12 }, (_, i) => `x${i}`)]) {
+      d.activeKey.value = k
+      await api.loadChat()
+      await nextTick() // 回收挂在 watch(activeKey) 上，等它跑完再进下一个
+    }
+
+    // s2 的活跃 run 让分片免于回收：切回去仍看得到
+    d.activeKey.value = 's2'
+    await nextTick()
+    expect(api.runs.value.map((r) => r.status)).toEqual(['running'])
+    // s1 无活跃 run 且在最早位置 → 已被回收：切回去是重新加载前的空白分片
+    d.activeKey.value = 's1'
+    await nextTick()
+    expect(api.runs.value).toEqual([])
+  })
+})
+
 describe('useAgentChat 排队横幅提示', () => {
   it('queueHint/queueOccupiedBy：pending + 其他会话 running 时提示占用与位置', () => {
     const { api } = setup()
     api.runs.value = [makeRun({ status: 'pending' })]
-    api.queueInfo.value = { position: 3, other_running: true, running_sessions: ['s2'] }
+    api.queueInfo.value = { position: 3, other_running: true, running_sessions: ['s2'], max_concurrency: 1, running_count: 1 }
     expect(api.queueHint.value).toBe(t('agent.queue_other_running_pos', '3'))
     expect(api.queueOccupiedBy.value).toBe('s2')
 
     // 占用者即本会话 → 无「被谁占用」跳转
-    api.queueInfo.value = { position: 1, other_running: true, running_sessions: ['s1'] }
+    api.queueInfo.value = { position: 1, other_running: true, running_sessions: ['s1'], max_concurrency: 1, running_count: 1 }
     expect(api.queueOccupiedBy.value).toBeNull()
 
     // 非 pending → 无提示
     api.runs.value = [makeRun({ status: 'success' })]
     expect(api.queueHint.value).toBeNull()
     expect(api.queueOccupiedBy.value).toBeNull()
+  })
+
+  it('queueHint：并发上限 > 1 且未满时不提示排队，跑满才提示等待执行位', () => {
+    const { api } = setup()
+    api.runs.value = [makeRun({ status: 'pending' })]
+
+    // 上限 3、只有 1 个在跑 → 还有空位，本会话马上就会被调度，不该说「被别会话挡住」
+    api.queueInfo.value = { position: 1, other_running: true, running_sessions: ['s2'], max_concurrency: 3, running_count: 1 }
+    expect(api.queueHint.value).toBeNull()
+    expect(api.queueOccupiedBy.value).toBeNull()
+
+    // 跑满 → 真排队
+    api.queueInfo.value = { position: 4, other_running: true, running_sessions: ['s2'], max_concurrency: 3, running_count: 3 }
+    expect(api.queueHint.value).toBe(t('agent.queue_limit_reached_pos', '4'))
+    expect(api.queueOccupiedBy.value).toBe('s2')
   })
 })

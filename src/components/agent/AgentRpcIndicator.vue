@@ -1,4 +1,4 @@
-<!-- pi 常驻进程健康指示：点灯弹状态菜单（状态详情 + 重启入口）。
+<!-- pi RPC 进程池健康指示：点灯弹状态菜单（状态详情 + 重启入口）。
      重启是低频排障操作，收进菜单而非一级按钮；未运行时菜单不提供
      重启项（无物可重启，首次提交时进程会自动拉起）。
      状态与菜单逻辑由编排层的 useAgentRpc 持有，本组件纯 props/emit 展示。 -->
@@ -39,8 +39,10 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
           <span class="agent-ws-rpc-status-dot" :class="{ on: rpcStatus?.running }" aria-hidden="true"></span>
           <div class="agent-ws-rpc-status-text">
             <span class="agent-ws-rpc-status-main">{{ rpcStatus?.running ? t('agent.rpc_running') : t('agent.rpc_stopped') }}</span>
-            <span v-if="rpcStatus?.running && rpcStatus.pid" class="agent-ws-rpc-status-sub">pid {{ rpcStatus.pid }}</span>
-            <span v-else class="agent-ws-rpc-status-sub">{{ t('agent.rpc_not_started_hint') }}</span>
+            <!-- 副行优先报进程数：>1 说明有会话正在并行，是比单个 pid 更有信息量的状态。 -->
+            <span v-if="!rpcStatus?.running" class="agent-ws-rpc-status-sub">{{ t('agent.rpc_not_started_hint') }}</span>
+            <span v-else-if="rpcStatus.process_count > 1" class="agent-ws-rpc-status-sub">{{ t('agent.rpc_processes', String(rpcStatus.process_count)) }}</span>
+            <span v-else-if="rpcStatus.pid" class="agent-ws-rpc-status-sub">pid {{ rpcStatus.pid }}</span>
           </div>
         </div>
         <!-- 重启入口：仅运行中提供（未运行时点击无物可重启，且首次提交会自动拉起） -->

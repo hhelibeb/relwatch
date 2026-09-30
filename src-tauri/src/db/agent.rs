@@ -16,10 +16,16 @@ use specta::Type;
 
 use super::settings::{
     get_setting_bool, get_setting_i64, get_setting_str, set_setting,
-    KEY_AGENT_BINARY, KEY_AGENT_ENABLED, KEY_AGENT_MODEL, KEY_AGENT_PROMPT_SUFFIX,
-    KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_TYPE, KEY_AGENT_WORKING_DIR,
-    KEY_AGENT_WS_WIDTH,
+    KEY_AGENT_BINARY, KEY_AGENT_ENABLED, KEY_AGENT_MAX_CONCURRENCY, KEY_AGENT_MODEL,
+    KEY_AGENT_PROMPT_SUFFIX, KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_TYPE,
+    KEY_AGENT_WORKING_DIR, KEY_AGENT_WS_WIDTH,
 };
+
+/// Agent 并发上限默认值：3（1 个常驻进程 + 最多 2 个临时进程）。
+pub const DEFAULT_AGENT_MAX_CONCURRENCY: i64 = 3;
+/// Agent 并发上限硬上限：每个并发位对应一个 pi（Node）进程，再高只是把内存压力
+/// 从「排队」换成「任务管理器里更多 node.exe」，边际收益为负。
+pub const MAX_AGENT_CONCURRENCY: i64 = 8;
 
 /// 全局 Agent 配置（设置页「Agent」分区读写）。
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -39,6 +45,9 @@ pub struct AgentConfig {
     pub prompt_suffix: Option<String>,
     /// 子进程超时秒数（超时 kill）。
     pub timeout_seconds: i64,
+    /// 同时执行的会话数上限（1 = 串行排队，与单进程模型等价；
+    /// N > 1 = 最多 N 个会话并行，RpcManager 按需起临时进程）。
+    pub max_concurrency: i64,
     /// 全局 skill 备选列表（`@` 菜单数据源；运行前校验存在性）。
     pub skills: Vec<String>,
 }
@@ -53,6 +62,7 @@ impl Default for AgentConfig {
             working_dir: None,
             prompt_suffix: None,
             timeout_seconds: 300,
+            max_concurrency: DEFAULT_AGENT_MAX_CONCURRENCY,
             skills: Vec::new(),
         }
     }
@@ -96,6 +106,8 @@ pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
         working_dir: non_empty(get_setting_str(conn, KEY_AGENT_WORKING_DIR, "")?),
         prompt_suffix: non_empty(get_setting_str(conn, KEY_AGENT_PROMPT_SUFFIX, "")?),
         timeout_seconds: get_setting_i64(conn, KEY_AGENT_TIMEOUT_SECONDS, 300)?.max(1),
+        max_concurrency: get_setting_i64(conn, KEY_AGENT_MAX_CONCURRENCY, DEFAULT_AGENT_MAX_CONCURRENCY)?
+            .clamp(1, MAX_AGENT_CONCURRENCY),
         skills,
     })
 }
@@ -123,6 +135,11 @@ pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), Str
     set_setting(conn, KEY_AGENT_WORKING_DIR, cfg.working_dir.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_PROMPT_SUFFIX, cfg.prompt_suffix.as_deref().unwrap_or(""))?;
     set_setting(conn, KEY_AGENT_TIMEOUT_SECONDS, &cfg.timeout_seconds.max(1).to_string())?;
+    set_setting(
+        conn,
+        KEY_AGENT_MAX_CONCURRENCY,
+        &cfg.max_concurrency.clamp(1, MAX_AGENT_CONCURRENCY).to_string(),
+    )?;
     set_setting(conn, KEY_AGENT_SKILLS, &skills_json)?;
     Ok(())
 }
@@ -357,12 +374,19 @@ pub struct AgentQueueStatus {
     pub other_running: bool,
     /// 其他会话 running run 的 session_key（前端可映射为会话标题）。
     pub running_sessions: Vec<String>,
+    /// 全局并发上限（1 = 串行排队；>1 = 并行执行，仅达上限才排队）。
+    pub max_concurrency: i64,
+    /// 全局 running run 总数（含本会话）。≥ max_concurrency 时 pending 才是真排队。
+    pub running_count: i64,
 }
 
 /// 查询全局队列状态：本会话最新 pending run 的队列位置 + 其他会话占用情况。
 ///
-/// 调度器为全局单并发（Semaphore::new(1)），pending run 按创建顺序排队；
-/// 队列位置 = 全局 status ∈ {pending, running} 且 id 更小的 run 数 + 1。
+/// 调度器并发上限为 `agent_max_concurrency`（默认 1 = 串行；N > 1 时最多 N 个会话
+/// 并行执行），pending run 按创建顺序排队；队列位置 = 全局 status ∈ {pending, running}
+/// 且 id 更小的 run 数 + 1。
+/// 注意：并发上限 > 1 时 `other_running` 不再等于「本会话被阻塞」——只要
+/// `running_count < max_concurrency`，本会话的 pending run 下一个就会被调度。
 pub fn agent_queue_status(conn: &Connection, session_key: &str) -> Result<AgentQueueStatus, String> {
     let latest_pending: Option<i64> = conn
         .query_row(
@@ -399,6 +423,15 @@ pub fn agent_queue_status(conn: &Connection, session_key: &str) -> Result<AgentQ
         position,
         other_running: !running_sessions.is_empty(),
         running_sessions,
+        max_concurrency: get_setting_i64(conn, KEY_AGENT_MAX_CONCURRENCY, DEFAULT_AGENT_MAX_CONCURRENCY)?
+            .clamp(1, MAX_AGENT_CONCURRENCY),
+        running_count: conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?,
     })
 }
 
@@ -416,9 +449,10 @@ pub struct AgentQueueItem {
 
 /// 查询全局队列（全部活跃 run，按执行顺序升序）。
 ///
-/// 调度器为全局单并发（Semaphore::new(1)），活跃 run 即 `status IN ('pending','running')`，
-/// 按 id 升序（创建顺序）即执行顺序。前端用它给侧栏每个会话画运行状态点、
-/// 给「排队中」横幅定位占用者（哪个会话的 run 正在执行）。
+/// 活跃 run 即 `status IN ('pending','running')`，按 id 升序（创建顺序）。
+/// 并发上限 > 1 时位置只表示创建顺序（前 `max_concurrency` 个可同时执行），
+/// 不再等于「还要等几个」。前端用它给侧栏每个会话画运行状态点、
+/// 给「排队中」横幅定位占用者（哪些会话的 run 正在执行）。
 pub fn agent_queue(conn: &Connection) -> Result<Vec<AgentQueueItem>, String> {
     let mut stmt = conn
         .prepare(
@@ -590,6 +624,7 @@ mod tests {
         assert_eq!(cfg.agent_type, "pi");
         assert!(cfg.binary.is_none());
         assert_eq!(cfg.timeout_seconds, 300);
+        assert_eq!(cfg.max_concurrency, DEFAULT_AGENT_MAX_CONCURRENCY);
         assert!(cfg.skills.is_empty());
 
         // 保存（含重复/空 skill 归一化）
@@ -603,6 +638,7 @@ mod tests {
                 working_dir: None,
                 prompt_suffix: Some("请输出中文".into()),
                 timeout_seconds: 120,
+                max_concurrency: 4,
                 skills: vec!["/s1".into(), "/s1".into(), "  /s2  ".into(), "".into()],
             },
         )
@@ -614,6 +650,7 @@ mod tests {
         assert_eq!(loaded.binary.as_deref(), Some("C:/pi.cmd"));
         assert_eq!(loaded.skills, vec!["/s1", "/s2"]);
         assert_eq!(loaded.timeout_seconds, 120);
+        assert_eq!(loaded.max_concurrency, 4);
     }
 
     #[test]
@@ -707,6 +744,50 @@ mod tests {
         assert!(active_runs_for_session(&conn, "ws-a").unwrap().is_empty());
     }
 
+    /// 并发上限的存储边界：写侧 clamp 到 [1, MAX]，读侧同样 clamp。
+    /// 上游（前端输入框 / 脏数据）给越界值时不该让调度层拿到 0（永久排队）或超大值。
+    #[test]
+    fn max_concurrency_clamped_on_save_and_load() {
+        let conn = init_memory_db().unwrap();
+        let mut cfg = load_agent_config(&conn).unwrap();
+
+        cfg.max_concurrency = 0;
+        save_agent_config(&conn, &cfg).unwrap();
+        assert_eq!(load_agent_config(&conn).unwrap().max_concurrency, 1);
+
+        cfg.max_concurrency = 999;
+        save_agent_config(&conn, &cfg).unwrap();
+        assert_eq!(
+            load_agent_config(&conn).unwrap().max_concurrency,
+            MAX_AGENT_CONCURRENCY
+        );
+
+        // 直接写脏值（绕过 save 的 clamp）→ 读侧仍收敛到合法区间
+        set_setting(&conn, KEY_AGENT_MAX_CONCURRENCY, "-5").unwrap();
+        assert_eq!(load_agent_config(&conn).unwrap().max_concurrency, 1);
+    }
+
+    /// 队列状态暴露并发上限：max_concurrency 透传配置值，running_count 统计全局
+    /// running（含本会话）—— 前端据此区分「真排队（已达上限）」与「只是别的会话在并行」。
+    #[test]
+    fn queue_status_exposes_concurrency_limit() {
+        let conn = init_memory_db().unwrap();
+        let mut cfg = load_agent_config(&conn).unwrap();
+        cfg.max_concurrency = 3;
+        save_agent_config(&conn, &cfg).unwrap();
+
+        let ra = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A", model: None, session_path: None, files: None }).unwrap();
+        mark_run_started(&conn, ra).unwrap();
+        let rb = create_run(&conn, &NewRun { session_key: "ws-b", skill_path: None, entities: &[], instruction: "B", model: None, session_path: None, files: None }).unwrap();
+        mark_run_started(&conn, rb).unwrap();
+
+        let st = agent_queue_status(&conn, "ws-a").unwrap();
+        assert_eq!(st.max_concurrency, 3);
+        assert_eq!(st.running_count, 2);
+        // 另一个会话在跑（other_running），但上限未满 → 本会话不必排队
+        assert!(st.other_running);
+    }
+
     #[test]
     fn queue_status_reports_position_and_other_running() {
         let conn = init_memory_db().unwrap();
@@ -715,6 +796,7 @@ mod tests {
         assert_eq!(st.position, None);
         assert!(!st.other_running);
         assert!(st.running_sessions.is_empty());
+        assert_eq!(st.running_count, 0);
 
         // 会话 A 先建 run（running），会话 B 建 pending → B 队列位置 2、other_running
         let ra = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "任务A", model: None, session_path: None, files: None }).unwrap();
@@ -724,6 +806,7 @@ mod tests {
         assert_eq!(st.position, Some(2));
         assert!(st.other_running);
         assert_eq!(st.running_sessions, vec!["ws-a"]);
+        assert_eq!(st.running_count, 1);
 
         // A 自己视角：无其他会话 running
         let st = agent_queue_status(&conn, "ws-a").unwrap();

@@ -58,10 +58,12 @@ pub fn get_agent_config(state: tauri::State<'_, AppState>) -> Result<AgentConfig
 }
 
 /// 保存全局 Agent 配置。
-/// 进程级字段（agent_type / binary / model / working_dir / skills）变化时重启常驻 RPC 进程：
+/// 进程级字段（agent_type / binary / model / working_dir / skills）变化时重启 RPC 进程池：
 /// spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
 /// 会回到 /skill: 透传失效，改 model 会静默用旧模型）；有 run 在跑时推迟到当前 run
-/// 结束，下次提交 ensure_started 自动重启并恢复会话。
+/// 结束，下次提交自动重建。
+/// max_concurrency 变化不重启进程，只调调度层闸门：抬高立即多出执行位，压低则等
+/// 正在跑的 run 收尾归还执行位后到位。
 /// timeout / prompt_suffix / enabled 每次调度重读，无需重启。
 #[tauri::command]
 #[specta::specta]
@@ -86,11 +88,17 @@ pub async fn save_agent_config(
         "agent.config_saved",
         &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
     );
+    // 并发上限变更：就地调整闸门（仅改这一个字段无需重启进程池，进程模型自适应池容量）。
+    // 压低上限时执行位不是就地收回，而是等当前 run 收尾归还（见 agent_gate.rs）。
+    let old_max = old.max_concurrency;
+    let new_max = state.agent_gate.set_limit(config.max_concurrency);
+    if new_max != old_max {
+        log::info!("agent concurrency limit changed: {} -> {}", old_max, new_max);
+    }
     if agent_process_level_changed(&old, &config) {
-        // 不直接 kill_now——正在生成的 run 会被 rpc_exited 中断、记 failed 且 token 作废；
-        // request_restart 带 running 守卫：空闲立即重启生效，
-        // 有 running run 时延迟到当前 run 结束（dispatch_run 收尾 restart_if_pending）。
-        log::info!("agent config process-level fields changed, requesting RPC process restart");
+        // 不直接 kill——正在生成的 run 会被 rpc_exited 中断、记 failed 且 token 作废；
+        // request_restart 带忙进程守卫：池空闲立即重启生效，
+        // 有 run 在跑时延迟到收尾点（dispatch_run 的 restart_if_pending）。
         state.agent_rpc.request_restart().await;
     }
     Ok(())
@@ -380,7 +388,7 @@ pub async fn get_agent_available_models(
                 // 守卫：有正在执行的 run 时跳过回写——set_model 是进程级状态操作，
                 // 正在生成的 run 可能在 prompt 前刚 set_model(显式选择)，中途切模型
                 // 会污染本次生成。run 结束后下次打开工作区再恢复默认。
-                if !state.agent_rpc.has_running_run().await {
+                if !state.agent_rpc.has_busy_process().await {
                     state.agent_rpc.set_model(provider, model_id).await?;
                     current = state.agent_rpc.get_current_model().await?;
                 }
@@ -407,8 +415,9 @@ pub fn list_agent_runs(
 }
 
 /// 查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
-/// 「排队中」提示的数据源：调度器全局单并发（Semaphore::new(1)），
-/// 本会话 pending 说明有其他 run 占用执行位，前端据此提示「其他会话执行中」。
+/// 「排队中」提示的数据源：pending 说明已达并发上限（`agent_max_concurrency`），
+/// 前端据此提示「等待空闲执行位」并展示占用者。
+/// 注意并发上限 > 1 时，其他会话正在跑不等于本会话被阻塞（还有空闲位就直接上）。
 #[tauri::command]
 #[specta::specta]
 pub fn get_agent_queue_status(
@@ -424,9 +433,10 @@ pub fn get_agent_queue_status(
 
 /// 查询全局队列（全部活跃 run，按执行顺序升序）。
 ///
-/// 会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：调度器全局单并发，
-/// 活跃 run 即执行队列，前端据此给每个会话画运行状态（执行中 / 排队第 N 位），
-/// 并定位「哪个会话的 run 正在执行」以便横幅一键跳转。
+/// 会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：活跃 run
+/// （pending / running）即执行队列，前端据此给每个会话画运行状态
+/// （执行中 / 排队第 N 位），并定位「哪些会话的 run 正在执行」以便横幅一键跳转。
+/// 并发上限 > 1 时前 `max_concurrency` 个可能同时在跑，位置只表示创建顺序。
 #[tauri::command]
 #[specta::specta]
 pub fn get_agent_queue(
@@ -654,7 +664,9 @@ async fn cancel_run_inner(state: &AppState, run_id: i64) -> Result<(), String> {
             .map(|r| r.status == "running")
             .unwrap_or(false);
         if still_running {
-            state.agent_rpc.abort_force().await;
+            // 按 run_id 精确定位承载进程后中止：abort 是进程级命令，并行下无参版本
+            // 会打断**其他会话**正在跑的 run（用户点「停止」反而停了别人的任务）。
+            state.agent_rpc.abort_run(run_id).await;
         }
     }
     // 二次校验（收窄 TOCTOU）：run 恰在插入标记前完成（dispatch 已落库终态并消费）
@@ -702,18 +714,20 @@ pub async fn delete_agent_session(
     agent::delete_runs_for_session(&conn, &session_key).map_err(|e| e.to_string())
 }
 
-/// pi 常驻进程的健康状态（工作区头部指示灯数据源）。
+/// pi RPC 进程池的健康状态（工作区头部指示灯数据源）。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct AgentRpcStatus {
-    /// 进程是否存活（`pi --mode rpc` 常驻进程）。
+    /// 池中是否有存活进程（`pi --mode rpc`）。
     pub running: bool,
-    /// 进程 pid（未运行时 None）。
+    /// 常驻进程 pid（未运行时 None）；临时进程 pid 不在此暴露，总数见 process_count。
     pub pid: Option<u32>,
+    /// 存活进程数（1 = 仅常驻；>1 = 有会话正在并行，各占一个 pi 进程）。
+    pub process_count: u32,
     /// 进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效。
     pub restart_pending: bool,
 }
 
-/// 查询 pi 常驻进程状态（健康指示 + 配置推迟提示）。
+/// 查询 pi RPC 进程池状态（健康指示 + 配置推迟提示）。
 ///
 /// 惰性设计：不主动拉起进程——进程未启动属正常（首次提交时才 spawn），
 /// 指示灯显示「未运行」即可，不该为了让灯变绿而白白起一个 node 进程。
@@ -723,15 +737,16 @@ pub async fn get_agent_rpc_status(state: tauri::State<'_, AppState>) -> Result<A
     Ok(AgentRpcStatus {
         running: state.agent_rpc.is_running().await,
         pid: state.agent_rpc.pid().await,
+        process_count: state.agent_rpc.process_count().await as u32,
         restart_pending: state.agent_rpc.restart_pending(),
     })
 }
 
-/// 手动重启 pi 常驻进程（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
+/// 手动重启 pi RPC 进程池（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
 ///
-/// 有正在执行的 run 时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
+/// 有 run 在跑时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
 /// 已产生的词元全部作废）；返回 false 表示被拒绝，前端据此提示「当前有任务在跑」。
-/// 返回 true 表示已重启（下次提交时 ensure_started 惰性重新拉起）。
+/// 返回 true 表示已清空进程池（下次提交时惰性重建）。
 #[tauri::command]
 #[specta::specta]
 pub async fn restart_agent_rpc(state: tauri::State<'_, AppState>) -> Result<bool, String> {

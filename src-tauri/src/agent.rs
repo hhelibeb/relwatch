@@ -18,8 +18,8 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Semaphore;
 
+use crate::agent_gate::ConcurrencyGate;
 use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentRun};
 use crate::db::releases::ReleaseInfo;
 use crate::db::sources::Source;
@@ -47,6 +47,8 @@ pub const STATUS_UNKNOWN: &str = "unknown";
 
 /// 一次 Agent 执行的输入上下文。
 pub struct AgentContext<'a> {
+    /// 本次 run 的数据库 id：进程池按它标记占用、abort 按它精确定位承载进程。
+    pub run_id: i64,
     /// 本次提交使用的 skill 路径（run 记录固化；None = 不带 skill 运行）。
     pub skill_path: Option<&'a str>,
     /// 本次提交绑定的 pi 会话文件（run 记录固化，生产路径恒为 Some；
@@ -200,25 +202,44 @@ impl AgentExecutor for RpcExecutor {
     }
 
     async fn execute(&self, ctx: &AgentContext<'_>) -> Result<AgentOutcome, AgentError> {
+        // 租用进程槽位（常驻优先，P0 忙则起临时进程）：
+        // 一个 run 独占一个进程 —— 会话绑定、模型切换、prompt、abort 全部作用于
+        // 该进程，并行会话互不可见。这也是旧「先 ensure_session 再 prompt
+        // 两次独立加锁会被别的提交切走会话」不可能的根因。
+        let lease = self.rpc.acquire(ctx.run_id).await?;
+        let result = self.execute_leased(ctx, &lease).await;
+        // 归还槽位：临时进程在此销毁（用完关闭），常驻进程保留进程内会话上下文
+        lease.release().await;
+        result
+    }
+}
+
+impl RpcExecutor {
+    /// 租约内的一次完整执行（进程已独占，无并发威胁）。
+    async fn execute_leased(
+        &self,
+        ctx: &AgentContext<'_>,
+        lease: &crate::agent_rpc::ProcessLease,
+    ) -> Result<AgentOutcome, AgentError> {
         use serde_json::Value;
         use tokio::sync::broadcast::error::RecvError;
 
-        // 绑定会话文件（不存在时 pi 自动创建）；无会话文件时仅确保进程存活
-        match ctx.session_path {
-            Some(sp) => self.rpc.ensure_session(sp).await?,
-            None => self.rpc.ensure_started().await?,
+        // 绑定会话文件（不存在时 pi 自动创建）；无会话文件时不绑定（沿用进程现状）
+        if let Some(sp) = ctx.session_path {
+            lease.ensure_session(sp).await?;
         }
-        // 订阅事件流（必须在 prompt 之前，避免漏事件）
-        let mut rx = self.rpc.subscribe();
-        // 模型切换（run 单并发串行，先 set_model 再 prompt 不会串台）：
+        // 订阅**本进程**的事件流（必须在 prompt 之前，避免漏事件；
+        // 每进程独立 channel 是并行不串台的前提）
+        let mut rx = lease.subscribe();
+        // 模型切换（进程已由本 run 独占，先 set_model 再 prompt 不会串台）：
         // - 显式选择：切换为所选模型
-        // - 「默认」：也必须显式恢复全局配置模型，否则常驻进程会保留上一个 run
+        // - 「默认」：也必须显式恢复全局配置模型，否则进程会保留上一个 run
         //   的显式选择，UI 显示与实际不符。
         match ctx.model {
-            Some(m) => self.rpc.set_model(&m.provider, &m.model_id).await?,
+            Some(m) => lease.set_model(&m.provider, &m.model_id).await?,
             None => {
                 if let Some((provider, model_id)) = &self.default_model {
-                    self.rpc.set_model(provider, model_id).await?;
+                    lease.set_model(provider, model_id).await?;
                 }
             }
         }
@@ -235,7 +256,7 @@ impl AgentExecutor for RpcExecutor {
             Some(skill) => format!("/skill:{} {}", skill_short_name(skill), base),
             None => base,
         };
-        self.rpc.prompt(&append_local_files(&message, ctx.files)).await?;
+        lease.prompt(&append_local_files(&message, ctx.files)).await?;
 
         let timeout = if ctx.timeout_seconds > 0 {
             ctx.timeout_seconds
@@ -253,8 +274,8 @@ impl AgentExecutor for RpcExecutor {
         while !settled {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
-                // abort 无响应（进程卡死）时强杀进程树，下次 ensure_started 自动重启
-                self.rpc.abort_force().await;
+                // abort 无响应（进程卡死）时强杀进程树（下次 acquire 自动重建）
+                lease.abort_force().await;
                 return Err(AgentError::new(
                     format!("err.agent.timeout|{}", timeout),
                     stdout,
@@ -273,7 +294,7 @@ impl AgentExecutor for RpcExecutor {
                     return Err(AgentError::new("err.agent.rpc_exited", stdout))
                 }
                 Err(_) => {
-                    self.rpc.abort_force().await;
+                    lease.abort_force().await;
                     return Err(AgentError::new(
                         format!("err.agent.timeout|{}", timeout),
                         stdout,
@@ -303,9 +324,11 @@ impl AgentExecutor for RpcExecutor {
                         return Err(AgentError::new("err.agent.aborted", stdout));
                     }
                 }
-                // 读循环 EOF（进程崩溃 / 被 kill）时广播的合成事件：立即失败返回，
-                // 不干等 deadline（否则会挂到超时才收敛，前端期间看不到任何进展）
+                // 读循环 EOF（本进程崩溃 / 被 kill）时广播的合成事件：立即失败返回，
+                // 不干等 deadline（否则会挂到超时才收敛，前端期间看不到任何进展）。
+                // 并行下该事件来自**本 run 所租用的进程**，不会因其他会话的进程退出而误触。
                 Some("rpc_exited") => return Err(AgentError::new("err.agent.rpc_exited", stdout)),
+
                 Some("agent_settled") => {
                     // 兜底：正常协议 agent_end 必先于 settled 到达。若 agent_end 事件被
                     // 广播丢帧挤掉（Lagged），last_messages 为空，errorMessage 检测失效，
@@ -582,7 +605,8 @@ pub fn kill_process_tree(pid: u32) {
 #[derive(Clone)]
 pub struct AgentDispatchCtx {
     pub db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
-    pub semaphore: Arc<Semaphore>,
+    /// 并发闸门：拿到执行位才把 run 标 running，否则停在 pending 排队。
+    pub gate: Arc<ConcurrencyGate>,
     /// 测试用 executor 覆盖；None 时按全局配置 + agent_type 构造。
     pub executor_override: Option<Arc<dyn AgentExecutor>>,
     /// 事件发射目标；None（测试）时跳过事件。
@@ -706,11 +730,11 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         },
     };
 
-    // 并发上限：Agent 进程较重，默认限制同时运行数量
-    let _permit = match ctx.semaphore.acquire().await {
+    // 并发上限：拿到执行位才开跑（Agent 进程较重，同时执行的会话数由设置页限流）
+    let _permit = match ctx.gate.acquire().await {
         Ok(p) => p,
         Err(e) => {
-            log::error!("agent semaphore closed: {}", e);
+            log::error!("agent gate closed: {}", e);
             clear_cancel_marker(ctx, run_id);
             mark_run_failed(&ctx.db_pool, run_id, "err.agent.semaphore_closed").await;
             return;
@@ -746,6 +770,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
 
     let outcome = executor
         .execute(&AgentContext {
+            run_id,
             skill_path: skill_path.as_deref(),
             model: model_override.as_ref(),
             // 会话文件路径（None = 不绑定：仅确保常驻进程存活，沿用进程当前会话）
@@ -883,7 +908,7 @@ pub fn dispatch_ctx_from_app(app: &tauri::AppHandle) -> AgentDispatchCtx {
     let state = app.state::<AppState>();
     AgentDispatchCtx {
         db_pool: state.db.clone(),
-        semaphore: state.agent_semaphore.clone(),
+        gate: state.agent_gate.clone(),
         executor_override: None,
         app: Some(app.clone()),
         rpc: state.agent_rpc.clone(),
@@ -907,6 +932,7 @@ mod tests {
             working_dir: None,
             prompt_suffix: None,
             timeout_seconds: 300,
+            max_concurrency: 1,
             skills: vec!["/tmp/skill".to_string()],
         }
     }
@@ -1115,7 +1141,7 @@ mod tests {
     ) -> AgentDispatchCtx {
         AgentDispatchCtx {
             db_pool: pool.clone(),
-            semaphore: Arc::new(Semaphore::new(1)),
+            gate: crate::agent_gate::ConcurrencyGate::new(1),
             executor_override: Some(executor),
             app: None,
             rpc: Arc::new(crate::agent_rpc::RpcManager::new(pool)),
@@ -1567,12 +1593,14 @@ mod tests {
     fn config_json_round_trip() {
         let v = json!({
             "enabled": true, "agent_type": "pi", "binary": null, "model": "m",
-            "prompt_suffix": null, "timeout_seconds": 300, "skills": ["/s1"]
+            "prompt_suffix": null, "timeout_seconds": 300, "skills": ["/s1"],
+            "working_dir": null, "max_concurrency": 3
         });
         let c: AgentConfig = serde_json::from_value(v).unwrap();
         assert!(c.enabled);
         assert_eq!(c.agent_type, "pi");
         assert_eq!(c.skills, vec!["/s1"]);
+        assert_eq!(c.max_concurrency, 3);
     }
 
     #[test]

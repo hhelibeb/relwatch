@@ -13,7 +13,7 @@
 //! agent_settled 判定终态），同时经 `on_stream` 回调实时转发前端（打字机效果）。
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -22,10 +22,16 @@ use specta::Type;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, oneshot, Mutex};
 
-use crate::db::agent::{load_agent_config, AgentConfig};
+use crate::db::agent::{load_agent_config, AgentConfig, MAX_AGENT_CONCURRENCY};
 
 /// 单条命令等待响应的超时（RPC 响应 = 命令被接受/排队，即时返回）。
 const COMMAND_TIMEOUT_SECS: u64 = 15;
+
+/// 临时进程数上限（= 并发上限硬上限 − 1 个常驻位）。
+///
+/// 真正的并发闸门是调度层的 `ConcurrencyGate`（在 pending→running 处限流），
+/// 这里只是「闸门与池不同步」时防进程泄漏的最后一道防线。
+const MAX_TEMP_PROCESSES: usize = MAX_AGENT_CONCURRENCY as usize - 1;
 
 /// pi 可选模型（scope model：provider 已配置鉴权、可直接使用）。
 /// 来自 RPC `get_available_models` / `get_state` 返回的 Model JSON，仅提取前端需要的字段。
@@ -136,155 +142,272 @@ unsafe impl Send for ProcessScope {}
 #[cfg(windows)]
 unsafe impl Sync for ProcessScope {}
 
-/// RPC 常驻进程管理器（AppState 单例，工作区共享）。
+/// Agent RPC 进程池管理器（AppState 单例，工作区共享）。
+///
+/// # 进程模型：1 个常驻 + 最多 N-1 个临时
+///
+/// - **常驻进程（P0）**：单会话连续对话的快速路径。run 结束**不销毁** —— pi 的会话
+///   上下文留在进程内存，多轮对话无需重载 JSONL。任何 run 开始时若 P0 空闲即占用它。
+/// - **临时进程**：P0 被占用（其他会话正在跑）时按需新建，run 结束即强杀。
+///   产物已落盘 JSONL，kill 不丢数据；用完关闭使内存只在真并行时增长。
+/// - 并发上限 N = `agent_max_concurrency`（设置页），由调度层的 `ConcurrencyGate`
+///   在 pending→running 处限流，本池容量是它的镜像。
+///
+/// # 事件隔离（并行安全的前提）
+///
+/// 每个进程持有**自己的** broadcast sender（`RpcProcess::events`），订阅必须经
+/// `ProcessLease::subscribe` 取自己所租用进程的事件流。若沿用全局单 channel，
+/// 并行 run 会互收对方的 delta / agent_end / agent_settled，把别人的结束当成自己的
+/// 结束（终态误判）。
 pub struct RpcManager {
     db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
-    inner: Mutex<Option<Arc<RpcProcess>>>,
-    events: broadcast::Sender<Value>,
+    /// 进程池（常驻 + 临时）。所有「检查-创建-占用」都在同一把锁内完成。
+    pool: Mutex<PoolState>,
     /// 最近一次 spawn 时读取的 scoped-models 模式快照（None = 尚未 spawn 过）。
     /// pi settings.json 的 enabledModels 变化不会自动生效（spawn 时经 --models
     /// 传入一次），检测到与当前不一致时重启进程使新配置生效。
-    spawned_models: Mutex<Option<Vec<String>>>,
-    /// 延迟重启标记：进程级配置变更时若有 running run，先置位不打断生成，
-    /// 当前 run 结束（dispatch_run 收尾 restart_if_pending）后再 kill 重启生效。
+    ///
+    /// 用 std Mutex：只在赋值/比较时短暂持有、不跨 await —— 避免与 pool 锁
+    /// 构成「pool → spawned_models」与反向获取的环。
+    spawned_models: std::sync::Mutex<Option<Vec<String>>>,
+    /// 延迟重启标记：进程级配置变更时若有 run 正在跑，先置位不打断生成，
+    /// 池中进程全部空闲后再 kill 重启生效。
     pending_restart: AtomicBool,
+}
+
+/// 池的容量与占用（`RpcManager::pool` 锁保护）。
+#[derive(Default)]
+struct PoolState {
+    /// 常驻进程（None = 尚未创建或已崩溃被丢弃，下次 acquire/permanent 重建）。
+    permanent: Option<Arc<RpcProcess>>,
+    /// 临时进程（长度 ≤ 并发上限 - 1）。
+    temps: Vec<Arc<RpcProcess>>,
+}
+
+impl PoolState {
+    /// 丢弃已崩溃的进程句柄（在用的 run 会收到合成的 `rpc_exited` 自行收敛）。
+    fn sweep_dead(&mut self) {
+        if self.permanent.as_ref().is_some_and(|p| p.is_dead()) {
+            log::info!("agent permanent RPC process died; will respawn on next use");
+            self.permanent = None;
+        }
+        let before = self.temps.len();
+        self.temps.retain(|p| !p.is_dead());
+        if self.temps.len() != before {
+            log::info!("agent dropped {} dead temp RPC process(es)", before - self.temps.len());
+        }
+    }
 }
 
 impl RpcManager {
     pub fn new(db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>) -> Self {
-        let (tx, _) = broadcast::channel(EVENT_CAPACITY);
         RpcManager {
             db_pool,
-            inner: Mutex::new(None),
-            events: tx,
-            spawned_models: Mutex::new(None),
+            pool: Mutex::new(PoolState::default()),
+            spawned_models: std::sync::Mutex::new(None),
             pending_restart: AtomicBool::new(false),
         }
     }
 
-    /// 订阅原始 RPC 事件流（executor 每轮 run 订阅一次）。
-    pub fn subscribe(&self) -> broadcast::Receiver<Value> {
-        self.events.subscribe()
-    }
-
     /// 当前是否有存活进程。
     pub async fn is_running(&self) -> bool {
-        self.inner
-            .lock()
-            .await
-            .as_ref()
-            .map(|p| !p.dead.load(Ordering::SeqCst))
-            .unwrap_or(false)
+        let pool = self.pool.lock().await;
+        pool.permanent.as_ref().is_some_and(|p| !p.is_dead())
+            || pool.temps.iter().any(|p| !p.is_dead())
     }
 
-    /// 是否有正在执行的 run（占用 RPC 进程）。进程级操作（kill 重启 / set_model 回写）
-    /// 的守卫：避免打断正在生成的 run。查询失败时保守返回 true（不执行进程级操作）。
-    pub async fn has_running_run(&self) -> bool {
-        let Ok(conn) = self.db_pool.get() else {
-            return true;
-        };
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM agent_runs WHERE status = 'running')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap_or(true)
+    /// 存活进程数（健康指示灯「N 个进程」的数据源）。
+    pub async fn process_count(&self) -> usize {
+        let pool = self.pool.lock().await;
+        let permanent = usize::from(pool.permanent.as_ref().is_some_and(|p| !p.is_dead()));
+        permanent + pool.temps.iter().filter(|p| !p.is_dead()).count()
     }
 
-    /// 请求重启常驻进程（进程级配置变更后调用）：有正在执行的 run 时
-    /// **不打断**生成（kill 会以 rpc_exited 中断当前 run、记 failed 烧掉 token），
-    /// 置延迟标记，由 dispatch_run 收尾的 restart_if_pending 在 run 结束后重启；
-    /// 空闲时立即重启。与 sync_scoped_models 的 running 守卫语义一致。
-    pub async fn request_restart(&self) {
-        if self.has_running_run().await {
-            log::info!(
-                "agent config process-level fields changed but a run is in progress; deferring restart"
-            );
-            self.pending_restart.store(true, Ordering::SeqCst);
-        } else {
-            self.kill_now().await;
-        }
+    /// 是否有 run 正在执行（进程级操作的重启守卫）。
+    ///
+    /// 以池内占用状态为准，而非 DB 的 `status='running'`：守卫要防的是「kill 掉正在
+    /// 生成的那个进程」，内存占用的粒度恰好就是进程；DB 状态在崩溃/竞态下会短暂
+    /// 与之不一致（旧实现查 DB，失败时保守返回 true 而什么都不做）。
+    pub async fn has_busy_process(&self) -> bool {
+        let pool = self.pool.lock().await;
+        pool.permanent.as_ref().is_some_and(|p| p.is_busy())
+            || pool.temps.iter().any(|p| p.is_busy())
     }
 
-    /// 消费延迟重启标记（dispatch_run 收尾调用）：当前 run 已结束，执行之前被
-    /// 推迟的 kill，使新配置在下次 ensure_started（下一次提交）生效。
-    pub async fn restart_if_pending(&self) {
-        if self.pending_restart.swap(false, Ordering::SeqCst) {
-            log::info!("agent deferred restart now executing after run finished");
-            self.kill_now().await;
-        }
-    }
+    /// 为一个 run 租用进程槽位（常驻优先；P0 忙则复用/新建临时进程）。
+    ///
+    /// 并发上限由调度层的 `ConcurrencyGate` 在 pending→running 处保证，
+    /// 因此「无空闲槽位」只在闸门与池不同步时出现（求解模式），
+    /// 返回错误让 run 落 failed 而不无限等待。
+    pub async fn acquire(self: &Arc<Self>, run_id: i64) -> Result<ProcessLease, String> {
+        let mut pool = self.pool.lock().await;
+        pool.sweep_dead();
 
-    /// 确保进程存活：惰性启动或崩溃后重启，并恢复上次绑定的会话。
-    pub async fn ensure_started(&self) -> Result<(), String> {
-        let mut guard = self.inner.lock().await;
-        if let Some(p) = guard.as_ref() {
-            if !p.dead.load(Ordering::SeqCst) {
-                return Ok(());
+        // 1. 常驻进程空闲 → 占用（最快路径：会话上下文留驻，多轮对话零重载）
+        if let Some(p) = pool.permanent.as_ref() {
+            if p.try_occupy(run_id) {
+                return Ok(ProcessLease::new(p.clone(), false, self.clone()));
             }
         }
-        // 崩溃前绑定的会话（重启后恢复）
-        let prev = guard.as_ref().and_then(|p| p.session.lock().unwrap().clone());
-        let proc = self.spawn_process().await?;
-        if let Some(path) = prev {
-            let _ = proc.command(json!({"type": "switch_session", "sessionPath": path})).await;
-            *proc.session.lock().unwrap() = Some(path);
+        // 2. 兜底：池里若存在空闲临时进程就复用它（胜过新建）。
+        //    正常路径不会产生这种状态——临时进程的「摘出池 + 清占用标记」在同一
+        //    临界区（retire_temp），异常路径也直接强杀退役（ProcessLease::Drop）。
+        if let Some(p) = pool.temps.iter().find(|p| p.try_occupy(run_id)).cloned() {
+            return Ok(ProcessLease::new(p, true, self.clone()));
         }
-        *guard = Some(Arc::new(proc));
-        Ok(())
-    }
-
-    /// 确保 RPC 进程绑定到指定会话文件（不存在时 pi 自动创建）。
-    pub async fn ensure_session(&self, session_path: &str) -> Result<(), String> {
-        self.ensure_started().await?;
-        let guard = self.inner.lock().await;
-        let proc = guard.as_ref().ok_or_else(|| "err.agent.rpc_not_started".to_string())?;
-        let current = proc.session.lock().unwrap().clone().map(|s| normalize_path(&s));
-        let target = normalize_path(session_path);
-        if current.as_deref() != Some(target.as_str()) {
-            proc.command(json!({"type": "switch_session", "sessionPath": session_path})).await?;
-            *proc.session.lock().unwrap() = Some(session_path.to_string());
+        // 3. 按需新建：P0 不存在时让它充当常驻（下次提交仍有快速路径）
+        let as_permanent = pool.permanent.is_none();
+        if !as_permanent && pool.temps.len() >= MAX_TEMP_PROCESSES {
+            log::error!(
+                "agent process pool full ({} temp processes), rejecting run {}",
+                pool.temps.len(),
+                run_id
+            );
+            return Err("err.agent.pool_full".to_string());
         }
-        Ok(())
+        let proc = Arc::new(self.spawn_process().await?);
+        proc.try_occupy(run_id);
+        if as_permanent {
+            pool.permanent = Some(proc.clone());
+        } else {
+            pool.temps.push(proc.clone());
+        }
+        Ok(ProcessLease::new(proc, !as_permanent, self.clone()))
     }
 
-    /// 发送 prompt 命令（工作区提交）。
-    pub async fn prompt(&self, message: &str) -> Result<(), String> {
-        self.ensure_started().await?;
-        let guard = self.inner.lock().await;
-        let proc = guard.as_ref().ok_or_else(|| "err.agent.rpc_not_started".to_string())?;
-        proc.command(json!({"type": "prompt", "message": message})).await?;
-        Ok(())
+    /// 临时进程用完关闭：**同一把锁内**摘出池 + 清占用标记，然后（锁外）强杀。
+    ///
+    /// 两步必须同锁，顺序不可倒置：先清标记的话，中间插进来的 acquire（复用空闲
+    /// 临时进程那条分支）会 `try_occupy` 成功并把这个即将被杀的进程交给新 run ——
+    /// 新 run 随即被自己的池逻辑打断（rpc_exited → failed，已产生的词元白烧）。
+    ///
+    /// 不走 500ms 优雅关闭：run 已 settled、会话已落盘 JSONL，pi 的工具子进程也已
+    /// 收尾；强杀更快且不占退出/重启路径的时间预算（Windows 侧由 JobObject
+    /// `KILL_ON_JOB_CLOSE` 一次清干净整棵作业树）。
+    async fn retire_temp(&self, proc: &Arc<RpcProcess>) {
+        {
+            let mut pool = self.pool.lock().await;
+            pool.temps.retain(|p| !Arc::ptr_eq(p, proc));
+            proc.clear_busy();
+        }
+        proc.kill().await;
     }
 
-    /// scoped-models 同步：pi settings.json 的 enabledModels 变化时（spawn 后仅启动时
-    /// 经 --models 传入一次）重启常驻进程，使新模型集合生效。首次 spawn 前不动作
-    /// （ensure_started 会按当前配置启动）。
-    /// 有正在执行的 run 时**不重启**（kill 会以 rpc_exited 中断生成）；快照保持旧值，
-    /// 下次检测仍会尝试，直到进程空闲。
+    /// 归还常驻进程：清占用标记（已崩溃则同时摘出池，下次 acquire/permanent 重建）。
+    ///
+    /// 常驻进程正常归还时留在池里（进程内会话上下文是它存在的理由），不涉及
+    /// 「摘出 + 清标记」的次序问题；死进程由 `try_occupy` 拒绝，不会被复用。
+    async fn release_permanent(&self, proc: &Arc<RpcProcess>) {
+        let mut pool = self.pool.lock().await;
+        if proc.is_dead() && pool.permanent.as_ref().is_some_and(|p| Arc::ptr_eq(p, proc)) {
+            pool.permanent = None;
+        }
+        proc.clear_busy();
+    }
+
+    /// 摘出池并强杀指定进程（abort 无响应 / 进程卡死的兜底）。
+    async fn kill_process(&self, proc: &Arc<RpcProcess>) {
+        {
+            let mut pool = self.pool.lock().await;
+            pool.temps.retain(|p| !Arc::ptr_eq(p, proc));
+            if pool.permanent.as_ref().is_some_and(|p| Arc::ptr_eq(p, proc)) {
+                pool.permanent = None;
+            }
+        }
+        proc.kill().await;
+    }
+
+    /// 池中无忙进程时**原子地**摘出全部进程（检查与摘出同一锁内）。
+    /// 有忙进程则返回 None，调用方保留待重启标记。
+    ///
+    /// 原子性是必要的：若在「检查空闲」与「摘出」之间插入一次 acquire，
+    /// 那个 run 会被 kill 掉（rpc_exited → failed，已产生的词元白烧）。
+    async fn take_all_if_idle(&self) -> Option<Vec<Arc<RpcProcess>>> {
+        let mut pool = self.pool.lock().await;
+        pool.sweep_dead();
+        if pool.permanent.as_ref().is_some_and(|p| p.is_busy())
+            || pool.temps.iter().any(|p| p.is_busy())
+        {
+            return None;
+        }
+        let mut all: Vec<Arc<RpcProcess>> = Vec::new();
+        all.extend(pool.permanent.take());
+        all.append(&mut pool.temps);
+        Some(all)
+    }
+
+    /// 请求重启进程池（进程级配置变更后调用）：池空闲时立即 kill 重启，
+    /// 有 run 在跑时**不打断**生成（kill 会以 rpc_exited 中断当前 run、
+    /// 记 failed 烧掉已产生的词元），置延迟标记等收尾点消费。
+    pub async fn request_restart(&self) {
+        self.pending_restart.store(true, Ordering::SeqCst);
+        self.restart_idle_if_pending().await;
+    }
+
+    /// 消费延迟重启标记（dispatch_run 收尾调用）：池空闲时执行之前被推迟的
+    /// kill，使新配置在下次 acquire/permanent（下一次提交）生效；池忙则保留标记。
+    pub async fn restart_if_pending(&self) {
+        self.restart_idle_if_pending().await;
+    }
+
+    /// 池中无忙进程时才消费待重启标记（幂等，可被多个收尾点重复调用）。
+    async fn restart_idle_if_pending(&self) {
+        if !self.pending_restart.load(Ordering::SeqCst) {
+            return;
+        }
+        let Some(procs) = self.take_all_if_idle().await else {
+            log::info!("agent pool restart deferred: a run is in progress");
+            return;
+        };
+        for p in procs {
+            p.kill().await;
+        }
+        self.pending_restart.store(false, Ordering::SeqCst);
+        log::info!("agent deferred pool restart executed");
+    }
+
+    /// 取常驻进程（不存在或已崩溃时惰性创建）。
+    ///
+    /// 查询类命令（模型枚举 / 当前模型读回）走这里：它们不承载 run、不占并发槽位，
+    /// 也不该为了一次查询多起一个进程。
+    async fn permanent(&self) -> Result<Arc<RpcProcess>, String> {
+        let mut pool = self.pool.lock().await;
+        if let Some(p) = pool.permanent.as_ref() {
+            if !p.is_dead() {
+                return Ok(p.clone());
+            }
+            pool.permanent = None;
+        }
+        let proc = Arc::new(self.spawn_process().await?);
+        pool.permanent = Some(proc.clone());
+        Ok(proc)
+    }
+
+    /// scoped-models 同步：pi settings.json 的 enabledModels 变化时（spawn 时仅经
+    /// `--models` 传入一次）重启进程池，使新模型集合生效。首次 spawn 前不动作
+    /// （spawn 会按当前配置启动）。
+    /// 有 run 在跑时不重启（kill 会以 rpc_exited 中断生成）；待重启标记保留，
+    /// 池空闲后的任一收尾点消费。
     async fn sync_scoped_models(&self) {
         let current = read_scoped_model_patterns();
-        let changed = match self.spawned_models.lock().await.as_ref() {
-            None => false, // 尚未 spawn：ensure_started 按当前配置启动即可
-            Some(old) => old != &current,
+        let changed = {
+            let snapshot = self.spawned_models.lock().unwrap();
+            match snapshot.as_ref() {
+                None => false, // 尚未 spawn：spawn 按当前配置启动即可
+                Some(old) => old != &current,
+            }
         };
         if changed {
-            if self.has_running_run().await {
-                log::info!("agent scoped-models changed but a run is in progress; deferring restart");
-                return;
-            }
-            log::info!("agent scoped-models changed, restarting RPC process");
-            self.kill_now().await;
-            // 快照保留旧值直到 spawn 成功更新（spawn 失败时下次检测仍会重启重试）
+            log::info!("agent scoped-models changed, requesting RPC pool restart");
+            self.pending_restart.store(true, Ordering::SeqCst);
+            self.restart_idle_if_pending().await;
         }
     }
 
     /// 枚举 pi 当前可用的模型（scope model：已配置鉴权）。
     pub async fn get_available_models(&self) -> Result<Vec<RpcAvailableModel>, String> {
         self.sync_scoped_models().await;
-        self.ensure_started().await?;
-        let guard = self.inner.lock().await;
-        let proc = guard.as_ref().ok_or_else(|| "err.agent.rpc_not_started".to_string())?;
+        let proc = self.permanent().await?;
         let resp = proc.command(json!({"type": "get_available_models"})).await?;
         let models = resp
             .pointer("/data/models")
@@ -306,20 +429,22 @@ impl RpcManager {
         Ok(out)
     }
 
-    /// 切换 pi 当前模型到指定 provider + modelId（`set_model`）。
+    /// 把**常驻进程**的当前模型切回指定模型（模型下拉「默认」落点修复用）。
+    ///
+    /// 并行时各进程的当前模型各自独立：临时进程的模型由其 run 开始时显式
+    /// `set_model` 决定，不受此处影响。调用方必须以 `has_busy_process()`
+    /// 为守卫——这是进程级状态写操作，会在生成中途污染本次 run 的模型。
     pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<(), String> {
-        self.ensure_started().await?;
-        let guard = self.inner.lock().await;
-        let proc = guard.as_ref().ok_or_else(|| "err.agent.rpc_not_started".to_string())?;
-        proc.command(json!({"type": "set_model", "provider": provider, "modelId": model_id})).await?;
+        let proc = self.permanent().await?;
+        proc.command(json!({"type": "set_model", "provider": provider, "modelId": model_id}))
+            .await?;
         Ok(())
     }
 
     /// 读 pi 进程当前激活模型（「默认」选项的实际落点；无模型时 None）。
+    /// 读的是常驻进程的现状——并行时各进程的当前模型各自独立，常驻进程即「后台默认」。
     pub async fn get_current_model(&self) -> Result<Option<RpcAvailableModel>, String> {
-        self.ensure_started().await?;
-        let guard = self.inner.lock().await;
-        let proc = guard.as_ref().ok_or_else(|| "err.agent.rpc_not_started".to_string())?;
+        let proc = self.permanent().await?;
         let resp = proc.command(json!({"type": "get_state"})).await?;
         let m = resp.pointer("/data/model");
         Ok(m.and_then(|v| v.as_object()).map(|m| RpcAvailableModel {
@@ -329,40 +454,50 @@ impl RpcManager {
         }))
     }
 
-    /// 中止当前生成（不杀进程；无进程时静默忽略）。
-    /// 返回 Err 表示 abort 命令本身无响应（RPC 进程卡死），调用方应升级为强杀。
-    pub async fn abort(&self) -> Result<(), String> {
-        let guard = self.inner.lock().await;
-        if let Some(proc) = guard.as_ref() {
-            proc.command(json!({"type": "abort"})).await.map(|_| ())
-        } else {
-            Ok(())
+    /// 中止指定 run 所租用进程的生成（run 级精确中止）。
+    ///
+    /// abort 是进程级命令：并行下无参版本会打断**别的会话**正在跑的 run
+    /// （用户点「停止」反而停了别人的任务）。此处按 run_id 定位承载进程，
+    /// 只中止它；abort 无响应（进程卡死）则强杀该进程。
+    /// 找不到承载进程（请求排队中未启动 / 已完成 / 崩溃已被清出池）时静默返回，
+    /// 取消标记由 `cancel_run_inner` 写入、dispatch 消费，run 仍会落 cancelled。
+    pub async fn abort_run(&self, run_id: i64) {
+        let target = {
+            let pool = self.pool.lock().await;
+            pool.permanent
+                .as_ref()
+                .filter(|p| p.busy_run.load(Ordering::SeqCst) == run_id)
+                .or_else(|| {
+                    pool.temps
+                        .iter()
+                        .find(|p| p.busy_run.load(Ordering::SeqCst) == run_id)
+                })
+                .cloned()
+        };
+        let Some(proc) = target else {
+            log::info!("agent abort skipped: run {} has no hosting process", run_id);
+            return;
+        };
+        if proc.command(json!({"type": "abort"})).await.is_err() {
+            log::warn!("agent rpc abort 无响应，强杀进程树 (run={})", run_id);
+            self.kill_process(&proc).await;
         }
     }
 
-    /// 中止当前生成；abort 命令无响应（进程卡死）时升级为强杀进程树，
-    /// 下次 ensure_started 自动重启并恢复会话。
-    pub async fn abort_force(&self) {
-        if self.abort().await.is_err() {
-            log::warn!("agent rpc abort 无响应，强杀进程树");
-            self.kill_now().await;
-        }
-    }
-
-    /// 优雅关闭：关 stdin 让 pi 走自身清理流程（杀它 spawn 的工具子进程）。
+    /// 优雅关闭全部进程：并发关 stdin（每个等 500ms 让 pi 清理自己的子进程），
+    /// 总耗时约等于单进程耗时，仍在退出预算（3s）内。
     pub async fn shutdown(&self) {
-        let mut guard = self.inner.lock().await;
-        if let Some(proc) = guard.take() {
-            proc.shutdown().await;
+        let procs: Vec<Arc<RpcProcess>> = {
+            let mut pool = self.pool.lock().await;
+            let mut all: Vec<Arc<RpcProcess>> = Vec::new();
+            all.extend(pool.permanent.take());
+            all.append(&mut pool.temps);
+            all
+        };
+        if procs.is_empty() {
+            return; // 无存活进程：退出路径不该白等 500ms
         }
-    }
-
-    /// 强杀进程（abort 无响应等极端兜底）；随后 ensure_started 会重启恢复。
-    pub async fn kill_now(&self) {
-        let mut guard = self.inner.lock().await;
-        if let Some(proc) = guard.take() {
-            proc.kill().await;
-        }
+        futures_util::future::join_all(procs.iter().map(|p| p.shutdown())).await;
     }
 
     /// 从 DB 读 Agent 配置并 spawn RPC 进程。
@@ -415,18 +550,24 @@ impl RpcManager {
             cmd.args(["--models", &scoped_patterns.join(",")]);
         }
         // 记录本次 spawn 的 scoped-models 快照（sync_scoped_models 检测变化用）
-        *self.spawned_models.lock().await = Some(scoped_patterns);
         cmd.stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null());
 
         let mut child = cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
+        // spawn **成功后才**更新快照：失败时保持旧值，sync_scoped_models 下次仍会重试；
+        // 若在 spawn 前更新，一次失败会把「新配置已生效」变成既成事实而永不重试。
+        *self.spawned_models.lock().unwrap() = Some(scoped_patterns);
         let stdin = tokio::sync::Mutex::new(child.stdin.take().ok_or_else(|| "err.agent.spawn|no stdin".to_string())?);
         let stdout = child.stdout.take().ok_or_else(|| "err.agent.spawn|no stdout".to_string())?;
 
         let pending = Arc::new(std::sync::Mutex::new(HashMap::<String, oneshot::Sender<Value>>::new()));
         let dead = Arc::new(AtomicBool::new(false));
-        let events = self.events.clone();
+        // 事件 channel **每进程一个**：run 只订阅自己租用进程的事件流。
+        // 若共用一个全域 channel，并行 run 会互收对方的 delta / agent_end /
+        // agent_settled —— 把别人的结束当成自己的结束（见 RpcManager 文档）。
+        let (events, _) = broadcast::channel(EVENT_CAPACITY);
+        let events_tx = events.clone();
         let pending_clone = pending.clone();
         let dead_clone = dead.clone();
 
@@ -449,7 +590,7 @@ impl RpcManager {
                         }
                     }
                 } else {
-                    let _ = events.send(value);
+                    let _ = events_tx.send(value);
                 }
             }
             // EOF：进程退出（正常 shutdown 或崩溃）
@@ -457,8 +598,8 @@ impl RpcManager {
             for (_, tx) in pending_clone.lock().unwrap().drain() {
                 let _ = tx.send(json!({"type": "response", "success": false, "error": "err.agent.rpc_exited"}));
             }
-            // 广播合成事件：正在等待事件流的 executor 立即失败返回，而不是干等超时
-            let _ = events.send(json!({"type": "rpc_exited"}));
+            // 广播合成事件：租用本进程的 executor 立即失败返回，而不是干等超时
+            let _ = events_tx.send(json!({"type": "rpc_exited"}));
         });
 
         // 纳管进生命周期域（此时进程刚 spawn，尚未 spawn 自己的子进程，纳管即时生效）
@@ -474,16 +615,18 @@ impl RpcManager {
             next_id: Arc::new(AtomicU64::new(1)),
             dead,
             session: Arc::new(std::sync::Mutex::new(None)),
+            events,
+            busy_run: AtomicI64::new(0),
         })
     }
 
-    /// 当前进程 pid（无存活进程时 None）——进程健康指示的数据源。
+    /// 常驻进程 pid（无存活进程时 None）——进程健康指示的数据源。
     pub async fn pid(&self) -> Option<u32> {
-        let guard = self.inner.lock().await;
-        guard.as_ref().and_then(|p| p.pid())
+        let pool = self.pool.lock().await;
+        pool.permanent.as_ref().and_then(|p| p.pid())
     }
 
-    /// 进程级配置变更是否正处于「推迟生效」状态（等当前 run 结束后重启）。
+    /// 进程级配置变更是否正处于「推迟生效」状态（等池中全部 run 结束后重启）。
     ///
     /// 用户改了 pi 路径 / 模型 / skill 后，若有 run 正在生成，重启会被推迟以避免
     /// 打断生成（烧掉已产生的词元）；前端据此提示「将在当前任务结束后生效」。
@@ -491,17 +634,20 @@ impl RpcManager {
         self.pending_restart.load(Ordering::SeqCst)
     }
 
-    /// 手动重启常驻进程（进程健康指示的「一键重启」）。
+    /// 手动重启进程池（进程健康指示的「一键重启」）。
     ///
-    /// 有正在执行的 run 时拒绝重启（与 request_restart 同守卫）：kill 会以 rpc_exited
+    /// 有 run 在跑时拒绝（与 request_restart 同守卫）：kill 会以 rpc_exited
     /// 中断当前 run、记 failed 且已产生的词元作废，代价太大。
     /// 返回是否真的执行了重启（false = 因有 run 在跑而拒绝）。
     pub async fn restart_now(&self) -> bool {
-        if self.has_running_run().await {
+        let Some(procs) = self.take_all_if_idle().await else {
             log::info!("agent manual restart skipped: a run is in progress");
             return false;
+        };
+        for p in procs {
+            p.kill().await;
         }
-        self.kill_now().await;
+        self.pending_restart.store(false, Ordering::SeqCst);
         true
     }
 }
@@ -679,7 +825,7 @@ pub fn resolve_agent_binary(config: &AgentConfig) -> Result<String, String> {
 }
 
 /// 一个存活（或待清理）的 RPC 进程句柄。
-struct RpcProcess {
+pub(crate) struct RpcProcess {
     _child: tokio::process::Child,
     /// Windows 生命周期域（JobObject 句柄）；Unix 侧靠 process_group 击杀整树，无需它。
     #[cfg(windows)]
@@ -688,11 +834,146 @@ struct RpcProcess {
     pending: Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     next_id: Arc<AtomicU64>,
     dead: Arc<AtomicBool>,
-    /// 当前绑定的会话文件（崩溃恢复用；ensure_session 更新）。
+    /// 当前绑定的会话文件（ensure_session 更新；崩溃重建后为 None）。
     session: Arc<std::sync::Mutex<Option<String>>>,
+    /// 本进程的事件流。**必须每进程一个**：这是并行 run 不串台的前提。
+    events: broadcast::Sender<Value>,
+    /// 当前占用的 run_id（0 = 空闲）。池调度的唯一占用依据。
+    busy_run: AtomicI64,
+}
+
+/// 一次 run 对池中某个进程的独占租约。
+///
+/// 必须在业务结束时显式 `release()`：临时进程的回收是异步的（kill + 摘出池），
+/// `Drop` 里做不到。`RpcExecutor::execute` 以「acquire → 业务 → release」三段式持有。
+pub struct ProcessLease {
+    proc: Arc<RpcProcess>,
+    /// 临时进程（run 结束即销毁）还是常驻进程（保留进程内会话上下文）。
+    is_temp: bool,
+    /// 是否已经走完 `release()`（Drop 靠它区分正常路径与异常路径）。
+    released: bool,
+    mgr: Arc<RpcManager>,
+}
+
+impl ProcessLease {
+    fn new(proc: Arc<RpcProcess>, is_temp: bool, mgr: Arc<RpcManager>) -> Self {
+        ProcessLease { proc, is_temp, released: false, mgr }
+    }
+
+    /// 订阅**本进程**的事件流（原始 RPC 协议事件 + 合成的 rpc_exited）。
+    pub fn subscribe(&self) -> broadcast::Receiver<Value> {
+        self.proc.events.subscribe()
+    }
+
+    /// 本进程 pid（日志/诊断用）。
+    pub fn pid(&self) -> Option<u32> {
+        self.proc.pid()
+    }
+
+    /// 是否为临时进程（run 结束即销毁）。
+    pub fn is_temp(&self) -> bool {
+        self.is_temp
+    }
+
+    /// 确保本进程绑定到指定会话文件（不存在时 pi 自动创建）。
+    ///
+    /// 「比较 + 发送 switch_session」两次操作在同一个租约内，而租约已排除其他 run
+    /// 并发使用本进程 —— 这正是「并发提交互相切走会话」不再可能的原因。
+    pub async fn ensure_session(&self, session_path: &str) -> Result<(), String> {
+        let current = self.proc.session.lock().unwrap().clone().map(|s| normalize_path(&s));
+        let target = normalize_path(session_path);
+        if current.as_deref() != Some(target.as_str()) {
+            self.proc
+                .command(json!({"type": "switch_session", "sessionPath": session_path}))
+                .await?;
+            *self.proc.session.lock().unwrap() = Some(session_path.to_string());
+        }
+        Ok(())
+    }
+
+    /// 切换本进程当前模型（显式选择，或「默认」时恢复全局配置模型）。
+    pub async fn set_model(&self, provider: &str, model_id: &str) -> Result<(), String> {
+        self.proc
+            .command(json!({"type": "set_model", "provider": provider, "modelId": model_id}))
+            .await?;
+        Ok(())
+    }
+
+    /// 发送 prompt 命令（工作区提交）。
+    pub async fn prompt(&self, message: &str) -> Result<(), String> {
+        self.proc.command(json!({"type": "prompt", "message": message})).await?;
+        Ok(())
+    }
+
+    /// 中止本进程的生成；abort 无响应（进程卡死）时强杀该进程。
+    /// 只影响本租约的进程 —— 并行下不会误伤其他会话正在跑的 run。
+    pub async fn abort_force(&self) {
+        if self.proc.command(json!({"type": "abort"})).await.is_err() {
+            log::warn!(
+                "agent rpc abort 无响应，强杀进程树 (run={})",
+                self.proc.busy_run.load(Ordering::SeqCst)
+            );
+            self.mgr.kill_process(&self.proc).await;
+        }
+    }
+
+    /// 归还槽位：临时进程就地销毁（用完关闭），常驻进程标记空闲。
+    pub async fn release(mut self) {
+        self.released = true;
+        if self.is_temp {
+            self.mgr.retire_temp(&self.proc).await;
+        } else {
+            self.mgr.release_permanent(&self.proc).await;
+        }
+    }
+}
+
+/// 租约被 drop 而**未经 release()** 时的兜底（`execute_leased` panic / 任务被丢弃）。
+///
+/// 不能只清占用标记把进程留在池里：它可能仍在生成本轮任务，被复用后上一轮的
+/// delta / `agent_end` 会被新 run 当成本轮事件（新 run 可能提前收敛、落错误产出）。
+/// 因此直接放弃这个进程：标记 dead 让 `sweep_dead` 摘出池，并同步强杀进程树
+/// （`kill_process_tree` 不 panic、错误全部忽略，可用在 Drop 里）。
+impl Drop for ProcessLease {
+    fn drop(&mut self) {
+        if self.released {
+            return; // 正常路径：release() 已收尾
+        }
+        log::warn!(
+            "agent lease dropped without release (run={}); retiring its process",
+            self.proc.busy_run.load(Ordering::SeqCst)
+        );
+        self.proc.kill_sync();
+        self.proc.clear_busy();
+    }
 }
 
 impl RpcProcess {
+    /// 进程是否已退出（读循环 EOF 置位）。
+    fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::SeqCst)
+    }
+
+    /// 是否被某个 run 占用。
+    fn is_busy(&self) -> bool {
+        self.busy_run.load(Ordering::SeqCst) != 0
+    }
+
+    /// 尝试占用（CAS 0 → run_id）。已被占用或进程已死则 false。
+    fn try_occupy(&self, run_id: i64) -> bool {
+        if run_id == 0 || self.is_dead() {
+            return false;
+        }
+        self.busy_run
+            .compare_exchange(0, run_id, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    /// 清占用标记（归还）。改池内状态时必须与 `pool` 锁同一临界区，见 `retire_temp`。
+    fn clear_busy(&self) {
+        self.busy_run.store(0, Ordering::SeqCst);
+    }
+
     /// 进程 pid（进程已退出时 tokio 仍返回上次的 id，故与 dead 标记一起判定）。
     fn pid(&self) -> Option<u32> {
         if self.dead.load(Ordering::SeqCst) {
@@ -746,12 +1027,17 @@ impl RpcProcess {
         self.dead.store(true, Ordering::SeqCst);
     }
 
-    /// 强杀进程树。
-    async fn kill(&self) {
+    /// 强杀进程树（同步内核：Drop 兜底路径也要用，那时拿不到 async 上下文）。
+    fn kill_sync(&self) {
         if let Some(pid) = self._child.id() {
             crate::agent::kill_process_tree(pid);
         }
         self.dead.store(true, Ordering::SeqCst);
+    }
+
+    /// 强杀进程树。
+    async fn kill(&self) {
+        self.kill_sync();
     }
 }
 
@@ -767,6 +1053,37 @@ mod tests {
             assert_eq!(normalize_path(r"C:\Data\Sessions\ws-1.jsonl"), "c:/data/sessions/ws-1.jsonl");
             assert_eq!(normalize_path(r"E:\a\b"), "e:/a/b");
         }
+    }
+
+    /// 空池上的管理操作必须安全且语义正确——「进程尚未启动」是最常见的状态
+    /// （用户从未用过 Agent，或刚重启应用）。
+    #[tokio::test]
+    async fn empty_pool_management_ops_are_noops() {
+        let rpc = RpcManager::new(crate::db::init::init_memory_pool().unwrap());
+        assert!(!rpc.is_running().await);
+        assert_eq!(rpc.process_count().await, 0);
+        assert!(rpc.pid().await.is_none());
+        assert!(!rpc.has_busy_process().await);
+        // 无进程承载该 run：静默返回（调用方按 run 状态过滤，不该 panic）
+        rpc.abort_run(1).await;
+        // 无忙进程 → 手动重启视为成功（池已空，下次提交惰性重建）
+        assert!(rpc.restart_now().await);
+    }
+
+    /// 空闲池上的进程级配置变更立即消费重启标记：不残留 pending 状态，
+    /// 前端不会错误提示「配置将在当前任务结束后生效」。
+    #[tokio::test]
+    async fn restart_request_consumed_immediately_when_idle() {
+        let rpc = RpcManager::new(crate::db::init::init_memory_pool().unwrap());
+        assert!(!rpc.restart_pending());
+        rpc.request_restart().await;
+        assert!(
+            !rpc.restart_pending(),
+            "空闲池应就地消费重启标记，不提示「稍后生效」"
+        );
+        // 幂等：收尾点重复调用不报错、状态稳定
+        rpc.restart_if_pending().await;
+        assert!(!rpc.restart_pending());
     }
 
     /// 无存活进程时 `shutdown` 必须立即返回。

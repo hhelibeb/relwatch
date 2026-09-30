@@ -194,6 +194,13 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
         );
     }
 
+    // 导入是整库替换 app_settings：进程内缓存了值的东西要重新对齐。Agent 并发闸门
+    // 缓存了 agent_max_concurrency，不重新对齐就会「设置页显示 1、实际按 3 并行」，
+    // 直到重启应用。（其余设置都是每次用时重读 DB，无需处理。）
+    if let Ok(conn) = state.db.get() {
+        state.agent_gate.sync_from_db(&conn);
+    }
+
     if let Ok(conn) = state.db.get() {
         crate::db::logs::write_log_key(&conn, "INFO", "backup.imported", &json!({"path": &path_str}).to_string());
     }
