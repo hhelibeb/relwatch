@@ -5,6 +5,13 @@ export default defineConfig({
   plugins: [vue()],
   base: './',
   clearScreen: false,
+  build: {
+    // 体积警告阈值放宽：默认 500 kB 是给 Web 算的（首屏要下载），而产物由
+    // Tauri 从本地磁盘经自定义协议加载，没有下载成本，只剩解析开销。
+    // 放宽后这警告仍然只会在真进了重量级依赖（整包拖进主 chunk）时才响——
+    // 本地加载没有网络延迟会提醒你，它是最后一道信号。
+    chunkSizeWarningLimit: 800,
+  },
   server: {
     port: 5173,
     strictPort: true,
