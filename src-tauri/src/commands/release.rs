@@ -182,9 +182,12 @@ use serde_json::json;
 /// 用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 /// 仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
 ///
+/// 译文分片经 `release-translate-chunk` 事件实时投递，前端弹窗边收边渲染（流式）。
+/// 分片只是体感优化：落库与失败判定仍以回查 `body_translated` 为准。
+///
 /// 返回**真实结果**（前端靠 Err 复位「翻译中」状态，静默 Ok 会让卡片永久禁用无法重试）：
 /// - 前置校验 AI 未启用 / key 缺失 → Err
-/// - 执行后回查：generate_translations_for_new 返回时所有任务与落库动作均已
+/// - 执行后回查：translate_single_release 返回时所有任务与落库动作均已
 ///   await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
 #[tauri::command]
 
@@ -230,9 +233,28 @@ use serde_json::json;
         }
     }
 
-    // 委托给 deepseek 的批量翻译函数（内部校验并发、执行翻译/语言检测短路）。
-    let saved = vec![(release_id, Some(body))];
-    crate::deepseek::generate_translations_for_new(&state.db, &state.deepseek_semaphore, &saved, true).await;
+    // 分片出口：只投给这次手动翻译。事件带 release_id，前端按 id 只接自己那条。
+    // emit 失败（窗口已关）不影响翻译本身，故忽略返回值。
+    let on_chunk: crate::deepseek::ChunkSink = {
+        let app = app.clone();
+        std::sync::Arc::new(move |release_id: i64, delta: &str| {
+            let _ = crate::events::ReleaseTranslateChunk {
+                release_id,
+                delta: delta.to_string(),
+            }
+            .emit(&app);
+        })
+    };
+
+    // 委托给 deepseek 的单条翻译入口（内部校验并发、执行翻译/语言检测短路）。
+    crate::deepseek::translate_single_release(
+        &state.db,
+        &state.deepseek_semaphore,
+        release_id,
+        body,
+        Some(on_chunk),
+    )
+    .await;
 
     // 回查结果：await 后仍未落库 = 翻译未成功（断网/API 错误/build_client 失败等），
     // 返回 Err 让前端复位并提示，而非静默 Ok 造成「翻译中」永久卡死。

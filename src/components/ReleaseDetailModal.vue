@@ -186,13 +186,17 @@ function resolveMode(mode: ViewMode | null | undefined): ViewMode {
 const viewMode = ref<ViewMode>(defaultViewMode())
 const bodyEl = ref<HTMLElement | null>(null)
 
-// 翻译状态机（与 ReleaseItem 卡片共用同一实现）
-const { translating, handleTranslateRelease } = useReleaseTranslate({
+// 翻译状态机（与 ReleaseItem 卡片共用同一实现）；弹窗额外打开流式分片：
+// 译文边收边渲染，只有这里有位置显示增量内容
+const { translating, streamText, handleTranslateRelease } = useReleaseTranslate({
   release: () => props.release,
   showToast,
+  stream: true,
   onStart: () => { viewMode.value = 'translated' },
   onSuccess: () => emit('update'),
-  onError: () => { viewMode.value = 'full' },
+  // 失败后无任何分片时才回退视图（与卡片行为一致）；已有部分译文则留在译文视图，
+  // 那是用户此刻唯一能看到的内容，切回原文等于把它藏起来
+  onError: () => { if (!streamText.value) viewMode.value = 'full' },
   onTranslated: () => {
     if (viewMode.value === 'full') {
       viewMode.value = 'translated'
@@ -200,10 +204,26 @@ const { translating, handleTranslateRelease } = useReleaseTranslate({
   },
 })
 
+/** 当前显示的是失败残留的部分译文（未落库、已停止翻译）。 */
+const isPartialTranslation = computed(() =>
+  viewMode.value === 'translated'
+  && !props.release.body_translated
+  && !translating.value
+  && !!streamText.value
+)
+
+/** 内容来自流式缓冲（未落库）：Markdown 渲染不写缓存——内容每个合帧批次都变，
+ *  写进去只会以「内容前缀」形式冲刷掉列表/详情等静态场景的缓存条目。 */
+const streamingContent = computed(() =>
+  viewMode.value === 'translated'
+  && !props.release.body_translated
+  && !!streamText.value
+)
+
 const availableModes = computed<{ mode: ViewMode; label: string }[]>(() => {
   const modes: { mode: ViewMode; label: string }[] = []
   if (props.release.ai_summary) modes.push({ mode: 'summary', label: t('release.view_summary') })
-  if (props.release.body_translated) {
+  if (props.release.body_translated || isPartialTranslation.value) {
     modes.push({ mode: 'translated', label: t('release.view_translated') })
   } else if (translating.value) {
     modes.push({ mode: 'translated', label: t('release.view_translating') })
@@ -216,8 +236,8 @@ const currentContent = computed<string | null>(() => {
   switch (viewMode.value) {
     case 'summary': return props.release.ai_summary
     case 'translated':
-      if (translating.value && !props.release.body_translated) return null
-      return props.release.body_translated
+      // 落库译文优先；流式进行中与失败残留走内存缓冲（尚未落库，props 里没有）
+      return props.release.body_translated ?? (streamText.value || null)
     case 'full': return props.release.body
     default: return null
   }
@@ -237,11 +257,29 @@ watch(() => props.release.id, () => {
 })
 
 // ========== 操作 ==========
-// 弹窗仅在全文视图下允许翻译（卡片无视图概念，直接用基础条件）
+// 弹窗仅在全文视图下允许翻译（卡片无视图概念，直接用基础条件）。
+// 例外：失败残留的部分译文已经停在译文视图，那里也要能重试——把按钮藏起来
+// 等于逼用户先切回原文再点翻译。
 const canTranslate = computed(() =>
-  viewMode.value === 'full'
+  (viewMode.value === 'full' || isPartialTranslation.value)
   && canTranslateRelease(props.release, aiEnabled.value)
 )
+
+// 流式追加时跟随到底部；用户上翻（已离开底部）后不再把视线拽走。
+// 在 DOM 更新前测量：更新后 scrollHeight 已变，「是否贴底」就判不准了。
+// 只在「眼前显示的就是这份缓冲」时才跟随：清空缓冲（切版本、译文落库）同样会触发
+// 本 watcher，跟随会把刚切版本的「回顶部」又拽到底部。
+const FOLLOW_BOTTOM_PX = 48
+watch(streamText, () => {
+  if (!streamingContent.value) return
+  const el = bodyEl.value
+  if (!el) return
+  if (el.scrollHeight - el.scrollTop - el.clientHeight > FOLLOW_BOTTOM_PX) return
+  nextTick(() => {
+    const target = bodyEl.value
+    if (target) target.scrollTop = target.scrollHeight
+  })
+})
 
 async function handleCopyContent() {
   const content = currentContent.value
@@ -380,12 +418,16 @@ async function applyFlag(flag: number) {
         <div ref="bodyEl" class="release-detail-body" @contextmenu.prevent.stop="handleBodyContextMenu">
           <!-- 译文 / 原文：完整 Markdown 渲染，无高度限制 -->
           <div v-if="currentContent" class="release-detail-markdown">
-            <MarkdownContent :content="currentContent" />
+            <MarkdownContent :content="currentContent" :no-cache="streamingContent" />
           </div>
           <div v-else-if="translating && viewMode === 'translated'" class="release-detail-translating">
             {{ t('release.translating_hint') }}
           </div>
           <div v-else class="release-detail-translating">{{ t('release.detail_empty') }}</div>
+          <!-- 中断残留：内容不完整必须写出来，否则用户会拿它当完整译文去引用/复制 -->
+          <div v-if="isPartialTranslation" class="release-detail-interrupted">
+            {{ t('release.translate_interrupted') }}
+          </div>
         </div>
         <div class="release-detail-footer">
           <div class="release-detail-nav">
@@ -713,6 +755,17 @@ async function applyFlag(flag: number) {
   text-align: center;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
+}
+
+/* 流式译文被中断的残留提示：贴在正文末尾，与正文一起滚动 */
+.release-detail-interrupted {
+  margin: 12px 0 4px;
+  padding: 8px 10px;
+  background: var(--danger-soft-bg);
+  color: var(--danger-soft-text);
+  border-radius: var(--radius-xs);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .release-detail-footer {

@@ -3,7 +3,12 @@ pub struct HttpClientConfig<'a> {
     pub proxy_url: &'a str,
     pub proxy_mode: &'a str,
     pub bearer_token: Option<&'a str>,
+    /// 总超时秒数（覆盖建连→读完响应体全程）。**0 = 不设总超时**：流式响应
+    /// （SSE）下总超时会把「持续有产出但总量大」的请求中途掐断，只能靠
+    /// `read_timeout_secs` 这种空闲超时兜底。
     pub timeout_secs: u64,
+    /// 空闲读超时秒数：两次成功读取之间的最大间隔（None = 不设）。
+    pub read_timeout_secs: Option<u64>,
     pub content_type_json: bool,
     /// 为 true 时把 `bearer_token` 作为 client 的 **default header**（对所有域名生效）。
     /// 仅 DeepSeek 这种「所有请求都打同一 API 域名」的场景可安全设 true。
@@ -25,6 +30,7 @@ impl<'a> Default for HttpClientConfig<'a> {
             proxy_mode: "none",
             bearer_token: None,
             timeout_secs: 30,
+            read_timeout_secs: None,
             content_type_json: false,
             set_default_auth: false,
             follow_redirects: true,
@@ -72,8 +78,13 @@ fn build_http_client_with_dns(
     }
     let mut builder = reqwest::Client::builder()
         .user_agent("RelWatch/0.4")
-        .timeout(std::time::Duration::from_secs(config.timeout_secs))
         .connect_timeout(std::time::Duration::from_secs(10));
+    if config.timeout_secs > 0 {
+        builder = builder.timeout(std::time::Duration::from_secs(config.timeout_secs));
+    }
+    if let Some(secs) = config.read_timeout_secs {
+        builder = builder.read_timeout(std::time::Duration::from_secs(secs));
+    }
     if !config.follow_redirects {
         // SSRF 防护：禁用自动重定向，调用方手动跟随并每跳重新校验目标地址
         builder = builder.redirect(reqwest::redirect::Policy::none());
@@ -591,6 +602,7 @@ pub async fn fetch_public_with_headers(
                 proxy_mode: config.proxy_mode,
                 bearer_token: config.bearer_token,
                 timeout_secs: config.timeout_secs,
+                read_timeout_secs: config.read_timeout_secs,
                 content_type_json: false,
                 set_default_auth: false,
                 follow_redirects: false,

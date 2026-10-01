@@ -63,6 +63,17 @@ pub struct AgentRpcStream {
     pub event: String,
 }
 
+/// 单条 release 的流式翻译分片（用户在详情弹窗点「翻译」期间的增量译文）。
+///
+/// 只在手动单条翻译时发出：后台自动翻译批没有观察者，逐片发事件纯属白耗 IPC。
+/// 前端按 `release_id` 过滤，只喂给当前正在展示的那条（并行时可能多条同时出字）。
+#[derive(Debug, Clone, Serialize, Type, Event)]
+pub struct ReleaseTranslateChunk {
+    pub release_id: i64,
+    /// 本次新增的译文片段（**非全量**，前端累加）。
+    pub delta: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +89,14 @@ mod tests {
     #[test]
     fn navigate_event_name_unchanged() {
         assert_eq!(<Navigate as tauri_specta::Event>::NAME, "navigate");
+    }
+
+    /// 流式翻译分片事件名同样锁住：前端 `events.releaseTranslateChunk` 监听它。
+    #[test]
+    fn release_translate_chunk_event_name_is_kebab_case() {
+        assert_eq!(
+            <ReleaseTranslateChunk as tauri_specta::Event>::NAME,
+            "release-translate-chunk"
+        );
     }
 }

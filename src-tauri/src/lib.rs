@@ -53,6 +53,7 @@ fn specta_builder() -> Builder<tauri::Wry> {
             events::FocusRelease,
             events::AgentRunFinished,
             events::AgentRpcStream,
+            events::ReleaseTranslateChunk,
         ])
         .commands(collect_commands![
         commands::add_source,

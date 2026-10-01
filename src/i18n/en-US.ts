@@ -292,6 +292,7 @@ export default {
   'release.delete_failed': 'Failed to delete version: ',
   'release.translating': 'Translation submitted, refresh later to view',
   'release.translating_hint': 'Translating, please wait...',
+  'release.translate_interrupted': 'Translation was interrupted — the text above is incomplete. Click "Translate" to retry.',
   'release.translate_failed': 'Translation failed: ',
   'release.status_failed': 'Failed to update status: ',
   'release.hf_pipeline_tag': 'Task',

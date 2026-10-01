@@ -181,6 +181,30 @@ pub const DEEPSEEK_TIMEOUT_SECS_SUMMARY: u64 = 120;
 pub const DEEPSEEK_TIMEOUT_SECS_TRANSLATE: u64 = 300;
 pub const DEEPSEEK_TIMEOUT_SECS_TEST: u64 = 60;
 
+/// 流式翻译的空闲读超时（秒）：两次成功读之间的最大间隔。
+///
+/// 流式路径**不设总超时**（见 `build_stream_client`）：总超时会把「持续在产出、
+/// 只是总量大」的长译文中途掐断，而流式下这正是常态。改用空闲读超时。
+///
+/// 取与非流式总预算同值，是因为它同样要覆盖**首字节之前**的等待：读超时的语义是
+/// 「多久没读到数据」，而网关排队、以及无视 `stream: true` 攒完整包再回的缓冲型
+/// 中转，都会让首字节晚到很久（见 `DEEPSEEK_TIMEOUT_SECS_TRANSLATE` 的取值理由）。
+/// 收紧到 60s 会让这两类请求在服务端还在生成时就被判失败。
+pub const DEEPSEEK_STREAM_READ_TIMEOUT_SECS: u64 = 300;
+
+/// 本地错误码号段下限：`(u16, String)` 的 status 位除了 HTTP 状态，还要表达本地
+/// 判定的失败（如「上游返回空内容」）。留 600 起的号段给本地码——HTTP 状态码不到这，
+/// 两者不会撞号。`format_chat_error` 对号段内的码不套 HTTP 前缀。
+const LOCAL_CODE_BASE: u16 = 600;
+
+/// 「上游返回空内容」（语言检测用）。
+///
+/// 必须**不在 `is_retryable` 的瞬时故障白名单里**（0/429/520/524）：空结果重试是
+/// 纯浪费——同一个请求重试结果必然一样（最常见成因是思考模式把 `max_tokens`
+/// 预算全吃在思维链上），而检测失败本来就不阻塞翻译（代码按语言不一致照常翻译），
+/// 此前为它睡 2+4+8 秒指数退避才开始翻译。
+const LOCAL_CODE_EMPTY_CONTENT: u16 = LOCAL_CODE_BASE;
+
 /// 翻译请求的 `max_tokens`：输出侧上限。
 ///
 /// 与输入截断 `DEEPSEEK_TRANSLATE_TRUNCATE_CHARS` 必须保持同量级：中英互译
@@ -208,6 +232,81 @@ pub fn build_client(
     })
 }
 
+/// 流式专用 client：不设总超时，只约束「多久没有新数据」（见
+/// `DEEPSEEK_STREAM_READ_TIMEOUT_SECS`）。
+///
+/// 不能复用 `build_client`：它设的是总超时（摘要 120s / 翻译 300s），那是为「要么
+/// 整包到达要么没有」的非流式请求量的。流式下一旦首片到达就开始产出，掐断的代价是
+/// 用户已经看到了半截译文。
+pub fn build_stream_client(
+    api_key: &str,
+    proxy_url: &str,
+    proxy_mode: &str,
+) -> Result<reqwest::Client, String> {
+    crate::http::build_http_client(crate::http::HttpClientConfig {
+        proxy_url,
+        proxy_mode,
+        bearer_token: Some(api_key),
+        timeout_secs: 0,
+        read_timeout_secs: Some(DEEPSEEK_STREAM_READ_TIMEOUT_SECS),
+        content_type_json: true,
+        set_default_auth: true,
+        ..Default::default()
+    })
+}
+
+/// relwatch 会往请求体里塞的 DeepSeek 扩展字段（非 OpenAI 标准）。
+///
+/// 网关不认这些字段时常见反应是 400。它们只影响速度（`thinking`）与统计口径
+/// （`stream_options`），不值得让整条任务失败，故 400 时全部去掉重发一次。
+const OPTIONAL_BODY_FIELDS: [&str; 2] = ["thinking", "stream_options"];
+
+/// 关闭思考模式：思维链经 `reasoning_content` 返回（与 `content` 同级），
+/// 而我们只读 `content`——于是整段思考期间前端一个字都不显示，表现为「首字极慢」。
+///
+/// 且思考默认开启、effort 默认 high（见 DeepSeek 思考模式文档），翻译/语言检测这类
+/// 确定性任务并不需要它：一段 849 字符的正文也能思考出约 2000 token（实测用量表
+/// 对得上），这些 token 按输出计价，首字要等约 9 秒。
+/// 思考模式还忽略 `temperature`（不报错但不生效），关掉后才能真正生效。
+fn disable_thinking(body_json: &mut serde_json::Value) {
+    if let Some(obj) = body_json.as_object_mut() {
+        obj.insert(
+            "thinking".to_string(),
+            serde_json::json!({ "type": "disabled" }),
+        );
+    }
+}
+
+/// 去掉请求体里的扩展字段（见 `OPTIONAL_BODY_FIELDS`），返回是否确实去掉了。
+fn strip_optional_fields(body_json: &mut serde_json::Value) -> bool {
+    let Some(obj) = body_json.as_object_mut() else {
+        return false;
+    };
+    let mut removed = false;
+    for key in OPTIONAL_BODY_FIELDS {
+        removed |= obj.remove(key).is_some();
+    }
+    removed
+}
+
+/// POST 一次 chat/completions。
+///
+/// 网络层错误（未收到 HTTP 响应）：reqwest 的 Display 只打顶层文案（"error sending
+/// request for url (...)"），真正的失败原因（连接超时/连接被重置/DNS 等）藏在 source
+/// 链里，故逐层展开 source 拼入（见 `describe_reqwest_error`）。
+async fn send_chat_request(
+    client: &reqwest::Client,
+    endpoint: &str,
+    body_json: &serde_json::Value,
+) -> Result<reqwest::Response, (u16, String)> {
+    client
+        .post(endpoint)
+        .json(body_json)
+        .send()
+        .await
+        .map_err(|e| (0, format!("请求失败: {}", describe_reqwest_error(&e))))
+}
+
 /// 通用 chat/completions 调用：POST → 判 success → 取 content + usage → 错误映射。
 /// 三个 call_*（摘要/语言检测/翻译）与连接测试共用此模板，
 /// 改超时/重试/错误格式只需动此处一处。
@@ -221,23 +320,17 @@ pub(crate) async fn chat_completion(
     let endpoint = resolve_chat_completion_url(base_url);
     // 显式要求非流式：部分中转（如 Cline）缺省 stream=true 会返回 SSE 流，
     // 与 relwatch 的 `resp.json()` 解析路径冲突。显式禁止即可规避。
-    let body = body_json.to_owned().clone();
-    // 网络层错误（未收到 HTTP 响应）。reqwest 的 Display 只打顶层文案
-    // （"error sending request for url (...)"），真正的失败原因（连接超时/
-    // 连接被重置/DNS 等）藏在 source 链里，故逐层展开 source 拼入。
+    let mut body = body_json.clone();
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(false));
+    }
     let started = std::time::Instant::now();
-    let resp = client
-        .post(&endpoint)
-        .json(&{
-            let mut b = body;
-            if let Some(obj) = b.as_object_mut() {
-                obj.insert("stream".to_string(), serde_json::Value::Bool(false));
-            }
-            b
-        })
-        .send()
-        .await
-        .map_err(|e| (0, format!("请求失败: {}", describe_reqwest_error(&e))))?;
+    let mut resp = send_chat_request(client, &endpoint, &body).await?;
+    // 400/422 多见于「非标准字段不被接受」（不同网关用不同码）：去掉重发一次
+    // （见 OPTIONAL_BODY_FIELDS）
+    if matches!(resp.status().as_u16(), 400 | 422) && strip_optional_fields(&mut body) {
+        resp = send_chat_request(client, &endpoint, &body).await?;
+    }
     if resp.status().is_success() {
         // 流式累加 + 超限中断；错误文案保持本模块中文风格，不走
         // read_json_limited 的 err. 前缀格式
@@ -258,16 +351,170 @@ pub(crate) async fn chat_completion(
             duration_ms,
         });
     }
+    Err(read_error_body(resp).await)
+}
+
+/// 读非 2xx 响应体生成 `(status, msg)`。
+/// 错误体限流到 64KB：错误文本会进日志与 toast，超限时以占位文本替代完整 body。
+async fn read_error_body(resp: reqwest::Response) -> (u16, String) {
     let status = resp.status().as_u16();
-    // 错误体同样限流：错误文本会进日志与 toast，超限时以占位
-    // 文本替代完整 body
     const MAX_ERROR_BODY_BYTES: usize = 64 * 1024;
     let text = match crate::http::read_body_limited(resp, MAX_ERROR_BODY_BYTES).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(crate::http::BodyReadError::Overflow(_)) => "<body too large>".to_string(),
         Err(crate::http::BodyReadError::Transport(e)) => e,
     };
-    Err((status, text))
+    (status, text)
+}
+
+/// 流式 chat/completions：`stream: true` + SSE 逐行解析，`delta.content` 每片即时
+/// 经 `on_delta` 投递；返回值与非流式同形（累计全文 + usage + 耗时），调用方的
+/// 落库/统计/错误处理逻辑无需感知差异。
+///
+/// 三条容错路径：
+/// - **形态判定按首字节**：拿到第一批字节后，首个非空白字节是 `{` 就按整包 JSON 处理，
+///   否则按 SSE。不能靠 Content-Type——中转可能回 text/plain，而 Nginx 缓冲后
+///   又可能回 application/octet-stream。
+/// - **网关无视 `stream: true`**：退回整包解析并把全文一次性投递（前端消费路径不变）。
+///   请求流式却拿到静默非流式，不能变成失败。
+/// - **`stream_options` / `thinking` 被拒**：部分网关对非标准字段回 400/422。
+///   统计退化与思考照旧可以接受，整条翻译失败不可以，故去掉这些字段重发一次
+///   （统一规则见 `OPTIONAL_BODY_FIELDS`）。
+///
+/// 截断判定：SSE 走完却从未见到「生成结束」（`[DONE]` 或带 `finish_reason` 的帧）
+/// 即判失败。已投递的分片留在前端（调用方据此保留半截译文并提示），但**不落库**。
+pub(crate) async fn chat_completion_stream(
+    client: &reqwest::Client,
+    base_url: &str,
+    body_json: &serde_json::Value,
+    on_delta: &(dyn Fn(&str) + Send + Sync),
+) -> Result<ChatCompletionOk, (u16, String)> {
+    use futures_util::StreamExt;
+
+    let endpoint = resolve_chat_completion_url(base_url);
+    let mut body = body_json.clone();
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), serde_json::Value::Bool(true));
+        // 要求末片携带 usage：否则流式路径拿不到 token 统计，只能退化为
+        // 字符数估算（estimated=true），与设置页的统计口径不一致。
+        obj.insert(
+            "stream_options".to_string(),
+            serde_json::json!({ "include_usage": true }),
+        );
+    }
+    let started = std::time::Instant::now();
+    let mut resp = send_chat_request(client, &endpoint, &body).await?;
+    // 400/422 多见于「非标准字段不被接受」（不同网关用不同码）：去掉重发一次
+    // （见 OPTIONAL_BODY_FIELDS）。为统计/速度字段丢整条译文不值得，退了仍有内容。
+    if matches!(resp.status().as_u16(), 400 | 422) && strip_optional_fields(&mut body) {
+        resp = send_chat_request(client, &endpoint, &body).await?;
+    }
+    if !resp.status().is_success() {
+        return Err(read_error_body(resp).await);
+    }
+
+    let mut stream = resp.bytes_stream();
+    // 未成行的原始字节。行尾换行符是完整性保证：跨 TCP 分片的多字节字符不会被
+    // 截成半个 UTF-8 去解析，只有整行到齐才动它。
+    let mut buf: Vec<u8> = Vec::new();
+    let mut content = String::new();
+    let mut usage: Option<RawUsage> = None;
+    // None = 还没拿到第一批字节，无从判定形态
+    let mut is_sse: Option<bool> = None;
+    let mut finished = false;
+    // 上游是否明确表示过「生成结束」：[DONE] 或任一帧带 finish_reason。
+    // 两者都没有 = 流被截断（含对端直接关连接），半截不能当成品
+    let mut terminated = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| (0, format!("请求失败: {}", describe_reqwest_error(&e))))?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() + content.len() > crate::http::MAX_JSON_BYTES {
+            return Err((
+                0,
+                format!("响应体过大 (超过 {} 字节)", crate::http::MAX_JSON_BYTES),
+            ));
+        }
+        if is_sse.is_none() {
+            if let Some(first) = buf.iter().find(|b| !b.is_ascii_whitespace()) {
+                is_sse = Some(*first != b'{');
+            }
+        }
+        // 整包 JSON（含形态未定的空 chunk）：留到流结束再整体解析
+        if is_sse != Some(true) {
+            continue;
+        }
+        while let Some(pos) = buf.iter().position(|b| *b == b'\n') {
+            let line = String::from_utf8_lossy(&buf[..pos]).trim_end().to_string();
+            buf.drain(..=pos);
+            let Some(payload) = line.strip_prefix("data:") else {
+                continue; // `event:` / 注释 / 空行都无需处理
+            };
+            let payload = payload.trim();
+            if payload == "[DONE]" {
+                finished = true;
+                terminated = true;
+                break;
+            }
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
+                // 单行坏数据不终止整条译文：SSE 里可能混入非 JSON 的调试行，
+                // 已到达的分片照常交付
+                continue;
+            };
+            if let Some(err) = v.get("error") {
+                // 流中错误（限流/上游故障）：已投递的分片留在前端，由调用方按
+                // 失败处理（不落库）
+                return Err((0, format!("AI API 返回错误: {}", err)));
+            }
+            if let Some(u) = extract_usage(&v) {
+                usage = Some(u);
+            }
+            // 部分中转只给 finish_reason、不给 [DONE]：两者取「或」判是否收全
+            if v.pointer("/choices/0/finish_reason")
+                .is_some_and(|r| !r.is_null())
+            {
+                terminated = true;
+            }
+            if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|d| d.as_str()) {
+                if !delta.is_empty() {
+                    content.push_str(delta);
+                    on_delta(delta);
+                }
+            }
+        }
+        if finished {
+            break;
+        }
+    }
+
+    let duration_ms = started.elapsed().as_millis() as i64;
+    if is_sse == Some(false) {
+        // 静默非流式：全文一次性投递，前端消费路径与逐片一致
+        let json: serde_json::Value =
+            serde_json::from_slice(&buf).map_err(|e| (0, format!("解析响应失败: {}", e)))?;
+        let content = extract_content(&json);
+        if !content.is_empty() {
+            on_delta(&content);
+        }
+        return Ok(ChatCompletionOk {
+            content,
+            usage: extract_usage(&json),
+            duration_ms,
+        });
+    }
+
+    // SSE 收完但上游从没说过「生成结束」：流被中途截断（半开连接、代理超时断开等）。
+    // 半截译文一旦落库，用户拿到的就是一份看不出破绽的「完整译文」，比报错更坑。
+    // 形态未定（空响应体）不走这条：那种情况交给调用方的「结果为空」判定。
+    if is_sse == Some(true) && !terminated {
+        return Err((0, "响应流中断（未收到生成结束标记），译文不完整".to_string()));
+    }
+
+    // 与非流式 `extract_content` 的 trim 口径对齐：两种路径落库内容不能有尾部差异
+    Ok(ChatCompletionOk {
+        content: content.trim().to_string(),
+        usage,
+        duration_ms,
+    })
 }
 
 /// 展开 reqwest 错误链生成可读描述。
@@ -319,9 +566,12 @@ fn has_translation(conn: &Connection, release_id: i64) -> bool {
 
 /// 把 chat/completions 调用链的 `(status, msg)` 错误映射为展示串。
 /// 三个 call_*（摘要/语言检测/翻译）共用同一展示格式（`status` 重复一次
-/// 属既定格式，勿改）。
+/// 属既定格式，勿改）；本地码（见 `LOCAL_CODE_BASE`）不带 HTTP 前缀。
 fn format_chat_error(status: u16, msg: &str) -> String {
-    if status > 0 {
+    if status >= LOCAL_CODE_BASE {
+        // 本地码不对应任何 HTTP 状态，套 HTTP 前缀只会误导
+        msg.to_string()
+    } else if status > 0 {
         format!("[{}] AI API 返回错误 {}: {}", status, status, msg)
     } else {
         msg.to_string()
@@ -434,7 +684,7 @@ async fn call_detect_language(
         "请判断以下文本的主体语言，仅用一个词回答语言名称（如 中文、English、日本語、Français 等），不要输出其他任何内容。\n\n文本：\n{}",
         text_sample
     );
-    let body_json = serde_json::json!({
+    let mut body_json = serde_json::json!({
         "model": model,
         "messages": [
             {"role": "user", "content": prompt}
@@ -442,6 +692,9 @@ async fn call_detect_language(
         "temperature": 0.0,
         "max_tokens": 20
     });
+    // 必须关掉思考：默认 effort=high 的思维链会把 20 token 预算吃光，
+    // `content` 返回空（之前的空结果重试就是被它触发的）
+    disable_thinking(&mut body_json);
     let usages: std::sync::Arc<std::sync::Mutex<Vec<CallUsage>>> = Default::default();
     let outcome = crate::retry::retry_with_backoff(
         &crate::retry::RetryConfig::default(),
@@ -456,7 +709,9 @@ async fn call_detect_language(
                 outcome.duration_ms,
             ));
             if outcome.content.is_empty() {
-                return Err((0, "语言检测结果为空".to_string()));
+                // 用 LOCAL_CODE_EMPTY_CONTENT 上报：空结果不重试（见常量说明），
+                // 而 429/网络类瞬时故障照旧重试
+                return Err((LOCAL_CODE_EMPTY_CONTENT, "语言检测结果为空".to_string()));
             }
             Ok(outcome.content)
         },
@@ -478,10 +733,38 @@ async fn call_translate(
     target_lang: &str,
     body_text: &str,
 ) -> Result<(String, Vec<CallUsage>), (String, Vec<CallUsage>)> {
+    call_translate_impl(client, model, base_url, target_lang, body_text, None).await
+}
+
+/// 流式翻译：分片边到边经 `sink` 投递，返回值与非流式完全相同。
+async fn call_translate_streaming(
+    client: &reqwest::Client,
+    model: &str,
+    base_url: &str,
+    target_lang: &str,
+    body_text: &str,
+    sink: &(dyn Fn(&str) + Send + Sync),
+) -> Result<(String, Vec<CallUsage>), (String, Vec<CallUsage>)> {
+    call_translate_impl(client, model, base_url, target_lang, body_text, Some(sink)).await
+}
+
+/// 翻译调用主体：`sink` 为 None 走非流式（自动批与卡片入口），Some 走流式
+/// （用户在弹窗里点「翻译」）。
+///
+/// 两条路径的请求体、重试、用量收集、空结果判定完全共用——差异只在单次请求
+/// 用 `chat_completion` 还是 `chat_completion_stream`。
+async fn call_translate_impl(
+    client: &reqwest::Client,
+    model: &str,
+    base_url: &str,
+    target_lang: &str,
+    body_text: &str,
+    sink: Option<&(dyn Fn(&str) + Send + Sync)>,
+) -> Result<(String, Vec<CallUsage>), (String, Vec<CallUsage>)> {
     let prompt = DEFAULT_DEEPSEEK_TRANSLATE_PROMPT
         .replace("{lang}", target_lang)
         .replace("{}", body_text);
-    let body_json = serde_json::json!({
+    let mut body_json = serde_json::json!({
         "model": model,
         "messages": [
             {"role": "user", "content": prompt}
@@ -489,12 +772,27 @@ async fn call_translate(
         "temperature": 0.3,
         "max_tokens": DEEPSEEK_TRANSLATE_MAX_TOKENS
     });
+    // 翻译是确定性任务，思考没有收益（见 disable_thinking）
+    disable_thinking(&mut body_json);
     let usages: std::sync::Arc<std::sync::Mutex<Vec<CallUsage>>> = Default::default();
+    // 是否已向前端投递过分片。重试只对「还没吐出任何内容」的失败有意义：
+    // 已开流的尝试重试会从零重新生成，与已投递的分片在用户眼前叠成两份文本，
+    // 且上游已为作废的那轮计费。
+    let emitted = std::sync::atomic::AtomicBool::new(false);
     let outcome = crate::retry::retry_with_backoff(
         &crate::retry::RetryConfig::default(),
-        is_retryable,
+        |e| !emitted.load(std::sync::atomic::Ordering::SeqCst) && is_retryable(e),
         || async {
-            let outcome = chat_completion(client, base_url, &body_json).await?;
+            let outcome = match sink {
+                Some(sink) => {
+                    let emit = |delta: &str| {
+                        emitted.store(true, std::sync::atomic::Ordering::SeqCst);
+                        sink(delta);
+                    };
+                    chat_completion_stream(client, base_url, &body_json, &emit).await?
+                }
+                None => chat_completion(client, base_url, &body_json).await?,
+            };
             usages.lock().unwrap().push(CallUsage::from_outcome(
                 "translate",
                 outcome.usage,
@@ -554,13 +852,26 @@ enum TranslateOutcome {
     Translated(String),
 }
 
+/// 批量注入的流式分片出口：分片带上 `release_id`。
+///
+/// 批内可能多条同时在出字，只有前端自己知道当前展示的是哪条，故由事件携带 id
+/// 让前端过滤，而不是在服务端维护「谁是当前观察者」这种易错状态。
+pub type ChunkSink = std::sync::Arc<dyn Fn(i64, &str) + Send + Sync>;
+
+/// 单条任务的流式分片出口（已绑定 release_id）。
+pub type DeltaSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
 /// AI 任务公共流水线：读配置 → 建 client → 并发调度 → 结果/失败分别落库。
 ///
 /// 摘要与翻译两条流水线共用此骨架，差异点以参数注入：
 /// - `job`：控制台日志文案（"摘要"/"译文"）
 /// - `truncate_chars`：正文截断上限（摘要 4000 / 翻译见
 ///   `DEEPSEEK_TRANSLATE_TRUNCATE_CHARS`，须与 `DEEPSEEK_TRANSLATE_MAX_TOKENS` 同量级）
-/// - `timeout_secs`：本批请求的总超时（摘要 120 / 翻译 300，见 DEEPSEEK_TIMEOUT_SECS_*）
+/// - `timeout_secs`：本批请求的总超时（摘要 120 / 翻译 300，见 DEEPSEEK_TIMEOUT_SECS_*）。
+///   仅在非流式路径生效：传入 `on_chunk` 时改用流式客户端（空闲读超时），见
+///   `build_stream_client`。
+/// - `on_chunk`：流式分片出口（None = 非流式）。只有用户点「翻译」的那次单条
+///   翻译会传 Some：后台自动批没有观察者，逐片发事件纯属白耗 IPC 与主线程。
 /// - `extra_ready`：额外前置开关（翻译的 translate_enabled/force；摘要恒 true）
 /// - `call`：AI 调用（翻译侧在闭包内做语言检测短路）
 /// - `on_ok` / `on_err`：成功/失败各自的落库与日志动作（在 spawn_blocking 内执行）
@@ -580,13 +891,17 @@ async fn run_ai_job<T, F, Fut>(
     job: &'static str,
     truncate_chars: usize,
     timeout_secs: u64,
+    on_chunk: Option<ChunkSink>,
     extra_ready: impl Fn(&Connection) -> bool,
     already_done: impl Fn(&Connection, i64) -> bool + Send + Sync + 'static,
     call: F,
     on_ok: impl Fn(&Connection, i64, T) + Send + Sync + 'static,
     on_err: impl Fn(&Connection, i64, &str) + Send + Sync + 'static,
 ) where
-    F: Fn(reqwest::Client, String, String, String, String) -> Fut + Send + Sync + 'static,
+    F: Fn(reqwest::Client, String, String, String, String, Option<DeltaSink>) -> Fut
+        + Send
+        + Sync
+        + 'static,
     // call 的返回值携带本次任务的用量明细（可能含语言检测 + 翻译多次调用），
     // 统一由本流水线落 `ai_usage` 表，call_* 与 on_ok 均无需感知统计。
     // 失败分支同样带回用量：重试耗尽前的已消耗调用也要记录。
@@ -618,7 +933,13 @@ async fn run_ai_job<T, F, Fut>(
         Some(k) => k,
         None => return,
     };
-    let client = match build_client(&api_key, &proxy_url, &proxy_mode, timeout_secs) {
+    let client = match if on_chunk.is_some() {
+        // 有分片消费者 = 本次走流式请求：客户端也得换成流式口径
+        // （不设总超时，改空闲读超时，见 build_stream_client）
+        build_stream_client(&api_key, &proxy_url, &proxy_mode)
+    } else {
+        build_client(&api_key, &proxy_url, &proxy_mode, timeout_secs)
+    } {
         Ok(c) => c,
         Err(e) => {
             let msg = format!("创建 DeepSeek 客户端失败: {}", e);
@@ -660,6 +981,11 @@ async fn run_ai_job<T, F, Fut>(
         let on_ok = on_ok.clone();
         let on_err = on_err.clone();
         let already_done = already_done.clone();
+        // 分片出口绑定本条 release：批内可能多条并行出字，前端按 id 只接自己那条
+        let on_chunk: Option<DeltaSink> = on_chunk.clone().map(|sink| {
+            let bound: DeltaSink = std::sync::Arc::new(move |delta: &str| sink(release_id, delta));
+            bound
+        });
 
         handles.push(tokio::spawn(async move {
             let _permit = match sem_clone.acquire_owned().await {
@@ -694,7 +1020,7 @@ async fn run_ai_job<T, F, Fut>(
                 );
                 return;
             }
-            match call(client, model.clone(), base_url, prompt, truncated).await {
+            match call(client, model.clone(), base_url, prompt, truncated, on_chunk).await {
                 Ok((result, usages)) => {
                     // 同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
                     let _ = tokio::task::spawn_blocking(move || {
@@ -762,9 +1088,11 @@ pub async fn generate_summaries_for_new(
         "摘要",
         4000,
         DEEPSEEK_TIMEOUT_SECS_SUMMARY,
+        // 摘要不走流式（无人逐片展示，卡片只显示最终摘要）
+        None,
         |_| true,
         has_ai_summary,
-        |client, model, base_url, prompt, text| async move {
+        |client, model, base_url, prompt, text, _sink| async move {
             call_summary(&client, &model, &base_url, &prompt, &text).await
         },
         |conn, release_id, (summary, importance)| {
@@ -793,11 +1121,46 @@ pub async fn generate_summaries_for_new(
 /// 保证 AI 请求总并发不变。
 /// - `force=false`：仅在 `deepseek_translate_release=true` 且已配置 API key 时生效（轮询自动场景）
 /// - `force=true`：绕过 `translate_enabled` 开关，只要 AI 已启用且配置 key 即翻译（手动单条场景）
+///
+/// 无流式出口：这里都是后台/无观察者的批，逐片发事件无人消费（需要流式分片的手动
+/// 单条翻译走 `translate_single_release`）。
 pub async fn generate_translations_for_new(
     db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
     force: bool,
+) {
+    run_translate_job(db_pool, deepseek_semaphore, saved, force, None).await;
+}
+
+/// 用户在弹窗里点「翻译」的单条翻译：force 语义（绕过开关与「已有译文」复查）+
+/// 可选流式分片出口。
+///
+/// 独立入口而非给 `generate_translations_for_new` 多加一个 bool/`Option`
+/// 参数：调用点写得出「这是手动单条 + 要流式」的意图，不用去猜裸参含义。
+pub async fn translate_single_release(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    release_id: i64,
+    body: String,
+    on_chunk: Option<ChunkSink>,
+) {
+    run_translate_job(
+        db_pool,
+        deepseek_semaphore,
+        &[(release_id, Some(body))],
+        true,
+        on_chunk,
+    )
+    .await;
+}
+
+async fn run_translate_job(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
+    saved: &[(i64, Option<String>)],
+    force: bool,
+    on_chunk: Option<ChunkSink>,
 ) {
     // 目标语言供 call 闭包（语言检测短路）与 on_ok（短路日志）使用，提前读取。
     let target_lang = {
@@ -821,15 +1184,17 @@ pub async fn generate_translations_for_new(
         // 译文会在句子中间被硬截断。
         DEEPSEEK_TRANSLATE_TRUNCATE_CHARS,
         // 翻译超时 300s：max_tokens=20000 的长生成，中转要等上游出完才回
-        // 响应头，60s 会在网关排队时超时
+        // 响应头，60s 会在网关排队时超时（流式路径不用它，见 build_stream_client）
         DEEPSEEK_TIMEOUT_SECS_TRANSLATE,
+        // 流式出口：仅手动单条翻译注入
+        on_chunk,
         // 翻译开关：force 绕过 translate_enabled（手动单条场景）
         move |conn| read_translate_config(conn).0 || force,
         // 复查跳过：仅对自动批（force=false）生效。手动单条翻译（force=true）
         // 是用户显式要求重翻（可能上一版译文不满意），必须放行，不能被
         // 「已有译文」挡住——否则设置页点了翻译却毫无反应、也不报错。
         move |conn, id| !force && has_translation(conn, id),
-        move |client, model, base_url, _prompt, text| {
+        move |client, model, base_url, _prompt, text, sink| {
             let target_lang = target_lang.clone();
             async move {
                 // 语言检测短路：取 body 前 500 字符让 AI 判断主体语言，
@@ -842,6 +1207,8 @@ pub async fn generate_translations_for_new(
                     Ok((detected, mut detect_usages)) => {
                         usages.append(&mut detect_usages);
                         if detected.trim() == target_lang {
+                            // 短路没有流式可言（原文即译文）：保持既有行为，
+                            // 一次性写库后由 ReleaseStateChanged 驱动前端切视图
                             return Ok((TranslateOutcome::Skipped(text), usages));
                         }
                     }
@@ -849,14 +1216,20 @@ pub async fn generate_translations_for_new(
                 }
                 // 不能用 `?`：Err 直接传播会把局部 usages（语言检测的用量）丢掉，
                 // 翻译失败时检测侧已消耗的调用就漏记了。
-                let (translated, mut translate_usages) =
-                    match call_translate(&client, &model, &base_url, &target_lang, &text).await {
-                        Ok(v) => v,
-                        Err((e, mut translate_usages)) => {
-                            usages.append(&mut translate_usages);
-                            return Err((e, usages));
-                        }
-                    };
+                let translate_outcome = match sink.as_deref() {
+                    Some(sink) => {
+                        call_translate_streaming(&client, &model, &base_url, &target_lang, &text, sink)
+                            .await
+                    }
+                    None => call_translate(&client, &model, &base_url, &target_lang, &text).await,
+                };
+                let (translated, mut translate_usages) = match translate_outcome {
+                    Ok(v) => v,
+                    Err((e, mut translate_usages)) => {
+                        usages.append(&mut translate_usages);
+                        return Err((e, usages));
+                    }
+                };
                 usages.append(&mut translate_usages);
                 Ok((TranslateOutcome::Translated(translated), usages))
             }
@@ -1120,6 +1493,16 @@ mod tests {
         let result = call_detect_language(&client, "test-model", &mock.uri(), "some text").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().0.contains("为空"));
+
+        // 空结果不重试：同一个请求重试结果必然一样，而检测失败本来就不阻塞翻译。
+        // 此前这里会重试 3 次（睡 2+4+8 秒）才开始翻译——「首字特别慢」的一半就是它。
+        let reqs = mock.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 1, "空结果不应重试");
+        // 思考模式默认开启且 effort=high，20 token 预算会被思维链吃光并返回空 content，
+        // 即「空结果」的最常见成因：必须顶关掉
+        let sent: serde_json::Value = serde_json::from_slice(&reqs[0].body).unwrap();
+        assert_eq!(sent["thinking"]["type"], serde_json::json!("disabled"));
+        assert_eq!(sent["max_tokens"], serde_json::json!(20));
     }
 
     // ── Semaphore 并发限制测试 ────────────────────────────────────
@@ -1189,6 +1572,440 @@ mod tests {
         let max = peak.load(Ordering::SeqCst);
         assert!(max <= 1, "并发峰值 {} 不应超过信号量限制 1", max);
         assert_eq!(max, 1, "应严格串行执行");
+    }
+
+    // ── 流式翻译（手动单条：SSE 分片 / 形态兜底 / 重试边界）──
+
+    /// SSE 报文：`data:` 行逐片累积，末片带 usage，`[DONE]` 结束。
+    fn sse_body(deltas: &[&str]) -> String {
+        let mut s = String::new();
+        for d in deltas {
+            s.push_str(&format!(
+                "data: {}\n\n",
+                serde_json::json!({"choices": [{"delta": {"content": d}}]})
+            ));
+        }
+        s.push_str(&format!(
+            "data: {}\n\n",
+            serde_json::json!({
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 22,
+                    "prompt_cache_hit_tokens": 3,
+                    "prompt_cache_miss_tokens": 8
+                }
+            })
+        ));
+        s.push_str("data: [DONE]\n\n");
+        s
+    }
+
+    /// 收集分片的回调（测试用 sink）。
+    fn chunk_collector() -> (std::sync::Arc<std::sync::Mutex<Vec<String>>>, impl Fn(&str) + Send + Sync) {
+        let store = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink_store = store.clone();
+        (store, move |d: &str| sink_store.lock().unwrap().push(d.to_string()))
+    }
+
+    #[tokio::test]
+    async fn test_chat_completion_stream_accumulates_deltas_and_usage() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(sse_body(&["这是", "译文"]), "text/event-stream"),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let body = serde_json::json!({"model": "m", "messages": []});
+        let out = chat_completion_stream(&client, &mock.uri(), &body, &sink)
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "这是译文", "分片应累加为全文");
+        assert_eq!(*chunks.lock().unwrap(), vec!["这是".to_string(), "译文".to_string()]);
+        let usage = out.usage.expect("末片携带的 usage 应被采集");
+        assert_eq!(usage.prompt_tokens, 11);
+        assert_eq!(usage.completion_tokens, 22);
+        assert_eq!(usage.cache_hit_tokens, 3);
+
+        // 请求侧：必须声明流式，并要求末片带 usage（否则统计只能退化为字符数估算）
+        let req = &mock.received_requests().await.unwrap()[0];
+        let sent: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+        assert_eq!(sent["stream"], serde_json::json!(true));
+        assert_eq!(
+            sent["stream_options"]["include_usage"],
+            serde_json::json!(true)
+        );
+    }
+
+    /// 流被截断（既无 `[DONE]` 也无 `finish_reason`）：判失败。
+    /// 已到达的分片照常投递（前端留住半截并提示），但绝不落库——半截译文写进去后
+    /// 用户看到的就是一份看不出破绽的「完整译文」。
+    #[tokio::test]
+    async fn test_chat_completion_stream_truncated_is_error() {
+        let mock = MockServer::start().await;
+        let body = format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"delta": {"content": "半截"}}]})
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let body = serde_json::json!({"model": "m", "messages": []});
+        let out = chat_completion_stream(&client, &mock.uri(), &body, &sink).await;
+
+        let (status, msg) = out.expect_err("无生成结束标记应判失败");
+        assert_eq!(status, 0, "截断按非 HTTP 层失败上报（status 0）");
+        assert!(msg.contains("中断"), "错误文案应说明是流中断: {}", msg);
+        assert_eq!(
+            *chunks.lock().unwrap(),
+            vec!["半截".to_string()],
+            "已到达的分片保留给前端作部分译文"
+        );
+    }
+
+    /// 只有 `finish_reason`、没有 `[DONE]`：视为生成收全（部分中转如此）。
+    /// 终结判定取「两者或」，否则会把正常完成的流判成截断。
+    #[tokio::test]
+    async fn test_chat_completion_stream_finish_reason_without_done_is_ok() {
+        let mock = MockServer::start().await;
+        let mut body = format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"delta": {"content": "译文"}}]})
+        );
+        body.push_str(&format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        ));
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let body = serde_json::json!({"model": "m", "messages": []});
+        let out = chat_completion_stream(&client, &mock.uri(), &body, &sink)
+            .await
+            .expect("带 finish_reason 的流不应判截断");
+
+        assert_eq!(out.content, "译文");
+        assert_eq!(*chunks.lock().unwrap(), vec!["译文".to_string()]);
+    }
+
+    /// 网关无视 `stream: true` 回整包 JSON：按首字节判定走整包解析，内容一次性投递。
+    /// 「请求流式却拿到静默非流式」不能变成失败。
+    #[tokio::test]
+    async fn test_chat_completion_stream_falls_back_to_plain_json() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_translate_response()))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let body = serde_json::json!({"model": "m", "messages": []});
+        let out = chat_completion_stream(&client, &mock.uri(), &body, &sink)
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "这是译文内容");
+        assert_eq!(*chunks.lock().unwrap(), vec!["这是译文内容".to_string()]);
+    }
+
+    /// `stream_options` 被网关拒（400）：去掉该字段重发。
+    /// 为用量统计丢整条译文不值得，退了仍有内容，只是退化为估算。
+    #[tokio::test]
+    async fn test_chat_completion_stream_reposts_without_stream_options_on_400() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("unknown field: stream_options"))
+            .up_to_n_times(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(sse_body(&["译文"]), "text/event-stream"),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let body = serde_json::json!({"model": "m", "messages": []});
+        let out = chat_completion_stream(&client, &mock.uri(), &body, &sink)
+            .await
+            .unwrap();
+
+        assert_eq!(out.content, "译文");
+        assert_eq!(*chunks.lock().unwrap(), vec!["译文".to_string()], "重发后的分片照常投递");
+        let reqs = mock.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2, "400 应触发一次不带 stream_options 的重发");
+        let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert!(second.get("stream_options").is_none());
+        assert_eq!(second["stream"], serde_json::json!(true), "重发仍是流式");
+    }
+
+    /// 首个分片前失败（429）：照常重试。重试的第二轮从零开始，不污染已投递内容。
+    #[tokio::test]
+    async fn test_call_translate_streaming_retries_before_first_delta() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(sse_body(&["这是", "译文"]), "text/event-stream"),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let out = call_translate_streaming(&client, "m", &mock.uri(), "中文", "body", &sink).await;
+
+        assert_eq!(out.map(|(s, _)| s).as_deref(), Ok("这是译文"));
+        assert_eq!(*chunks.lock().unwrap(), vec!["这是".to_string(), "译文".to_string()]);
+    }
+
+    /// 已投递分片后的失败：**不得重试**——重试会从零重新生成，与用户眼前已有的
+    /// 分片叠成两份文本，且上游已为作废的那轮计费。
+    #[tokio::test]
+    async fn test_call_translate_streaming_does_not_retry_after_first_delta() {
+        let mock = MockServer::start().await;
+        let mut body = format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"delta": {"content": "半截"}}]})
+        );
+        // 流中错误帧（限流/上游故障）
+        body.push_str(&format!(
+            "data: {}\n\n",
+            serde_json::json!({"error": {"message": "rate limited"}})
+        ));
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (chunks, sink) = chunk_collector();
+        let out = call_translate_streaming(&client, "m", &mock.uri(), "中文", "body", &sink).await;
+
+        assert!(out.is_err(), "流中错误应上报失败（不落库）");
+        assert_eq!(*chunks.lock().unwrap(), vec!["半截".to_string()], "已到达的分片保留");
+        assert_eq!(
+            mock.received_requests().await.unwrap().len(),
+            1,
+            "已投递分片后不得重试"
+        );
+    }
+
+    /// 手动单条流式翻译全链路：detect 判定非目标语言 → SSE 逐片投递，落库完整译文。
+    #[tokio::test]
+    async fn test_translate_single_release_streams_chunks_and_persists() {
+        use wiremock::matchers::body_string_contains;
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains("请判断以下文本的主体语言"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_detect_response("English")))
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains("完整翻译成"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(sse_body(&["这是", "译文"]), "text/event-stream"),
+            )
+            .mount(&mock)
+            .await;
+
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            insert_release_with_body(&conn, "release body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let chunks: std::sync::Arc<std::sync::Mutex<Vec<(i64, String)>>> = Default::default();
+        let sink_chunks = chunks.clone();
+        let sink: ChunkSink = std::sync::Arc::new(move |rid: i64, delta: &str| {
+            sink_chunks.lock().unwrap().push((rid, delta.to_string()));
+        });
+
+        translate_single_release(&pool, &sem, id, "release body".to_string(), Some(sink)).await;
+
+        // 分片必须带 release_id：并行翻译时前端靠它认出自己那条
+        assert_eq!(
+            *chunks.lock().unwrap(),
+            vec![(id, "这是".to_string()), (id, "译文".to_string())]
+        );
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert_eq!(rel.body_translated.as_deref(), Some("这是译文"));
+    }
+
+    /// 手动单条翻译遇到截断流：分片照常到手，但**不落库**。
+    /// 与前端「留住半截 + 红字中断提示 + 可重试」的行为配套：落库了就没有重试入口。
+    #[tokio::test]
+    async fn test_translate_single_release_truncated_stream_does_not_persist() {
+        use wiremock::matchers::body_string_contains;
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains("请判断以下文本的主体语言"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_detect_response("English")))
+            .mount(&mock)
+            .await;
+        let truncated = format!(
+            "data: {}\n\n",
+            serde_json::json!({"choices": [{"delta": {"content": "半截译文"}}]})
+        );
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_string_contains("完整翻译成"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(truncated, "text/event-stream"))
+            .mount(&mock)
+            .await;
+
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            insert_release_with_body(&conn, "release body")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let chunks: std::sync::Arc<std::sync::Mutex<Vec<(i64, String)>>> = Default::default();
+        let sink_chunks = chunks.clone();
+        let sink: ChunkSink = std::sync::Arc::new(move |rid: i64, delta: &str| {
+            sink_chunks.lock().unwrap().push((rid, delta.to_string()));
+        });
+
+        translate_single_release(&pool, &sem, id, "release body".to_string(), Some(sink)).await;
+
+        assert_eq!(
+            *chunks.lock().unwrap(),
+            vec![(id, "半截译文".to_string())],
+            "截断前已到达的分片仍要交给前端"
+        );
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert!(
+            rel.body_translated.is_none(),
+            "截断的半截译文不得当成成品落库: {:?}",
+            rel.body_translated
+        );
+    }
+
+    /// 语言检测命中目标语言：短路写原文、不投递任何分片（保持既有行为）。
+    #[tokio::test]
+    async fn test_translate_single_release_language_match_emits_no_chunk() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_detect_response("中文")))
+            .mount(&mock)
+            .await;
+
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            enable_deepseek(&conn, &mock.uri());
+            insert_release_with_body(&conn, "原文内容")
+        };
+        let sem = Arc::new(tokio::sync::Semaphore::new(2));
+        let chunks: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let sink_chunks = chunks.clone();
+        let sink: ChunkSink = std::sync::Arc::new(move |_rid: i64, delta: &str| {
+            sink_chunks.lock().unwrap().push(delta.to_string());
+        });
+
+        translate_single_release(&pool, &sem, id, "原文内容".to_string(), Some(sink)).await;
+
+        assert!(chunks.lock().unwrap().is_empty(), "短路无译文可流式投递");
+        let conn = pool.get().unwrap();
+        let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
+        assert_eq!(rel.body_translated.as_deref(), Some("原文内容"));
+    }
+
+    /// 需注意：重发时不应再带任何非标准字段。
+    #[tokio::test]
+    async fn test_chat_completion_reposts_without_optional_fields_on_400() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(400).set_body_string("unknown field: thinking"))
+            .up_to_n_times(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample_translate_response()))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        // 与 call_translate 同形：带 thinking 的非标准字段
+        let mut body = serde_json::json!({"model": "m", "messages": []});
+        disable_thinking(&mut body);
+        let out = chat_completion(&client, &mock.uri(), &body).await.unwrap();
+
+        assert_eq!(out.content, "这是译文内容");
+        let reqs = mock.received_requests().await.unwrap();
+        assert_eq!(reqs.len(), 2, "400 应触发一次去掉扩展字段的重发");
+        let second: serde_json::Value = serde_json::from_slice(&reqs[1].body).unwrap();
+        assert!(second.get("thinking").is_none());
+        assert_eq!(second["stream"], serde_json::json!(false));
+    }
+
+    /// 翻译/流式翻译路径都必须带 `thinking: disabled`：默认开启的思考模式会把
+    /// 首字拖到整段思维链之后（译文只会在 `content` 里出现，思考走 `reasoning_content`）。
+    #[tokio::test]
+    async fn test_translate_requests_disable_thinking() {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_raw(sse_body(&["译文"]), "text/event-stream"),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let (_, sink) = chunk_collector();
+        call_translate_streaming(&client, "m", &mock.uri(), "中文", "body", &sink)
+            .await
+            .unwrap();
+
+        let sent: serde_json::Value =
+            serde_json::from_slice(&mock.received_requests().await.unwrap()[0].body).unwrap();
+        assert_eq!(sent["thinking"]["type"], serde_json::json!("disabled"));
+        assert_eq!(sent["stream"], serde_json::json!(true));
     }
 
     // ── 编排函数 generate_summaries_for_new / generate_translations_for_new 集成测试 ──

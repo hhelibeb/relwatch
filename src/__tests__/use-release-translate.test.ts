@@ -1,13 +1,23 @@
-import { describe, expect, it, vi, afterEach } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { defineComponent, nextTick, reactive } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { translateRelease } from '../api/releases'
+import { events } from '../bindings'
+import type { ReleaseTranslateChunk } from '../bindings'
 import type { ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
 
 vi.mock('../api/releases', () => ({
   translateRelease: vi.fn(),
+}))
+
+// 事件层单独 mock：分片由后端经 release-translate-chunk 事件推进，
+// 测试需要拿到监听回调自行投递分片（真 Tauri 环境外无处可发）
+vi.mock('../bindings', () => ({
+  events: {
+    releaseTranslateChunk: { listen: vi.fn() },
+  },
 }))
 
 // 用量埋点与断言无关：track mock 为 no-op，避免真实实现的定时器与写入干扰
@@ -42,20 +52,56 @@ function mountHarness(opts: {
   onSuccess?: () => void
   onError?: () => void
   onTranslated?: () => void
+  stream?: boolean
 }) {
   return mount(defineComponent({
     setup() {
-      const { translating, handleTranslateRelease } = useReleaseTranslate(opts)
-      return { translating, handleTranslateRelease }
+      const { translating, streamText, handleTranslateRelease } = useReleaseTranslate(opts)
+      return { translating, streamText, handleTranslateRelease }
     },
     template: `
       <div>
         <button class="translate" @click="handleTranslateRelease">translate</button>
         <span class="busy" v-if="translating">busy</span>
+        <span class="stream">{{ streamText }}</span>
       </div>
     `,
   }))
 }
+
+// ── 流式分片（详情弹窗专用）──
+type ChunkEvent = { payload: ReleaseTranslateChunk }
+let chunkHandler: ((e: ChunkEvent) => void) | null = null
+
+/** 投递一个分片（模拟后端事件）。 */
+function emitChunk(releaseId: number, delta: string) {
+  chunkHandler?.({ payload: { release_id: releaseId, delta } })
+}
+
+/** 等过合帧窗口（50ms）——分片不是逐条上屏，定窗合并后才写入缓冲。 */
+function waitFrame() {
+  return new Promise((r) => setTimeout(r, 60))
+}
+
+/** 可控完成时机的命令承诺：先投分片、再放行成功/失败，
+ *  否则命令会在分片到达前就结束（失败路径下缓冲会被立刻退订）。 */
+function deferred() {
+  let resolve!: () => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res
+    reject = rej
+  })
+  return { promise, resolve, reject }
+}
+
+beforeEach(() => {
+  chunkHandler = null
+  vi.mocked(events.releaseTranslateChunk.listen).mockImplementation((cb) => {
+    chunkHandler = cb as unknown as (e: ChunkEvent) => void
+    return Promise.resolve(vi.fn())
+  })
+})
 
 afterEach(() => {
   vi.clearAllMocks()
@@ -164,5 +210,149 @@ describe('useReleaseTranslate — 翻译状态机', () => {
 
     // 已有值→新值：不属于「从无到有」，不触发 onTranslated（复位依赖列表刷新）
     expect(onTranslated).not.toHaveBeenCalled()
+  })
+})
+
+describe('useReleaseTranslate — 流式分片', () => {
+  it('stream 开启时订阅事件，分片合帧累加进 streamText', async () => {
+    translateReleaseMock.mockImplementation(() => deferred().promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const wrapper = mountHarness({ release: () => release, stream: true })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    expect(events.releaseTranslateChunk.listen).toHaveBeenCalledOnce()
+    emitChunk(7, '你好')
+    emitChunk(7, '世界')
+    // 合帧窗口未到：分片还在队列里（逐片上屏会让每片都触发一次全量 Markdown 重解析）
+    expect(wrapper.get('.stream').text()).toBe('')
+
+    await waitFrame()
+    expect(wrapper.get('.stream').text()).toBe('你好世界')
+  })
+
+  it('stream 未开启时不订阅（卡片列表不订阅，避免每行一个监听器）', async () => {
+    translateReleaseMock.mockResolvedValue(undefined)
+    const wrapper = mountHarness({ release: () => makeRelease({ id: 7 }) })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    expect(events.releaseTranslateChunk.listen).not.toHaveBeenCalled()
+  })
+
+  it('其它 release 的分片不入本条的缓冲（并行翻译时事件会混流）', async () => {
+    translateReleaseMock.mockImplementation(() => deferred().promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const wrapper = mountHarness({ release: () => release, stream: true })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    emitChunk(99, '别条的译文')
+    await waitFrame()
+
+    expect(wrapper.get('.stream').text()).toBe('')
+  })
+
+  it('翻译失败：保留已显示的部分文本，未合帧的尾巴也一并上屏', async () => {
+    const cmd = deferred()
+    translateReleaseMock.mockImplementation(() => cmd.promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const showToast = vi.fn()
+    const wrapper = mountHarness({ release: () => release, stream: true, showToast })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    emitChunk(7, '半截译')
+    emitChunk(7, '文')
+    cmd.reject(new Error('boom'))
+    // 不等合帧窗口：失败收尾必须把未处理的分片落盘，
+    // 否则最后几十毫秒的内容会凭空消失
+    await flushPromises()
+
+    expect(wrapper.get('.stream').text()).toBe('半截译文')
+    expect(showToast).toHaveBeenCalledWith(t('release.translate_failed') + 'boom')
+    expect(wrapper.find('.busy').exists()).toBe(false)
+  })
+
+  it('失败收尾后退订，之后到达的分片不再写入', async () => {
+    const cmd = deferred()
+    translateReleaseMock.mockImplementation(() => cmd.promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const wrapper = mountHarness({ release: () => release, stream: true, showToast: vi.fn() })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    emitChunk(7, '半截')
+    cmd.reject(new Error('boom'))
+    await flushPromises()
+    emitChunk(7, '迟到的尾巴')
+    await waitFrame()
+
+    expect(wrapper.get('.stream').text()).toBe('半截')
+  })
+
+  it('译文落库（body_translated 从无到有）后清空缓冲，避免与 props 重复显示', async () => {
+    const cmd = deferred()
+    translateReleaseMock.mockImplementation(() => cmd.promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const wrapper = mountHarness({ release: () => release, stream: true })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    emitChunk(7, '译文')
+    await waitFrame()
+    expect(wrapper.get('.stream').text()).toBe('译文')
+
+    // 命令成功但列表尚未刷新：缓冲留着兜住这段空窗（避免闪一下空白）
+    cmd.resolve()
+    await flushPromises()
+    expect(wrapper.get('.stream').text()).toBe('译文')
+
+    release.body_translated = '译文全文'
+    await nextTick()
+
+    expect(wrapper.get('.stream').text()).toBe('')
+  })
+
+  it('翻译进行中重复触发：只发一次命令、只订阅一次（监听器不被覆盖）', async () => {
+    const cmd = deferred()
+    translateReleaseMock.mockImplementation(() => cmd.promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const wrapper = mountHarness({ release: () => release, stream: true })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    expect(translateReleaseMock).toHaveBeenCalledTimes(1)
+    expect(events.releaseTranslateChunk.listen).toHaveBeenCalledOnce()
+
+    cmd.resolve()
+    await flushPromises()
+  })
+
+  it('翻到另一个版本时清空缓冲（缓冲属于上一条）', async () => {
+    translateReleaseMock.mockImplementation(() => deferred().promise)
+    const release = reactive(makeRelease({ id: 7 }))
+    const wrapper = mountHarness({ release: () => release, stream: true })
+
+    await wrapper.get('.translate').trigger('click')
+    await flushPromises()
+
+    emitChunk(7, '上一条的译文')
+    await waitFrame()
+    expect(wrapper.get('.stream').text()).toBe('上一条的译文')
+
+    release.id = 8
+    await nextTick()
+
+    expect(wrapper.get('.stream').text()).toBe('')
   })
 })

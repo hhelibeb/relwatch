@@ -38,9 +38,12 @@ export const commands = {
 	 *  用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
 	 *  仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
 	 * 
+	 *  译文分片经 `release-translate-chunk` 事件实时投递，前端弹窗边收边渲染（流式）。
+	 *  分片只是体感优化：落库与失败判定仍以回查 `body_translated` 为准。
+	 * 
 	 *  返回**真实结果**（前端靠 Err 复位「翻译中」状态，静默 Ok 会让卡片永久禁用无法重试）：
 	 *  - 前置校验 AI 未启用 / key 缺失 → Err
-	 *  - 执行后回查：generate_translations_for_new 返回时所有任务与落库动作均已
+	 *  - 执行后回查：translate_single_release 返回时所有任务与落库动作均已
 	 *    await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
 	 */
 	translateRelease: (releaseId: number) => __TAURI_INVOKE<null>("translate_release", { releaseId }),
@@ -321,6 +324,7 @@ export const events = {
 	navigate: makeEvent<Navigate>("navigate"),
 	pollCompleted: makeEvent<PollCompleted>("poll-completed"),
 	releaseStateChanged: makeEvent<ReleaseStateChanged>("release-state-changed"),
+	releaseTranslateChunk: makeEvent<ReleaseTranslateChunk>("release-translate-chunk"),
 	sourceAutoDisabled: makeEvent<SourceAutoDisabled>("source-auto-disabled"),
 };
 
@@ -778,6 +782,18 @@ export type ReleaseSearchBody = {
 
 /**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id。 */
 export type ReleaseStateChanged = number;
+
+/**
+ *  单条 release 的流式翻译分片（用户在详情弹窗点「翻译」期间的增量译文）。
+ * 
+ *  只在手动单条翻译时发出：后台自动翻译批没有观察者，逐片发事件纯属白耗 IPC。
+ *  前端按 `release_id` 过滤，只喂给当前正在展示的那条（并行时可能多条同时出字）。
+ */
+export type ReleaseTranslateChunk = {
+	release_id: number,
+	/**  本次新增的译文片段（**非全量**，前端累加）。 */
+	delta: string,
+};
 
 /**
  *  pi 可选模型（scope model：provider 已配置鉴权、可直接使用）。

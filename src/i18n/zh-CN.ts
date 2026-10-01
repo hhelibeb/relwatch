@@ -292,6 +292,7 @@ export default {
   'release.delete_failed': '删除版本失败: ',
   'release.translating': '已提交翻译，请稍候刷新查看',
   'release.translating_hint': '正在翻译，请稍候...',
+  'release.translate_interrupted': '翻译被中断，以上译文不完整，可点击「翻译」重试。',
   'release.translate_failed': '翻译失败: ',
   'release.status_failed': '更新状态失败: ',
   'release.hf_pipeline_tag': '任务类型',
