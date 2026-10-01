@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-10-01
+
+### Added
+- 翻译支持流式渲染。(`351819e`)
+- 视频封面右键菜单新增封面专属操作：复制封面图片、复制封面图片链接、打开封面图片。(`1566d74`)
+- 设置页新增「并发会话数」（1–8），多个 Agent 会话可并行执行，超出上限的会话排队等待。(`6619908`)
+
+### Fixed
+- 修复同一时刻关闭再打开右键菜单时，菜单停在上一次落点的问题。(`16e29f9`)
+- 修复窗口隐藏或失焦后重新聚焦时，已经消失的临时提示重新冒出来的问题。(`9138131`)
+
+### Changed
+- 优化翻译的首字延迟。(`351819e`)
+- 依赖升级（`dompurify`、`eslint-plugin-vue` patch 版本）。(`cc36e7e`)
+
 ## [1.18.0] - 2026-09-27
 
 ### Added
@@ -476,7 +491,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.18.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.19.0...HEAD
+[1.19.0]: https://github.com/hhelibeb/relwatch/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/hhelibeb/relwatch/compare/v1.17.3...v1.18.0
 [1.17.3]: https://github.com/hhelibeb/relwatch/compare/v1.17.2...v1.17.3
 [1.17.2]: https://github.com/hhelibeb/relwatch/compare/v1.17.1...v1.17.2
