@@ -111,6 +111,10 @@ pub fn tier1_body_source_types() -> Vec<&'static str> {
 /// 鉴权 token 通过 `token` 参数传入，由适配器实现按请求 `.bearer_auth(token)`
 /// 设置，确保 GitHub Token **不会**随 HuggingFace 请求泄露给 huggingface.co。
 /// 无需鉴权的源（如 HuggingFace）实现中忽略 `token` 即可。
+// clippy 1.99 的 double_must_use 打在 async_trait 展开的生成代码上（返回
+// Pin<Box<dyn Future>> 本已 must_use，宏又挂了一次 #[must_use]），不是本项目能改的地方。
+// 解除条件：async_trait 或 clippy 修掉该交互后删掉本 allow。
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait SourceAdapter: Send + Sync {
     /// 该适配器处理的 source_type 字符串（如 "github" / "huggingface"）。

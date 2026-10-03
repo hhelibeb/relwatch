@@ -121,7 +121,7 @@ use serde_json::json;
             .map(|s| {
                 payload_map
                     .get(s.key)
-                    .map(&json_to_str)
+                    .map(json_to_str)
                     .unwrap_or_else(|| s.default.to_string())
             })
             .collect();

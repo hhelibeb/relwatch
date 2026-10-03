@@ -116,6 +116,9 @@ impl From<&str> for AgentError {
 }
 
 /// Agent 实现抽象：新 Agent 类型实现此 trait 并在 `executor_for` 登记。
+// clippy 1.99 的 double_must_use 打在 async_trait 展开的生成代码上，不是本项目能改的地方。
+// 解除条件：async_trait 或 clippy 修掉该交互后删掉本 allow。
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AgentExecutor: Send + Sync {
     fn agent_type(&self) -> &'static str;
