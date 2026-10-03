@@ -18,8 +18,14 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      # SFC 类型检查（vue-tsc，tsc 不检查 .vue），与本地 build 前置步骤一致
-      - run: pnpm run typecheck
+      # 版本号三处一致性：tauri.conf.json 决定发布产物版本（tagName/releaseName/latest.json），
+      # 漏改它只会在 release 时表现为「发到旧版本的 release 上 + updater 静默不更新」
+      - run: node scripts/check-version.mjs
+      # 真实构建（`pnpm run build` = vue-tsc --noEmit && vite build）：含 SFC 类型检查，
+      # 不再另列 typecheck（同一 job 内重复跑一遍 vue-tsc 只是白等，lint.yml 已单独报该信号）。
+      # typecheck/coverage 都不产出 dist，vite.config.ts 写错只会在打 tag 后由 release.yml
+      # 的 beforeBuildCommand 暴露，那时回滚成本是「已推 tag + 双平台 LTO 重跑」
+      - run: pnpm run build
       # 覆盖率模式运行全部测试并执行 vitest.config.ts 中的 thresholds 门槛，低于门槛时非零退出
       - run: pnpm run coverage
 
