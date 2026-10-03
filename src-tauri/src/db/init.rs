@@ -244,44 +244,62 @@ pub fn apply_schema(conn: &Connection) -> Result<()> {
 }
 
 pub fn migrate(conn: &Connection) -> Result<()> {
-    let has_summary: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='ai_summary'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_summary {
+    // 两条防线合起来保证「要么整体生效，要么下次重试」：
+    //
+    // 1. 事务：execute_batch 逐条 autocommit，中途失败（磁盘满、进程被杀）会留下半执行的
+    //    迁移——旧版本曾因此让 releases 缺列，整表读取（query_releases / get_release）
+    //    永久报错，重启也不会自愈。BEGIN IMMEDIATE 而非 DEFERRED：DEFERRED 先以读事务跑
+    //    pragma_table_info 再升级为写事务，WAL 下若期间有别的连接提交过，升级会直接 BUSY
+    //    （busy_timeout 对该场景无效）；备份导入路径是在应用运行中调 migrate 的。
+    // 2. 逐列守卫（见 `migrate_steps`）：事务只能挡本次执行中途失败，挡不住已经被历史
+    //    版本写成半迁移状态的库。
+    conn.execute_batch("BEGIN IMMEDIATE")?;
+    match migrate_steps(conn) {
+        Ok(()) => conn.execute_batch("COMMIT"),
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(e)
+        }
+    }
+}
+
+fn migrate_steps(conn: &Connection) -> Result<()> {
+    // 守卫逐列判断，不用「组守卫」（只看组内首列）：组守卫对已经半迁移的库会永久跳过
+    // 缺口（它已当成整组执行过），而重跑整组又会以 duplicate column 失败。
+    if !table_has_column(conn, "releases", "ai_summary") {
+        conn.execute_batch("ALTER TABLE releases ADD COLUMN ai_summary TEXT")?;
+    }
+    if !table_has_column(conn, "releases", "ai_importance") {
+        conn.execute_batch("ALTER TABLE releases ADD COLUMN ai_importance TEXT")?;
+    }
+    if !table_has_column(conn, "logs", "message_key") {
+        conn.execute_batch("ALTER TABLE logs ADD COLUMN message_key TEXT")?;
+    }
+    if !table_has_column(conn, "logs", "message_args") {
+        conn.execute_batch("ALTER TABLE logs ADD COLUMN message_args TEXT")?;
+    }
+    if !table_has_column(conn, "sources", "last_checked_at") {
+        conn.execute_batch("ALTER TABLE sources ADD COLUMN last_checked_at TEXT")?;
+    }
+    if !table_has_column(conn, "sources", "last_check_status") {
         conn.execute_batch(
-            "ALTER TABLE releases ADD COLUMN ai_summary TEXT;
-             ALTER TABLE releases ADD COLUMN ai_importance TEXT;",
+            "ALTER TABLE sources ADD COLUMN last_check_status TEXT NOT NULL DEFAULT 'unknown'",
         )?;
     }
-    let has_msg_key: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('logs') WHERE name='message_key'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_msg_key {
+    if !table_has_column(conn, "sources", "last_check_message") {
+        conn.execute_batch("ALTER TABLE sources ADD COLUMN last_check_message TEXT")?;
+    }
+    if !table_has_column(conn, "sources", "consecutive_failures") {
         conn.execute_batch(
-            "ALTER TABLE logs ADD COLUMN message_key TEXT;
-             ALTER TABLE logs ADD COLUMN message_args TEXT;",
+            "ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0",
         )?;
     }
-    let has_source_health: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='last_checked_at'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_source_health {
+    if !table_has_column(conn, "sources", "last_new_count") {
         conn.execute_batch(
-            "ALTER TABLE sources ADD COLUMN last_checked_at TEXT;
-             ALTER TABLE sources ADD COLUMN last_check_status TEXT NOT NULL DEFAULT 'unknown';
-             ALTER TABLE sources ADD COLUMN last_check_message TEXT;
-             ALTER TABLE sources ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE sources ADD COLUMN last_new_count INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE sources ADD COLUMN last_new_count INTEGER NOT NULL DEFAULT 0",
         )?;
     }
-    let has_desc: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='description'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_desc {
+    if !table_has_column(conn, "sources", "description") {
         conn.execute_batch("ALTER TABLE sources ADD COLUMN description TEXT")?;
     }
 
@@ -348,14 +366,12 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 
     // ── Migration 9: body_translated + translate_retry_count on releases ──
     // 用于 AI 翻译 release note 全文功能。
-    let has_body_translated: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='body_translated'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_body_translated {
+    if !table_has_column(conn, "releases", "body_translated") {
+        conn.execute_batch("ALTER TABLE releases ADD COLUMN body_translated TEXT;")?;
+    }
+    if !table_has_column(conn, "releases", "translate_retry_count") {
         conn.execute_batch(
-            "ALTER TABLE releases ADD COLUMN body_translated TEXT;
-             ALTER TABLE releases ADD COLUMN translate_retry_count INTEGER NOT NULL DEFAULT 0;",
+            "ALTER TABLE releases ADD COLUMN translate_retry_count INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
 
@@ -440,10 +456,10 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     // 注意 insert_release 单条插入**不再**触发重算（避免历史模式批量插入退化为
     // O(N²)），调用方契约见 releases::recompute_version_bumps。
     if !table_has_column(conn, "releases", "flag") {
-        conn.execute_batch(
-            "ALTER TABLE releases ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;
-             ALTER TABLE releases ADD COLUMN version_bump TEXT;",
-        )?;
+        conn.execute_batch("ALTER TABLE releases ADD COLUMN flag INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    if !table_has_column(conn, "releases", "version_bump") {
+        conn.execute_batch("ALTER TABLE releases ADD COLUMN version_bump TEXT;")?;
         match backfill_version_bumps(conn) {
             Ok(n) if n > 0 => {
                 log::info!("已回填 {} 个源的 version_bump", n);
@@ -710,19 +726,17 @@ fn rebuild_agent_runs(conn: &Connection) -> Result<()> {
         return Ok(()); // 结构异常（无 id 列）：放弃重建，交由上层报错
     }
     let cols = shared.join(", ");
-    // unchecked_transaction：迁移期无法拿到 &mut Connection（migrate 与 init_pool 都只
-    // 持有 &Connection），而此处是启动期单线程路径，独占性由调用点保证。
-    // 用它把「建表 + 拷贝 + 换名 + 建索引」包成一个原子操作：中途失败不会留下
-    // 半重建的 agent_runs（旧表已删、新表未就位的中间态）。
-    let tx = conn.unchecked_transaction()?;
-    tx.execute_batch(&format!("CREATE TABLE agent_runs_new {}", AGENT_RUNS_COLUMNS))?;
-    tx.execute_batch(&format!(
+    // 原子性由 migrate() 的外层事务提供：此处不能再开事务（SQLite 不允许嵌套 BEGIN）。
+    // 「建表 + 拷贝 + 换名 + 建索引」中途失败会随外层事务一起回滚，半重建的 agent_runs
+    // （旧表已删、新表未就位的中间态）不会被提交出去。
+    conn.execute_batch(&format!("CREATE TABLE agent_runs_new {}", AGENT_RUNS_COLUMNS))?;
+    conn.execute_batch(&format!(
         "INSERT INTO agent_runs_new ({cols}) SELECT {cols} FROM agent_runs;"
     ))?;
-    tx.execute_batch("DROP TABLE agent_runs;")?;
-    tx.execute_batch("ALTER TABLE agent_runs_new RENAME TO agent_runs;")?;
-    tx.execute_batch(AGENT_RUNS_SESSION_INDEX)?;
-    tx.commit()
+    conn.execute_batch("DROP TABLE agent_runs;")?;
+    conn.execute_batch("ALTER TABLE agent_runs_new RENAME TO agent_runs;")?;
+    conn.execute_batch(AGENT_RUNS_SESSION_INDEX)?;
+    Ok(())
 }
 
 /// 启动清理：把上次进程遗留的 pending / running run 批量置终态。
@@ -769,6 +783,48 @@ mod tests {
         migrate(&conn).unwrap();
         // 第二次调用不应报错
         migrate(&conn).unwrap();
+    }
+
+    /// 逐列守卫：上次进程在两条 ALTER 之间被杀（ai_summary 已加、ai_importance 未加）的库，
+    /// 本次启动应把缺的列补上。用「只看组内首列」的组守卫时，这一步会被永久跳过，
+    /// 而重跑整组又会以 duplicate column 失败。
+    #[test]
+    fn test_migrate_repairs_half_applied_step() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_schema(&conn).unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch("ALTER TABLE releases DROP COLUMN ai_importance;")
+            .unwrap();
+        assert!(!has_column(&conn, "releases", "ai_importance"));
+
+        migrate(&conn).unwrap();
+
+        assert!(has_column(&conn, "releases", "ai_summary"));
+        assert!(has_column(&conn, "releases", "ai_importance"));
+    }
+
+    /// 迁移中途失败必须整体回滚。否则会留下「守卫为 true、后续列没补上」的库：
+    /// 缺列让 query_releases / get_release 永久报错，重启也不会自愈。
+    #[test]
+    fn test_migrate_rolls_back_on_failure() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON;").unwrap();
+        apply_schema(&conn).unwrap();
+        migrate(&conn).unwrap();
+        // 让 Migration 6（notification_state.last_notified_at）失败——它排在 ai_importance 之后
+        conn.execute_batch(
+            "ALTER TABLE releases DROP COLUMN ai_importance;
+             DROP TABLE notification_state;",
+        )
+        .unwrap();
+
+        assert!(migrate(&conn).is_err());
+
+        assert!(
+            !has_column(&conn, "releases", "ai_importance"),
+            "失败前已执行的 ALTER 应随事务回滚"
+        );
     }
 
     /// 验证所有 migration 添加的列在初始化后均存在
