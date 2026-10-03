@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# CI 轮询脚本 — 前台阻塞，等待 main 分支全部 workflow（Release 除外）和可选 tag Release 全部通过
+# CI 轮询脚本 — 前台阻塞，等待 main 分支全部 PR 门禁 workflow 和可选 tag Release 通过。
+# 已完成且失败的 workflow 是终态，立即退出（等待不会改变结果）。
 # Usage: ./scripts/poll-ci.sh [tag]
 set -euo pipefail
 
@@ -8,19 +9,23 @@ POLL=30
 MAX=30 # 轮次上限（配合 POLL 约 15 分钟）
 
 # 按 commit 过滤：只按 branch 取「最新一次 run」时，本次新 run 还没进 API 就会读到上一个
-# commit 的绿灯，等于拿上一次的结果给本次发布放行。SHA 可用 CI_SHA 覆盖（如发布脚本已
-# 记录被推送的 commit，或本地 HEAD 不是待验证的那个）。
+# commit 的绿灯，等于拿上一次的结果给本次发布放行。SHA 可用 CI_SHA 覆盖。
 SHA="${CI_SHA:-$(git rev-parse HEAD)}"
 
-# workflow 名单从仓库读，不再手工维护副本：漏加一个 workflow = 它红了也不报错，
-# 发布就会带着红的 CI 照发。release.yml 只在 tag 上跑，由 check_tag_release 单独负责。
+# workflow 名单从仓库读，不手工维护副本：漏加一个 workflow = 它红了也不报错，发布就会带着
+# 红的 CI 照发。只取带 pull_request 触发的（必然为推到 main 的每个 commit 产出 run）；
+# 只在 tag/cron 上跑的 workflow 永远等不到 run，会把轮询一路拖到超时。
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAMES=()
 while IFS= read -r name; do
-  [ -n "$name" ] && NAMES+=("$name")
+  [ -n "$name" ] || continue
+  NAMES+=("$name")
 done < <(
-  grep -h --exclude=release.yml '^name:' "$ROOT"/.github/workflows/*.yml |
-    sed 's/^name:[[:space:]]*//' | sort
+  for f in "$ROOT"/.github/workflows/*.yml; do
+    if [ "$(basename "$f")" != "release.yml" ] && grep -q '^[[:space:]]*pull_request:' "$f"; then
+      sed -n 's/^name:[[:space:]]*//p' "$f"
+    fi
+  done | sort
 )
 if [ "${#NAMES[@]}" -eq 0 ]; then
   echo "❌ 未能从 .github/workflows/ 解析出 workflow 名单" >&2
@@ -34,6 +39,7 @@ echo "Workflows: ${NAMES[*]}"
 echo "Poll: ${POLL}s | 上限 $((MAX * POLL / 60)) 分钟"
 echo "======================"
 
+# 返回码：0 = 全部成功；1 = 已有终态的失败（等待无意义）；2 = 仍有未结束的
 check_workflows() {
   local branch="$1" sha="$2"
   shift 2
@@ -65,9 +71,11 @@ check_workflows() {
         ;;
     esac
   done
-  if $all_done && ! $any_failed; then return 0; else return 1; fi
+  if $any_failed; then return 1; fi
+  if $all_done; then return 0; else return 2; fi
 }
 
+# 返回码同 check_workflows；tag run 尚未创建也算 2（它只会在推送后才出现）
 check_tag_release() {
   local tag="$1"
   local row status conclusion
@@ -77,7 +85,7 @@ check_tag_release() {
   conclusion="${row##*//}"
   if [ -z "$status" ]; then
     printf "  \xe2\x8f\xb3 %-15s  %s\n" "Release" "N/A"
-    return 1
+    return 2
   fi
   case "$status" in
     completed)
@@ -91,7 +99,7 @@ check_tag_release() {
       ;;
     *)
       printf "  \xe2\x8f\xb3 %-15s  %s\n" "Release" "$status"
-      return 1
+      return 2
       ;;
   esac
 }
@@ -99,23 +107,27 @@ check_tag_release() {
 for i in $(seq 1 "$MAX"); do
   echo "[$i/$MAX]  $(date '+%H:%M:%S')"
 
-  main_ok=false
-  check_workflows main "$SHA" "${NAMES[@]}" && main_ok=true
+  main_rc=2
+  if check_workflows main "$SHA" "${NAMES[@]}"; then main_rc=0; else main_rc=$?; fi
 
-  tag_ok=true
+  tag_rc=0
   if [ -n "$TAG" ]; then
-    check_tag_release "$TAG" || tag_ok=false
+    if check_tag_release "$TAG"; then tag_rc=0; else tag_rc=$?; fi
   fi
 
   echo ""
-  if $main_ok && $tag_ok; then
+  if [ "$main_rc" = "0" ] && [ "$tag_rc" = "0" ]; then
     echo "===== 🎉 全部 CI 通过！======"
     exit 0
+  fi
+  if [ "$main_rc" = "1" ] || [ "$tag_rc" = "1" ]; then
+    echo "===== ❌ CI 失败：上面标 ❌ 的 workflow 未通过，继续等待不会改变结果 ====="
+    exit 1
   fi
   if [ "$i" -lt "$MAX" ]; then
     sleep "$POLL"
   fi
 done
 
-echo "===== ❌ 超时：CI 未在 $((MAX * POLL / 60)) 分钟内完成 ====="
+echo "===== ⏱ 超时：仍有 workflow 未结束（上限 $((MAX * POLL / 60)) 分钟）====="
 exit 1
