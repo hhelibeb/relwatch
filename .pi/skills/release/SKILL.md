@@ -350,12 +350,8 @@ test -z "$(git status --porcelain)" || { echo "❌ 工作区不干净"; exit 1; 
 # 2. 在 main 分支
 test "$(git branch --show-current)" = "main" || { echo "❌ 不在 main"; exit 1; }
 
-# 3. 版本号一致
-pkg_ver=$(node -p "require('./package.json').version")
-cargo_ver=$(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
-tauri_ver=$(node -p "require('./src-tauri/tauri.conf.json').version")
-test "$pkg_ver" = "$cargo_ver" || { echo "❌ 版本号不一致"; exit 1; }
-test "$pkg_ver" = "$tauri_ver" || { echo "❌ 版本号不一致"; exit 1; }
+# 3. 版本号一致（与 CI 同一脚本，避免两份判定标准）
+node scripts/check-version.mjs || { echo "❌ 版本号不一致"; exit 1; }
 
 # 4. 当前 HEAD 是 release bump commit
 echo "最近 3 个 commit:"
@@ -392,7 +388,10 @@ git push origin main v<新版本>
 
 ```bash
 # main 分支上的 CI / Lint / Secret Scan / Dependency Audit
-gh run list --branch main --limit 10 --json name,status,conclusion
+# --commit 限定到待发布的 commit：不加会读到上一个 commit 的绿灯（新 run 还没进 API）；
+# --json 带 headSha，便于逐行核对是不是本次的 run
+gh run list --branch main --commit "$(git rev-parse HEAD)" \
+  --json name,status,conclusion,headSha
 
 # tag 触发上的 Release workflow
 gh run list --limit 20 --json name,status,conclusion,headBranch | grep "v<新版本>"
@@ -402,14 +401,18 @@ gh run list --limit 20 --json name,status,conclusion,headBranch | grep "v<新版
 
 | Workflow | 触发方式 | 检查命令 |
 |----------|---------|---------|
-| CI（frontend + backend tests） | push main | `gh run list --branch main` |
-| Lint（clippy -D warnings） | push main | `gh run list --branch main` |
-| Secret Scan | push main | `gh run list --branch main` |
-| Dependency Audit（cargo audit + pnpm audit --prod） | push main / 每周一定时 | `gh run list --branch main` |
+| CI（frontend + backend tests） | push main | 同上（`--commit` 限定） |
+| Lint（clippy -D warnings） | push main | 同上 |
+| Secret Scan | push main | 同上 |
+| Dependency Audit（cargo audit + pnpm audit --prod） | push main / 每周一定时 | 同上 |
 | Release（构建产物 + draft release） | push tag v* | `gh run list --branch v<新版本>`（或在列表中按 tag 名筛选） |
 
-> `scripts/poll-ci.sh` 的 `NAMES` 覆盖 main 侧全部 workflow。**新增 workflow 时必须同步加进去**
-> ——否则该 workflow 失败不会让轮询报错，release 会带着红的 CI 照发。
+> 上面两条手动命令与 `scripts/poll-ci.sh` 口径必须一致：都按 `--commit` 限定到待发布的
+> commit（否则读到的是上一个 commit 的绿灯），都把 `skipped` 视为未通过——门禁没执行
+> 并不等于通过。
+>
+> `scripts/poll-ci.sh` 的 workflow 名单从 `.github/workflows/*.yml` 自动解析（`release.yml`
+> 除外，它由 tag 检查单独负责），不需要手工同步。
 
 ### 9.2 检查 Draft Release 和产物
 
