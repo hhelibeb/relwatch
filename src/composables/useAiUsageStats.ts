@@ -19,6 +19,15 @@ export function formatTokens(n: number): string {
   return String(n)
 }
 
+/** 逐日聚合里的今日（本地日）用量；今天尚未发起调用时无对应行，返回 0。 */
+export function todayUsage(
+  daily: { day: string; prompt_tokens: number; completion_tokens: number; calls: number }[],
+  today: Date,
+): { tokens: number; calls: number } {
+  const row = daily.find((d) => d.day === toDateKey(today))
+  return { tokens: row ? dailyTotalTokens(row) : 0, calls: row?.calls ?? 0 }
+}
+
 export interface HeatCell {
   day: string
   tokens: number
@@ -248,13 +257,13 @@ export function useAiUsageStats() {
     return buildHeatmap(stats.value.daily, new Date(), heatmapWeeks(stats.value.daily, days.value, new Date()))
   })
 
+  /** 当前筛选窗口内今日（本地日）用量，供弹窗顶部「今日」块突出显示。 */
+  const today = computed(() => todayUsage(stats.value?.daily ?? [], new Date()))
+
   const totalTokens = computed(() =>
     (stats.value?.daily ?? []).reduce((s, d) => s + dailyTotalTokens(d), 0),
   )
   const totalCalls = computed(() => (stats.value?.daily ?? []).reduce((s, d) => s + d.calls, 0))
-  const cacheHitTokens = computed(() =>
-    (stats.value?.daily ?? []).reduce((s, d) => s + d.cache_hit_tokens, 0),
-  )
   /** 当前筛选窗口内估算行（中转剥离 usage 按字符数兜底）的词元合计，供「含估算」提示。 */
   const estimatedTokens = computed(() =>
     (stats.value?.daily ?? []).reduce((s, d) => s + d.estimated_tokens, 0),
@@ -269,9 +278,9 @@ export function useAiUsageStats() {
     sources,
     bySource,
     heatmap,
+    today,
     totalTokens,
     totalCalls,
-    cacheHitTokens,
     estimatedTokens,
     reload: load,
   }

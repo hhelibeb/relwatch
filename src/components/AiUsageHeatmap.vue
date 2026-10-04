@@ -12,7 +12,11 @@ const props = defineProps<{ data: HeatmapData }>()
 const CELL = 11
 const GAP = 3
 
+const TIP_GAP = 12
+const VIEWPORT_PAD = 4
+
 const scrollEl = ref<HTMLElement | null>(null)
+const tooltipEl = ref<HTMLElement | null>(null)
 const tooltip = ref<{ x: number; y: number; day: string; tokens: number; calls: number } | null>(null)
 
 // 一年 53 列远超弹窗宽度：初始与数据变化后都滚到最右端（今天所在周），
@@ -58,7 +62,24 @@ function formatDay(day: string): string {
 
 function handleHover(e: MouseEvent, cell: HeatCell) {
   if (cell.isFuture) return // future 占位格不显示 tooltip（不依赖 CSS visibility 挡事件）
-  tooltip.value = { x: e.clientX + 12, y: e.clientY + 12, day: cell.day, tokens: cell.tokens, calls: cell.calls }
+  tooltip.value = {
+    x: e.clientX + TIP_GAP,
+    y: e.clientY + TIP_GAP,
+    day: cell.day,
+    tokens: cell.tokens,
+    calls: cell.calls,
+  }
+  // 光标贴近右/下边界时提示框会超出窗口（贴右边界的热力图列最常碰到）：
+  // 渲染完量到实际尺寸后翻到光标另一侧，再兜底钳进窗口（同 SourceTab 健康提示的做法）
+  nextTick(() => {
+    const el = tooltipEl.value
+    if (!el || !tooltip.value) return
+    const rect = el.getBoundingClientRect()
+    if (rect.right > window.innerWidth - VIEWPORT_PAD) tooltip.value.x = e.clientX - rect.width - TIP_GAP
+    if (rect.bottom > window.innerHeight - VIEWPORT_PAD) tooltip.value.y = e.clientY - rect.height - TIP_GAP
+    tooltip.value.x = Math.max(VIEWPORT_PAD, tooltip.value.x)
+    tooltip.value.y = Math.max(VIEWPORT_PAD, tooltip.value.y)
+  })
 }
 
 function clearTooltip() {
@@ -101,7 +122,6 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
               :key="cell.day"
               class="heatmap-cell"
               :class="levelClass(cell)"
-              :title="cell.day"
               @mouseenter="handleHover($event, cell)"
               @mouseleave="clearTooltip"
             ></div>
@@ -119,20 +139,29 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
     <i class="heatmap-cell heat-4"></i>
     <span class="heatmap-legend-label">{{ t('aiUsage.legend_more') }}</span>
   </div>
-  <div
-    v-if="tooltip"
-    class="heatmap-tooltip"
-    :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
-  >
-    <div class="heatmap-tooltip-day">{{ formatDay(tooltip.day) }}</div>
-    <div class="heatmap-tooltip-detail">
-      {{ t('aiUsage.tooltip_tokens', String(tooltip.tokens)) }} · {{ t('aiUsage.tooltip_calls', String(tooltip.calls)) }}
+  <!-- 挂到 body：宿主弹窗用 transform 做拖动/尺寸补偿，transform 会成为 fixed 后代的
+       包含块，left/top 被当成相对弹窗的坐标，且被弹窗的 overflow:hidden 裁掉。 -->
+  <Teleport to="body">
+    <div
+      v-if="tooltip"
+      ref="tooltipEl"
+      class="heatmap-tooltip"
+      :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }"
+    >
+      <div class="heatmap-tooltip-day">{{ formatDay(tooltip.day) }}</div>
+      <div class="heatmap-tooltip-detail">
+        {{ t('aiUsage.fmt_tokens', String(tooltip.tokens)) }} · {{ t('aiUsage.fmt_calls', String(tooltip.calls)) }}
+      </div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
 .heatmap-scroll {
+  /* 宿主弹窗 body 是 flex 列：不锁定自身高度时，内容超高会把热力图压扁并
+     在热力图内部生出垂直滚动条（overflow-x 非 visible 会连带把 overflow-y 算成 auto）。
+     滚动交给弹窗 body 自己。 */
+  flex: none;
   overflow-x: auto;
   padding: 4px 2px;
 }
@@ -210,6 +239,7 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
 }
 
 .heatmap-legend {
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: flex-end;

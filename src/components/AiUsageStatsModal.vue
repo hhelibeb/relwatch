@@ -41,9 +41,9 @@ const {
   sources,
   bySource,
   heatmap,
+  today,
   totalTokens,
   totalCalls,
-  cacheHitTokens,
   estimatedTokens,
   reload,
 } = useAiUsageStats()
@@ -182,9 +182,6 @@ onUnmounted(() => {
             <span class="ai-usage-chip" :title="t('aiUsage.col_calls')">
               {{ t('aiUsage.calls_unit') }} <b>{{ totalCalls }}</b>
             </span>
-            <span class="ai-usage-chip" :title="t('aiUsage.cache_hit_note')">
-              {{ t('aiUsage.cache_hit_short') }} <b>{{ formatTokens(cacheHitTokens) }}</b>
-            </span>
             <!-- 估算行（中转剥离 usage 按字符数兜底）混在真实统计里无法分辨，显式标出 -->
             <span
               v-if="estimatedTokens > 0"
@@ -202,18 +199,30 @@ onUnmounted(() => {
           <div v-else-if="error" class="ai-usage-state ai-usage-error">{{ error }}</div>
           <div v-else-if="!hasAnyData || !heatmap" class="ai-usage-state">{{ t('aiUsage.empty') }}</div>
           <template v-else>
+            <!-- 今日用量作为基本信息常驻顶部：热力图里今天只是一格，看不出具体数字 -->
+            <div class="ai-usage-today">
+              <span class="ai-usage-today-label">{{ t('aiUsage.today_label') }}</span>
+              <span class="ai-usage-today-stat">{{ t('aiUsage.fmt_tokens', formatTokens(today.tokens)) }}</span>
+              <span class="ai-usage-today-stat">{{ t('aiUsage.fmt_calls', String(today.calls)) }}</span>
+            </div>
+
             <AiUsageHeatmap :data="heatmap" />
 
             <div class="ai-usage-bottom-tabs">
-              <div class="ai-usage-tab-buttons">
-                <button :class="{ active: bottomTab === 'table' }" @click="switchTab('table')">{{ t('aiUsage.tab_table') }}</button>
-                <button :class="{ active: bottomTab === 'donut' }" @click="switchTab('donut')">{{ t('aiUsage.tab_donut') }}</button>
+              <div class="ai-usage-tab-bar">
+                <div class="ai-usage-tab-buttons">
+                  <button :class="{ active: bottomTab === 'table' }" @click="switchTab('table')">{{ t('aiUsage.tab_table') }}</button>
+                  <button :class="{ active: bottomTab === 'donut' }" @click="switchTab('donut')">{{ t('aiUsage.tab_donut') }}</button>
+                </div>
+                <button
+                  v-if="bottomTab === 'table'"
+                  class="btn-sm"
+                  :disabled="tableRows.length === 0"
+                  @click="copyTable"
+                >{{ t('aiUsage.copy') }}</button>
               </div>
 
               <div v-if="bottomTab === 'table'" class="ai-usage-table-wrap">
-                <div class="ai-usage-table-actions">
-                  <button class="btn-sm" :disabled="tableRows.length === 0" @click="copyTable">{{ t('aiUsage.copy') }}</button>
-                </div>
                 <table class="ai-usage-table">
                   <thead>
                     <tr>
@@ -416,13 +425,45 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+.ai-usage-today {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 10px 14px;
+  background: var(--primary-soft-bg);
+  border: 1px solid var(--primary-soft-border);
+  border-radius: var(--radius);
+  color: var(--primary-soft-text);
+}
+
+.ai-usage-today-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ai-usage-today-stat {
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .ai-usage-error {
   color: var(--danger, #dc2626);
 }
 
 .ai-usage-bottom-tabs {
+  flex: none;
   border-top: 1px solid var(--border);
   padding-top: 10px;
+}
+
+/* 复制表格与视图切换同行：省一行高度，按钮右对齐不碍选项卡 */
+.ai-usage-tab-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .ai-usage-tab-buttons,
@@ -452,12 +493,6 @@ onUnmounted(() => {
 
 .ai-usage-table-wrap {
   margin-top: 10px;
-}
-
-.ai-usage-table-actions {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 6px;
 }
 
 .ai-usage-table {

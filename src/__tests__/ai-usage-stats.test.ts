@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import {
   buildHeatmap,
   heatLevel,
@@ -10,6 +10,7 @@ import {
   resolveSourceLabels,
   formatTokens,
   dailyTotalTokens,
+  todayUsage,
 } from '../composables/useAiUsageStats'
 import type { AiUsageSourceRow, AiUsageActionRow } from '../api/aiUsage'
 import type { Source } from '../api/sources'
@@ -85,6 +86,10 @@ describe('buildHeatmap', () => {
 })
 
 describe('AiUsageHeatmap 组件', () => {
+  // tooltip 通过 Teleport 挂到 body（宿主弹窗的 transform 会被当成 fixed 包含块并裁切），
+  // 故断言要查 document.body 而非 wrapper
+  const tooltipEl = () => document.body.querySelector('.heatmap-tooltip')
+
   it('渲染 maxWeeks×7 个格子 + 图例，future 格不触发 tooltip', async () => {
     const data = buildHeatmap(
       [{ day: '2026-09-14', prompt_tokens: 500, completion_tokens: 500, calls: 3 }],
@@ -102,7 +107,8 @@ describe('AiUsageHeatmap 组件', () => {
     const future = cells.find((c) => c.classes().includes('heat-future'))!
     expect(future).toBeDefined()
     await future.trigger('mouseenter')
-    expect(wrapper.find('.heatmap-tooltip').exists()).toBe(false)
+    expect(tooltipEl()).toBeNull()
+    wrapper.unmount()
   })
 
   it('有数据的格子 hover 显示 tooltip，离开后清除', async () => {
@@ -115,11 +121,64 @@ describe('AiUsageHeatmap 组件', () => {
     const cells = wrapper.findAll('.heatmap-grid .heatmap-cell')
     const hot = cells.find((c) => c.classes().includes('heat-4'))!
     await hot.trigger('mouseenter')
-    const tooltip = wrapper.find('.heatmap-tooltip')
-    expect(tooltip.exists()).toBe(true)
-    expect(tooltip.text()).toContain('1000') // 500 输入 + 500 输出
-    await hot.trigger('mouseleave')
+    const tooltip = tooltipEl()
+    expect(tooltip).not.toBeNull()
+    expect(tooltip!.textContent).toContain('1000') // 500 输入 + 500 输出
+    // tooltip 必须挂在 body 上、不能留在 wrap 内：否则会被弹窗的 transform/overflow 吃掉
     expect(wrapper.find('.heatmap-tooltip').exists()).toBe(false)
+    // 原生 title 会在光标处盖住自定义 tooltip（只露出日期），故格子不带 title
+    expect(hot.attributes('title')).toBeUndefined()
+    await hot.trigger('mouseleave')
+    expect(tooltipEl()).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('光标贴右/下边界时提示框翻到另一侧，不超出窗口', async () => {
+    const data = buildHeatmap(
+      [{ day: '2026-09-14', prompt_tokens: 500, completion_tokens: 500, calls: 3 }],
+      new Date(2026, 8, 15),
+      5,
+    )
+    const wrapper = mount(AiUsageHeatmap, { props: { data } })
+    const hot = wrapper.findAll('.heatmap-grid .heatmap-cell').find((c) => c.classes().includes('heat-4'))!
+    // jsdom 没有布局（尺寸恒为 0），直接给出“贴边时会越界”的尺寸
+    const rect = vi
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockReturnValue({ right: 2000, bottom: 2000, width: 200, height: 40, left: 0, top: 0, x: 0, y: 0, toJSON: () => ({}) })
+    // 短路 jsdom 的 window.innerWidth（1024）：以 1000×600 窗口验证换算
+    const innerW = vi.spyOn(window, 'innerWidth', 'get').mockReturnValue(1000)
+    const innerH = vi.spyOn(window, 'innerHeight', 'get').mockReturnValue(600)
+    await hot.trigger('mouseenter', { clientX: 990, clientY: 590 })
+    await flushPromises()
+    const style = (tooltipEl() as HTMLElement).style
+    // 990 + 12 + 200 > 1000-4 → 翻到左侧：990 - 200 - 12；同理纵向 590 - 40 - 12
+    expect(style.left).toBe('778px')
+    expect(style.top).toBe('538px')
+    rect.mockRestore()
+    innerW.mockRestore()
+    innerH.mockRestore()
+    wrapper.unmount()
+  })
+})
+
+describe('todayUsage', () => {
+  const today = new Date(2026, 8, 15)
+
+  it('取当日行合计；无当日行（今天还没调用）返回 0', () => {
+    const daily = [
+      { day: '2026-09-14', prompt_tokens: 100, completion_tokens: 20, calls: 1 },
+      { day: '2026-09-15', prompt_tokens: 300, completion_tokens: 50, calls: 4 },
+    ]
+    expect(todayUsage(daily, today)).toEqual({ tokens: 350, calls: 4 })
+    expect(todayUsage(daily.slice(0, 1), today)).toEqual({ tokens: 0, calls: 0 })
+    expect(todayUsage([], today)).toEqual({ tokens: 0, calls: 0 })
+  })
+
+  it('按本地日匹配，与 toDateKey 同口径', () => {
+    expect(todayUsage([{ day: toDateKey(today), prompt_tokens: 7, completion_tokens: 0, calls: 1 }], today)).toEqual({
+      tokens: 7,
+      calls: 1,
+    })
   })
 })
 
