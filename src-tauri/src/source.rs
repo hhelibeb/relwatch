@@ -334,8 +334,8 @@ mod tests {
         // 视频源用 description 作可读源名（youtube 兼容旧版前缀）并带来源标签
         let yt_adapter = adapters.iter().find(|a| a.source_type() == "youtube").unwrap();
         assert_eq!(
-            yt_adapter.notification_source_name("UCabc", "", Some("YouTube channel: Freesia")),
-            "Freesia"
+            yt_adapter.notification_source_name("UCabc", "", Some("YouTube channel: Test Channel")),
+            "Test Channel"
         );
         assert_eq!(yt_adapter.notification_source_label(), Some("YouTube"));
         let bili_adapter = adapters.iter().find(|a| a.source_type() == "bilibili").unwrap();

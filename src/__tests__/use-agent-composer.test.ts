@@ -21,7 +21,7 @@ const SOURCES: Source[] = [
   {
     id: 1,
     source_type: 'youtube',
-    owner: 'UCrD39DnkX5QjIvH3yssXqJA',
+    owner: 'UCabcdefghijklmnopqrst',
     repo: 'UULF3DnkX5QjIvH3yssXqJA',
     poll_interval_minutes: 30,
     enabled: true,
@@ -43,7 +43,7 @@ const RELEASES: ReleaseInfo[] = [
     id: 7,
     source_id: 1,
     source_type: 'youtube',
-    owner: 'UCrD39DnkX5QjIvH3yssXqJA',
+    owner: 'UCabcdefghijklmnopqrst',
     repo: '8Pi_1HjBUPU',
     tag_name: '8Pi_1HjBUPU',
     release_name: '白袜轻蹭耳朵柔和触发音',

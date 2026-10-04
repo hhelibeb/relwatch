@@ -1535,7 +1535,7 @@ mod tests {
             id: 1,
             source_id: 1,
             source_type: "bilibili".into(),
-            owner: "476599099".into(),
+            owner: "12345678".into(),
             repo: "".into(),
             tag_name: "BV1xx".into(),
             release_name: "".into(),

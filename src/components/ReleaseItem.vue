@@ -798,7 +798,7 @@ const youtubeViewTitle = computed(() =>
 
 /* 仓库名：宽度不足时与版本号等权收缩（谁长谁让得多），完整值靠 title。
    刻意不设 min-width 保底：flex 里 min-width 是「实际尺寸」而非「收缩下限」，
-   会把短内容反而撑宽（`Freesia` 被 12ch 撑到 87px，后面凭空多出一片空白），
+   会把短内容反而撑宽（实测：短频道名被 12ch 撑到 87px，后面凭空多出一片空白），
    已踩过这个坑。省略号已足够表达「被截断」。 */
 .release-repo {
   font-size: 13px;

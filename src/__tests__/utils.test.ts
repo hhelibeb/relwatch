@@ -410,14 +410,14 @@ describe('statusClass', () => {
 
 describe('releaseMatchesSearch — source_description', () => {
   it('YouTube 频道名可被搜索命中', () => {
-    const release = makeRelease({ owner: 'UCXuqSBlHAE6Xw', repo: '', source_description: '时局眼' })
-    expect(releaseMatchesSearch(release, '时局眼')).toBe(true)
-    expect(releaseMatchesSearch(release, '局眼')).toBe(true)
+    const release = makeRelease({ owner: 'UCabcdefghijklmnopqrst', repo: '', source_description: '示例频道' })
+    expect(releaseMatchesSearch(release, '示例频道')).toBe(true)
+    expect(releaseMatchesSearch(release, '示例')).toBe(true)
   })
 
   it('无 source_description 时不影响其它字段匹配', () => {
-    const release = makeRelease({ owner: 'UCXuqSBlHAE6Xw', repo: '' })
-    expect(releaseMatchesSearch(release, 'UCXuqSBlHAE6Xw')).toBe(true)
+    const release = makeRelease({ owner: 'UCabcdefghijklmnopqrst', repo: '' })
+    expect(releaseMatchesSearch(release, 'UCabcdefghijklmnopqrst')).toBe(true)
   })
 })
 

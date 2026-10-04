@@ -190,9 +190,9 @@ describe('ReleaseItem.vue — 长文本截断兜底', () => {
   })
 
   it('仓库名带 title（owner/repo），被省略时仍有完整值可取', () => {
-    const wrapper = mountRelease(createRelease({ owner: 'deepseek-ai', repo: 'deepseek-harness' }))
+    const wrapper = mountRelease(createRelease({ owner: 'example-org', repo: 'example-repo' }))
 
-    expect(wrapper.find('.release-repo').attributes('title')).toBe('deepseek-ai/deepseek-harness')
+    expect(wrapper.find('.release-repo').attributes('title')).toBe('example-org/example-repo')
   })
 
   it('版本号带 title（tag_name）', () => {
@@ -663,7 +663,7 @@ describe('ReleaseItem.vue — YouTube 源', () => {
   function ytRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
     return createRelease({
       source_type: 'youtube',
-      owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      owner: 'UCabcdefghijklmnopqrst',
       repo: '',
       tag_name: 'abc123',
       release_name: '一段很长的视频标题：用于验证长标题在两行内截断显示的效果测试',
@@ -674,9 +674,9 @@ describe('ReleaseItem.vue — YouTube 源', () => {
   }
 
   it('显示频道名而非 channel_id，且不显示 videoId 标签', () => {
-    const wrapper = mountRelease(ytRelease({ source_description: '时局眼' }))
-    expect(wrapper.text()).toContain('时局眼')
-    expect(wrapper.text()).not.toContain('UCXuqSBlHAE6Xw')
+    const wrapper = mountRelease(ytRelease({ source_description: '示例频道' }))
+    expect(wrapper.text()).toContain('示例频道')
+    expect(wrapper.text()).not.toContain('UCabcdefghijklmnopqrst')
     expect(wrapper.text()).not.toContain('abc123')
   })
 
@@ -688,7 +688,7 @@ describe('ReleaseItem.vue — YouTube 源', () => {
 
   it('无频道名时回退 owner', () => {
     const wrapper = mountRelease(ytRelease({ source_description: null }))
-    expect(wrapper.text()).toContain('UCXuqSBlHAE6Xw-yeJA0Tunw')
+    expect(wrapper.text()).toContain('UCabcdefghijklmnopqrst')
   })
 
   it('显示视频封面图与直播徽标', () => {
@@ -731,12 +731,12 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
   function yt(overrides: Partial<ReleaseInfo> = {}) {
     return createRelease({
       source_type: 'youtube',
-      owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      owner: 'UCabcdefghijklmnopqrst',
       repo: '',
       tag_name: 'abc123',
       release_name: '视频标题',
       html_url: 'https://www.youtube.com/watch?v=abc123',
-      source_description: '时局眼',
+      source_description: '示例频道',
       body: '这是视频简介内容，用于测试阅读全文。',
       extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'https://i.ytimg.com/vi/abc123/hqdefault.jpg' }),
       ...overrides,
@@ -794,7 +794,7 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
   it('B 站播放量同样显示在底部行', async () => {
     const wrapper = mountRelease(createRelease({
       source_type: 'bilibili',
-      owner: '476599099',
+      owner: '12345678',
       repo: '',
       tag_name: 'BV1xx',
       release_name: 'B 站视频',

@@ -82,15 +82,15 @@ describe('ReleaseDetailModal — 长文本截断兜底', () => {
   it('仓库名与版本号都带 title（截断后可取回完整值）', async () => {
     const release = {
       ...makeRelease(null),
-      owner: 'deepseek-ai',
-      repo: 'deepseek-harness',
+      owner: 'example-org',
+      repo: 'example-repo',
       tag_name: 'dsh-v0.1.7-rc.2',
     }
     const wrapper = mountModalWithRelease(release)
     await nextTick()
 
     expect(document.body.querySelector('.release-detail-repo')?.getAttribute('title'))
-      .toBe('deepseek-ai/deepseek-harness')
+      .toBe('example-org/example-repo')
     expect(document.body.querySelector('.release-detail-tag')?.getAttribute('title'))
       .toBe('dsh-v0.1.7-rc.2')
     wrapper.unmount()

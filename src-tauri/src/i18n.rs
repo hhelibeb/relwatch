@@ -392,8 +392,8 @@ mod tests {
     #[test]
     fn test_render_check_auto_integer_from_db() {
         // 真实的数据库数据：count 是整数 0
-        let r = render("check.auto", &json!({"count":0,"owner":"Scighost","repo":"Starward"}), "zh-CN");
-        assert_eq!(r, "检查 Scighost/Starward: 0 个新版本");
+        let r = render("check.auto", &json!({"count":0,"owner":"example-org","repo":"example-repo"}), "zh-CN");
+        assert_eq!(r, "检查 example-org/example-repo: 0 个新版本");
     }
 
     #[test]

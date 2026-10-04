@@ -44,7 +44,7 @@ export default {
   'source.pause': 'Pause',
   'source.resume': 'Resume',
   'source.delete': 'Delete',
-  'source.invalid_url': 'Please enter a valid GitHub repo (owner/repo or link), HuggingFace org name/link, YouTube channel (link, @handle, or channel ID), or Bilibili UID / space.bilibili.com link. E.g. microsoft/vscode, moonshotai, @Fireship, or 476599099',
+  'source.invalid_url': 'Please enter a valid GitHub repo (owner/repo or link), HuggingFace org name/link, YouTube channel (link, @handle, or channel ID), or Bilibili UID / space.bilibili.com link. E.g. microsoft/vscode, moonshotai, @Fireship, or 12345678',
   'source.input_invalid': 'Invalid Input',
   'source.add_failed': 'Failed to add source: {source_type} {owner}/{repo}, {error}',
   'source.exists': 'Source already exists',

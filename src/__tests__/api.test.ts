@@ -144,7 +144,7 @@ describe('parseSourceUrl', () => {
   })
 
   it('YouTube 链接识别为 youtube 类型', () => {
-    expect(parseSourceUrl('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')).toEqual({ type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '' })
+    expect(parseSourceUrl('https://www.youtube.com/channel/UCabcdefghijklmnopqrst')).toEqual({ type: 'youtube', owner: 'UCabcdefghijklmnopqrst', repo: '' })
     expect(parseSourceUrl('https://www.youtube.com/@Fireship')?.type).toBe('youtube')
     expect(parseSourceUrl('@Fireship')?.type).toBe('youtube')
   })
@@ -158,17 +158,17 @@ describe('parseSourceUrl', () => {
 
 describe('parseBilibiliUrl', () => {
   it('纯数字 UID 直接接受', () => {
-    expect(parseBilibiliUrl('476599099')).toBe('476599099')
-    expect(parseBilibiliUrl(' 546195 ')).toBe('546195')
+    expect(parseBilibiliUrl('12345678')).toBe('12345678')
+    expect(parseBilibiliUrl(' 1234567 ')).toBe('1234567')
     // 16 位新式 UID（新注册用户）
-    expect(parseBilibiliUrl('3546715770588065')).toBe('3546715770588065')
+    expect(parseBilibiliUrl('1234567890123456')).toBe('1234567890123456')
   })
 
   it('从空间链接提取 UID', () => {
-    expect(parseBilibiliUrl('https://space.bilibili.com/476599099/video')).toBe('476599099')
-    expect(parseBilibiliUrl('space.bilibili.com/476599099?from=search')).toBe('476599099')
-    expect(parseBilibiliUrl('https://bilibili.com/space/546195')).toBe('546195')
-    expect(parseBilibiliUrl('https://space.bilibili.com/3546715770588065')).toBe('3546715770588065')
+    expect(parseBilibiliUrl('https://space.bilibili.com/12345678/video')).toBe('12345678')
+    expect(parseBilibiliUrl('space.bilibili.com/12345678?from=search')).toBe('12345678')
+    expect(parseBilibiliUrl('https://bilibili.com/space/1234567')).toBe('1234567')
+    expect(parseBilibiliUrl('https://space.bilibili.com/1234567890123456')).toBe('1234567890123456')
   })
 
   it('非 UID 输入返回 null', () => {
@@ -180,13 +180,13 @@ describe('parseBilibiliUrl', () => {
 
 describe('parseSourceUrl bilibili', () => {
   it('空间链接识别为 bilibili 类型', () => {
-    expect(parseSourceUrl('https://space.bilibili.com/476599099')).toEqual({ type: 'bilibili', owner: '476599099', repo: '' })
-    expect(parseSourceUrl('bilibili.com/space/546195')?.type).toBe('bilibili')
+    expect(parseSourceUrl('https://space.bilibili.com/12345678')).toEqual({ type: 'bilibili', owner: '12345678', repo: '' })
+    expect(parseSourceUrl('bilibili.com/space/1234567')?.type).toBe('bilibili')
   })
 
   it('纯数字 UID 识别为 bilibili 类型', () => {
-    expect(parseSourceUrl('476599099')?.type).toBe('bilibili')
-    expect(parseSourceUrl('546195')).toEqual({ type: 'bilibili', owner: '546195', repo: '' })
+    expect(parseSourceUrl('12345678')?.type).toBe('bilibili')
+    expect(parseSourceUrl('1234567')).toEqual({ type: 'bilibili', owner: '1234567', repo: '' })
   })
 })
 
@@ -194,12 +194,12 @@ describe('parseSourceUrl bilibili', () => {
 
 describe('parseYoutubeUrl', () => {
   it('直接接受 channel_id', () => {
-    expect(parseYoutubeUrl('UCXuqSBlHAE6Xw-yeJA0Tunw')).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+    expect(parseYoutubeUrl('UCabcdefghijklmnopqrst')).toBe('UCabcdefghijklmnopqrst')
   })
 
   it('从 channel 链接提取 channel_id', () => {
-    expect(parseYoutubeUrl('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
-    expect(parseYoutubeUrl('youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw/featured')).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+    expect(parseYoutubeUrl('https://www.youtube.com/channel/UCabcdefghijklmnopqrst')).toBe('UCabcdefghijklmnopqrst')
+    expect(parseYoutubeUrl('youtube.com/channel/UCabcdefghijklmnopqrst/featured')).toBe('UCabcdefghijklmnopqrst')
   })
 
   it('@handle 与纯 handle 归一化为 @handle', () => {

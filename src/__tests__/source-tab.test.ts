@@ -105,7 +105,7 @@ describe('SourceTab — 添加 Source', () => {
     const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
-    await input.setValue('https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw')
+    await input.setValue('https://www.youtube.com/channel/UCabcdefghijklmnopqrst')
     await flushPromises()
 
     // 复选框行应可见（视频/直播勾选、帖子禁用）
@@ -123,7 +123,7 @@ describe('SourceTab — 添加 Source', () => {
 
     expect(addSourceMock).toHaveBeenCalledWith(
       'youtube',
-      'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      'UCabcdefghijklmnopqrst',
       '',
       JSON.stringify({ videos: false, live: true, posts: false }),
     )
@@ -488,23 +488,23 @@ describe('SourceTab — 打开 Source 链接和发布页', () => {
   })
 
   it('YouTube 源点击查看发布，emit 频道名而非 channel_id', async () => {
-    const source = createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: '时局眼' })
+    const source = createSource({ source_type: 'youtube', owner: 'UCabcdefghijklmnopqrst', repo: '', description: '示例频道' })
     const { wrapper } = mountSourceTab([source])
 
     const viewReleasesButton = wrapper.findAll('.btn-icon-link')[1]
     await viewReleasesButton.trigger('click')
 
-    expect(wrapper.emitted('openReleases')?.[0]).toEqual(['时局眼'])
+    expect(wrapper.emitted('openReleases')?.[0]).toEqual(['示例频道'])
   })
 
   it('YouTube 源无频道名时，查看发布回退 channel_id', async () => {
-    const source = createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: null })
+    const source = createSource({ source_type: 'youtube', owner: 'UCabcdefghijklmnopqrst', repo: '', description: null })
     const { wrapper } = mountSourceTab([source])
 
     const viewReleasesButton = wrapper.findAll('.btn-icon-link')[1]
     await viewReleasesButton.trigger('click')
 
-    expect(wrapper.emitted('openReleases')?.[0]).toEqual(['UCXuqSBlHAE6Xw-yeJA0Tunw'])
+    expect(wrapper.emitted('openReleases')?.[0]).toEqual(['UCabcdefghijklmnopqrst'])
   })
 
   it('有未读 release 时，显示待更新链接并点击 emit openUnreadReleases', async () => {
@@ -1124,18 +1124,18 @@ describe('SourceTab — 更多菜单切换', () => {
 
 describe('SourceTab — YouTube 源显示名', () => {
   it('youtube 源显示频道名（description）而非 channel_id', () => {
-    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: 'Videos' })])
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCabcdefghijklmnopqrst', repo: '', description: 'Videos' })])
     expect(wrapper.get('.source-name').text()).toBe('Videos')
   })
 
   it('youtube 源兼容旧版 "YouTube channel: " 前缀描述', () => {
-    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: 'YouTube channel: Videos' })])
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCabcdefghijklmnopqrst', repo: '', description: 'YouTube channel: Videos' })])
     expect(wrapper.get('.source-name').text()).toBe('Videos')
   })
 
   it('youtube 源无描述时回退 owner', () => {
-    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw', repo: '', description: null })])
-    expect(wrapper.get('.source-name').text()).toBe('UCXuqSBlHAE6Xw-yeJA0Tunw')
+    const { wrapper } = mountSourceTab([createSource({ source_type: 'youtube', owner: 'UCabcdefghijklmnopqrst', repo: '', description: null })])
+    expect(wrapper.get('.source-name').text()).toBe('UCabcdefghijklmnopqrst')
   })
 
   it('github 源仍显示 owner/repo', () => {

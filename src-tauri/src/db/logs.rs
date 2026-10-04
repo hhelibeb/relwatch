@@ -585,7 +585,7 @@ mod tests {
             "WARN",
             "check.failed",
             &serde_json::json!({
-                "owner": "Freesia",
+                "owner": "Test Channel",
                 "repo": "",
                 "error": "err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?id=UC1&key=AIzaSyFAKEKEY0000000000000000000000)"
             })

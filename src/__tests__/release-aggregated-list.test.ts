@@ -167,22 +167,22 @@ describe('ReleaseAggregatedList.vue — 分组显示名（注册表 displayName�
   it('youtube 显示频道名（source_description），不显示 channel_id', () => {
     const releases = [createRelease({
       source_type: 'youtube',
-      owner: 'UCXuqSBlHAE6Xw-yeJA0Tunw',
+      owner: 'UCabcdefghijklmnopqrst',
       repo: '',
       tag_name: 'vid1',
-      source_description: '时局眼',
+      source_description: '示例频道',
       published_at: '2025-06-01T00:00:00Z',
     })]
     const wrapper = mountList(releases)
 
-    expect(wrapper.find('.repo-name').text()).toBe('时局眼')
-    expect(wrapper.text()).not.toContain('UCXuqSBlHAE6Xw')
+    expect(wrapper.find('.repo-name').text()).toBe('示例频道')
+    expect(wrapper.text()).not.toContain('UCabcdefghijklmnopqrst')
   })
 
   it('bilibili 显示 UP 主名（source_description），不显示 UID', () => {
     const releases = [createRelease({
       source_type: 'bilibili',
-      owner: '476599099',
+      owner: '12345678',
       repo: '',
       tag_name: 'BV1xx',
       source_description: '某UP主',
@@ -191,7 +191,7 @@ describe('ReleaseAggregatedList.vue — 分组显示名（注册表 displayName�
     const wrapper = mountList(releases)
 
     expect(wrapper.find('.repo-name').text()).toBe('某UP主')
-    expect(wrapper.text()).not.toContain('476599099')
+    expect(wrapper.text()).not.toContain('12345678')
   })
 
   it('github 默认 owner/repo，无 displayName', () => {
@@ -204,14 +204,14 @@ describe('ReleaseAggregatedList.vue — 分组显示名（注册表 displayName�
   // 组头与卡片遵守同一套截断策略（仓库名/版本号都有 title 兜底，宽度不足时才靠省略号）
   it('组头仓库名与最新版本号都带 title（截断后可取回完整值）', () => {
     const releases = [createRelease({
-      owner: 'deepseek-ai',
-      repo: 'deepseek-harness',
+      owner: 'example-org',
+      repo: 'example-repo',
       tag_name: 'dsh-v0.1.7-rc.2',
       published_at: '2025-06-01T00:00:00Z',
     })]
     const wrapper = mountList(releases)
 
-    expect(wrapper.find('.repo-name').attributes('title')).toBe('deepseek-ai/deepseek-harness')
+    expect(wrapper.find('.repo-name').attributes('title')).toBe('example-org/example-repo')
     expect(wrapper.find('.repo-latest-tag').attributes('title')).toBe('dsh-v0.1.7-rc.2')
   })
 })

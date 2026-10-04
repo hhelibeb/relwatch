@@ -975,28 +975,28 @@ mod tests {
 
     #[test]
     fn test_extract_uid_variants() {
-        assert_eq!(extract_uid("476599099").as_deref(), Some("476599099"));
-        assert_eq!(extract_uid(" 546195 ").as_deref(), Some("546195"));
+        assert_eq!(extract_uid("12345678").as_deref(), Some("12345678"));
+        assert_eq!(extract_uid(" 1234567 ").as_deref(), Some("1234567"));
         // 16 位新式 UID（新注册用户，space.bilibili.com/{mid} 的 mid 即 UID）
         assert_eq!(
-            extract_uid("3546715770588065").as_deref(),
-            Some("3546715770588065")
+            extract_uid("1234567890123456").as_deref(),
+            Some("1234567890123456")
         );
         assert_eq!(
-            extract_uid("https://space.bilibili.com/3546715770588065").as_deref(),
-            Some("3546715770588065")
+            extract_uid("https://space.bilibili.com/1234567890123456").as_deref(),
+            Some("1234567890123456")
         );
         assert_eq!(
-            extract_uid("https://space.bilibili.com/476599099/video").as_deref(),
-            Some("476599099")
+            extract_uid("https://space.bilibili.com/12345678/video").as_deref(),
+            Some("12345678")
         );
         assert_eq!(
-            extract_uid("space.bilibili.com/476599099?from=search").as_deref(),
-            Some("476599099")
+            extract_uid("space.bilibili.com/12345678?from=search").as_deref(),
+            Some("12345678")
         );
         assert_eq!(
-            extract_uid("https://bilibili.com/space/546195").as_deref(),
-            Some("546195")
+            extract_uid("https://bilibili.com/space/1234567").as_deref(),
+            Some("1234567")
         );
         // 非 UID 输入
         assert_eq!(extract_uid("@someuser"), None);
@@ -1141,7 +1141,7 @@ mod tests {
     #[test]
     fn test_save_entries_dedup() {
         let conn = init_memory_db().unwrap();
-        let source_id = db::sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
+        let source_id = db::sources::add_source(&conn, "bilibili", "12345678", "", "").unwrap();
         let entry = BiliEntry {
             bvid: "BV1a1b2c3d4e5f".to_string(),
             title: "新视频".to_string(),

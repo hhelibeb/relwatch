@@ -979,7 +979,7 @@ mod tests {
     #[test]
     fn test_update_release_metadata_refreshes_existing() {
         let conn = init_memory_db().unwrap();
-        let sid = sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
+        let sid = sources::add_source(&conn, "bilibili", "12345678", "", "").unwrap();
         // 首次插入
         let rid = insert_release(&conn, sid, "BV1xx", "T", "https://x", "2024-01-01T00:00:00Z", false, None).unwrap();
         assert!(rid > 0);
@@ -1423,7 +1423,7 @@ mod tests {
     fn seed_gh_yt_bili_releases(conn: &rusqlite::Connection) -> (i64, i64, i64) {
         let gh = sources::add_source(conn, "github", "o", "r", "").unwrap();
         let yt = sources::add_source(conn, "youtube", "UCabc123", "", "").unwrap();
-        let bl = sources::add_source(conn, "bilibili", "476599099", "", "").unwrap();
+        let bl = sources::add_source(conn, "bilibili", "12345678", "", "").unwrap();
         let gh_id = insert_release(conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh body")).unwrap();
         let yt_id = insert_release(conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt body")).unwrap();
         let bl_id = insert_release(conn, bl, "BV1a1b2c3d4e5f", "V", "https://b", "2024-01-03T00:00:00Z", false, Some("bili body")).unwrap();
@@ -1572,7 +1572,7 @@ mod tests {
     #[test]
     fn test_version_bump_null_for_non_semver_source() {
         let conn = init_memory_db().unwrap();
-        let sid = sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
+        let sid = sources::add_source(&conn, "bilibili", "12345678", "", "").unwrap();
         insert_release(&conn, sid, "BV11a2c3d4e5f", "V1", "https://b", "2024-01-01T00:00:00Z", false, None).unwrap();
         insert_release(&conn, sid, "BV12a2c3d4e5f", "V2", "https://b", "2024-01-02T00:00:00Z", false, None).unwrap();
         let releases = get_releases_with_state(&conn).unwrap();

@@ -44,7 +44,7 @@ export default {
   'source.pause': '暂停',
   'source.resume': '恢复',
   'source.delete': '删除',
-  'source.invalid_url': '请输入有效的 GitHub 仓库（owner/repo 或链接）、HuggingFace 组织名/链接、YouTube 频道（链接 / @handle / 频道 ID），或 B 站 UID / space.bilibili.com 链接。如 microsoft/vscode、moonshotai、@Fireship 或 476599099',
+  'source.invalid_url': '请输入有效的 GitHub 仓库（owner/repo 或链接）、HuggingFace 组织名/链接、YouTube 频道（链接 / @handle / 频道 ID），或 B 站 UID / space.bilibili.com 链接。如 microsoft/vscode、moonshotai、@Fireship 或 12345678',
   'source.input_invalid': '输入无效',
   'source.add_failed': '添加监控源失败: {source_type} {owner}/{repo}, {error}',
   'source.exists': '监控源已存在',

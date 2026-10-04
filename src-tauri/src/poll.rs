@@ -2251,7 +2251,7 @@ mod tests {
             let conn = pool.get().unwrap();
             let gh = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
             let yt = db::sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
-            let bl = db::sources::add_source(&conn, "bilibili", "476599099", "", "").unwrap();
+            let bl = db::sources::add_source(&conn, "bilibili", "12345678", "", "").unwrap();
             let gh_id = db::releases::insert_release(&conn, gh, "v1", "R", "https://x", "2024-01-01T00:00:00Z", false, Some("gh")).unwrap();
             let yt_id = db::releases::insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some("yt")).unwrap();
             let bl_id = db::releases::insert_release(&conn, bl, "BV1xx", "V", "https://b", "2024-01-03T00:00:00Z", false, Some("bili")).unwrap();

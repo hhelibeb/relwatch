@@ -439,7 +439,7 @@ fn extract_channel_id_from_html(html: &str) -> Option<String> {
 
 /// 验证频道可达并返回真实频道名。
 ///
-/// 优先级：频道页 `<meta property="og:title">`（真实频道名，如“时局眼”）；
+/// 优先级：频道页 `<meta property="og:title">`（频道自报的名字，比 RSS 的播放列表名准）；
 /// 页面失败时回退 UULF feed 的标题（注意：RSS 标题是播放列表名如 "Videos"，
 /// 仅作兜底，正常情况下不会用到）。
 async fn verify_and_describe_channel(
@@ -1320,10 +1320,10 @@ mod tests {
     async fn test_resolve_channel_id_via_api_direct_id_no_http() {
         // 直接 UC id 无需 API 请求
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let id = resolve_channel_id_via_api(&client, "UCXuqSBlHAE6Xw-yeJA0Tunw", "k", "http://unused")
+        let id = resolve_channel_id_via_api(&client, "UCabcdefghijklmnopqrst", "k", "http://unused")
             .await
             .unwrap();
-        assert_eq!(id, "UCXuqSBlHAE6Xw-yeJA0Tunw");
+        assert_eq!(id, "UCabcdefghijklmnopqrst");
     }
 
     #[tokio::test]
@@ -1333,7 +1333,7 @@ mod tests {
             .and(path("/channels"))
             .and(query_param("id", "UCabc123"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"snippet": {"title": "Freesia"}}]
+                "items": [{"snippet": {"title": "Test Channel"}}]
             })))
             .mount(&mock)
             .await;
@@ -1341,7 +1341,7 @@ mod tests {
         let title = verify_and_describe_channel_via_api(&client, "UCabc123", "k", &mock.uri())
             .await
             .unwrap();
-        assert_eq!(title, "Freesia");
+        assert_eq!(title, "Test Channel");
     }
 
     #[tokio::test]
@@ -1367,13 +1367,13 @@ mod tests {
         let adapter = YoutubeAdapter;
         // 有 description：通知标题用频道名而非 channel_id
         assert_eq!(
-            adapter.notification_source_name("UCabc123", "", Some("Freesia")),
-            "Freesia"
+            adapter.notification_source_name("UCabc123", "", Some("Test Channel")),
+            "Test Channel"
         );
         // 旧版数据带 "YouTube channel: " 前缀：兼容剥离
         assert_eq!(
-            adapter.notification_source_name("UCabc123", "", Some("YouTube channel: Freesia")),
-            "Freesia"
+            adapter.notification_source_name("UCabc123", "", Some("YouTube channel: Test Channel")),
+            "Test Channel"
         );
         // 无 description：回退 channel_id
         assert_eq!(
@@ -1792,26 +1792,26 @@ mod tests {
     #[test]
     fn test_extract_channel_id_from_input_direct() {
         assert_eq!(
-            extract_channel_id_from_input("UCXuqSBlHAE6Xw-yeJA0Tunw").as_deref(),
-            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+            extract_channel_id_from_input("UCabcdefghijklmnopqrst").as_deref(),
+            Some("UCabcdefghijklmnopqrst")
         );
     }
 
     #[test]
     fn test_extract_channel_id_from_input_channel_url() {
         assert_eq!(
-            extract_channel_id_from_input("https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw")
+            extract_channel_id_from_input("https://www.youtube.com/channel/UCabcdefghijklmnopqrst")
                 .as_deref(),
-            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+            Some("UCabcdefghijklmnopqrst")
         );
     }
 
     #[test]
     fn test_extract_channel_id_from_input_channel_url_with_suffix() {
         assert_eq!(
-            extract_channel_id_from_input("youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw/featured")
+            extract_channel_id_from_input("youtube.com/channel/UCabcdefghijklmnopqrst/featured")
                 .as_deref(),
-            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+            Some("UCabcdefghijklmnopqrst")
         );
     }
 
@@ -1854,28 +1854,28 @@ mod tests {
 
     #[test]
     fn test_extract_channel_id_from_html_json() {
-        let html = r#"<script>var ytInitialData = {"header":{"channelId":"UCXuqSBlHAE6Xw-yeJA0Tunw"}};</script>"#;
+        let html = r#"<script>var ytInitialData = {"header":{"channelId":"UCabcdefghijklmnopqrst"}};</script>"#;
         assert_eq!(
             extract_channel_id_from_html(html).as_deref(),
-            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+            Some("UCabcdefghijklmnopqrst")
         );
     }
 
     #[test]
     fn test_extract_channel_id_from_html_meta() {
-        let html = r#"<meta itemprop="channelId" content="UCXuqSBlHAE6Xw-yeJA0Tunw">"#;
+        let html = r#"<meta itemprop="channelId" content="UCabcdefghijklmnopqrst">"#;
         assert_eq!(
             extract_channel_id_from_html(html).as_deref(),
-            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+            Some("UCabcdefghijklmnopqrst")
         );
     }
 
     #[test]
     fn test_extract_channel_id_from_html_canonical() {
-        let html = r#"<link rel="canonical" href="https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw">"#;
+        let html = r#"<link rel="canonical" href="https://www.youtube.com/channel/UCabcdefghijklmnopqrst">"#;
         assert_eq!(
             extract_channel_id_from_html(html).as_deref(),
-            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+            Some("UCabcdefghijklmnopqrst")
         );
     }
 
@@ -1888,8 +1888,8 @@ mod tests {
 
     #[test]
     fn test_extract_og_title_basic() {
-        let html = r#"<html><head><meta property="og:title" content="时局眼"></head></html>"#;
-        assert_eq!(extract_og_title(html).as_deref(), Some("时局眼"));
+        let html = r#"<html><head><meta property="og:title" content="示例频道"></head></html>"#;
+        assert_eq!(extract_og_title(html).as_deref(), Some("示例频道"));
     }
 
     #[test]
@@ -1910,10 +1910,10 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_channel_id_direct_no_http() {
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let id = resolve_channel_id(&client, "UCXuqSBlHAE6Xw-yeJA0Tunw")
+        let id = resolve_channel_id(&client, "UCabcdefghijklmnopqrst")
             .await
             .unwrap();
-        assert_eq!(id, "UCXuqSBlHAE6Xw-yeJA0Tunw");
+        assert_eq!(id, "UCabcdefghijklmnopqrst");
     }
 
     #[tokio::test]

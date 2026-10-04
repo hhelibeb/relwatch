@@ -652,7 +652,7 @@ mod tests {
     fn test_intermediate_versions_all_saved_and_marked_read() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::sources::add_source(&conn, "github", "anomalyco", "opencode", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "example-org", "example-repo", "").unwrap();
 
         // ── 第一次检查：max_count=1，只保存 v1.15.6 ──
         let data1 = vec![
@@ -721,7 +721,7 @@ mod tests {
     fn test_intermediate_versions_not_notified_when_newer_exists() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
-        let sid = db::sources::add_source(&conn, "github", "anomalyco", "opencode", "").unwrap();
+        let sid = db::sources::add_source(&conn, "github", "example-org", "example-repo", "").unwrap();
 
         // ── 第一轮：检测到 v1.15.10（最新），通知 ──
         let data1 = vec![

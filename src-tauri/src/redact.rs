@@ -274,14 +274,14 @@ mod tests {
 
     #[test]
     fn redact_strips_query_api_key() {
-        // 现网实证样本（YouTube Data API）
-        let raw = "err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?part=contentDetails&id=UCrD39DnkX5QjIvH3yssXqJA&key=AIzaSyFAKEKEY0000000000000000000000)";
+        // 真实报错文本形态（YouTube Data API，id 用占位值）
+        let raw = "err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?part=contentDetails&id=UCabcdefghijklmnopqrst&key=AIzaSyFAKEKEY0000000000000000000000)";
         let out = redact(raw);
         assert!(!out.contains("AIzaSy"), "API key 泄露: {out}");
         assert!(out.contains("&key=***)"), "应保留参数名与闭合括号: {out}");
         // 非凭据参数不受影响，排障信息不丢
         assert!(out.contains("part=contentDetails"));
-        assert!(out.contains("id=UCrD39DnkX5QjIvH3yssXqJA"));
+        assert!(out.contains("id=UCabcdefghijklmnopqrst"));
     }
 
     #[test]

@@ -222,21 +222,21 @@ describe('resolveSourceLabels', () => {
   it('youtube/bilibili/HF 组织用可读名，不显示 owner/repo', () => {
     // 后端 label 是 owner/repo 拼串，这三类源 repo 恒为空，会退化成机器 ID
     const rows = [
-      row({ source_id: 7, label: 'UCsiXz7G2UtVIcKygER8PEsg/', source_type: 'youtube' }),
-      row({ source_id: 8, label: '25876945/', source_type: 'bilibili' }),
-      row({ source_id: 9, label: 'deepseek-ai/', source_type: 'huggingface' }),
+      row({ source_id: 7, label: 'UCabcdefghijklmnopqrst/', source_type: 'youtube' }),
+      row({ source_id: 8, label: '87654321/', source_type: 'bilibili' }),
+      row({ source_id: 9, label: 'example-org/', source_type: 'huggingface' }),
       row({ source_id: 10, label: 'microsoft/vscode', source_type: 'github' }),
     ]
     const sources = [
-      source({ id: 7, source_type: 'youtube', owner: 'UCsiXz7G2UtVIcKygER8PEsg', description: 'YouTube channel: misa' }),
-      source({ id: 8, source_type: 'bilibili', owner: '25876945', description: '极客湾Geekerwan' }),
-      source({ id: 9, source_type: 'huggingface', owner: 'deepseek-ai' }),
+      source({ id: 7, source_type: 'youtube', owner: 'UCabcdefghijklmnopqrst', description: 'YouTube channel: 某频道' }),
+      source({ id: 8, source_type: 'bilibili', owner: '87654321', description: '某UP主' }),
+      source({ id: 9, source_type: 'huggingface', owner: 'example-org' }),
       source({ id: 10, source_type: 'github', owner: 'microsoft', repo: 'vscode' }),
     ]
     expect(resolveSourceLabels(rows, sources).map((r) => r.label)).toEqual([
-      'misa',
-      '极客湾Geekerwan',
-      'deepseek-ai',
+      '某频道',
+      '某UP主',
+      'example-org',
       'microsoft/vscode',
     ])
   })
