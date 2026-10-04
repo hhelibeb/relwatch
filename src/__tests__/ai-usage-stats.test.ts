@@ -7,10 +7,12 @@ import {
   aggregateDonutBySource,
   aggregateDonutByAction,
   buildSourceTsv,
+  resolveSourceLabels,
   formatTokens,
   dailyTotalTokens,
 } from '../composables/useAiUsageStats'
 import type { AiUsageSourceRow, AiUsageActionRow } from '../api/aiUsage'
+import type { Source } from '../api/sources'
 import AiUsageHeatmap from '../components/AiUsageHeatmap.vue'
 import { toDateKey } from '../utils/dateKey'
 
@@ -198,6 +200,52 @@ describe('aggregateDonutByAction', () => {
     expect(segs.map((s) => s.key)).toEqual(['translate', 'summary', 'detect_language'])
     expect(segs[0].tokens).toBe(900)
     expect(segs[0].share).toBeCloseTo(900 / 1214, 5)
+  })
+})
+
+describe('resolveSourceLabels', () => {
+  const row = (over: Partial<AiUsageSourceRow>): AiUsageSourceRow => ({
+    source_id: 1,
+    label: 'a/b',
+    source_type: 'github',
+    calls: 1,
+    prompt_tokens: 100,
+    completion_tokens: 50,
+    cache_hit_tokens: 0,
+    cache_miss_tokens: 0,
+    ...over,
+  })
+
+  const source = (over: Partial<Source> & Pick<Source, 'id' | 'source_type' | 'owner'>): Source =>
+    ({ repo: '', description: null, ...over }) as unknown as Source
+
+  it('youtube/bilibili/HF 组织用可读名，不显示 owner/repo', () => {
+    // 后端 label 是 owner/repo 拼串，这三类源 repo 恒为空，会退化成机器 ID
+    const rows = [
+      row({ source_id: 7, label: 'UCsiXz7G2UtVIcKygER8PEsg/', source_type: 'youtube' }),
+      row({ source_id: 8, label: '25876945/', source_type: 'bilibili' }),
+      row({ source_id: 9, label: 'deepseek-ai/', source_type: 'huggingface' }),
+      row({ source_id: 10, label: 'microsoft/vscode', source_type: 'github' }),
+    ]
+    const sources = [
+      source({ id: 7, source_type: 'youtube', owner: 'UCsiXz7G2UtVIcKygER8PEsg', description: 'YouTube channel: misa' }),
+      source({ id: 8, source_type: 'bilibili', owner: '25876945', description: '极客湾Geekerwan' }),
+      source({ id: 9, source_type: 'huggingface', owner: 'deepseek-ai' }),
+      source({ id: 10, source_type: 'github', owner: 'microsoft', repo: 'vscode' }),
+    ]
+    expect(resolveSourceLabels(rows, sources).map((r) => r.label)).toEqual([
+      'misa',
+      '极客湾Geekerwan',
+      'deepseek-ai',
+      'microsoft/vscode',
+    ])
+  })
+
+  it('源已删除 / 无源行 / 源列表加载失败时保留后端 label', () => {
+    const rows = [row({ source_id: 404, label: 'ghost/' }), row({ source_id: null, label: null })]
+    const sources = [source({ id: 7, source_type: 'youtube', owner: 'UCabc', description: 'ch' })]
+    expect(resolveSourceLabels(rows, sources).map((r) => r.label)).toEqual(['ghost/', null])
+    expect(resolveSourceLabels(rows, [])).toEqual(rows)
   })
 })
 

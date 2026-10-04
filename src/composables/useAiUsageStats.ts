@@ -2,7 +2,7 @@ import { computed, ref, watch } from 'vue'
 import { getAiUsageStats } from '../api/aiUsage'
 import type { AiUsageActionRow, AiUsageSourceRow, AiUsageStats } from '../api/aiUsage'
 import type { Source } from '../api/sources'
-import { listSources } from '../api/sources'
+import { listSources, sourceDisplayName } from '../api/sources'
 import { toDateKey, parseDateKey } from '../utils/dateKey'
 
 // ── 纯函数（供组件与单测复用） ────────────────────────────────────────
@@ -143,6 +143,21 @@ function toSegments(
   return segments
 }
 
+/**
+ * 按源聚合行 → 可读源名。后端 label 是 `owner/repo`，而 youtube / bilibili /
+ * HF 组织等源 repo 恒为空（可读名在 description），直接展示会退化成一串机器 ID，
+ * 故按 source_id 回查 Source 走 sourceDisplayName。listSources 里找不到（源已删除）
+ * 或 source_id 为空的行走后端 label 兜底。
+ */
+export function resolveSourceLabels(rows: AiUsageSourceRow[], sources: Source[]): AiUsageSourceRow[] {
+  if (sources.length === 0) return rows
+  const byId = new Map(sources.map((s) => [s.id, s]))
+  return rows.map((r) => {
+    const source = r.source_id === null ? undefined : byId.get(r.source_id)
+    return source ? { ...r, label: sourceDisplayName(source) } : r
+  })
+}
+
 /** 表格数据行（按源分组）→ TSV 文本（含表头，制表符分隔可直接贴入 Excel）。 */
 export function buildSourceTsv(headers: string[], rows: AiUsageSourceRow[], noSourceLabel: string): string {
   const lines = [headers.join('\t')]
@@ -224,6 +239,9 @@ export function useAiUsageStats() {
   load()
   loadSources()
 
+  /** 按源聚合行（已解析可读源名）：表格 / 饼图 / TSV 导出共用。 */
+  const bySource = computed(() => resolveSourceLabels(stats.value?.by_source ?? [], sources.value))
+
   /** 热力图窗口周数：随时间范围收窄，「全部」按最早数据日反推（见 heatmapWeeks）。 */
   const heatmap = computed<HeatmapData | null>(() => {
     if (!stats.value) return null
@@ -249,6 +267,7 @@ export function useAiUsageStats() {
     loading,
     error,
     sources,
+    bySource,
     heatmap,
     totalTokens,
     totalCalls,

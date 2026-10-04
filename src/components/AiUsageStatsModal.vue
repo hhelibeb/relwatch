@@ -14,6 +14,7 @@ import {
 import type { AiUsageSourceRow } from '../api/aiUsage'
 import { copyTextToClipboard } from '../api/client'
 import { useDragResize } from '../composables/useDragResize'
+import { sourceDisplayName } from '../api/sources'
 import { registerOverlayActive } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
@@ -38,6 +39,7 @@ const {
   loading,
   error,
   sources,
+  bySource,
   heatmap,
   totalTokens,
   totalCalls,
@@ -55,8 +57,9 @@ const donutDim = ref<DonutDim>('source')
 const sourceOptions = computed(() =>
   sources.value.map((s) => ({
     id: s.id,
-    // 与表格/饼图的统计维度一致：显示 owner/repo 本名（description 是用户备注）
-    label: `${s.owner}/${s.repo}`,
+    // 与表格/饼图共用 sourceDisplayName：youtube/bilibili/HF 组织的可读名在 description，
+    // 直接拼 owner/repo 会显示成 channel_id、UID 这类机器 ID
+    label: sourceDisplayName(s),
   })),
 )
 
@@ -73,7 +76,7 @@ const hasAnyData = computed(() => (stats.value?.daily.length ?? 0) > 0)
 const donutSegments = computed(() => {
   if (!stats.value) return []
   return donutDim.value === 'source'
-    ? aggregateDonutBySource(stats.value.by_source, t('aiUsage.other'))
+    ? aggregateDonutBySource(bySource.value, t('aiUsage.other'))
     : aggregateDonutByAction(stats.value.by_action, t('aiUsage.other'))
 })
 
@@ -83,7 +86,7 @@ function donutSegmentLabel(seg: { key: string; label: string }): string {
 }
 
 // ── 表格 ──
-const tableRows = computed(() => stats.value?.by_source ?? [])
+const tableRows = computed(() => bySource.value)
 const grandTotal = computed(() => tableRows.value.reduce((s, r) => s + dailyTotalTokens(r), 0))
 
 function sourceLabel(r: AiUsageSourceRow): string {
