@@ -13,8 +13,10 @@ MAX=30 # 轮次上限（配合 POLL 约 15 分钟）
 SHA="${CI_SHA:-$(git rev-parse HEAD)}"
 
 # workflow 名单从仓库读，不手工维护副本：漏加一个 workflow = 它红了也不报错，发布就会带着
-# 红的 CI 照发。只取带 pull_request 触发的（必然为推到 main 的每个 commit 产出 run）；
-# 只在 tag/cron 上跑的 workflow 永远等不到 run，会把轮询一路拖到超时。
+# 红的 CI 照发。只取 push: branches 含 main 的 —— 门禁等的是推到 main 的 run，只有 push
+# 触发器会为它产出（pull_request 只为 PR 事件产出 run，headBranch 是 PR 源分支，按
+# --branch main 查不到，照它筛会漏掉只配 push 的 workflow）；只在 tag/cron 上跑的 workflow
+# 永远等不到 run，会把轮询一路拖到超时。
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NAMES=()
 while IFS= read -r name; do
@@ -22,7 +24,13 @@ while IFS= read -r name; do
   NAMES+=("$name")
 done < <(
   for f in "$ROOT"/.github/workflows/*.yml; do
-    if [ "$(basename "$f")" != "release.yml" ] && grep -q '^[[:space:]]*pull_request:' "$f"; then
+    # push: 块 = 从该行到下一个同级或更外层 key；块内 branches 列出 main 才算门禁，
+    # release.yml 的 push 只有 tags，因而天然落选（无需按文件名特判）
+    if awk '
+      /^[[:space:]]*push:/ { p = match($0, /[^ ]/); next }
+      p && /^[[:space:]]*[^[:space:]#]/ && match($0, /[^ ]/) <= p { p = 0 }
+      p
+    ' "$f" | grep -qE '(^|[^[:alnum:]_-])main([^[:alnum:]_-]|$)'; then
       sed -n 's/^name:[[:space:]]*//p' "$f"
     fi
   done | sort
