@@ -122,10 +122,10 @@ echo "Cargo.toml:      $(grep '^version' src-tauri/Cargo.toml | head -1 | sed 's
 echo "tauri.conf.json: $(node -p "require('./src-tauri/tauri.conf.json').version")"
 ```
 
-如果有 `package-lock.json`，同步更新：
+本项目用 pnpm，锁文件是 `pnpm-lock.yaml`；若本次 Release 同时动了依赖，同步锁文件：
 
 ```bash
-npm install --package-lock-only
+pnpm install --lockfile-only
 ```
 
 ---
@@ -280,14 +280,20 @@ npm install --package-lock-only
 (
   set -euo pipefail
 
-  # TypeScript 类型检查
-  npx vue-tsc --noEmit
+  # TypeScript 类型检查（含 Vue SFC）
+  pnpm exec vue-tsc --noEmit
+
+  # tsc 编译检查（本地额外保险，CI 只跑 vue-tsc）
+  pnpm exec tsc --noEmit
 
   # 前端测试
-  npx vitest run
+  pnpm exec vitest run
 
   # ESLint 检查
-  npm run lint
+  pnpm run lint
+
+  # bindings.ts 与 Rust 代码同步（同 CI 的 check-bindings 步骤）
+  bash scripts/check-bindings.sh
 )
 
 (
@@ -305,6 +311,9 @@ npm install --package-lock-only
   cargo clippy -- -D warnings
 )
 ```
+
+> 上面这组门禁与 commit skill Step 2 的提交前门禁是同一套，两边必须同步增删——
+> 否则会出现「提交时更严、发布时更松」（或反之），同一个 commit 在两处结论不一致。
 
 > ⚠️ **不要在本地跑 `tauri build` 来验证更新产物**：`tauri.conf.json` 的
 > `bundle.createUpdaterArtifacts` 为 `true`，构建时 tauri CLI 必须有签名私钥，
