@@ -157,6 +157,9 @@ async fn fetch_page(
         .map_err(|e| (0, describe_request_error(&e)))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
+        if let Some(limited) = rate_limit_error(status, resp.headers()) {
+            return Err(limited);
+        }
         let reason = resp.status().canonical_reason().unwrap_or("").to_string();
         return Err((status, format!("err.api_error|{}|{}", status, reason)));
     }
@@ -172,6 +175,50 @@ async fn fetch_page(
         .map_err(|e| (status, e))?;
 
     Ok((items, next_url))
+}
+
+/// 从状态码 + 响应头识别「上游速率限制 / 凭据失效」，产出可分类的错误键。
+///
+/// 判据取头不取 body：GitHub 主限流是 `403 + x-ratelimit-remaining: 0`、次级限流与通用
+/// 限流是 429（常带 `retry-after`），body 文案会变且要先读完才知道。
+///
+/// 这些键进 `poll::UNCOUNTED_FAILURE_PREFIXES`——它们一次命中全部共用凭据/出口 IP 的源，
+/// 且限流解除或用户改配置后即自愈，照旧累加会把断路器变成「集体禁用」；
+/// 带等待窗口的 `err.rate_limit_reset` 还被 [`default_should_retry`] 排除重试（退避的
+/// 秒级远短于限流的分钟级，重试只是白耗配额）。
+/// 无这些头的 403（私有仓库、被封）不在此列，仍按真实故障计入断路器。
+fn rate_limit_error(status: u16, headers: &reqwest::header::HeaderMap) -> Option<(u16, String)> {
+    // 带失效 Authorization 头时 GitHub 主限流会返回 401（而非 403），凭据问题同为全局性
+    if status == 401 {
+        return Some((status, "err.credential_invalid".to_string()));
+    }
+    let rate_limited = status == 429
+        || (status == 403
+            && headers
+                .get("x-ratelimit-remaining")
+                .and_then(|v| v.to_str().ok())
+                .map(|v| v.trim() == "0")
+                .unwrap_or(false));
+    if !rate_limited {
+        return None;
+    }
+    // 等待提示优先 retry-after（相对秒），否则用 x-ratelimit-reset（epoch 秒）折算
+    let wait_secs = headers
+        .get("retry-after")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<i64>().ok())
+        .or_else(|| {
+            headers
+                .get("x-ratelimit-reset")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<i64>().ok())
+                .map(|reset| reset - chrono::Utc::now().timestamp())
+        })
+        .filter(|secs| *secs > 0);
+    Some(match wait_secs {
+        Some(secs) => (status, format!("err.rate_limit_reset|{}", secs)),
+        None => (status, "err.rate_limit".to_string()),
+    })
 }
 
 /// 重试包装：`should_retry` 返回 false 的错误不重试，其他可重试错误最多重试 3 次。
@@ -212,9 +259,16 @@ pub fn describe_request_error(e: &reqwest::Error) -> String {
     }
 }
 
-/// 默认重试判断：403 不重试（source 拒绝访问），其他可重试错误重试。
+/// 默认重试判断：403 不重试（source 拒绝访问）；已知等待窗口的限流与凭据失效也不重试
+/// ——退避间隔（秒级）远小于限流窗口（分钟级），重试只是在已耗尽的配额上继续请求。
+/// 不带任何等待提示的 429（`err.rate_limit`）仍按普通错误重试：它可能只是瞬时抖动，
+/// 且重试成本是一次请求，而放弃成本的整轮无数据。
 fn default_should_retry(e: &(u16, String)) -> bool {
     if e.0 == 403 {
+        return false;
+    }
+    if e.1.starts_with("err.rate_limit_reset") || e.1 == "err.credential_invalid" {
+        log::warn!("请求失败(状态={}), 上游限流/凭据问题, 不重试: {}", e.0, e.1);
         return false;
     }
     log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
@@ -756,6 +810,107 @@ mod tests {
         let url = format!("{}/api/models", mock.uri());
         let result = fetch_page_with_retry(&client, &url, None).await;
         assert!(result.is_err(), "token=None 不应携带 Authorization，故不应命中要求该 header 的 mock");
+    }
+
+    fn hdrs(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+        let mut h = reqwest::header::HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(
+                k.parse::<reqwest::header::HeaderName>().unwrap(),
+                reqwest::header::HeaderValue::from_str(v).unwrap(),
+            );
+        }
+        h
+    }
+
+    #[test]
+    fn test_rate_limit_error_classification() {
+        // GitHub 主限流：403 + 配额归零，无等待提示 → 通用限流键
+        let e = rate_limit_error(403, &hdrs(&[("x-ratelimit-remaining", "0")])).unwrap();
+        assert_eq!((e.0, e.1.as_str()), (403, "err.rate_limit"));
+
+        // 次级限流：retry-after 直接给出秒数
+        let e = rate_limit_error(
+            403,
+            &hdrs(&[("x-ratelimit-remaining", "0"), ("retry-after", "120")]),
+        )
+        .unwrap();
+        assert_eq!(e.1, "err.rate_limit_reset|120");
+
+        // 429 按头判定，不依赖 body 文案；reset 为 epoch 时折算成剩余秒
+        let reset = chrono::Utc::now().timestamp() + 3600;
+        let e = rate_limit_error(429, &hdrs(&[("x-ratelimit-reset", &reset.to_string())])).unwrap();
+        let secs: i64 = e
+            .1
+            .strip_prefix("err.rate_limit_reset|")
+            .unwrap_or("0")
+            .parse()
+            .unwrap();
+        assert!(
+            (3595..=3600).contains(&secs),
+            "应折算为约 3600 秒，实得 {}",
+            secs
+        );
+
+        // 配额未耗尽的 403（私有仓库、被封）与 404 不属限流：仍按真实故障计入断路器
+        assert!(rate_limit_error(403, &hdrs(&[("x-ratelimit-remaining", "4999")])).is_none());
+        assert!(rate_limit_error(403, &hdrs(&[])).is_none());
+        assert!(rate_limit_error(404, &hdrs(&[])).is_none());
+
+        // 带失效凭据时 GitHub 以 401 回，属全局凭据问题（用户改配置即自愈）
+        assert_eq!(
+            rate_limit_error(401, &hdrs(&[])).unwrap().1,
+            "err.credential_invalid"
+        );
+    }
+
+    #[test]
+    fn test_rate_limit_errors_are_not_retried() {
+        // 已知等待窗口的限流：退避（秒级）远短于窗口（分钟级），重试只是白耗配额
+        assert!(!default_should_retry(&(
+            429,
+            "err.rate_limit_reset|120".to_string()
+        )));
+        assert!(!default_should_retry(&(
+            401,
+            "err.credential_invalid".to_string()
+        )));
+        // 403 一律不重试（无论是限流还是拒绝访问）
+        assert!(!default_should_retry(&(403, "err.rate_limit".to_string())));
+        assert!(!default_should_retry(&(
+            403,
+            "err.api_error|403|Forbidden".to_string()
+        )));
+        // 无等待提示的 429 无法判断窗口，按普通错误重试
+        assert!(default_should_retry(&(429, "err.rate_limit".to_string())));
+        assert!(default_should_retry(&(
+            429,
+            "err.api_error|429|Too Many Requests".to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn test_fetch_page_reports_github_rate_limit() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/repos/o/r/releases"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("x-ratelimit-remaining", "0")
+                    .insert_header("retry-after", "1800")
+                    .set_body_json(serde_json::json!({"message": "API rate limit exceeded"})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let url = format!("{}/repos/o/r/releases", mock.uri());
+        let (_, msg) = fetch_page_with_retry(&client, &url, Some("t"))
+            .await
+            .expect_err("限流响应应为 Err");
+        // 分类正确 + 全程只请求一次（不重试）
+        assert_eq!(msg, "err.rate_limit_reset|1800");
     }
 
     #[tokio::test]

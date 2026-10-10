@@ -271,8 +271,9 @@ pub struct NewModel {
 /// - insert 时 body 传 None，README 由阶段 2 异步拉取后由 `finalize_models` 回填
 /// - 元数据 JSON 由 `finalize_models` 写入 `extra_metadata`
 ///
-/// 行为与 `github::save_releases` 对齐：按 published_at 降序排列，`max_count=1` 时
-/// 遇到已入库记录立即返回空 vec；历史模式跳过已存在记录继续。
+/// 行为与 `db::save::save_entries_generic` 对齐：按 published_at 降序排列，`max_count`
+/// 只限本轮写入条数，扫描停止由连续已知命中（`KNOWN_HIT_STOP`）决定——旧实现
+/// 「首条去重命中即返回空」会让同一轮内较旧的新模型永久留在库外。
 pub fn insert_new_models(
     conn: &Connection,
     source_id: i64,
@@ -286,6 +287,7 @@ pub fn insert_new_models(
     parsed.sort_by(|a, b| b.created_at.cmp(&a.created_at));
 
     let mut inserted = Vec::new();
+    let mut known_hits: usize = 0;
     let inserted_any = std::cell::Cell::new(false);
     // 循环任意出口统一收尾：本轮确有新插入时对该 source 全链重算一次 version_bump
     // （批量收尾一次，避免逐条重算在历史模式首拉 N 条时退化为 O(N²)；最终态等价）。
@@ -311,7 +313,7 @@ pub fn insert_new_models(
         let tag = &model.id;
         let html_url = format!("https://huggingface.co/{}", tag);
         let metadata = model.metadata_json();
-        if let Ok(id) = releases::insert_release(
+        match releases::insert_release(
             conn,
             source_id,
             tag,
@@ -321,26 +323,33 @@ pub fn insert_new_models(
             false,
             None,
         ) {
-            if id > 0 {
+            Ok(id) if id > 0 => {
+                known_hits = 0;
                 inserted_any.set(true);
                 inserted.push(NewModel {
                     id,
                     tag: tag.clone(),
                     metadata,
                 });
-                if inserted.len() >= max_count {
+                if max_count > 0 && inserted.len() >= max_count {
                     finalize();
                     return inserted;
                 }
-                continue;
+            }
+            // 已入库（去重命中，UNIQUE(source_id, tag_name)）；负值理论不可达，同按去重处理
+            Ok(_) => {
+                known_hits += 1;
+                if known_hits >= crate::db::save::KNOWN_HIT_STOP {
+                    break;
+                }
+            }
+            // 真正的 DB 错误：记日志并中断本轮。当成去重命中吞掉会让下一轮以为该区域
+            // 已处理完，故障因此不可见。
+            Err(e) => {
+                log::error!("insert_release failed (source_id={}, tag={}): {}", source_id, tag, e);
+                break;
             }
         }
-        // 已入库且普通模式（max_count=1）时，说明不是新模型，停止
-        if max_count == 1 {
-            finalize();
-            return vec![];
-        }
-        // 历史模式：已存在的跳过，继续找更新的新模型
     }
     finalize();
     inserted
@@ -521,7 +530,7 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_new_models_max_count_1_existing_returns_empty() {
+    fn test_insert_new_models_write_cap_backfills_older_unsaved_model() {
         let conn = db::init::init_memory_db().unwrap();
         let sid = db::sources::add_source(&conn, "huggingface", "moonshotai", "", "").unwrap();
         let data = vec![
@@ -531,9 +540,16 @@ mod tests {
         // 首次保存 m3
         let r1 = insert_and_finalize(&conn, sid, &data, 1);
         assert_eq!(r1.len(), 1);
-        // 再次保存同样数据：m3 已存在 → 返回空
+        // 再次保存同一页：m3 已入库，但写入上限不兼任停止判据 → 缺口 m2 被补写
         let r2 = insert_and_finalize(&conn, sid, &data, 1);
-        assert_eq!(r2.len(), 0);
+        assert_eq!(r2.len(), 1);
+        let mut tags: Vec<String> = db::releases::get_releases_with_state(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        tags.sort();
+        assert_eq!(tags, vec!["org/m2".to_string(), "org/m3".to_string()]);
     }
 
     #[test]

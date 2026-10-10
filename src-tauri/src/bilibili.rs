@@ -658,8 +658,8 @@ fn entries_to_json(entries: Vec<BiliEntry>) -> Vec<serde_json::Value> {
 
 /// 保存视频条目到 releases 表（tag_name = bvid，天然去重）。
 ///
-/// 行为收敛到 `db::save::save_entries_generic`（与 youtube 共用同一循环）：
-/// 按 published 降序，max_count=1 遇到已入库记录立即返回空；历史模式跳过已存在记录继续。
+/// 行为收敛到 `db::save::save_entries_generic`（与 youtube 共用同一循环）：按 published
+/// 降序排列，max_count 只限本轮写入条数，扫描要到连续 KNOWN_HIT_STOP 条已入库命中才停止。
 pub fn save_entries(
     conn: &Connection,
     source_id: i64,

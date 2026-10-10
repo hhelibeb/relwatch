@@ -202,7 +202,8 @@ pub fn save_releases(
         .unwrap_or(false);
 
     // 行为收敛到 db::save::save_entries_generic：按 published_at 降序排列，
-    // max_count=1 遇到已入库记录立即返回空；历史模式跳过已存在记录继续。
+    // max_count 只限本轮写入条数；扫描由连续 KNOWN_HIT_STOP 条已入库命中才停止，
+    // 因此同一轮内较旧的新条目会在下一轮补上。
     // prerelease 未开启时在投影阶段跳过（不参与 max_count 早退计数）。
     let entries: Vec<crate::db::save::SaveEntry> = gh_releases
         .iter()
@@ -567,7 +568,7 @@ mod tests {
     }
 
     #[test]
-    fn test_save_releases_max_count_1_existing_returns_empty() {
+    fn test_save_releases_write_cap_backfills_older_unsaved_release() {
         let conn = db::init::init_memory_db().unwrap();
         db::settings::set_setting(&conn, db::settings::KEY_CHECK_PRERELEASES, "false").unwrap();
         let sid = db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
@@ -580,9 +581,17 @@ mod tests {
         let result = save_releases(&conn, sid, &data, 1);
         assert_eq!(result.len(), 1);
 
-        // Second save with same data: v3.0.0 already exists, should return empty
+        // 第二轮同一页：v3 已入库不再写，但写入上限不兼任停止判据，
+        // 排在已知最新版之后的 v2 必须被补写（否则该缺口永不回补）。
         let result = save_releases(&conn, sid, &data, 1);
-        assert_eq!(result.len(), 0);
+        assert_eq!(result.len(), 1);
+        let mut tags: Vec<String> = db::releases::get_releases_with_state(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        tags.sort();
+        assert_eq!(tags, vec!["v2.0.0".to_string(), "v3.0.0".to_string()]);
     }
 
     #[test]

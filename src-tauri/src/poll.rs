@@ -80,10 +80,11 @@ fn compute_fetch_plan(
         // 小数量，单次 API 调用即可
         (Some(fetch_history_count), (fetch_history_count + 5).clamp(10, 100), false)
     } else {
-        // 增量模式：max_count=0（“拉取全部”）时 save 不截断（None），
-        // 避免 fetch_history_count=0 导致 save 阶段只保存 1 条。
-        let max_count = if fetch_history_count == 0 { None } else { Some(fetch_history_count) };
-        (max_count, 10, false)
+        // 增量模式不设写入上限：`fetch_history_count` 按设置项文案（「历史版本数量」）只
+        // 约束首次/历史拉取，拿它兼任每轮写入上限会把同一周期内第二条起的新版本全部挡在
+        // 库外（配合旧的「首条去重命中即停止」更会形成永不回补的缺口）。单页 10 条已是
+        // 每轮成本上界，无需再截断。
+        (None, 10, false)
     }
 }
 
@@ -660,15 +661,23 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
             {
                 Ok(saved) => saved,
                 Err(_) => {
-                    log::error!(
-                        "err.save_timeout|{} (owner={}, repo={})",
-                        SOURCE_FETCH_TIMEOUT_SECS,
-                        log_owner,
-                        log_repo
-                    );
-                    vec![]
+                    // 超时意味着本轮结果**不完整**（已 insert 的 release 仍在库中，其余没落库），
+                    // 不是「本轮无新增」。走未计数失败路径（err.save_timeout 在豁免名单里，
+                    // 不烧断路器额度）后直接返回：若继续落进成功分支，缺失会被记成 INFO 成功、
+                    // 断路器清零，用户无从察觉。
+                    let msg = format!("err.save_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS);
+                    return Err(record_check_failure(ctx.db_pool, source.id, log_owner, log_repo, 0, &msg).await);
                 }
             };
+            // 抓到的每一条都是新内容、且吃满单页 → feed 窗口被上游截断：比它更旧的新版本没随
+            // 本次响应返回，本轮结果仍不完整（如间隔内发布数超过单页容量）。fetch/save 本身
+            // 确实成功，故源健康保持 ok，但补一条 WARN 让缺口在日志里可见。
+            // 首次检查必然全为新内容，不在此列（那不是截断，是建库）。
+            let window_truncated = !is_first_query
+                && !history_query
+                && per_page > 0
+                && releases.len() >= per_page
+                && saved.len() == releases.len();
             // save 之后的同步 DB 写入收笼进 spawn_blocking，避免阻塞 tokio worker
             let db_pool_blk = ctx.db_pool.clone();
             let source_id = source.id;
@@ -691,6 +700,14 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
                     log_key,
                     &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
                 );
+                if window_truncated {
+                    db::logs::write_log_key(
+                        &conn,
+                        "WARN",
+                        "check.partial",
+                        &json!({"owner": &owner, "repo": &repo, "count": new_count}).to_string(),
+                    );
+                }
                 (ids, saved)
             })
             .await;
@@ -703,41 +720,51 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
             }
         }
         Err((status, msg)) => {
-            // 凭据脱敏：适配器错误文本会回显完整 URL（如 `…&key=AIzaSy…`），
-            // 此处的 msg 有**三个去向**，逐个出口处理不现实，故在源头脱敏：
-            // ① logs（`write_log_key` 也默认脱敏，此处是二道保险）；
-            // ② `sources.last_check_message`（`record_check_failure` 同样默认脱敏）；
-            // ③ **返回给前端**——手动检查失败时该文本会进 toast，用户截图报障即外泄。
-            let msg = crate::redact::redact(&msg);
-            // 网络错误(0)、认证/限流(401/403/429)、服务端错误(5xx) 均为临时性，记为 WARN
-            let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-            let db_pool_blk = ctx.db_pool.clone();
-            let source_id = source.id;
-            let owner = log_owner;
-            let repo = log_repo;
-            let msg_for_log = msg.clone();
-            // 上游配额/限流/凭据类失败不计入断路器（见 is_uncounted_failure）
-            let uncounted = is_uncounted_failure(&msg);
-            let log_key_failed = if uncounted { "check.failed_uncounted" } else { "check.failed" };
-            let _ = tokio::task::spawn_blocking(move || {
-                if let Ok(conn) = db_pool_blk.get() {
-                    let _ = if uncounted {
-                        db::sources::record_check_failure_uncounted(&conn, source_id, &msg_for_log)
-                    } else {
-                        db::sources::record_check_failure(&conn, source_id, &msg_for_log)
-                    };
-                    db::logs::write_log_key(
-                        &conn,
-                        level,
-                        log_key_failed,
-                        &json!({"owner": &owner, "repo": &repo, "error": &msg_for_log}).to_string(),
-                    );
-                }
-            })
-            .await;
+            let msg = record_check_failure(ctx.db_pool, source.id, log_owner, log_repo, status, &msg).await;
             Err(msg)
         }
     }
+}
+
+/// 记录一次检查失败（源健康状态 + 日志），返回**脱敏后**的错误文本供调用方返回前端。
+///
+/// 凭据脱敏放在这里而非各出口：适配器错误文本会回显完整 URL（如 `…&key=AIzaSy…`），
+/// 而该文本有**三个去向**——① logs（`write_log_key` 也默认脱敏，此处是二道保险）；
+/// ② `sources.last_check_message`；③ 返回给前端进 toast（用户截图报障即外泄）。
+///
+/// `status=0` 表示无 HTTP 状态（超时/发送失败），与认证、限流、5xx 同样按临时性记 WARN。
+async fn record_check_failure(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    source_id: i64,
+    owner: String,
+    repo: String,
+    status: u16,
+    msg: &str,
+) -> String {
+    let msg = crate::redact::redact(msg);
+    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+    // 上游配额/限流/保存超时这类环境故障不计入断路器（见 is_uncounted_failure）
+    let uncounted = is_uncounted_failure(&msg);
+    let log_key_failed = if uncounted { "check.failed_uncounted" } else { "check.failed" };
+    let pool = db_pool.clone();
+    let msg_for_log = msg.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        if let Ok(conn) = pool.get() {
+            let _ = if uncounted {
+                db::sources::record_check_failure_uncounted(&conn, source_id, &msg_for_log)
+            } else {
+                db::sources::record_check_failure(&conn, source_id, &msg_for_log)
+            };
+            db::logs::write_log_key(
+                &conn,
+                level,
+                log_key_failed,
+                &json!({"owner": &owner, "repo": &repo, "error": &msg_for_log}).to_string(),
+            );
+        }
+    })
+    .await;
+    msg
 }
 
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
@@ -992,6 +1019,16 @@ const UNCOUNTED_FAILURE_PREFIXES: &[&str] = &[
     // B 站风控校验失败 / IP 级限流（账号/IP 层，非源本身）
     "err.bili_risk",
     "err.bili_rate_limit",
+    // 上游速率限制（GitHub 主/次级限流、任意主机的 429，见 http::rate_limit_error）：
+    // 与上面几条同构——共用 token / 共用出口 IP 会一次命中全部同类源，且限流解除即自愈。
+    // 照旧累加的话，未配置 GitHub Token（60 次/小时按 IP 共享）连续 3 轮就会把所有
+    // GitHub 源集体禁用。
+    "err.rate_limit",
+    "err.rate_limit_reset",
+    // 凭据失效（带失效 Authorization 头时 GitHub 以 401 回）：改配置即自愈，同样全局命中
+    "err.credential_invalid",
+    // save 阶段超时：本轮数据量/上游速度问题，不是这个源坏了（下轮继续增量）
+    "err.save_timeout",
 ];
 
 /// 该错误是否属于「不该计入连续失败」的类别。
@@ -1618,18 +1655,20 @@ mod tests {
 
     #[test]
     fn test_compute_plan_no_history() {
-        // fetch_history=false → third branch (Some(count), 10, false)
+        // fetch_history=false → 增量分支：每轮不截断写入（(None, 10, false)）。
+        // 曾经这里返回 Some(count)，把「历史版本数量」兼任每轮上限 → 同一周期内
+        // 第二条起的新版本全部不入库。
         let (max, per_page, paginate) = compute_fetch_plan(false, true, 50);
-        assert_eq!(max, Some(50));
+        assert_eq!(max, None);
         assert_eq!(per_page, 10);
         assert!(!paginate);
     }
 
     #[test]
     fn test_compute_plan_not_first_query() {
-        // !is_first_query → third branch
+        // !is_first_query → 增量分支，同样不受 fetch_history_count 约束
         let (max, per_page, paginate) = compute_fetch_plan(true, false, 50);
-        assert_eq!(max, Some(50));
+        assert_eq!(max, None);
         assert_eq!(per_page, 10);
         assert!(!paginate);
     }
@@ -1690,6 +1729,182 @@ mod tests {
         assert_eq!(max, Some(101));
         assert_eq!(per_page, 100);
         assert!(paginate);
+    }
+
+    #[test]
+    fn test_uncounted_failure_covers_rate_limit_and_save_timeout() {
+        // 全局性、可自愈的故障不烧断路器额度。回归点：未配置 GitHub Token 时限流是
+        // 403 + x-ratelimit-remaining:0（http::rate_limit_error 归类），照旧累加的话
+        // 连续 3 轮会把**所有** GitHub 源集体禁用。
+        for msg in [
+            "err.rate_limit",
+            "err.rate_limit_reset|120",
+            "err.credential_invalid",
+            "err.save_timeout|300",
+            "err.youtube_api_quota|quota",
+            "err.bili_rate_limit",
+        ] {
+            assert!(is_uncounted_failure(msg), "{} 应豁免断路器", msg);
+        }
+        // 私有仓库/404/持续拉取超时是源自身的问题，照常累加（该禁就禁）
+        for msg in [
+            "err.api_error|403|Forbidden",
+            "err.api_error|404|Not Found",
+            "err.source_timeout|300",
+        ] {
+            assert!(!is_uncounted_failure(msg), "{} 应计入断路器", msg);
+        }
+    }
+
+    /// 只驱动编排+保存路径的最小适配器：`fetch` 依次吐出预置窗口，`save` 走真实的
+    /// [`crate::db::save::save_entries_generic`]，用于端到端验证增量轮转语义。
+    struct StubAdapter {
+        windows: std::sync::Mutex<Vec<Vec<(&'static str, &'static str)>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl source::SourceAdapter for StubAdapter {
+        fn source_type(&self) -> &'static str {
+            "github"
+        }
+
+        async fn fetch(
+            &self,
+            _client: &reqwest::Client,
+            _source: &db::sources::Source,
+            _per_page: usize,
+            _token: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+            Ok(self
+                .windows
+                .lock()
+                .unwrap()
+                .remove(0)
+                .into_iter()
+                .map(|(tag, published)| json!({"tag": tag, "published": published}))
+                .collect())
+        }
+
+        async fn fetch_all(
+            &self,
+            client: &reqwest::Client,
+            source: &db::sources::Source,
+            _max_count: Option<usize>,
+            token: Option<&str>,
+        ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+            self.fetch(client, source, 0, token).await
+        }
+
+        async fn save(
+            &self,
+            db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+            source: &db::sources::Source,
+            data: &[serde_json::Value],
+            max_count: usize,
+            _client: &reqwest::Client,
+        ) -> Vec<(i64, Option<String>)> {
+            let conn = match db_pool.get() {
+                Ok(c) => c,
+                Err(_) => return vec![],
+            };
+            let entries: Vec<db::save::SaveEntry> = data
+                .iter()
+                .map(|v| {
+                    let tag = v["tag"].as_str().unwrap_or_default().to_string();
+                    db::save::SaveEntry {
+                        name: tag.clone(),
+                        html_url: format!("https://x/{}", tag),
+                        published: v["published"].as_str().unwrap_or_default().to_string(),
+                        tag,
+                        prerelease: false,
+                        body: None,
+                        metadata: None,
+                    }
+                })
+                .collect();
+            db::save::save_entries_generic(
+                &conn,
+                source.id,
+                &entries,
+                max_count,
+                |_, _, _| {},
+                |_, _, _| {},
+            )
+        }
+
+        async fn verify_and_describe(
+            &self,
+            _client: &reqwest::Client,
+            _owner: &str,
+            _repo: &str,
+            _token: Option<&str>,
+        ) -> Result<String, (u16, String)> {
+            Ok("stub".to_string())
+        }
+    }
+
+    /// 回归（核心缺陷）：同一轮询周期内发布多条时，上一轮已抓走最新那条，本轮首条即
+    /// 去重命中——旧实现在此返回空集，较旧的新条目**每轮都排在已知条目之后**，永不入库。
+    /// 走真实编排链路（fetch → save → post_save）验证缺口会被自动补上。
+    #[tokio::test]
+    async fn check_one_source_backfills_releases_published_in_same_interval() {
+        let pool = db::init::init_memory_pool().unwrap();
+        let source_id = {
+            let conn = pool.get().unwrap();
+            db::sources::add_source(&conn, "github", "o", "r", "").unwrap()
+        };
+        let adapter = StubAdapter {
+            windows: std::sync::Mutex::new(vec![
+                // 第 1 轮：该周期只发布了 v3
+                vec![("v3", "2024-01-03T00:00:00Z")],
+                // 第 2 轮：v2/v1 其实与 v3 同属一个周期，只是排在已入库的 v3 之后
+                vec![
+                    ("v3", "2024-01-03T00:00:00Z"),
+                    ("v2", "2024-01-02T00:00:00Z"),
+                    ("v1", "2024-01-01T00:00:00Z"),
+                ],
+            ]),
+        };
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+
+        let expected_new = [1usize, 2usize];
+        for (round, expect_new) in expected_new.iter().enumerate() {
+            let source = {
+                let conn = pool.get().unwrap();
+                db::sources::list_sources(&conn)
+                    .unwrap()
+                    .into_iter()
+                    .find(|s| s.id == source_id)
+                    .unwrap()
+            };
+            let ctx = CheckCtx {
+                db_pool: &pool,
+                adapter: &adapter,
+                client: &client,
+                token: None,
+                fetch_history: false,
+                fetch_history_count: 1,
+                log_key: if round == 0 { "check.manual" } else { "check.auto" },
+            };
+            let outcome = check_one_source(&ctx, &source)
+                .await
+                .expect("本轮检查应成功");
+            assert_eq!(
+                outcome.new_ids.len(),
+                *expect_new,
+                "第 {} 轮新增条数不符",
+                round + 1
+            );
+        }
+
+        let conn = pool.get().unwrap();
+        let mut tags: Vec<String> = db::releases::get_releases_with_state(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        tags.sort();
+        assert_eq!(tags, vec!["v1", "v2", "v3"], "同一周期内的多条版本都必须入库");
     }
 
     // --- credential 读取（经 credential::read_credential）---

@@ -1150,7 +1150,7 @@ impl SourceAdapter for YoutubeAdapter {
 /// 保存 RSS 条目到 releases 表（tag_name = videoId，天然去重）。
 ///
 /// 行为收敛到 `db::save::save_entries_generic`：按 published 降序排列，
-/// `max_count=1` 时遇到已入库记录立即返回空；历史模式跳过已存在记录继续。
+/// `max_count` 只限本轮写入条数，扫描要到连续 `KNOWN_HIT_STOP` 条已入库命中才停止。
 pub fn save_entries(
     conn: &Connection,
     source_id: i64,
@@ -1999,7 +1999,7 @@ mod tests {
     }
 
     #[test]
-    fn test_save_entries_max_count_1_existing_returns_empty() {
+    fn test_save_entries_write_cap_backfills_older_unsaved_video() {
         let conn = db::init::init_memory_db().unwrap();
         let sid = db::sources::add_source(&conn, "youtube", "UCabc123", "", "").unwrap();
         let data = vec![
@@ -2007,8 +2007,15 @@ mod tests {
             entry_value("v2", "Two", "2024-02-01T00:00:00+00:00"),
         ];
         assert_eq!(save_entries(&conn, sid, &data, 1).len(), 1);
-        // 再次保存：v3 已存在 → 返回空
-        assert_eq!(save_entries(&conn, sid, &data, 1).len(), 0);
+        // 再次保存同一页：v3 已入库，但写入上限不兼任停止判据 → 缺口 v2 被补写
+        assert_eq!(save_entries(&conn, sid, &data, 1).len(), 1);
+        let mut tags: Vec<String> = db::releases::get_releases_with_state(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        tags.sort();
+        assert_eq!(tags, vec!["v2".to_string(), "v3".to_string()]);
     }
 
     #[test]

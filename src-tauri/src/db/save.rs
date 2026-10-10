@@ -5,7 +5,7 @@ use crate::db::releases;
 /// 保存循环的统一条目视图。
 ///
 /// 各适配器把各自的 JSON/强类型条目投影为该结构后交给 [`save_entries_generic`]，
-/// "排序 → 去重 → max_count 早退" 的语义收敛到一处，任何修正只需改一个地方。
+/// "排序 → 去重 → 写入上限 / 已知区域停止" 的语义收敛到一处，任何修正只需改一个地方。
 pub struct SaveEntry {
     /// 唯一标识（GitHub tag_name / YouTube video_id / B 站 bvid），用于去重。
     pub tag: String,
@@ -20,13 +20,21 @@ pub struct SaveEntry {
     pub metadata: Option<String>,
 }
 
+/// 连续命中多少条已入库条目即认为已扫进已知区域，停止本轮扫描。
+///
+/// 「首条去重命中就停」是不能用的停止判据：一轮内发布多条时，上一轮往往已经抓走了
+/// 最新那条，本轮首条即命中 → 立即停止 → 同轮较旧的新条目留在库外；下一轮仍在它
+/// 前面命中那一条而再次停止，**缺口永不回补**。跨过若干已知条目才能把缺口补上，
+/// 而 3 条的余量足够覆盖「已知条目穿插在中间」的正常形态，又不至于每轮全页重扫。
+pub(crate) const KNOWN_HIT_STOP: usize = 3;
+
 /// 通用保存循环：按 published 降序逐条 insert，新条目计入 saved 并触发
-/// `on_inserted`；去重命中触发 `on_duplicate`。真正的 DB 错误只记日志，
-/// 不当作去重命中吞掉。
+/// `on_inserted`；去重命中触发 `on_duplicate`。真正的 DB 错误只记日志并中断本轮。
 ///
 /// 模式语义（youtube/bilibili/github 三份 save 共用）：
-/// - 普通模式（max_count=1）遇到已入库记录立即返回空
-/// - 历史模式（max_count>1）跳过已存在记录继续找更新内容
+/// - `max_count` 只限制**本轮写入条数**，不参与扫描停止判断
+/// - 扫描停止只看 [`KNOWN_HIT_STOP`]；上限命中时剩余较旧条目本轮不写，
+///   但下一轮仍会被重新扫到（不会永久丢失）
 /// - `max_count=0` 表示不设上限
 pub fn save_entries_generic(
     conn: &Connection,
@@ -40,8 +48,9 @@ pub fn save_entries_generic(
     sorted.sort_by(|a, b| b.published.cmp(&a.published));
 
     let mut saved = Vec::new();
+    let mut known_hits: usize = 0;
     let inserted_any = std::cell::Cell::new(false);
-    // 循环以任意方式结束（耗尽 / max_count 早退 / 普通模式遇已存在）后统一收尾：
+    // 循环以任意方式结束（耗尽 / 写入上限命中 / 连续已知条目停止）后统一收尾：
     // 本轮确有新插入时对该 source 全链重算一次 version_bump
     // （逐条全链重算会退化为 O(N²)，改成批量结束一次、最终态等价）。
     let finalize = || {
@@ -76,6 +85,7 @@ pub fn save_entries_generic(
             entry.body.as_deref(),
         ) {
             Ok(id) if id > 0 => {
+                known_hits = 0;
                 inserted_any.set(true);
                 on_inserted(conn, id, entry);
                 saved.push((id, entry.body.clone()));
@@ -85,26 +95,22 @@ pub fn save_entries_generic(
                 }
                 continue;
             }
-            // 已入库（去重命中，UNIQUE(source_id, tag_name)）：交给适配器刷新元数据
-            Ok(0) => {
-                on_duplicate(conn, source_id, entry);
-            }
-            // 理论不可达（insert_release 返回值非负）；防御性按去重命中处理
+            // 已入库（去重命中，UNIQUE(source_id, tag_name)）：交给适配器刷新元数据。
+            // 负值理论不可达，一并按去重命中处理。
             Ok(_) => {
                 on_duplicate(conn, source_id, entry);
+                known_hits += 1;
+                if known_hits >= KNOWN_HIT_STOP {
+                    break;
+                }
             }
-            // 真正的 DB 错误：记日志，普通模式与去重命中同样中断本轮，但不触发
-            // on_duplicate（否则会把故障误当已存在去刷写元数据），便于从日志定位根因。
+            // 真正的 DB 错误：记日志并中断本轮，不触发 on_duplicate（否则会把故障误当
+            // 已存在去刷写元数据），也不清 known_hits——避免故障期间继续向更旧的条目扫描。
             Err(e) => {
                 log::error!("insert_release failed (source_id={}, tag={}): {}", source_id, entry.tag, e);
+                break;
             }
         }
-        // 已入库且普通模式（max_count=1）时，说明不是新内容，停止
-        if max_count == 1 {
-            finalize();
-            return vec![];
-        }
-        // 历史模式：已存在的跳过，继续找更新的新内容
     }
     finalize();
     saved
@@ -193,5 +199,92 @@ mod tests {
         assert_eq!(saved.len(), 2);
         assert_eq!(version_bump_of(&conn, "v1.1.0"), None);
         assert_eq!(version_bump_of(&conn, "v1.2.0").as_deref(), Some("minor"));
+    }
+
+    fn tags(conn: &rusqlite::Connection) -> Vec<String> {
+        let mut v: Vec<String> = releases::get_releases_with_state(conn)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.tag_name)
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// 回归（一轮多条时较旧的新条目被永久丢弃）：上一轮受写入上限只抓走最新那条，
+    /// 本轮首条即去重命中——旧实现在此立即返回空，v1.2.0 此后每轮都排在已知的
+    /// v1.3.0 之后，永不入库。停止判据改为连续已知命中后，这类缺口能在下一轮自动补上。
+    #[test]
+    fn test_older_unsaved_release_below_known_newest_is_backfilled() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let window = || {
+            vec![
+                entry("v1.3.0", "2024-01-03T00:00:00Z"),
+                entry("v1.2.0", "2024-01-02T00:00:00Z"),
+            ]
+        };
+        // 上一轮：写入上限 1，只落最新的 v1.3.0
+        assert_eq!(
+            save_entries_generic(&conn, sid, &window(), 1, |_, _, _| {}, |_, _, _| {}).len(),
+            1
+        );
+        assert_eq!(tags(&conn), vec!["v1.3.0"]);
+
+        // 本轮：v1.3.0 去重命中（旧实现于此停止），v1.2.0 必须被补写
+        let saved = save_entries_generic(&conn, sid, &window(), 0, |_, _, _| {}, |_, _, _| {});
+        assert_eq!(saved.len(), 1);
+        assert_eq!(tags(&conn), vec!["v1.2.0", "v1.3.0"]);
+        // 补写的旧条目也要有升型基线（v1.3.0 相对 v1.2.0 = minor）
+        assert_eq!(version_bump_of(&conn, "v1.2.0"), None);
+        assert_eq!(version_bump_of(&conn, "v1.3.0").as_deref(), Some("minor"));
+    }
+
+    /// 写入上限不再兼任停止判据：上限命中时较旧条目本轮不写，但下一轮仍会被扫到。
+    #[test]
+    fn test_write_cap_does_not_permanently_hide_older_entries() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let window = vec![
+            entry("v3", "2024-01-03T00:00:00Z"),
+            entry("v2", "2024-01-02T00:00:00Z"),
+            entry("v1", "2024-01-01T00:00:00Z"),
+        ];
+        save_entries_generic(&conn, sid, &window, 1, |_, _, _| {}, |_, _, _| {});
+        assert_eq!(tags(&conn), vec!["v3"]);
+
+        // 逐轮各写一条， backlog 应能排空而不是只剩 v3
+        save_entries_generic(&conn, sid, &window, 1, |_, _, _| {}, |_, _, _| {});
+        save_entries_generic(&conn, sid, &window, 1, |_, _, _| {}, |_, _, _| {});
+        assert_eq!(tags(&conn), vec!["v1", "v2", "v3"]);
+    }
+
+    /// 连续 [`KNOWN_HIT_STOP`] 条已知即停止扫描：藏得更旧的条目不每轮重扫（成本上界）。
+    #[test]
+    fn test_scan_stops_after_three_consecutive_known_hits() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let known = vec![
+            entry("v5", "2024-01-05T00:00:00Z"),
+            entry("v4", "2024-01-04T00:00:00Z"),
+            entry("v3", "2024-01-03T00:00:00Z"),
+        ];
+        save_entries_generic(&conn, sid, &known, 0, |_, _, _| {}, |_, _, _| {});
+
+        let mut window = vec![
+            entry("v5", "2024-01-05T00:00:00Z"),
+            entry("v4", "2024-01-04T00:00:00Z"),
+            entry("v3", "2024-01-03T00:00:00Z"),
+            entry("v2", "2024-01-02T00:00:00Z"),
+        ];
+        let saved = save_entries_generic(&conn, sid, &window, 0, |_, _, _| {}, |_, _, _| {});
+        assert!(saved.is_empty());
+        assert_eq!(tags(&conn), vec!["v3", "v4", "v5"]);
+
+        // 已知区域只剩 2 条命中时不停止：更旧的 v2 仍会被补写（余量覆盖穿插形态）
+        window.remove(0);
+        let saved = save_entries_generic(&conn, sid, &window, 0, |_, _, _| {}, |_, _, _| {});
+        assert_eq!(saved.len(), 1);
+        assert_eq!(tags(&conn), vec!["v2", "v3", "v4", "v5"]);
     }
 }
