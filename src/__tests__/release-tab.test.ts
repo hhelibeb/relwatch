@@ -803,6 +803,67 @@ describe('ReleaseTab 详情弹窗', () => {
   })
 })
 
+// ── 搜索防抖手势契约（真实搜索栏 + v-model 宿主）─────────────────
+// 搜索框本地回显 + 防抖上抛后，「后续用户手势发生时上游 search 已是最新值」
+// 的旧契约不再天然成立。这里用真实 ReleaseSearchBar 驱动两个手势：
+// 防抖窗口内点深度搜索 / 按 Enter，都必须按「此刻输入框里的词」行动。
+
+describe('ReleaseTab 搜索防抖手势契约', () => {
+  /** 宿主组件：v-model:search 模拟 App 持有搜索词的回传链路（emit → 宿主 → props）。 */
+  function mountTabRealBar(overrides: { aggregatedList?: ReturnType<typeof defineComponent> } = {}) {
+    const search = ref('')
+    const host = defineComponent({
+      components: { ReleaseTab },
+      setup: () => ({ releases, search }),
+      template: '<ReleaseTab :releases="releases" v-model:search="search" />',
+    })
+    return mount(host, {
+      global: { stubs: { ...stubs, ReleaseSearchBar: false, ReleaseAggregatedList: overrides.aggregatedList } },
+    })
+  }
+
+  it('防抖窗口内点深度搜索：立即按最新词建正文索引（不静默失效）', async () => {
+    vi.useFakeTimers()
+    backend.bodies.set(1, { body: 'full body of release 1', body_translated: null })
+    backend.bodies.set(2, { body: 'full body of release 2', body_translated: null })
+    const wrapper = mountTabRealBar()
+
+    await wrapper.find('input.search-input').setValue('tauri')
+    await wrapper.find('.deep-search-btn').trigger('click')
+
+    await vi.runAllTimersAsync()
+    expect(backend.chunkCalls.length).toBeGreaterThan(0)
+  })
+
+  it('防抖窗口内按 Enter：聚合视图展开的是最新搜索词的分组', async () => {
+    vi.useFakeTimers()
+    const expandedGroups: number[][] = []
+    const AggregatedProbe = defineComponent({
+      name: 'ReleaseAggregatedListProbe',
+      props: ['releases', 'isFiltering'],
+      emits: ['update', 'openDetail'],
+      methods: {
+        expandAll(this: { releases: ReleaseInfo[] }) {
+          expandedGroups.push(this.releases.map(r => r.id))
+        },
+      },
+      template: '<div class="agg-probe" />',
+    })
+    const wrapper = mountTabRealBar({ aggregatedList: AggregatedProbe })
+
+    // 切到聚合视图（视图下拉在搜索栏第 4 个筛选字段）
+    const fields = wrapper.findAll('.filter-field')
+    await fields[3].find('.filter-trigger').trigger('click')
+    await fields[3].findAll('.filter-dropdown button')[1].trigger('click')
+    expect(wrapper.findComponent({ name: 'ReleaseAggregatedListProbe' }).exists()).toBe(true)
+
+    await wrapper.find('input.search-input').setValue('tauri')
+    await wrapper.find('input.search-input').trigger('keydown.enter')
+
+    expect(expandedGroups).toEqual([[3]])
+  })
+})
+
 // ── 旗标与版本类型过滤（flagFilter / versionFilter）──────────────
 
 describe('ReleaseTab 旗标与版本类型过滤', () => {

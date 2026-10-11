@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, inject } from 'vue'
+import { ref, computed, inject, watch, onUnmounted } from 'vue'
 import { t } from '../i18n'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
@@ -264,8 +264,61 @@ const activeChips = computed<ActiveChip[]>(() => {
 })
 
 function onSearchEnter() {
+  flushSearch()
   emit('searchEnter')
 }
+
+// ── 搜索回显与上游状态解耦 ──
+// 受控输入逐键上抛时，上游（App 的 releaseSearch → 全量目录重过滤 → 列表重建）
+// 的同步工作全部挡在本帧绘制之前，字符上屏跟着变慢。改为本地即时回显，
+// 停顿 SEARCH_SYNC_DELAY 后才把搜索词同步给上游；App 在打字期间不再重渲染。
+const SEARCH_SYNC_DELAY = 200
+const inputValue = ref(props.modelValue)
+let syncTimer: ReturnType<typeof setTimeout> | undefined
+
+function cancelSync() {
+  if (syncTimer !== undefined) {
+    clearTimeout(syncTimer)
+    syncTimer = undefined
+  }
+}
+
+function onSearchInput(e: Event) {
+  inputValue.value = (e.target as HTMLInputElement).value
+  cancelSync()
+  syncTimer = setTimeout(() => {
+    syncTimer = undefined
+    emit('update:modelValue', inputValue.value)
+  }, SEARCH_SYNC_DELAY)
+}
+
+function clearSearch() {
+  cancelSync()
+  inputValue.value = ''
+  emit('update:modelValue', '')
+}
+
+function onDeepSearchBtnClick() {
+  // 深度搜索按「此刻输入框里的词」建索引：防抖期内未上抛的词先冲刷，否则上游拿到旧值
+  flushSearch()
+  emit('update:deepSearch', !props.deepSearch)
+}
+
+function flushSearch() {
+  if (syncTimer !== undefined && inputValue.value !== props.modelValue) {
+    cancelSync()
+    emit('update:modelValue', inputValue.value)
+  }
+}
+
+// 外部写入（Agent 拖入搜索词 / 通知定位清空）同步到本地回显；
+// 同时丢弃未发出的防抖值，避免清空后旧词回灌。
+watch(() => props.modelValue, (v) => {
+  cancelSync()
+  if (v !== inputValue.value) inputValue.value = v
+})
+
+onUnmounted(cancelSync)
 
 function selectStatusFilter(value: ReleaseStatusFilter) {
   emit('update:statusFilter', value)
@@ -320,15 +373,15 @@ function clearAllFilters() {
     <div class="log-search-row">
       <div v-if="props.showSearch" class="input-clear-wrap">
         <input
-          :value="modelValue"
+          :value="inputValue"
           :placeholder="t('release.search')"
           class="search-input"
-          @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
+          @input="onSearchInput"
           @keydown.enter.prevent="onSearchEnter"
         />
-        <span v-if="count !== undefined" class="release-count" :class="{ 'has-clear': modelValue !== '' }" :title="t('release.versions', String(count))">({{ count }})</span>
-        <button v-if="modelValue" type="button" class="deep-search-btn" :class="{ active: deepSearch }" :disabled="deepSearching" :title="t('release.deep_search_hint')" @click="emit('update:deepSearch', !deepSearch)">{{ t('release.deep_search') }}</button>
-        <button v-if="modelValue" type="button" class="input-clear-btn" :title="t('input.clear')" @click="emit('update:modelValue', '')">✕</button>
+        <span v-if="count !== undefined" class="release-count" :class="{ 'has-clear': inputValue !== '' }" :title="t('release.versions', String(count))">({{ count }})</span>
+        <button v-if="inputValue" type="button" class="deep-search-btn" :class="{ active: deepSearch }" :disabled="deepSearching" :title="t('release.deep_search_hint')" @click="onDeepSearchBtnClick">{{ t('release.deep_search') }}</button>
+        <button v-if="inputValue" type="button" class="input-clear-btn" :title="t('input.clear')" @click="clearSearch">✕</button>
       </div>
       <div class="filter-group" @mouseleave="filterDropdown.hoverLeave()">
         <!-- 漏斗居首：全量筛选入口；旗标/状态为单一维度快捷筛选，排其后 -->

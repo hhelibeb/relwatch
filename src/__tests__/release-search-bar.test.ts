@@ -45,13 +45,43 @@ afterEach(() => {
 // ============ 搜索框 ============
 
 describe('ReleaseSearchBar — 搜索框', () => {
-  it('输入时 emit update:modelValue', async () => {
+  it('输入时回显即时（不等上游往返），延迟后 emit update:modelValue', async () => {
+    vi.useFakeTimers()
     const wrapper = createWrapper()
 
     const input = wrapper.find('input')
-    await input.setValue('tauri')
+    await input.setValue('ta')
 
-    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['tauri'])
+    expect((input.element as HTMLInputElement).value).toBe('ta')
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+
+    vi.advanceTimersByTime(200)
+    expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['ta'])
+  })
+
+  it('连续输入只上抛最后一次（防抖合并）', async () => {
+    vi.useFakeTimers()
+    const wrapper = createWrapper()
+
+    const input = wrapper.find('input')
+    await input.setValue('t')
+    await input.setValue('ta')
+    await input.setValue('tau')
+
+    vi.advanceTimersByTime(200)
+    expect(wrapper.emitted('update:modelValue')).toEqual([['tau']])
+  })
+
+  it('外部修改 modelValue 同步回显，并丢弃未发出的防抖值', async () => {
+    vi.useFakeTimers()
+    const wrapper = createWrapper({ modelValue: 'seed' })
+
+    await wrapper.find('input').setValue('tauri')
+    await wrapper.setProps({ modelValue: '' } as Parameters<typeof wrapper.setProps>[0])
+
+    expect((wrapper.find('input').element as HTMLInputElement).value).toBe('')
+    vi.advanceTimersByTime(200)
+    expect(wrapper.emitted('update:modelValue')).toBeUndefined()
   })
 
   it('Enter 键触发 searchEnter', async () => {
@@ -443,8 +473,10 @@ describe('ReleaseSearchBar — 组合筛选场景', () => {
   it('同时使用搜索、状态筛选、重要度筛选并切换视图', async () => {
     const wrapper = createWrapper({}, withImportanceShown)
 
-    // 输入搜索词
+    // 输入搜索词（搜索同步有防抖，需推进计时器）
+    vi.useFakeTimers()
     await wrapper.find('input').setValue('vue')
+    vi.advanceTimersByTime(200)
     expect(wrapper.emitted('update:modelValue')?.[0]).toEqual(['vue'])
 
     // 选择状态"未读"

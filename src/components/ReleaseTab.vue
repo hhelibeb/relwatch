@@ -415,9 +415,13 @@ async function runDeepSearch() {
   await syncBodyIndex()
 }
 
-function onDeepSearchToggle(on: boolean) {
+async function onDeepSearchToggle(on: boolean) {
   deepSearch.value = on
-  if (on) void runDeepSearch()
+  if (!on) return
+  // 搜索栏切换前已 flush；新词同样要等 props 回传后才可见，
+  // 否则 runDeepSearch 读到旧词直接返回，正文索引静默不建。
+  await nextTick()
+  void runDeepSearch()
 }
 
 function enableDeepSearch() {
@@ -438,8 +442,12 @@ onUnmounted(() => {
   bodySignals.clear()
 })
 
-function handleSearchEnter() {
-  if (viewMode.value === 'aggregated') aggregatedList.value?.expandAll()
+async function handleSearchEnter() {
+  if (viewMode.value !== 'aggregated') return
+  // 搜索框 Enter 时已 flush，但新词要经宿主回传（props 更新）才可见：
+  // 等一帧再展开，否则 expandAll 展开的是输入前的全量分组。
+  await nextTick()
+  aggregatedList.value?.expandAll()
 }
 
 function backToCalendar() {
