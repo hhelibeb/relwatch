@@ -760,19 +760,31 @@ onUnmounted(() => {
       </div>
     </header>
 
+    <!-- v-show 直接绑在组件 vnode 上时，Vue 的 shouldUpdateComponent 见到
+         nextVNode.dirs 就无条件返回 true，父级每次重渲染都把三个隐藏 tab 整棵子树
+         重算一遍（打字时改的是 App 里的 releaseSearch，故每键都触发）。
+         指令挪到包裹 div 上，组件回到 props 浅比较，隐藏 tab 不再被无关状态牵连。 -->
     <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
-      <SourceTab v-show="activeTab === 'sources'" :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts" :show-source-type-icons="settings.show_source_type_icons"
-        @update="loadSources(); scheduleLoadReleases(); scheduleRefreshLogs()"
-        @check-result="handleSourceCheckResult"
-        @check-busy="sourceChecking = $event"
-        @open-releases="openSourceReleases"
-        @open-unread-releases="openSourceUnreadReleases" />
-      <ReleaseTab v-show="activeTab === 'releases'" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
-      <LogTab v-show="activeTab === 'logs'" :refresh-key="logRefreshKey" @update="refreshLogs()" />
-      <SettingsTab v-show="activeTab === 'settings'" :settings="settings"
-        @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"
-        @agent-config-changed="loadAgentConfig()"
-        @update-log-written="scheduleRefreshLogs()" />
+      <div v-show="activeTab === 'sources'">
+        <SourceTab :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts" :show-source-type-icons="settings.show_source_type_icons"
+          @update="loadSources(); scheduleLoadReleases(); scheduleRefreshLogs()"
+          @check-result="handleSourceCheckResult"
+          @check-busy="sourceChecking = $event"
+          @open-releases="openSourceReleases"
+          @open-unread-releases="openSourceUnreadReleases" />
+      </div>
+      <div v-show="activeTab === 'releases'">
+        <ReleaseTab v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
+      </div>
+      <div v-show="activeTab === 'logs'">
+        <LogTab :refresh-key="logRefreshKey" @update="refreshLogs()" />
+      </div>
+      <div v-show="activeTab === 'settings'">
+        <SettingsTab :settings="settings"
+          @update="(pollChanged, forceReload) => { loadSettings(); if (pollChanged) startCountdown(); if (forceReload) { loadSources(); loadReleases(); } refreshLogs(); applyTheme(settings.theme) }"
+          @agent-config-changed="loadAgentConfig()"
+          @update-log-written="scheduleRefreshLogs()" />
+      </div>
     </main>
 
     <Transition name="toast">
