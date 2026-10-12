@@ -726,6 +726,34 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
     }
 }
 
+/// task panic / 被取消时的失败留痕：源健康状态与日志页各记一条。
+///
+/// 与 [`record_check_failure`] 同口径双写，但错误文本只能是固定的
+/// `err.check_task_panic`——`JoinError` 只说明任务异常终止，源内的错误详情在 panic
+/// 中已经丢了。只写 `sources` 表的话，用户会在源列表看到红字却在日志页查不到任何
+/// 记录，而其他所有失败路径都是双写。
+///
+/// 同步 SQLite 调用收笼进 `spawn_blocking`（与 `apply_mass_failure_guard` 及
+/// huggingface.rs 的同类说明一致）：这条路径虽罕见，但它跑在整轮并发检查的收尾处，
+/// 直接阻塞的正是 tokio worker。
+async fn record_task_panic(
+    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    source_id: i64,
+) {
+    let pool = db_pool.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let Ok(conn) = pool.get() else { return };
+        let _ = db::sources::record_check_failure(&conn, source_id, "err.check_task_panic");
+        db::logs::write_log_key(
+            &conn,
+            "ERROR",
+            "err.check_task_panic",
+            &json!({"id": source_id}).to_string(),
+        );
+    })
+    .await;
+}
+
 /// 记录一次检查失败（源健康状态 + 日志），返回**脱敏后**的错误文本供调用方返回前端。
 ///
 /// 凭据脱敏放在这里而非各出口：适配器错误文本会回显完整 URL（如 `…&key=AIzaSy…`），
@@ -1075,7 +1103,8 @@ async fn poll_all_sources_async(
     };
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENCY));
-    let mut handles = Vec::new();
+    // 带上 source_id：task panic 时 JoinError 里没有源信息，而每个源都必须有人认领。
+    let mut handles: Vec<(i64, tokio::task::JoinHandle<TaskOutcome>)> = Vec::new();
     let pool = db_pool.clone();
 
     for source in sources {
@@ -1096,7 +1125,7 @@ async fn poll_all_sources_async(
         let token = source::token_for(adapter.as_ref(), github_token, youtube_api_key, bilibili_cookie)
             .map(|s| s.to_string());
 
-        handles.push(tokio::spawn(async move {
+        handles.push((source_id, tokio::spawn(async move {
             // 背压信号量用 graceful 等待获取：失败若直接 panic，会被 handle.await 静默吞掉
             let _permit = match sem.acquire_owned().await {
                 Ok(p) => p,
@@ -1133,17 +1162,32 @@ async fn poll_all_sources_async(
                     saved: vec![],
                 },
             }
-        }));
+        })));
     }
 
     let mut all_new_ids = Vec::new();
     let mut all_saved = Vec::new();
     let mut outcomes = Vec::new();
-    for handle in handles {
-        if let Ok(outcome) = handle.await {
-            all_new_ids.extend(outcome.new_ids.iter().copied());
-            all_saved.extend(outcome.saved.iter().cloned());
-            outcomes.push(outcome);
+    for (source_id, handle) in handles {
+        match handle.await {
+            Ok(outcome) => {
+                all_new_ids.extend(outcome.new_ids.iter().copied());
+                all_saved.extend(outcome.saved.iter().cloned());
+                outcomes.push(outcome);
+            }
+            // task panic / 被取消时只剩 JoinError。丢弃它等于该源本轮既不记成功也不记
+            // 失败：last_check_status 停在上一轮的 ok，UI 健康灯常绿但内容已停更。
+            Err(e) => {
+                log::error!("err.check_task_panic|{}|{}", source_id, e);
+                record_task_panic(db_pool, source_id).await;
+                outcomes.push(TaskOutcome {
+                    source_id,
+                    failed: true,
+                    checked: true,
+                    new_ids: vec![],
+                    saved: vec![],
+                });
+            }
         }
     }
 
@@ -2121,6 +2165,42 @@ mod tests {
 
     fn outcome(id: i64, failed: bool) -> TaskOutcome {
         TaskOutcome { source_id: id, failed, checked: true, new_ids: vec![], saved: vec![] }
+    }
+
+    /// panic / 取消的失败留痕必须**双写**：源健康状态置 error + 日志页留一条。
+    /// 只写 sources 的话，用户在源列表看到红字却在日志页查不到记录，与其他所有失败
+    /// 路径（都走 `record_check_failure` 双写）口径不一致。
+    #[tokio::test]
+    async fn record_task_panic_writes_source_and_log() {
+        let pool = crate::db::init::init_memory_pool().unwrap();
+        let id = {
+            let conn = pool.get().unwrap();
+            db::settings::set_setting(&conn, db::settings::KEY_LANGUAGE, "zh-CN").unwrap();
+            db::sources::add_source(&conn, "github", "o", "r", "").unwrap()
+        };
+
+        record_task_panic(&pool, id).await;
+
+        let conn = pool.get().unwrap();
+        let source = db::sources::get_source(&conn, id).unwrap().unwrap();
+        assert_eq!(source.last_check_status, "error", "panic 轮必须记失败，否则健康灯常绿");
+        assert_eq!(source.last_check_message.as_deref(), Some("err.check_task_panic"));
+        assert_eq!(
+            source.consecutive_failures, 1,
+            "panic 计入断路器（整轮同时挂掉由 mass-failure guard 回退）"
+        );
+
+        let logged = db::logs::get_logs(&conn, 100).unwrap_or_default();
+        let entry = logged
+            .iter()
+            .find(|l| l.message_key.as_deref() == Some("err.check_task_panic"))
+            .expect("日志页必须能看到本条——只写 sources 表会在这里断");
+        assert_eq!(entry.level, "ERROR");
+        assert!(
+            entry.rendered_message.as_deref().unwrap_or_default().contains("异常终止"),
+            "rendered_message 应是 i18n 渲染文本而非裸 key: {:?}",
+            entry.rendered_message
+        );
     }
 
     /// 整轮全挂（网络/代理层抖动）→ 回退本轮累加，源不会被逐个自动禁用。

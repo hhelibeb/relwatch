@@ -416,6 +416,7 @@ export default {
   'err.api_error': 'API request failed: HTTP {0} {1}',
   'err.parse_failed': 'Failed to parse response: {0}',
   'err.poll_in_progress': 'Poll in progress, please try again later',
+  'err.check_task_panic': 'The check task terminated abnormally; no result this round',
   'err.backup_cancelled_export': 'Backup cancelled',
   'err.backup_cancelled_import': 'Restore cancelled',
   'err.unsupported_source': 'Unsupported source type: {0}',

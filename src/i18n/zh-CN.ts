@@ -416,6 +416,7 @@ export default {
   'err.api_error': 'API 请求失败: HTTP {0} {1}',
   'err.parse_failed': '解析响应失败: {0}',
   'err.poll_in_progress': '轮询正在进行中，请稍后再试',
+  'err.check_task_panic': '检查任务异常终止，本轮未取得结果',
   'err.backup_cancelled_export': '已取消备份',
   'err.backup_cancelled_import': '已取消恢复',
   'err.unsupported_source': '不支持的监控源类型: {0}',

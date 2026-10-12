@@ -84,9 +84,9 @@ pub(crate) const MAX_NOTIFY_ATTEMPTS: i64 = 3;
 /// 为什么必须有它：`poll.rs` 在派发**之前**就批量写 `last_notified_at`（批量标记只需
 /// 一次取连接），而 `Emitter::notify_release` 返回 `()`、分发链路的错误无处可去，
 /// 于是发送失败时该 release 的桌面通知**永久丢失**：`get_pending_releases` 依靠
-/// `last_notified_at IS NULL` 选条目，标记已落就再也不会重发。更糟的是 release 版
-/// 没有挂载 `tauri_plugin_log`（仅 debug 构建注册），`log::error!` 是纯 no-op——
-/// 连降级文件都不会写，排查时零线索。
+/// `last_notified_at IS NULL` 选条目，标记已落就再也不会重发。更糟的是失败只
+/// `log::error!` 的话线索仅落在日志文件里（release 也落，但那是给排障者看的纯文本，
+/// 用户在应用内的日志页既搜不到也导不出）——等于零线索。
 ///
 /// 所以失败必须：① 写进 DB 日志（应用内日志页可见，release 版同样可见）；
 /// ② 清掉 `last_notified_at`，让下一轮轮询自动重发；③ 超过上限后停手并记 ERROR。
@@ -357,7 +357,7 @@ mod inner {
         })();
 
         if let Err(e) = result {
-            // 失败不再只写 log（release 版无 logger，等于丢进黑洞）：统一走留痕 + 受限重试
+            // 失败不能只写 log（那只进日志文件、进不了应用内日志页）：统一走留痕 + 受限重试
             crate::notify::handle_send_failure(app, rid, &e.to_string());
         }
     }

@@ -132,7 +132,12 @@ pub fn parse_next_link(link_header: &str) -> Option<String> {
         let trimmed = part.trim();
         if trimmed.contains("rel=\"next\"") {
             let start = trimmed.find('<')?;
-            let end = trimmed.find('>')?;
+            // 从 '<' 之后再找 '>'：畸形头（如 `x><y; rel="next"`）里 '>' 可能出现在
+            // '<' 之前，跨序切片会 panic，而 panic 的 fetch task 会被 handle.await 丢弃。
+            let end = trimmed[start..].find('>').map(|i| start + i)?;
+            if end <= start + 1 {
+                return None;
+            }
             return Some(trimmed[start + 1..end].to_string());
         }
     }
@@ -782,6 +787,20 @@ mod tests {
     fn test_parse_next_link_no_brackets() {
         let header = "rel=\"next\"";
         assert!(parse_next_link(header).is_none());
+    }
+
+    #[test]
+    fn test_parse_next_link_malformed_bracket_order() {
+        // '>' 出现在 '<' 之前：未校验下标顺序时 `trimmed[start + 1..end]` 直接 panic
+        // （slice index starts at N but ends at M），而该 panic 会被 fetch task 静默吞掉。
+        assert!(parse_next_link("x><y; rel=\"next\"").is_none());
+        assert!(parse_next_link(">broken<; rel=\"next\", <https://api.github.com/x?page=2>; rel=\"next\"").is_none());
+    }
+
+    #[test]
+    fn test_parse_next_link_empty_url() {
+        // 空 URL（`<>`）不是可用的下一页，不能当成翻页目标
+        assert!(parse_next_link("<>; rel=\"next\"").is_none());
     }
 
     // ── Token 泄露防护回归测试 ──

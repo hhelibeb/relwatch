@@ -944,9 +944,9 @@ async fn run_ai_job<T, F, Fut>(
         Err(e) => {
             let msg = format!("创建 DeepSeek 客户端失败: {}", e);
             log::error!("{}", msg);
-            // 同时写 DB：log 插件仅在 debug 构建启用，release 版用户看不到
-            // log::error!，只打 console 会让「批静默不发请求」（待办非空、开关
-            // 全开、retry 计数 = 0 却无任何可见错误）无法定位。
+            // 同时写 DB：log::error! 只落到日志文件，应用内的日志页看不到；只打 log
+            // 会让「批静默不发请求」（待办非空、开关全开、retry 计数 = 0 却无任何
+            // 可见错误）无法在应用内定位。
             // 写入后由调用方（后台批收尾）emit LogAppended 刷新日志 tab。
             if let Ok(conn) = db_pool.get() {
                 db::logs::write_log(&conn, "ERROR", &msg);
@@ -2517,9 +2517,9 @@ mod tests {
         );
     }
 
-    /// `build_client` 失败必须写 DB 日志：log 插件仅 debug 构建启用，只打
-    /// log::error! 对 release 版用户完全不可见，「待办非空、开关全开、
-    /// retry 计数 = 0 却无任何可见错误」这类静默不发请求故障将无法定位。
+    /// `build_client` 失败必须写 DB 日志：log::error! 只进日志文件、不进应用内
+    /// 日志页，「待办非空、开关全开、retry 计数 = 0 却无任何可见错误」这类静默
+    /// 不发请求故障将无法定位。
     /// 用带换行的非法 API key 触发 build_client 确定性失败，断言：
     /// 零请求 + DB 出现 ERROR 日志 + retry 计数不动（失败发生在发请求之前）。
     #[tokio::test]
@@ -2570,7 +2570,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             has_err, 1,
-            "build_client 失败应写入一条 ERROR DB 日志（release 版用户唯一可见的错误渠道）"
+            "build_client 失败应写入一条 ERROR DB 日志（应用内唯一可见的错误渠道）"
         );
         assert_eq!(
             translate_retry_count(&conn, id),

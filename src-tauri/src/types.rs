@@ -61,7 +61,7 @@ impl Emitter for tauri::AppHandle {
             );
         }) {
             // 派发失败（主线程已退出等）意味着通知根本没人发：同样要留痕 + 允许重试，
-            // 不能 `let _ =` 静默丢掉（release 版连 log 都不落）。
+            // 不能 `let _ =` 静默丢掉（log 只进日志文件，不进应用内日志页）。
             crate::notify::handle_send_failure(&fallback_app, release_id, &e.to_string());
         }
     }

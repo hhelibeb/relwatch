@@ -11,6 +11,9 @@
 //! 调用点（单一出口原则，勿绕过）：
 //! - `db::logs::write_log` / `write_log_key`：**所有**日志写入在此默认脱敏，
 //!   并由 `insert_into_logs_is_confined_to_this_module` 测试护栅（绕开本模块直写 logs 表会红）；
+//! - `lib::log_line`：`log::` 宏的出口（stdout + `RelWatch.log` 文件）。与 DB 日志并列的
+//!   第二条落盘出口，日志文件同样会被用户带出去排障，故在根 dispatch 的格式化器上一次
+//!   收口——全仓 100+ 处 `log::` 调用点不可能逐一守住，散在调用点上必然后续失守；
 //! - `db::sources::record_check_failure`：`sources.last_check_message` 列的唯一写入者，
 //!   该列不经 `write_log_key`、会被源列表展示并随备份导出，故在同一位置收口；
 //! - `poll::check_one_source` 的失败分支：该错误文本除落库外还**返回给前端**（手动检查

@@ -178,6 +178,22 @@ where
     rx.recv_timeout(budget).is_ok()
 }
 
+/// 日志行格式化：`log::` 出口（stdout 与 `RelWatch.log`）的**唯一**文本组装点。
+///
+/// 独立成函数是为了可测——`tauri_plugin_log::FormatCallback` 在测试里构造不出来，
+/// 但这一行就是落到用户磁盘上的全部内容，凭据脱敏必须在它上面验。格式与插件默认值
+/// 等价（UTC 时间 + target + level + 消息），时间基准同插件默认的 `UseUtc`。
+fn log_line(now: chrono::DateTime<chrono::Utc>, target: &str, level: &str, message: &str) -> String {
+    format!(
+        "[{}][{}][{}][{}] {}",
+        now.format("%Y-%m-%d"),
+        now.format("%H:%M:%S"),
+        target,
+        level,
+        crate::redact::redact(message)
+    )
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // 先声明 AUMID 再建窗口（Windows 要求在任何 UI 创建前设置）
@@ -355,13 +371,36 @@ pub fn run() {
             // 注册事件名映射（release 构建的 emit 同样依赖），必须在 emit 之前挂载
             specta_builder().mount_events(app);
 
-            if cfg!(debug_assertions) {
-                app.handle().plugin(
-                    tauri_plugin_log::Builder::default()
-                        .level(log::LevelFilter::Info)
-                        .build(),
-                )?;
-            }
+            // 日志插件必须在 release 也挂载：Windows GUI 进程没有控制台，未注册 logger 时
+            // 全部 `log::error!` 都是纯 no-op，轮询 panic、断路器自动禁用、Agent 批失败
+            // 这些排障线索会整条落不了盘。
+            //
+            // 代价是 `log::` 成了与 DB 日志并列的第二个落盘出口，而日志文件会被用户带出去
+            // 排障，所以它必须和 DB 出口一样默认脱敏（见 redact.rs 的出口清单）：错误文本
+            // 常回显带凭据的 URL（YouTube 的 `&key=AIza…`、代理的 `http://user:pass@…`），
+            // 不脱敏就等于把凭据明文写进用户磁盘。过滤放在根 dispatch 的格式化器里：
+            // 它的产物会下发给全部 target（stdout 与 LogDir 文件），一次覆盖全仓 100+
+            // 处 `log::` 调用点——散在调用点上的话，新增一行日志就可能重新开一个口子。
+            //
+            // 默认 target 已含 LogDir 文件输出（KeepOne 轮转）与 stdout，无需另指定；
+            // 默认 40KB 上限在 Info 级下只够留存极短历史，放宽到 5MiB 才有排查价值。
+            app.handle().plugin(
+                tauri_plugin_log::Builder::default()
+                    .level(log::LevelFilter::Info)
+                    .max_file_size(5 * 1024 * 1024)
+                    .format(|out, message, record| {
+                        out.finish(format_args!(
+                            "{}",
+                            log_line(
+                                chrono::Utc::now(),
+                                record.target(),
+                                record.level().as_str(),
+                                &message.to_string(),
+                            )
+                        ))
+                    })
+                    .build(),
+            )?;
 
             tray::create_tray(app.handle())?;
             tray::setup_tray_listeners(app.handle());
@@ -437,9 +476,9 @@ pub fn run() {
                     //
                     // 留痕走降级文件而不是 DB：退出路径不该为了记一行日志去同步取
                     // DB 连接（那正是这条退出路径要避免的阻塞面，且此刻进程即将终止）。
-                    // 持久化记录是必要的 —— release 版无控制台、tauri_plugin_log 也
-                    // 未挂载（见 setup 的 debug_assertions 分支），`eprintln!` 只对
-                    // dev 构建可见，不落文件就什么都留不下。
+                    // 持久化记录仍然必要 —— release 版无控制台，`eprintln!` 看不见；
+                    // 日志插件虽已挂载（见 setup），但它的产物是无结构的一行纯文本，
+                    // 而这里要的是与 `logs` 表列序对齐、可人工导入的 key + args 条目。
                     eprintln!(
                         "WARNING: pi RPC 进程未在 {:?} 内结束，放弃等待并继续退出（子进程由内核兜底回收）",
                         EXIT_SHUTDOWN_BUDGET
@@ -455,6 +494,25 @@ pub fn run() {
 }
 #[cfg(test)]
 mod tests {
+    /// 日志出口必须脱敏。`log::` 在 release 也落盘（`%LOCALAPPDATA%\com.relwatch\logs\
+    /// RelWatch.log`），而用户会把该文件发给他人排障——错误文本里回显的 URL 一旦带
+    /// 凭据，就是凭据明文外泄。这里的报文取 redact.rs 里的真实形态（YouTube Data API）。
+    #[test]
+    fn log_line_redacts_credentials() {
+        let line = super::log_line(
+            chrono::DateTime::<chrono::Utc>::from(std::time::UNIX_EPOCH),
+            "app_lib::youtube",
+            "WARN",
+            r#"请求失败(状态=0), 将重试: err.request_failed|error sending request for url (https://youtube.googleapis.com/youtube/v3/channels?id=UC1&key=AIzaSyFAKEKEY0000000000000000000000)"#,
+        );
+        assert!(
+            line.starts_with("[1970-01-01][00:00:00][app_lib::youtube][WARN] "),
+            "格式应与插件默认值等价: {line}"
+        );
+        assert!(!line.contains("AIzaSy"), "凭据泄露到日志文件: {line}");
+        assert!(line.contains("&key=***)"), "参数名与闭合括号应保留：{line}");
+    }
+
     /// 触发 TS 绑定导出：`cargo test` 即重新生成 src/bindings.ts，CI 可据此检查同步。
     #[test]
     #[cfg(debug_assertions)]

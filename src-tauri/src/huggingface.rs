@@ -141,9 +141,13 @@ fn build_page_url(org: &str, limit: usize) -> String {
 }
 
 /// HuggingFace 源的三阶段保存（避免 conn 跨 await）:
-/// 1. insert_new_models（持 conn，同步）
+/// 1. insert_new_models（持 conn，同步；收笼进 spawn_blocking）
 /// 2. fetch_readmes（不持 conn，异步并行拉取 README）
-/// 3. finalize_models（重新获取 conn，同步回填 body+extra_metadata）
+/// 3. finalize_models（重新获取 conn，同步回填 body+extra_metadata；同收笼）
+///
+/// 两个同步阶段的 SQLite 调用必须离开 async worker：历史模式下 10 个 HF 源并发首扫，
+/// 同步 IO 会顶住同样数量的 tokio worker（github/youtube/bilibili 均以 spawn_blocking
+/// 转包，此处对齐）。
 async fn save_huggingface_models(
     db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
     source: &db::sources::Source,
@@ -153,10 +157,21 @@ async fn save_huggingface_models(
 ) -> Vec<(i64, Option<String>)> {
     // 阶段 1：insert
     let new_models = {
-        match db.get() {
-            Ok(conn) => insert_new_models(&conn, source.id, data, max_count),
+        let pool = db.clone();
+        let source_id = source.id;
+        let data = data.to_vec();
+        let inserted = tokio::task::spawn_blocking(move || match pool.get() {
+            Ok(conn) => insert_new_models(&conn, source_id, &data, max_count),
             Err(e) => {
                 log::error!("err.db_lock|{}", e);
+                vec![]
+            }
+        })
+        .await;
+        match inserted {
+            Ok(models) => models,
+            Err(e) => {
+                log::error!("huggingface save spawn_blocking panic: {}", e);
                 return vec![];
             }
         }
@@ -167,10 +182,19 @@ async fn save_huggingface_models(
     // 阶段 2：并行拉取 README（不持 conn）
     let readmes = fetch_readmes(client, &new_models).await;
     // 阶段 3：回填 body + extra_metadata
-    match db.get() {
+    let pool = db.clone();
+    let finalized = tokio::task::spawn_blocking(move || match pool.get() {
         Ok(conn) => finalize_models(&conn, new_models, readmes),
         Err(e) => {
             log::error!("err.db_lock|{}", e);
+            vec![]
+        }
+    })
+    .await;
+    match finalized {
+        Ok(saved) => saved,
+        Err(e) => {
+            log::error!("huggingface save spawn_blocking panic: {}", e);
             vec![]
         }
     }
