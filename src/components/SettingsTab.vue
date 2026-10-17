@@ -1052,7 +1052,7 @@ async function handleImportBackup() {
 }
 
 .settings-sidebar button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   color: var(--text);
 }
 
@@ -1093,7 +1093,7 @@ async function handleImportBackup() {
 
 .version-github-btn:hover {
   color: var(--text);
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .version-github-btn svg {
@@ -1407,7 +1407,7 @@ select.setting-input {
 }
 
 .btn-secondary:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--text-faint);
 }
 
@@ -1453,7 +1453,7 @@ select.setting-input {
 
 .theme-select-option:hover,
 .theme-select-option.previewed {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   color: var(--text);
 }
 

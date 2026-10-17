@@ -153,7 +153,7 @@ function handleKeydown(e: KeyboardEvent) {
   border-radius: var(--radius-sm);
 }
 .context-menu button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 .context-menu-icon {
   display: inline-flex;

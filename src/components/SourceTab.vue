@@ -952,7 +952,7 @@ function hideHealthTooltip() {
 }
 
 .btn-mode-toggle:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
   color: var(--text);
 }
@@ -1016,7 +1016,7 @@ function hideHealthTooltip() {
 }
 
 .source-item:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .source-main {
@@ -1251,7 +1251,7 @@ function hideHealthTooltip() {
 }
 
 .dropdown-item:hover:not(:disabled) {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .dropdown-item:disabled {
@@ -1312,8 +1312,9 @@ function hideHealthTooltip() {
   height: 16px;
 }
 
+/* 行内图标按钮取二级悬停面：父行 .source-item:hover 已抬到 --hover-surface */
 .btn-icon-action:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--hover-surface-nested);
   color: var(--text);
 }
 
@@ -1325,7 +1326,7 @@ function hideHealthTooltip() {
 .btn-check:hover:not(:disabled),
 .btn-pause:hover:not(:disabled),
 .btn-resume:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--hover-surface-nested);
   color: var(--text);
 }
 
@@ -1351,7 +1352,7 @@ function hideHealthTooltip() {
 }
 
 .sort-trigger:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 
@@ -1393,7 +1394,7 @@ function hideHealthTooltip() {
 }
 
 .sort-dropdown button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .sort-dropdown button.selected {
@@ -1424,7 +1425,7 @@ function hideHealthTooltip() {
 }
 
 .btn-select:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 
@@ -1492,7 +1493,7 @@ function hideHealthTooltip() {
 }
 
 .yt-menu-option:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .yt-menu-option input[type="checkbox"] {

@@ -157,7 +157,7 @@ function handleOpenUrl(url: string) {
 }
 
 .repo-group-header:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .repo-group-header .repo-name {
@@ -255,8 +255,7 @@ function handleOpenUrl(url: string) {
 }
 
 .repo-group-body .release-item:hover {
-  border-color: var(--border);
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .repo-group-body .release-item:last-child {

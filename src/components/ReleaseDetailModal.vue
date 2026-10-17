@@ -679,7 +679,7 @@ async function applyFlag(flag: number) {
 }
 
 .flag-popover button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .flag-popover button.selected {

@@ -746,7 +746,9 @@ const youtubeViewTitle = computed(() =>
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  transition: border-color var(--dur-state) var(--ease-out);
+  /* hover 只抬背景、不动边框：与源列表 / 日志行同一套反馈语言。
+     边框留给静态分组，不再兼任交互态（它也是 highlight 强调边框的专用属性）。 */
+  transition: background-color var(--dur-hover) var(--ease-out);
   /* 头部信息密度按「卡片实宽」分级，而不是视口宽：同一个卡片在简单列表、
      聚合视图（内缩进 + 更小 padding）、日历日期详情里的宽度各不相同，
      媒体查询会判错（见下方 @container）。
@@ -757,7 +759,7 @@ const youtubeViewTitle = computed(() =>
 }
 
 .release-item:hover {
-  border-color: var(--border-strong);
+  background: var(--hover-surface);
 }
 
 /* 通知定位高亮：短暂呼吸动画后停留在强调边框，不抢焦点、不影响布局 */
@@ -974,7 +976,8 @@ const youtubeViewTitle = computed(() =>
 
 .yt-desc:hover {
   color: var(--text);
-  background: var(--bg-subtle);
+  /* 二级悬停面：卡片自身已抬到 --hover-surface，同色会把这里的可点提示吃掉 */
+  background: var(--hover-surface-nested);
 }
 
 .release-date {
@@ -1062,12 +1065,19 @@ const youtubeViewTitle = computed(() =>
 }
 
 .release-body-text:hover {
-  background: var(--bg-subtle);
+  /* 同 .yt-desc：否则「点击阅读全文」的提示被卡片 hover 吃掉 */
+  background: var(--hover-surface-nested);
 }
 
 .release-expand-btn {
   margin-top: 4px;
   font-size: var(--fs-caption);
+}
+
+/* 行内按钮一律取二级悬停面：全局 .btn-sm:hover 与卡片 hover 同为 --hover-surface，
+   不覆盖的话指针压到按钮上看不见它自己的反馈 */
+.release-item .btn-sm:hover {
+  background: var(--hover-surface-nested);
 }
 
 /* 摘要行内按钮：默认独立成行右对齐 */
@@ -1168,7 +1178,7 @@ const youtubeViewTitle = computed(() =>
 }
 
 .release-link-action:hover {
-  background: var(--bg-hover);
+  background: var(--hover-surface-nested);
 }
 
 </style>

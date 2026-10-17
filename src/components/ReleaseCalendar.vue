@@ -230,7 +230,7 @@ function handleNextMonth() {
 }
 
 .calendar-nav button:hover:not(:disabled) {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .calendar-nav button:disabled {
@@ -287,7 +287,7 @@ function handleNextMonth() {
 }
 
 .calendar-cell.current-month:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .calendar-cell.other-month {

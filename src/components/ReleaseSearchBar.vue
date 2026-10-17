@@ -683,7 +683,7 @@ function clearAllFilters() {
 }
 
 .filter-chip:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 

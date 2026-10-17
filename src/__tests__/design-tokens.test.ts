@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+﻿import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -44,6 +44,8 @@ const THEMED_TOKENS = [
   '--warning-soft-text',
   '--danger-soft-bg',
   '--text-muted',
+  '--hover-surface',
+  '--hover-surface-nested',
 ]
 
 /** 曾「引用有定义无」的变量：必须真的定义，且引用处不再藏 fallback */
@@ -232,5 +234,125 @@ describe('尺度守卫', () => {
         .map((decl) => `${file}: ${decl}`),
     )
     expect(offenders).toEqual([])
+  })
+})
+
+/**
+ * 列表 hover 语言守卫。
+ *
+ * 背景：版本卡片靠边框加深、源列表靠背景抬升、日志行干脆没有 hover，
+ * 三种列表三套反馈，扫长列表时手感不一致。收敛为「背景抬升 + 120ms」后，
+ * 用这条钉住三处不再分叉——尤其防止有人回头把 hover 又写成 border-color。
+ * 抬升色走 --hover-surface 而不是 --bg-subtle：后者深色值只比 --surface 高 1.03:1，
+ * 深色主题下整行划过等于没反馈（见 style.css 注释）。
+ */
+describe('列表 hover 语言守卫', () => {
+  const LIST_HOVER = [
+    { file: 'components/ReleaseItem.vue', selector: '.release-item:hover' },
+    { file: 'components/ReleaseAggregatedList.vue', selector: '.repo-group-body .release-item:hover' },
+    { file: 'components/ReleaseAggregatedList.vue', selector: '.repo-group-header:hover' },
+    { file: 'components/SourceTab.vue', selector: '.source-item:hover' },
+    { file: 'components/LogTab.vue', selector: '.log-item:hover' },
+  ]
+
+  const normalized = () =>
+    allStyleSources().map(({ file, css }) => ({ file: file.replace(/\\/g, '/'), css }))
+
+  const source = (target: string) => {
+    const hit = normalized().find(({ file }) => file.endsWith(target))
+    expect(hit, `找不到样式源: ${target}`).toBeTruthy()
+    return hit?.css ?? ''
+  }
+
+  const hoverRule = (css: string, selector: string) => {
+    const start = css.indexOf(`${selector} {`)
+    if (start === -1) return null
+    return css.slice(start, css.indexOf('}', start))
+  }
+
+  it('列表行 hover 都存在，且统一抬背景', () => {
+    for (const { file, selector } of LIST_HOVER) {
+      const rule = hoverRule(source(file), selector)
+      expect(rule, `${file} 缺少 ${selector}`).toBeTruthy()
+      expect(rule, `${file} hover 未抬背景`).toContain('background: var(--hover-surface)')
+    }
+  })
+
+  it('hover 不改边框色', () => {
+    const offenders = LIST_HOVER.filter(({ file, selector }) => (hoverRule(source(file), selector) ?? '').includes('border-color'))
+    expect(offenders.map((o) => o.file)).toEqual([])
+  })
+
+  // 深色下 --bg-subtle 与 --surface 只差 1.03:1：任何 hover 复用它都会变成"看不见的反馈"。
+  it('hover 一律用 --hover-surface，不用 --bg-subtle', () => {
+    const block = /([^{}]+)\{([^{}]*)\}/g
+    const offenders = allStyleSources().flatMap(({ file, css }) =>
+      [...css.matchAll(block)]
+        .filter((m) => m[1].includes(':hover') && m[2].includes('var(--bg-subtle)'))
+        .map((m) => `${file}: ${m[1].trim().replace(/\s+/g, ' ')}`),
+    )
+    expect(offenders).toEqual([])
+  })
+
+  /**
+   * 嵌套悬停面。
+   *
+   * 行/卡片 hover 抬到 --hover-surface 之后，容器内的可点块若还用同一档，
+   * 指针压上去看到的是容器自己的底色，等于没有反馈（深色下改复用 --bg-hover
+   * 也只有 1.05:1）。故单开一档，并用数值钉住「比一级高一档」这个关系：
+   * 只断言用了哪个 token，拦不住有人把两个色值写反。
+   */
+  const HOVER_TOKENS = { base: '--hover-surface', nested: '--hover-surface-nested' }
+
+  const tokenValue = (themeBlock: string, token: string) => {
+    const from = STYLE_CSS.indexOf(themeBlock)
+    const body = STYLE_CSS.slice(from, STYLE_CSS.indexOf('}', from))
+    return body.match(new RegExp(`${token}\\s*:\\s*(#[0-9a-fA-F]{6})`))?.[1] ?? ''
+  }
+
+  const luminance = (hex: string) => {
+    const channels = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    })
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+  }
+
+  const contrast = (a: string, b: string) => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+    return (hi + 0.05) / (lo + 0.05)
+  }
+
+  it('二级悬停面在深浅两套都比一级高一档', () => {
+    for (const theme of [':root {', '[data-theme="dark"] {']) {
+      const base = tokenValue(theme, HOVER_TOKENS.base)
+      const nested = tokenValue(theme, HOVER_TOKENS.nested)
+      expect(base && nested, `${theme} 缺少悬停面 token`).toBeTruthy()
+      const step = contrast(base, nested)
+      expect(step, `${theme} 二级与一级拉不开（${step.toFixed(3)}:1）`).toBeGreaterThan(1.08)
+      expect(step, `${theme} 二级过重（${step.toFixed(3)}:1）`).toBeLessThan(1.25)
+    }
+  })
+
+  it('容器内的可点块用二级悬停面', () => {
+    const NESTED_HOVER = [
+      { file: 'components/ReleaseItem.vue', selector: '.yt-desc:hover' },
+      { file: 'components/ReleaseItem.vue', selector: '.release-body-text:hover' },
+      { file: 'components/ReleaseItem.vue', selector: '.release-link-action:hover' },
+      { file: 'components/ReleaseItem.vue', selector: '.release-item .btn-sm:hover' },
+      { file: 'components/SourceTab.vue', selector: '.btn-icon-action:hover:not(:disabled)' },
+      { file: 'components/SourceTab.vue', selector: '.btn-check:hover:not(:disabled)' },
+    ]
+
+    for (const { file, selector } of NESTED_HOVER) {
+      const css = source(file)
+      const start = css.indexOf(selector)
+      expect(start, `${file} 缺少 ${selector}`).toBeGreaterThan(-1)
+      const open = css.indexOf('{', start)
+      const rule = css.slice(open, css.indexOf('}', open))
+      expect(rule, `${file} ${selector} 未用二级悬停面`).toContain(
+        `background: var(${HOVER_TOKENS.nested})`,
+      )
+    }
   })
 })

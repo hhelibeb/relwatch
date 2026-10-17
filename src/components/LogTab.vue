@@ -177,7 +177,7 @@ onUnmounted(() => {
     <div class="log-list">
       <div v-if="loading" class="empty">{{ t('log.loading') }}</div>
       <div v-else-if="logs.length === 0" class="empty">{{ searchKeyword ? t('log.no_match') : t('log.no_records') }}</div>
-      <div v-for="entry in logs" :key="entry.id" class="log-item">
+      <div v-for="entry in logs" :key="entry.id" class="log-item" :class="logLevelClass(entry.level)">
         <span class="log-level" :class="logLevelClass(entry.level)">{{ entry.level }}</span>
         <span class="log-msg">{{ renderMessage(entry) }}</span>
         <span class="log-date">{{ formatDate(entry.created_at) }}</span>
@@ -247,21 +247,30 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 7px 8px;
+  /* 左侧 2px 留给级别色条，padding-left 相应减 2，文本左边界与原来对齐 */
+  padding: 7px 8px 7px 6px;
   background: transparent;
+  border-left: 2px solid transparent;
   border-bottom: 1px solid var(--border);
   font-size: var(--fs-body);
+  transition: background-color var(--dur-hover) var(--ease-out);
 }
+
+.log-item:hover {
+  background: var(--hover-surface);
+}
+
+/* 级别由左侧色条编码，文字统一退回 muted：
+   红字配红条是同一信息两处编码，一行里只会更吵。 */
+.log-item.log-error { border-left-color: var(--danger); }
+.log-item.log-warn { border-left-color: var(--warning); }
 
 .log-level {
   font-weight: 600;
   flex-shrink: 0;
   min-width: 42px;
+  color: var(--text-muted);
 }
-
-.log-error { color: var(--danger); }
-.log-warn { color: var(--warning); }
-.log-info { color: var(--text-muted); }
 
 .log-msg {
   flex: 1;

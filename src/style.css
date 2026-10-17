@@ -16,6 +16,16 @@
   --input-bg: #ffffff;
   --control-active: #ffffff;
 
+  /* 悬停面：所有 hover 的背景都取它，不复用 --bg-subtle。
+     深色下 --bg-subtle(#1b1b20) 与 --surface(#18181c) 只差 1.03:1，
+     整行/整项扫过时等于没有反馈。浅色沿用原值，观感不变。 */
+  --hover-surface: #f4f4f5;
+
+  /* 第二级悬停面：嵌在已抬升容器内的可点块（卡片里的摘要文本、行内按钮）。
+     它们若与容器的 hover 同色，就被容器自身底色吃掉；再抬一档后，
+     深浅两套都保持相对 --hover-surface 约 1.10:1 的一步，与「底 → 一级悬停」同幅度。 */
+  --hover-surface-nested: #e9e9ec;
+
   /* 唯一强调色：只用于链接、版本号、焦点与关键选中态 */
   --primary: #3e63dd;
   --primary-hover: #3457c9;
@@ -141,6 +151,15 @@
   --surface: #18181c;
   --input-bg: #1b1b20;
   --control-active: #2a2a31;
+
+  /* 比 --bg-subtle 亮一档：值按「同时压过 --surface(#18181c) 与画布 #101013」
+     取，实测 1.12:1 / 1.20:1，与浅色下的 1.10:1 观感相当；再亮就接近 --bg-hover
+     (#26262c)，整行会显得过重。 */
+  --hover-surface: #222228;
+
+  /* 深色若沿用 --bg-hover(#26262c)，相对 --hover-surface 只有 1.05:1——行内按钮压上去
+     等于没反馈；#2a2a32 提到 1.11:1，与浅色的 1.10:1 对齐。 */
+  --hover-surface-nested: #2a2a32;
 
   --primary: #9aaef2;
   --primary-hover: #b3c1f6;
@@ -421,7 +440,7 @@ html {
 }
 
 .btn-sm:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 
@@ -575,7 +594,7 @@ html {
 }
 
 .filter-trigger:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .filter-divider {
@@ -641,7 +660,7 @@ html {
 }
 
 .filter-dropdown button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .filter-dropdown button.selected {
@@ -665,7 +684,7 @@ html {
   transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
 }
 .release-agent-btn:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 /* 展开态：与工作区激活项同源的 accent 高亮，提示面板当前已打开 */

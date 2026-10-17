@@ -342,7 +342,7 @@ onUnmounted(() => {
 }
 
 .ai-usage-close:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   color: var(--text);
 }
 
