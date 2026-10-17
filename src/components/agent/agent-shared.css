@@ -70,7 +70,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
 }
 .agent-ws-menu-empty {
   padding: 10px 8px;
@@ -115,7 +115,7 @@
   flex-shrink: 0;
 }
 .agent-ws-chip-remove:hover {
-  color: #d64545;
+  color: var(--danger);
   background: var(--bg-hover);
 }
 .agent-ws-chip-remove svg {
@@ -129,8 +129,8 @@
   padding: 2px 8px;
   font-size: 11px;
   border-radius: 999px;
-  background: rgba(46, 111, 208, 0.12);
-  color: #2e6fd0;
+  background: var(--primary-soft-bg);
+  color: var(--primary-soft-text);
   max-width: 220px;
   white-space: nowrap;
   overflow: hidden;

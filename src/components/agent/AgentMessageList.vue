@@ -245,8 +245,8 @@ function toolArgsSummary(args: string): string {
   line-height: 1.55;
 }
 .agent-ws-bubble-user {
-  background: rgba(46, 111, 208, 0.13);
-  border: 1px solid rgba(46, 111, 208, 0.28);
+  background: var(--primary-soft-bg);
+  border: 1px solid var(--primary-soft-border);
   border-top-right-radius: 3px;
   color: var(--text);
 }
@@ -262,7 +262,7 @@ function toolArgsSummary(args: string): string {
   font-size: 10px;
   opacity: 0.5;
   margin-bottom: 4px;
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
 }
 .agent-ws-bubble-meta {
   display: flex;
@@ -284,8 +284,8 @@ function toolArgsSummary(args: string): string {
   margin-top: 7px;
   padding: 5px 8px;
   border-radius: 6px;
-  border: 1px solid rgba(214, 69, 69, 0.35);
-  background: rgba(214, 69, 69, 0.08);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  background: var(--danger-soft-bg);
   font-size: 11px;
   line-height: 1.45;
   max-width: 100%;
@@ -298,15 +298,15 @@ function toolArgsSummary(args: string): string {
 /* 结果未知：既不是失败（可能跑成了），也不是取消（不是用户主动停的）——
    用中性的琥珀色，与红（失败）/灰（取消）三方区分 */
 .agent-ws-run-failed.run-unknown {
-  border-color: rgba(214, 158, 46, 0.45);
-  background: rgba(214, 158, 46, 0.09);
+  border-color: color-mix(in srgb, var(--warning) 45%, transparent);
+  background: var(--warning-soft-bg);
 }
 .agent-ws-run-failed.run-unknown .agent-ws-run-failed-status {
-  color: #b0882e;
+  color: var(--warning);
 }
 .agent-ws-run-failed-status {
   font-weight: 600;
-  color: #d64545;
+  color: var(--danger);
   flex-shrink: 0;
 }
 .agent-ws-run-failed.run-cancelled .agent-ws-run-failed-status {
@@ -362,7 +362,7 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-timeout-input:focus {
   outline: none;
-  border-color: var(--accent, #2e6fd0);
+  border-color: var(--primary);
 }
 
 /* 折叠块（思考 / 工具详情） */
@@ -381,7 +381,7 @@ function toolArgsSummary(args: string): string {
   user-select: none;
 }
 .agent-ws-fold-thinking summary {
-  color: #8a6d3b;
+  color: var(--warning);
 }
 .agent-ws-fold-prompt summary {
   color: var(--text-muted);
@@ -390,7 +390,7 @@ function toolArgsSummary(args: string): string {
   margin: 0;
   padding: 8px 10px;
   border-top: 1px solid var(--border);
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
   font-size: 11px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -413,7 +413,7 @@ function toolArgsSummary(args: string): string {
   overflow: hidden;
 }
 .agent-ws-tool-card.tool-error {
-  border-color: rgba(214, 69, 69, 0.5);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
 }
 .agent-ws-tool-head {
   display: flex;
@@ -424,11 +424,11 @@ function toolArgsSummary(args: string): string {
 .agent-ws-tool-icon {
   width: 13px;
   height: 13px;
-  color: var(--accent, #2e6fd0);
+  color: var(--primary);
   flex-shrink: 0;
 }
 .agent-ws-tool-name {
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;

@@ -858,7 +858,7 @@ onUnmounted(() => {
 }
 .agent-divider:hover,
 .agent-divider.active {
-  background: var(--accent, #2e6fd0);
+  background: var(--primary);
 }
 .agent-divider::after {
   content: '';

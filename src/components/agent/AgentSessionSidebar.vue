@@ -194,8 +194,8 @@ const emit = defineEmits<{
   background: var(--bg-hover);
 }
 .agent-ws-session-item.active {
-  background: rgba(46, 111, 208, 0.12);
-  border-color: rgba(46, 111, 208, 0.35);
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
 }
 .agent-ws-session-name {
   font-size: 12px;
@@ -221,12 +221,12 @@ const emit = defineEmits<{
   white-space: nowrap;
 }
 .agent-ws-session-dot.st-running {
-  color: #2e6fd0;
-  background: rgba(46, 111, 208, 0.14);
+  color: var(--primary-soft-text);
+  background: var(--primary-soft-bg);
 }
 .agent-ws-session-dot.st-pending {
-  color: #b0882e;
-  background: rgba(214, 158, 46, 0.16);
+  color: var(--warning-soft-text);
+  background: var(--warning-soft-bg);
 }
 /* 「已恢复」标记：磁盘发现补入的会话（localStorage 索引曾丢失） */
 .agent-ws-session-badge {
@@ -236,8 +236,8 @@ const emit = defineEmits<{
   font-size: 9px;
   line-height: 14px;
   vertical-align: 1px;
-  color: #8a6d1f;
-  background: rgba(214, 158, 46, 0.16);
+  color: var(--warning-soft-text);
+  background: var(--warning-soft-bg);
   border-radius: 3px;
   white-space: nowrap;
 }
@@ -270,7 +270,7 @@ const emit = defineEmits<{
   outline: none;
 }
 .agent-ws-session-search-input:focus {
-  border-color: #2e6fd0;
+  border-color: var(--primary);
 }
 .agent-ws-session-search-input::placeholder {
   color: var(--text-muted);
@@ -323,10 +323,10 @@ const emit = defineEmits<{
   z-index: 10002;
 }
 .agent-ws-menu-item.danger .agent-ws-menu-main {
-  color: #d64545;
+  color: var(--danger);
 }
 .agent-ws-menu-item.danger:hover {
-  background: rgba(214, 69, 69, 0.08);
+  background: var(--danger-soft-bg);
 }
 .agent-ws-rename-input {
   width: 100%;
@@ -337,7 +337,7 @@ const emit = defineEmits<{
   font-family: inherit;
   color: var(--text);
   background: var(--bg);
-  border: 1px solid #2e6fd0;
+  border: 1px solid var(--primary);
   border-radius: 5px;
   outline: none;
 }
@@ -357,8 +357,8 @@ const emit = defineEmits<{
   flex-shrink: 0;
 }
 .agent-ws-session-clear:hover {
-  color: #d64545;
-  border-color: rgba(214, 69, 69, 0.4);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
   background: var(--bg-hover);
 }
 .agent-ws-session-clear svg {

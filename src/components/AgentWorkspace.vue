@@ -923,7 +923,7 @@ onUnmounted(() => {
   overflow: hidden;
 }
 .agent-ws-main.drag-over {
-  outline: 2px dashed var(--accent, #2e6fd0);
+  outline: 2px dashed var(--primary);
   outline-offset: -4px;
 }
 
@@ -936,8 +936,8 @@ onUnmounted(() => {
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.5px;
-  color: var(--accent, #2e6fd0);
-  background: color-mix(in srgb, var(--accent, #2e6fd0) 10%, var(--bg));
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--bg));
   pointer-events: none;
   z-index: 30;
 }
@@ -968,7 +968,7 @@ onUnmounted(() => {
 }
 /* 拖到标题栏：独立虚线框 */
 .agent-ws-header.drop-over {
-  outline: 2px dashed var(--accent, #2e6fd0);
+  outline: 2px dashed var(--primary);
   outline-offset: -4px;
 }
 .agent-ws-title {
@@ -981,7 +981,7 @@ onUnmounted(() => {
 .agent-ws-title-icon {
   width: 16px;
   height: 16px;
-  color: var(--accent, #2e6fd0);
+  color: var(--primary);
 }
 .agent-ws-header-actions {
   display: flex;
@@ -1004,9 +1004,9 @@ onUnmounted(() => {
 }
 /* 会话侧栏开关：激活态与侧栏选中态同源 accent 高亮 */
 .agent-ws-sessions-btn.active {
-  background: rgba(46, 111, 208, 0.12);
-  border-color: rgba(46, 111, 208, 0.35);
-  color: #2e6fd0;
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
+  color: var(--primary-soft-text);
 }
 .agent-ws-close {
   border: none;

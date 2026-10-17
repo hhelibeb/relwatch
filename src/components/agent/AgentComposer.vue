@@ -293,21 +293,21 @@ const emit = defineEmits<{
 /* 引用加入的就地高亮。只做描边/底色 + 光晕，不改尺寸位移，
    避免 chip 换行引起输入区抖动。动画时长须与脚本里的 FLASH_DURATION（1200ms）保持一致 */
 .agent-ws-chip-attached.is-new {
-  border-color: var(--accent, #2e6fd0);
-  background: rgba(46, 111, 208, 0.14);
+  border-color: var(--primary);
+  background: var(--primary-soft-bg);
   animation: agent-ws-chip-flash 1.2s ease-out;
 }
 @keyframes agent-ws-chip-flash {
   0% {
-    background: rgba(46, 111, 208, 0.28);
-    box-shadow: 0 0 0 0 rgba(46, 111, 208, 0.45);
+    background: color-mix(in srgb, var(--primary) 28%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent);
   }
   35% {
-    box-shadow: 0 0 0 3px rgba(46, 111, 208, 0.18);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
   }
   100% {
-    background: rgba(46, 111, 208, 0.14);
-    box-shadow: 0 0 0 0 rgba(46, 111, 208, 0);
+    background: var(--primary-soft-bg);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -348,7 +348,7 @@ const emit = defineEmits<{
 }
 .agent-ws-textarea:focus {
   outline: none;
-  border-color: var(--accent, #2e6fd0);
+  border-color: var(--primary);
 }
 .agent-ws-submit {
   flex-shrink: 0;
@@ -359,12 +359,12 @@ const emit = defineEmits<{
   border-radius: 8px;
 }
 .agent-ws-submit.agent-ws-stop {
-  background: #d64545;
-  border-color: #d64545;
+  background: var(--danger);
+  border-color: var(--danger);
 }
 .agent-ws-submit.agent-ws-stop:hover {
-  background: #c0392b;
-  border-color: #c0392b;
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
 }
 
 /* 底部操作行：模型选择（最左）+ 附件/发送（右侧成组），共占一行。
@@ -404,8 +404,8 @@ const emit = defineEmits<{
 }
 .agent-ws-attach-btn:hover {
   color: var(--text);
-  border-color: var(--accent, #2e6fd0);
-  background: rgba(46, 111, 208, 0.08);
+  border-color: var(--primary);
+  background: var(--primary-soft-bg);
 }
 .agent-ws-attach-btn svg {
   width: 14px;
@@ -442,13 +442,13 @@ const emit = defineEmits<{
 }
 .agent-ws-model-btn:hover,
 .agent-ws-model-btn.open {
-  border-color: var(--accent, #2e6fd0);
-  background: rgba(46, 111, 208, 0.08);
+  border-color: var(--primary);
+  background: var(--primary-soft-bg);
 }
 .agent-ws-model-icon {
   width: 12px;
   height: 12px;
-  color: var(--accent, #2e6fd0);
+  color: var(--primary);
   flex-shrink: 0;
 }
 .agent-ws-model-label {
@@ -485,7 +485,7 @@ const emit = defineEmits<{
   flex-shrink: 0;
   width: 12px;
   font-size: 11px;
-  color: #2e6fd0;
+  color: var(--primary);
 }
 
 /* 会话上下文水位（数字由后端按 pi footer 同口径算好） */

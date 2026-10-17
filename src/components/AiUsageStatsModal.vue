@@ -449,7 +449,7 @@ onUnmounted(() => {
 }
 
 .ai-usage-error {
-  color: var(--danger, #dc2626);
+  color: var(--danger);
 }
 
 .ai-usage-bottom-tabs {

@@ -90,7 +90,7 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
 }
 .agent-ws-rpc-dot.running::before {
   /* 运行中：绿色实心（与「未运行」的灰点一眼可辨） */
-  background: #35a06b;
+  background: var(--success);
   opacity: 1;
 }
 .agent-ws-rpc-dot.restarting::before {
@@ -132,7 +132,7 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
   opacity: 0.45;
 }
 .agent-ws-rpc-status-dot.on {
-  background: #35a06b;
+  background: var(--success);
   opacity: 1;
 }
 .agent-ws-rpc-status-text {

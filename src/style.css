@@ -19,6 +19,11 @@
   /* 唯一强调色：只用于链接、版本号、焦点与关键选中态 */
   --primary: #3e63dd;
   --primary-hover: #3457c9;
+  /* 兼容别名：历史上 13 处 var(--accent, #2e6fd0) 靠 fallback 存活，组件现已统一改用
+     --primary；保留定义是为了让任何遗漏/新增引用都落到品牌色，而不是回退成旧的第二套蓝。
+     能随主题切换的前提是 data-theme 挂在 <html>（与 :root 同一元素），
+     若主题改挂到 body 或某个包裹 div，这里会固化成浅色值并继承下去。 */
+  --accent: var(--primary);
 
   /* 墨色实心按钮（主操作） */
   --ink: #26262b;
@@ -35,6 +40,8 @@
   --success: #15803d;
   --warning: #a16207;
   --danger: #b91c1c;
+  /* 危险实心按钮的 hover：浅色再压一档明度，深色反而提亮（与 --primary-hover 同向） */
+  --danger-hover: #991b1b;
 
   /* 语义软色对：徽章/提示的底与字，深浅主题各自取值 */
   --primary-soft-bg: #eef1fc;
@@ -60,6 +67,12 @@
   --heat-2: #d3dcf4;
   --heat-3: #a9baf0;
   --heat-4: #7f98e8;
+
+  /* 等宽字族：工具输出、代码块、时间戳 */
+  --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 主滚动区纵向内边距；sticky 贴顶时按此值抵消（见 .app-main 与 .log-search-*） */
+  --app-padding-y: 16px;
 
   /* 圆角数级 */
   --radius-xs: 3px;
@@ -112,6 +125,7 @@
   --success: #4cc38a;
   --warning: #e0b45c;
   --danger: #e56d68;
+  --danger-hover: #ef8f8b;
 
   /* 软色对：深色主题用半透明底 + 亮色字，保证对比度 */
   --primary-soft-bg: rgba(154, 174, 242, 0.12);
@@ -332,7 +346,7 @@ html {
 .app-main {
   flex: 1;
   overflow-y: auto;
-  padding: var(--app-padding-y, 16px) 20px;
+  padding: var(--app-padding-y) 20px;
   scrollbar-gutter: stable;
 }
 
@@ -622,8 +636,8 @@ html {
 }
 /* 展开态：与工作区激活项同源的 accent 高亮，提示面板当前已打开 */
 .release-agent-btn.open {
-  background: rgba(46, 111, 208, 0.1);
-  border-color: rgba(46, 111, 208, 0.4);
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
 }
 .release-agent-btn-icon {
   width: 14px;
@@ -635,7 +649,7 @@ html {
   color: var(--text-muted);
 }
 .release-agent-btn.open .release-agent-btn-arrow {
-  color: var(--primary, #2e6fd0);
+  color: var(--primary);
 }
 /* 版本页搜索/筛选区 sticky 容器：含筛选行与激活筛选 chips 行。
    LogTab 仍直接用 .log-search-row 自身 sticky，互不影响。 */
@@ -656,7 +670,7 @@ html {
 
 /* 滚动后 sticky 元素贴顶 */
 .app-main.is-scrolled .log-search-sticky {
-  top: calc(-1 * var(--app-padding-y, 16px));
+  top: calc(-1 * var(--app-padding-y));
 }
 
 .log-search-row {
@@ -687,7 +701,7 @@ html {
 
 /* 滚动后 sticky 元素贴顶 */
 .app-main.is-scrolled .log-search-row {
-  top: calc(-1 * var(--app-padding-y, 16px));
+  top: calc(-1 * var(--app-padding-y));
 }
 
 /* ── 发布徽标 / 状态灯（ReleaseItem 与 ReleaseDetailModal 共用，

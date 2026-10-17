@@ -850,7 +850,7 @@ function hideHealthTooltip() {
 }
 
 :global(.app-main.is-scrolled .source-sticky-panel) {
-  top: calc(-1 * var(--app-padding-y, 16px));
+  top: calc(-1 * var(--app-padding-y));
 }
 
 /* 与版本/日志 tab 的 .log-search-row 对齐：无内边距、无分隔线，保证三个 tab 输入框位置一致 */
@@ -1532,7 +1532,8 @@ function hideHealthTooltip() {
   padding: 2px 4px;
   font-size: 12px;
   color: var(--text);
-  background: var(--bg-input, var(--bg-subtle));
+  /* 原 --bg-input 从未定义，一直靠 fallback 落成 --bg-subtle；此处直接写下真实值 */
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;
 }

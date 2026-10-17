@@ -1486,7 +1486,7 @@ select.setting-input {
   flex: 1;
   min-width: 0;
   font-size: 12px;
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1506,7 +1506,7 @@ select.setting-input {
   border-radius: 4px;
 }
 .agent-skill-remove:hover {
-  color: #d64545;
+  color: var(--danger);
   background: var(--bg-hover);
 }
 .agent-skill-remove svg {
