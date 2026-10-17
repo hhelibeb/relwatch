@@ -14,4 +14,17 @@ ignore = [
     # 解除条件：rust_decimal 放开 rkyv 版本约束（>= 0.8.17）后随 cargo update 自然消除，
     #           届时请删除本行。
     "RUSTSEC-2026-0235",
+
+    # zip 4.6.1 — RUSTSEC-2026-0367 / 0368 / 0369（解包 SUID/SGID 位保留、symlink
+    # 目标不受限于解包目录，三条均为提权类，补丁版本 >= 9.0.0）
+    # 理由：**当前流程不可达**。zip 只由 tauri-plugin-updater 在 Windows 目标下引入，
+    #       且仅当下载到的更新包是 zip（`infer::archive::is_zip`）时才走 `ZipArchive::extract`；
+    #       本项目 Windows 产物是 `.exe` / `.msi`，走 `extract_exe`，解包路径不执行。
+    #       另外插件 2.x 约束 `zip = "4"`（3.x 仍为 alpha），上游暂无可用的 9.x 迁移；
+    #       更新包在解包前已完成 minisign 签名校验。
+    # 解除条件：tauri-plugin-updater 放开 zip 9（或随 tauri 3 升级）后 `cargo update` 消除，
+    #           届时请删除以下三行。
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
 ]
