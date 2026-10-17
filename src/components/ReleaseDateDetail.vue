@@ -4,6 +4,7 @@ import type { ReleaseInfo } from '../api/releases'
 import { getLocale, t } from '../i18n'
 import { parseDateKey, toDateKey } from '../utils/dateKey'
 import { track } from '../composables/useUsageTracking'
+import EmptyState from './common/EmptyState.vue'
 import ReleaseItem from './ReleaseItem.vue'
 
 const props = defineProps<{
@@ -42,7 +43,11 @@ function handleBack() {
   </button>
   <div class="date-detail-title">{{ dateDetailTitle }}</div>
   <div class="release-list">
-    <div v-if="dateDetailReleases.length === 0" class="empty">{{ t('release.no_match') }}</div>
+    <EmptyState
+      v-if="dateDetailReleases.length === 0"
+      :title="t('release.no_match')"
+      :description="t('release.no_match_desc')"
+    />
     <ReleaseItem
       v-for="release in dateDetailReleases"
       :key="release.id"

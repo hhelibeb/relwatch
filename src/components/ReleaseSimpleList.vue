@@ -2,7 +2,9 @@
 import { computed, onUnmounted, ref } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { t } from '../i18n'
+import EmptyState from './common/EmptyState.vue'
 import ReleaseItem from './ReleaseItem.vue'
+import SkeletonList from './common/SkeletonList.vue'
 import VirtualList from './common/VirtualList.vue'
 
 const props = defineProps<{
@@ -10,11 +12,35 @@ const props = defineProps<{
   isFiltering: boolean
   hasSearchQuery: boolean
   deepSearch: boolean
+  /** 目录加载中：仅列表为空时渲染骨架，避免刷新已有列表时重放 */
+  loading?: boolean
 }>()
 
 // open-detail 携带导航序列：简单视图使用全局时间倒序序列
 // enable-deep：空结果提示「试试深度搜索」的点击出口（由 ReleaseTab 接线开启深度搜索）
-const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]; 'enable-deep': [] }>()
+// clear-search / clear-filters：空态下的两个出口，与空态成因对应
+const emit = defineEmits<{
+  update: []
+  'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]
+  'enable-deep': []
+  'clear-search': []
+  'clear-filters': []
+}>()
+
+// 空态分三级：因成因不同，文案与出口也不同（首次为空 / 搜索无结果 / 筛选无结果）
+const emptyTitle = computed(() =>
+  props.hasSearchQuery || props.isFiltering ? t('release.no_match') : t('release.empty'),
+)
+const emptyDescription = computed(() => {
+  if (props.hasSearchQuery) {
+    return props.deepSearch
+      ? t('release.no_match_desc')
+      : t('release.no_match_deep_hint', t('release.deep_search_label'))
+  }
+  return props.isFiltering ? t('release.no_match_desc') : t('release.empty_desc')
+})
+// 首次为空时不给清空类出口（没有可清的东西），也不留一个空的动作区
+const hasEmptyAction = computed(() => props.hasSearchQuery || props.isFiltering)
 
 const sortedReleases = computed(() => {
   return [...props.releases].sort(
@@ -61,21 +87,38 @@ defineExpose({ focusReleaseId })
 
 <template>
   <div class="release-list">
-    <div v-if="sortedReleases.length === 0" class="empty">
-      <template v-if="props.hasSearchQuery">
-        <!-- 有搜索词：深度搜索未开启时给出一键开启的出口，开启后显示普通无匹配 -->
+    <SkeletonList
+      v-if="props.loading && sortedReleases.length === 0"
+      variant="card"
+      :rows="2"
+      :label="t('common.loading')"
+    />
+    <EmptyState
+      v-else-if="sortedReleases.length === 0"
+      :title="emptyTitle"
+      :description="emptyDescription"
+    >
+      <template v-if="hasEmptyAction" #actions>
         <button
-          v-if="!props.deepSearch"
+          v-if="props.hasSearchQuery && !props.deepSearch"
           type="button"
-          class="empty-deep-hint"
+          class="btn-sm"
           @click="emit('enable-deep')"
-        >{{ t('release.no_match_deep_hint', t('release.deep_search_label')) }}</button>
-        <template v-else>{{ t('release.no_match') }}</template>
+        >{{ t('release.deep_search_label') }}</button>
+        <button
+          v-if="props.hasSearchQuery"
+          type="button"
+          class="btn-sm"
+          @click="emit('clear-search')"
+        >{{ t('common.clear_search') }}</button>
+        <button
+          v-else-if="props.isFiltering"
+          type="button"
+          class="btn-sm"
+          @click="emit('clear-filters')"
+        >{{ t('release.filter_clear_all') }}</button>
       </template>
-      <template v-else>
-        {{ props.isFiltering ? t('release.no_match') : t('release.empty') }}
-      </template>
-    </div>
+    </EmptyState>
     <VirtualList
       v-else
       ref="virtualList"
@@ -99,22 +142,5 @@ defineExpose({ focusReleaseId })
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-
-/* 空结果里的「试试深度搜索」提示：整句可点，链接风格 */
-.empty-deep-hint {
-  border: none;
-  background: transparent;
-  padding: 0;
-  color: var(--primary);
-  font-size: inherit;
-  font-family: inherit;
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-}
-
-.empty-deep-hint:hover {
-  color: var(--primary-hover);
 }
 </style>

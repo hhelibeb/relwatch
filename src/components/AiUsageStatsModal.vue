@@ -3,6 +3,9 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import AiUsageHeatmap from './AiUsageHeatmap.vue'
 import AiUsageDonut from './AiUsageDonut.vue'
+import EmptyState from './common/EmptyState.vue'
+import ErrorBlock from './common/ErrorBlock.vue'
+import SkeletonList from './common/SkeletonList.vue'
 import {
   useAiUsageStats,
   buildSourceTsv,
@@ -195,9 +198,9 @@ onUnmounted(() => {
         </div>
 
         <div class="ai-usage-body">
-          <div v-if="loading" class="ai-usage-state">{{ t('aiUsage.loading') }}</div>
-          <div v-else-if="error" class="ai-usage-state ai-usage-error">{{ error }}</div>
-          <div v-else-if="!hasAnyData || !heatmap" class="ai-usage-state">{{ t('aiUsage.empty') }}</div>
+          <SkeletonList v-if="loading" variant="card" :rows="2" :label="t('common.loading')" />
+          <ErrorBlock v-else-if="error" :message="error" :retry-label="t('common.retry')" @retry="reload" />
+          <EmptyState v-else-if="!hasAnyData || !heatmap" :title="t('aiUsage.empty')" compact />
           <template v-else>
             <!-- 今日用量作为基本信息常驻顶部：热力图里今天只是一格，看不出具体数字 -->
             <div class="ai-usage-today">
@@ -418,13 +421,6 @@ onUnmounted(() => {
   gap: 12px;
 }
 
-.ai-usage-state {
-  padding: 40px 0;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: var(--fs-body);
-}
-
 .ai-usage-today {
   flex: none;
   display: flex;
@@ -446,10 +442,6 @@ onUnmounted(() => {
   font-size: var(--fs-title);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.ai-usage-error {
-  color: var(--danger);
 }
 
 .ai-usage-bottom-tabs {

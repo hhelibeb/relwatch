@@ -7,6 +7,9 @@ import { translateError } from '../api/client'
 import { formatDate, logLevelClass } from '../utils'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
+import EmptyState from './common/EmptyState.vue'
+import ErrorBlock from './common/ErrorBlock.vue'
+import SkeletonList from './common/SkeletonList.vue'
 
 const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ update: [] }>()
@@ -19,6 +22,8 @@ const loading = ref(false)
 const searchKeyword = ref('')
 const levelFilter = ref('all')
 const pageInput = ref('')
+/* 查询失败不再只清空列表：空列表配「暂无日志」会把拉取失败说成没有数据 */
+const error = ref('')
 const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 const openFilter = ref(false)
@@ -46,11 +51,13 @@ async function loadData() {
     logs.value = result.entries
     totalLogs.value = result.total
     pageInput.value = String(currentPage.value)
-  } catch {
-    // 查询失败时清空列表（仅最新调用负责），交给空状态 UI 呈现，避免未捕获 rejection
+    error.value = ''
+  } catch (e: unknown) {
+    // 查询失败时清空列表（仅最新调用负责），失败原因留在原位供重试
     if (id === loadId) {
       logs.value = []
       totalLogs.value = 0
+      error.value = t('app.load_failed', e instanceof Error ? e.message : String(e))
     }
   } finally {
     // 仅最新调用负责复位 loading，避免被陈旧响应提前清除
@@ -84,6 +91,17 @@ function onSearchInput() {
 
 function clearSearch() {
   searchKeyword.value = ''
+  currentPage.value = 1
+  loadData()
+}
+
+// 空态出口：搜索与级别筛选一起清掉（只清一项时结果仍可能为空，用户会以为兜底没生效）
+const hasLogSearch = computed(() => searchKeyword.value.trim() !== '')
+const hasLogFilter = computed(() => hasLogSearch.value || levelFilter.value !== 'all')
+
+function clearLogFilters() {
+  searchKeyword.value = ''
+  levelFilter.value = 'all'
   currentPage.value = 1
   loadData()
 }
@@ -175,8 +193,19 @@ onUnmounted(() => {
       </button>
     </div>
     <div class="log-list">
-      <div v-if="loading" class="empty">{{ t('log.loading') }}</div>
-      <div v-else-if="logs.length === 0" class="empty">{{ searchKeyword ? t('log.no_match') : t('log.no_records') }}</div>
+      <SkeletonList v-if="loading && logs.length === 0" :rows="3" :label="t('common.loading')" />
+      <ErrorBlock v-else-if="error" :message="error" :retry-label="t('common.retry')" @retry="loadData" />
+      <EmptyState
+        v-else-if="logs.length === 0"
+        :title="hasLogFilter ? t('log.no_match') : t('log.no_records')"
+        :description="hasLogFilter ? t('log.no_match_desc') : ''"
+      >
+        <template v-if="hasLogFilter" #actions>
+          <button type="button" class="btn-sm" @click="clearLogFilters">
+            {{ hasLogSearch ? t('common.clear_search') : t('release.filter_clear_all') }}
+          </button>
+        </template>
+      </EmptyState>
       <div v-for="entry in logs" :key="entry.id" class="log-item" :class="logLevelClass(entry.level)">
         <span class="log-level" :class="logLevelClass(entry.level)">{{ entry.level }}</span>
         <span class="log-msg">{{ renderMessage(entry) }}</span>

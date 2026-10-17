@@ -409,23 +409,165 @@ html {
 }
 
 /* ── 空状态 ───────────────────────────────────── */
+/* 空态骨架：图标 + 标题 + 说明 + 动作。此前 8 处 .empty 与 3 处自建空态共用同一个
+   36px 半透明灰图标（与白底合成 ≈1.61:1，等于看不见），加载态也借道这里，
+   于是「看不见的图标 + 一行灰字」同时当了空态与加载态。 */
 .empty {
-  text-align: center;
-  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   padding: 48px 20px;
+  color: var(--text-muted);
   font-size: var(--fs-body);
+  text-align: center;
 }
 
-.empty::before {
-  content: '';
-  display: block;
-  width: 36px;
-  height: 36px;
-  margin: 0 auto 10px;
+/* 描边图标：48px，用实色代替 opacity 叠加（1.61:1 → 2.56:1）。
+   图标本身是装饰（aria-hidden），空态的语义由标题文字承担，故不追求 4.5:1。
+   遮罩用描边而非填充的 SVG，缩放后仍是一条细线，不会糊成一团灰块。 */
+.empty-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
   background: var(--text-faint);
-  opacity: 0.55;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.empty-title {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.empty-desc {
+  max-width: 420px;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 紧凑档：弹窗内部或已有容器的空位，不要 48px 图标把内容顶出视区 */
+.empty.empty-compact {
+  padding: 24px 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+}
+
+/* ── 骨架屏 ───────────────────────────────────── */
+/* 延迟 100ms 出现：本地数据常在 100ms 内返回，骨架闪一帧比空白更刺眼。
+   只渲染在「列表为空 + 加载中」的组合上，刷新已有列表时不重放。 */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: skeleton-in var(--dur-state) var(--ease-out) 100ms both;
+}
+
+.skeleton-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.skeleton-card .skeleton-item {
+  padding: 14px;
+}
+
+.skeleton-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+}
+
+.skeleton-lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-line {
+  height: 10px;
+  border-radius: var(--radius-xs);
+}
+
+.skeleton-line-lg {
+  width: 62%;
+}
+
+.skeleton-line-sm {
+  width: 34%;
+}
+
+.skeleton-avatar,
+.skeleton-line {
+  background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--bg-hover) 37%, var(--bg-subtle) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+@keyframes skeleton-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 呼吸感是装饰：减弱动效下保留色块，去掉位移与闪烁 */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-avatar,
+  .skeleton-line {
+    animation: none;
+  }
+}
+
+/* ── 统一错误块 ───────────────────────────────── */
+/* 交替给「一行红字」与 Toast：前者说不出怎么办，后者会消失。
+   错误块把原因留在原位，右侧固定一个重试出口。 */
+.error-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--danger-soft-bg);
+  border-radius: var(--radius-sm);
+  color: var(--danger-soft-text);
+  font-size: var(--fs-meta);
+}
+
+.error-block-msg {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-block-retry {
+  flex-shrink: 0;
 }
 
 .btn-sm {

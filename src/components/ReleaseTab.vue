@@ -13,6 +13,8 @@ import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, R
 import { releaseFlagged } from '../utils/releaseFlag'
 import { track } from '../composables/useUsageTracking'
 import { ShowImportanceKey } from '../injection-keys'
+import { t } from '../i18n'
+import ErrorBlock from './common/ErrorBlock.vue'
 
 // 通知定位（App.vue focus-release 事件）下钻到单条 release：
 // - focusTarget：目标 release id（App 在收到通知点击时设置，供本组件消费）；
@@ -35,11 +37,17 @@ const props = withDefaults(defineProps<{
   focusTarget?: number | null
   /** 定位令牌：每次目标变化时递增；本组件据此决定是否消费。 */
   focusToken?: number
+  /** 目录加载中（App 侧状态）：传给列表，仅在列表为空时渲染骨架。 */
+  loading?: boolean
+  /** 目录加载失败信息：列表为空时用错误块代替空态，把「拉取失败」与「暂无版本」分开。 */
+  loadError?: string
 }>(), {
   search: '',
   statusFilter: 'all',
   focusTarget: null,
   focusToken: 0,
+  loading: false,
+  loadError: '',
 })
 
 const emit = defineEmits<{
@@ -50,6 +58,8 @@ const emit = defineEmits<{
   'focus-consumed': []
   /** 目标在本列表（重置筛选后）仍找不到（已删除）。 */
   'focus-not-found': []
+  /** 目录加载失败后的重试出口（由 App 重新拉取）。 */
+  reload: []
 }>()
 
 const viewMode = ref<ViewMode>('simple')
@@ -144,6 +154,22 @@ const statusFilter = computed({
 const hasActiveFilter = computed(() => {
   return releaseSearch.value.trim() !== '' || statusFilter.value !== 'all' || (showImportance.value && importanceFilter.value !== 'all') || sourceFilter.value !== 'all' || flagFilter.value !== 'all' || versionFilter.value !== 'all'
 })
+
+// 目录拉取失败只应在列表为空时占据空态位置：已有数据时旧内容还能读，错误改由 Toast 提示
+const showLoadError = computed(() => props.loadError !== '' && props.releases.length === 0)
+
+// 空态的两个出口：搜索无结果清搜索，筛选无结果清筛选（菜单里的 chip 未展开时用户看不到全部条件）
+function clearSearch() {
+  releaseSearch.value = ''
+}
+
+function clearFilters() {
+  statusFilter.value = 'all'
+  importanceFilter.value = 'all'
+  sourceFilter.value = 'all'
+  flagFilter.value = 'all'
+  versionFilter.value = 'all'
+}
 
 const filteredReleases = computed(() => {
   let list = props.releases
@@ -568,14 +594,24 @@ function navigateReleaseDetail(delta: number) {
       @search-enter="handleSearchEnter"
     />
 
+    <ErrorBlock
+      v-if="showLoadError"
+      :message="props.loadError"
+      :retry-label="t('common.retry')"
+      @retry="emit('reload')"
+    />
+
     <ReleaseSimpleList
-      v-if="viewMode === 'simple'"
+      v-else-if="viewMode === 'simple'"
       ref="simpleList"
       :releases="filteredReleases"
       :is-filtering="hasActiveFilter"
       :has-search-query="releaseSearch.trim() !== ''"
       :deep-search="deepSearch"
+      :loading="props.loading"
       @enable-deep="enableDeepSearch"
+      @clear-search="clearSearch"
+      @clear-filters="clearFilters"
       @update="emit('update')"
       @open-detail="openReleaseDetail"
     />
@@ -585,6 +621,10 @@ function navigateReleaseDetail(delta: number) {
       ref="aggregatedList"
       :releases="filteredReleases"
       :is-filtering="hasActiveFilter"
+      :has-search-query="releaseSearch.trim() !== ''"
+      :loading="props.loading"
+      @clear-search="clearSearch"
+      @clear-filters="clearFilters"
       @update="emit('update')"
       @open-detail="openReleaseDetail"
     />

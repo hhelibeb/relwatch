@@ -36,6 +36,12 @@ function onMainScroll(e: Event) {
 
 const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
+/* 加载态与错误态：列表为空时用来把「正在拉取」「拉取失败」「真的没有数据」
+   三种情况分开（此前三者都渲染同一个空态）。 */
+const sourcesLoading = ref(false)
+const sourcesError = ref('')
+const releasesLoading = ref(false)
+const releasesError = ref('')
 const logRefreshKey = ref(0)
 const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
 // Agent 全局配置（独立于 AppSettings：含 JSON 数组字段，不走设置注册表）
@@ -434,17 +440,29 @@ async function loadAll() {
 }
 
 async function loadSources() {
+  sourcesLoading.value = true
   try {
     sources.value = await listSources()
+    sourcesError.value = ''
   } catch (e: unknown) {
-    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+    const detail = e instanceof Error ? e.message : String(e)
+    sourcesError.value = t('app.load_failed', detail)
+    showToast(t('app.load_failed', detail))
+  } finally {
+    sourcesLoading.value = false
   }
 }
 async function loadReleases() {
+  releasesLoading.value = true
   try {
     releases.value = await getReleaseCatalog()
+    releasesError.value = ''
   } catch (e: unknown) {
-    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+    const detail = e instanceof Error ? e.message : String(e)
+    releasesError.value = t('app.load_failed', detail)
+    showToast(t('app.load_failed', detail))
+  } finally {
+    releasesLoading.value = false
   }
 }
 
@@ -767,6 +785,7 @@ onUnmounted(() => {
     <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
       <div v-show="activeTab === 'sources'">
         <SourceTab :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts" :show-source-type-icons="settings.show_source_type_icons"
+          :loading="sourcesLoading" :load-error="sourcesError"
           @update="loadSources(); scheduleLoadReleases(); scheduleRefreshLogs()"
           @check-result="handleSourceCheckResult"
           @check-busy="sourceChecking = $event"
@@ -774,7 +793,7 @@ onUnmounted(() => {
           @open-unread-releases="openSourceUnreadReleases" />
       </div>
       <div v-show="activeTab === 'releases'">
-        <ReleaseTab v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
+        <ReleaseTab v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" :loading="releasesLoading" :load-error="releasesError" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @reload="loadReleases" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
       </div>
       <div v-show="activeTab === 'logs'">
         <LogTab :refresh-key="logRefreshKey" @update="refreshLogs()" />

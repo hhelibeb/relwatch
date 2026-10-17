@@ -7,6 +7,7 @@
 // 清洗，无业务耦合），其余自绘约 100 行。
 import { ref, onMounted, onUnmounted, computed } from 'vue'
 import MarkdownContent from './common/MarkdownContent.vue'
+import EmptyState from './common/EmptyState.vue'
 import { openReleaseUrl } from '../api/client'
 import { registerOverlayActive } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
@@ -79,7 +80,7 @@ onUnmounted(() => {
           <!-- 防御性空态：SettingsTab 挂载条件是 `showUpdateNotes && updateNotesBody`（body 非空），
                生产路径拿不到空 body；此处兜底仅在组件被独立复用（未来其他调用方或本文件的
                「body 为空时显示空态」用例）时生效，避免弹窗渲染空白框。 -->
-          <div v-else class="update-notes-empty">{{ t('update.notes_empty') }}</div>
+          <EmptyState v-else class="update-notes-empty" :title="t('update.notes_empty')" compact />
         </div>
         <div class="update-notes-footer">
           <!-- 保留浏览器入口：GitHub Release 页上有安装包、commit 与历史版本，
@@ -181,11 +182,6 @@ onUnmounted(() => {
 
 .update-notes-empty {
   padding: 24px 12px;
-  color: var(--text-muted);
-  font-size: var(--fs-body);
-  text-align: center;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
 }
 
 .update-notes-footer {

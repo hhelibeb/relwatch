@@ -9,12 +9,15 @@ import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
+import EmptyState from './common/EmptyState.vue'
+import ErrorBlock from './common/ErrorBlock.vue'
+import SkeletonList from './common/SkeletonList.vue'
 import { AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
-const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean }>()
+const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean; /** 源列表加载中（App 侧状态）：仅在列表为空时渲染骨架 */ loading?: boolean; /** 源列表加载失败信息：列表为空时用错误块代替空态 */ loadError?: string }>()
 const emit = defineEmits<{
   update: []
   checkResult: [count: number]
@@ -24,7 +27,9 @@ const emit = defineEmits<{
 }>()
 
 const urlInput = ref('')
-const loading = ref(false)
+const urlInputEl = ref<HTMLInputElement | null>(null)
+/* 添加源的请求在途：与列表加载态（props.loading）分开 */
+const addBusy = ref(false)
 const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const openMoreId = ref<number | null>(null)
@@ -123,6 +128,12 @@ function toggleSelectionMode() {
 function toggleHeaderMode() {
   headerMode.value = headerMode.value === 'add' ? 'search' : 'add'
   track(headerMode.value === 'add' ? 'source.switch_add' : 'source.switch_search')
+}
+
+/* 空态出口：把用户直接送到输入框（搜索模式下它是隐藏的） */
+function focusAddInput() {
+  headerMode.value = 'add'
+  void nextTick(() => urlInputEl.value?.focus())
 }
 
 function selectSortField(field: SourceSortField) {
@@ -385,7 +396,7 @@ async function handleAdd() {
     showToast?.(t('source.exists'))
     return
   }
-  loading.value = true
+  addBusy.value = true
   try {
     const def = getSourceTypeDef(parsed.type)
     // 有专属配置 UI 的类型（YouTube 订阅复选框）才携带 config
@@ -415,7 +426,7 @@ async function handleAdd() {
     await message(tm('source.add_failed', { source_type: parsed.type, owner: parsed.owner, repo: parsed.repo, error: errMsg }), { title: t('settings.error'), kind: 'error' })
     emit('update')
   } finally {
-    loading.value = false
+    addBusy.value = false
   }
 }
 
@@ -610,6 +621,7 @@ function hideHealthTooltip() {
         <div class="input-clear-wrap">
           <input
             v-if="headerMode === 'add'"
+            ref="urlInputEl"
             v-model="urlInput"
             :placeholder="t('source.placeholder')"
             @keyup.enter="handleAdd"
@@ -641,7 +653,7 @@ function hideHealthTooltip() {
             @click="sourceSearch = ''"
           >✕</button>
         </div>
-        <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
+        <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="addBusy || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
         <div class="sort-group">
           <button type="button" class="sort-trigger" :aria-expanded="openSort" aria-haspopup="menu" @click.stop="sortDropdown.toggle($event, true)" @keydown="sortDropdown.handleTriggerKeydown($event, true)">
             <span class="sort-direction-icon" aria-hidden="true">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
@@ -716,8 +728,35 @@ function hideHealthTooltip() {
       </div>
     </div>
     <div class="source-list">
-      <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
-      <div v-else-if="hasActiveSourceSearch && sortedSources.length === 0" class="empty source-search-status">{{ t('source.search_empty') }}</div>
+      <SkeletonList
+        v-if="props.loading && props.sources.length === 0"
+        :rows="3"
+        :label="t('common.loading')"
+      />
+      <ErrorBlock
+        v-else-if="props.loadError && props.sources.length === 0"
+        :message="props.loadError"
+        :retry-label="t('common.retry')"
+        @retry="emit('update')"
+      />
+      <EmptyState
+        v-else-if="props.sources.length === 0"
+        :title="t('source.empty')"
+        :description="t('source.empty_desc')"
+      >
+        <template #actions>
+          <button type="button" class="btn-sm" @click="focusAddInput">{{ t('source.empty_cta') }}</button>
+        </template>
+      </EmptyState>
+      <EmptyState
+        v-else-if="hasActiveSourceSearch && sortedSources.length === 0"
+        class="source-search-status"
+        :title="t('source.search_empty')"
+      >
+        <template #actions>
+          <button type="button" class="btn-sm" @click="sourceSearch = ''">{{ t('common.clear_search') }}</button>
+        </template>
+      </EmptyState>
       <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }" :draggable="agentEnabled && agentPanelOpen" @dragstart="handleDragStart($event, source)">
       <div v-if="selectionMode" class="source-checkbox">
         <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @change="toggleSelection(source.id)" />
@@ -758,8 +797,11 @@ function hideHealthTooltip() {
               </span>
             </template>
           </div>
-          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error" :title="translateError(source.last_check_message)">
-            {{ translateError(source.last_check_message) }}
+          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error-block">
+            <span class="source-error" :title="translateError(source.last_check_message)">
+              {{ translateError(source.last_check_message) }}
+            </span>
+            <button type="button" class="btn-sm source-error-retry" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)">{{ t('common.retry') }}</button>
           </div>
         </div>
         <div class="source-actions">
@@ -831,7 +873,7 @@ function hideHealthTooltip() {
           </div>
         </div>
       </div>
-      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="empty source-search-status">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
+      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="source-search-result-count">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
     </div>
     <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="contextMenuItems" @action="handleMenuAction" @close="closeContextMenu" />
     <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
@@ -994,13 +1036,17 @@ function hideHealthTooltip() {
   flex-direction: column;
 }
 
+/* 搜索无结果：空态紧贴在搜索栏下方，不要 48px 图标把结果区顶出视区 */
 .source-search-status {
   padding-top: 30px;
 }
 
-/* 搜索结果计数行不显示空状态图标 */
-.source-search-status::before {
-  content: none;
+/* 搜索结果计数行：不是空态，仅一行行尾提示 */
+.source-search-result-count {
+  padding: 8px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
 }
 
 .source-item {
@@ -1176,12 +1222,29 @@ function hideHealthTooltip() {
 }
 
 .source-error {
+  flex: 1;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--fs-meta);
-  color: var(--danger);
+  color: var(--danger-soft-text);
+}
+
+/* 检查失败：原因留在原位，右侧固定一个重试（旧版只有一行红字，说不出下一步） */
+.source-error-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 3px 4px 3px 8px;
+  background: var(--danger-soft-bg);
+  border-radius: var(--radius-xs);
+}
+
+.source-error-retry {
+  flex-shrink: 0;
 }
 
 .source-status {

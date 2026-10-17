@@ -9,11 +9,16 @@ import { t } from '../i18n'
 import { formatDate } from '../utils'
 import { openReleaseUrl } from '../api/client'
 import { getSourceTypeDef, sourceRepoKey } from '../api/source-registry'
+import EmptyState from './common/EmptyState.vue'
 import ReleaseItem from './ReleaseItem.vue'
+import SkeletonList from './common/SkeletonList.vue'
 
 const props = defineProps<{
   releases: ReleaseInfo[]
   isFiltering: boolean
+  hasSearchQuery?: boolean
+  /** 目录加载中：仅列表为空时渲染骨架 */
+  loading?: boolean
 }>()
 
 /** 分组显示名：按注册表 displayName（YouTube 频道名），其余 owner/repo。 */
@@ -26,7 +31,21 @@ function repoGroupName(group: RepoGroup): string {
 
 // open-detail 携带导航序列：聚合视图使用当前仓库分组内的版本序列，
 // 保证弹窗「上一版本/下一版本」只在同仓库内导航，不跳到其他仓库
-const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]] }>()
+const emit = defineEmits<{
+  update: []
+  'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]
+  'clear-search': []
+  'clear-filters': []
+}>()
+
+// 空态分三级：与简单视图同一套口径（首次为空 / 搜索无结果 / 筛选无结果）
+const emptyTitle = computed(() =>
+  props.hasSearchQuery || props.isFiltering ? t('release.no_match') : t('release.empty'),
+)
+const emptyDescription = computed(() =>
+  props.hasSearchQuery || props.isFiltering ? t('release.no_match_desc') : t('release.empty_desc'),
+)
+const hasEmptyAction = computed(() => props.hasSearchQuery || props.isFiltering)
 
 function forwardOpenDetail(release: ReleaseInfo) {
   const key = sourceRepoKey(release.source_type, release.owner, release.repo)
@@ -103,9 +122,32 @@ function handleOpenUrl(url: string) {
 </script>
 
 <template>
-  <div v-if="repoGroups.length === 0" class="empty">
-    {{ props.isFiltering ? t('release.no_match') : t('release.empty') }}
-  </div>
+  <SkeletonList
+    v-if="props.loading && repoGroups.length === 0"
+    variant="card"
+    :rows="2"
+    :label="t('common.loading')"
+  />
+  <EmptyState
+    v-else-if="repoGroups.length === 0"
+    :title="emptyTitle"
+    :description="emptyDescription"
+  >
+    <template v-if="hasEmptyAction" #actions>
+      <button
+        v-if="props.hasSearchQuery"
+        type="button"
+        class="btn-sm"
+        @click="emit('clear-search')"
+      >{{ t('common.clear_search') }}</button>
+      <button
+        v-else-if="props.isFiltering"
+        type="button"
+        class="btn-sm"
+        @click="emit('clear-filters')"
+      >{{ t('release.filter_clear_all') }}</button>
+    </template>
+  </EmptyState>
   <div v-else class="repo-toolbar">
     <button class="btn-sm" @click="toggleAllRepos">
       <svg class="toggle-all-icon" :class="{ 'icon-collapse': allExpanded }"><use href="/icons.svg#chevron-down-icon"/></svg>

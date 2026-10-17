@@ -39,7 +39,12 @@ const confirmMock = vi.mocked(confirm)
 
 function mountSourceTab(
   sources: TestSource[] = [createSource()],
-  opts: { unreadReleaseCounts?: Record<string, number>; totalReleaseCounts?: Record<string, number> } = {},
+  opts: {
+    unreadReleaseCounts?: Record<string, number>
+    totalReleaseCounts?: Record<string, number>
+    loading?: boolean
+    loadError?: string
+  } = {},
 ) {
   const showToast = vi.fn()
   const wrapper = mount(SourceTab, {
@@ -49,6 +54,8 @@ function mountSourceTab(
       unreadReleaseCounts: opts.unreadReleaseCounts ?? {},
       totalReleaseCounts: opts.totalReleaseCounts ?? {},
       showSourceTypeIcons: true,
+      loading: opts.loading ?? false,
+      loadError: opts.loadError ?? '',
     },
     global: {
       provide: {
@@ -610,6 +617,16 @@ describe('SourceTab — 健康状态显示', () => {
 
     expect(wrapper.find('.source-error').text()).toBe('some error msg')
   })
+
+  it('失败原因旁边带重试：点击重跑该源检查', async () => {
+    const source = createSource({ id: 21, enabled: true, last_check_status: 'error', last_check_message: 'boom' })
+    const { wrapper } = mountSourceTab([source])
+
+    await wrapper.get('.source-error-retry').trigger('click')
+    await flushPromises()
+
+    expect(checkSingleSourceMock).toHaveBeenCalledWith(21)
+  })
 })
 
 // ============ 搜索过滤 ============
@@ -662,7 +679,7 @@ describe('SourceTab — 搜索过滤', () => {
     await input.setValue('vue')
     await flushPromises()
 
-    expect(wrapper.find('.source-search-status').text()).toContain(t('source.search_result_count', '2'))
+    expect(wrapper.find('.source-search-result-count').text()).toContain(t('source.search_result_count', '2'))
   })
 
   it('搜索模式下显示计数徽标，数量随过滤变化', async () => {
@@ -907,6 +924,39 @@ describe('SourceTab — 空状态', () => {
 
     expect(wrapper.find('.empty').exists()).toBe(true)
     expect(wrapper.find('.empty').text()).toContain(t('source.empty'))
+    expect(wrapper.find('.empty-desc').text()).toContain(t('source.empty_desc'))
+  })
+
+  it('首次为空：CTA 把用户直接送到输入框', async () => {
+    const focusSpy = vi.spyOn(HTMLInputElement.prototype, 'focus')
+    const { wrapper } = mountSourceTab([])
+    // 先切到搜索模式，确认 CTA 会把 header 切回添加模式并聚焦
+    await wrapper.get('.btn-mode-toggle').trigger('click')
+    expect(wrapper.find('.btn-add-source').exists()).toBe(false)
+
+    await wrapper.get('.empty-actions button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.btn-add-source').exists()).toBe(true)
+    expect(focusSpy).toHaveBeenCalled()
+    focusSpy.mockRestore()
+  })
+
+  it('加载中且列表为空时渲染骨架，不冒充空态', () => {
+    const { wrapper } = mountSourceTab([], { loading: true })
+
+    expect(wrapper.find('.skeleton').exists()).toBe(true)
+    expect(wrapper.find('.empty').exists()).toBe(false)
+  })
+
+  it('列表拉取失败时显示错误块并可重试', async () => {
+    const { wrapper } = mountSourceTab([], { loadError: '拉取失败: db locked' })
+
+    expect(wrapper.find('.empty').exists()).toBe(false)
+    expect(wrapper.get('.error-block').text()).toContain('拉取失败: db locked')
+
+    await wrapper.get('.error-block-retry').trigger('click')
+    expect(wrapper.emitted('update')).toBeTruthy()
   })
 })
 
