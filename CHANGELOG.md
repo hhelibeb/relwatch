@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-10-17
+
+### Security
+- 升级 `source-map-js` 至 1.2.2，修 GHSA-68fv-2mgg-jv7q（indexed source-map offsets 引发 event-loop DoS）。(`48b71f8`)
+- 日志文件不再明文写入凭据，YouTube `&key=`、代理 `user:pass@` 等在落盘前统一脱敏。(`0d286ed`)
+
+### Fixed
+- 修复同一检查周期内出现多条新版本时，第 2 条起被永久漏抓的问题。(`c225d8a`)
+- 修复抓取中途失败被记为检查成功、失败被忽略的问题。(`c225d8a`)
+- 修复未配 Token 时 GitHub 限流会连带禁用全部 GitHub 源的问题。(`c225d8a`)
+- 修复 HuggingFace 抓取阻塞后台任务、拖慢其他源并发检查的问题。(`0d286ed`)
+- 修复数据库升级中途失败后永久缺列、重启也不会自愈的问题。(`01855b0`)
+- 修复抓取任务异常退出被静默吞掉、源显示健康但内容已停更的问题。(`0d286ed`)
+- 修复正式版日志不落盘、出问题拿不到排障线索的问题。(`0d286ed`)
+- 修复版本列表搜索框逐键输入卡顿的问题。(`a9caa64`)
+- 修复隐藏的标签页跟随主界面一起重算、拖慢输入与切换的问题。(`0ffb57b`)
+- 修复 AI 用量统计里源名称显示为机器 ID 的问题。(`fb700da`)
+- 修复 AI 用量热力图提示框被裁掉、贴边溢出、窄窗口下被压扁，看不到用量的问题。(`d087d93`)
+
+### Changed
+- AI 用量弹窗顶部高亮显示今日用量，复制入口并入选项卡行。(`d087d93`)
+- 依赖升级（`vite`、`typescript-eslint`、`@types/node`、`globals` 等 patch / minor 版本）。(`f076c0a`)
+
 ## [1.19.0] - 2026-10-01
 
 ### Added
@@ -491,7 +514,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.19.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.19.1...HEAD
+[1.19.1]: https://github.com/hhelibeb/relwatch/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/hhelibeb/relwatch/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/hhelibeb/relwatch/compare/v1.17.3...v1.18.0
 [1.17.3]: https://github.com/hhelibeb/relwatch/compare/v1.17.2...v1.17.3
