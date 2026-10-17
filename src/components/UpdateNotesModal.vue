@@ -93,11 +93,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 层级与 ReleaseDetailModal 一致：高于列表 tooltip(10002) 与 ContextMenu(10000) */
+/* 层级与 ReleaseDetailModal 一致：--z-modal 高于全局浮层 --z-popover 与右键菜单 --z-menu */
 .update-notes-overlay {
   position: fixed;
   inset: 0;
-  z-index: 10010;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -134,13 +134,13 @@ onUnmounted(() => {
 
 .update-notes-version {
   font-weight: 600;
-  font-size: 15px;
+  font-size: var(--fs-title);
   color: var(--primary);
   flex-shrink: 0;
 }
 
 .update-notes-date {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -155,7 +155,7 @@ onUnmounted(() => {
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -182,7 +182,7 @@ onUnmounted(() => {
 .update-notes-empty {
   padding: 24px 12px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
   text-align: center;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);

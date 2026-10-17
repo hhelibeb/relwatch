@@ -70,9 +70,9 @@ function handleBack() {
   color: var(--text);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-body);
   margin-bottom: 12px;
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .calendar-back:hover {
@@ -85,7 +85,7 @@ function handleBack() {
 }
 
 .date-detail-title {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   margin-bottom: 12px;
   padding-left: 4px;

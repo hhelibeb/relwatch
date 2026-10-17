@@ -844,9 +844,9 @@ function hideHealthTooltip() {
 .source-sticky-panel {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   margin-bottom: 12px;
-  transition: top 0.15s ease;
+  transition: top var(--dur-state) var(--ease-out);
 }
 
 :global(.app-main.is-scrolled .source-sticky-panel) {
@@ -875,9 +875,9 @@ function hideHealthTooltip() {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
 }
 
 .source-header .input-clear-wrap input:focus {
@@ -897,11 +897,11 @@ function hideHealthTooltip() {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
   pointer-events: none;
-  transition: right 0.15s ease;
+  transition: right var(--dur-state) var(--ease-out);
 }
 
 .source-count.has-clear {
@@ -915,10 +915,10 @@ function hideHealthTooltip() {
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.15s ease, transform 0.1s ease;
+  transition: background var(--dur-state) var(--ease-out), transform var(--dur-hover) var(--ease-out);
 }
 
 .btn-add-source:hover:not(:disabled) {
@@ -943,12 +943,12 @@ function hideHealthTooltip() {
   height: 34px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
-  transition: all 0.12s;
+  transition: all var(--dur-hover) var(--ease-out);
 }
 
 .btn-mode-toggle:hover {
@@ -970,7 +970,7 @@ function hideHealthTooltip() {
   width: 7px;
   height: 7px;
   border: 2px solid var(--surface);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--primary);
 }
 
@@ -984,7 +984,7 @@ function hideHealthTooltip() {
 }
 
 .mode-toggle-plus {
-  font-size: 20px;
+  font-size: var(--fs-display);
   line-height: 1;
   font-weight: 500;
 }
@@ -1012,7 +1012,7 @@ function hideHealthTooltip() {
   background: transparent;
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .source-item:hover {
@@ -1083,7 +1083,7 @@ function hideHealthTooltip() {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1098,10 +1098,10 @@ function hideHealthTooltip() {
   background: var(--primary-soft-bg);
   color: var(--primary-soft-text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background var(--dur-state) var(--ease-out);
 }
 
 .source-pending-link:hover {
@@ -1119,13 +1119,13 @@ function hideHealthTooltip() {
 
 .source-health-tooltip {
   position: fixed;
-  z-index: 10002;
+  z-index: var(--z-popover);
   padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   pointer-events: none;
   max-width: 360px;
@@ -1147,7 +1147,7 @@ function hideHealthTooltip() {
   position: relative;
   width: 7px;
   height: 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   flex-shrink: 0;
   background: var(--text-muted);
 }
@@ -1159,7 +1159,7 @@ function hideHealthTooltip() {
   left: -5px;
   right: -5px;
   bottom: -5px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .health-ok {
@@ -1180,7 +1180,7 @@ function hideHealthTooltip() {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--danger);
 }
 
@@ -1190,7 +1190,7 @@ function hideHealthTooltip() {
   gap: 5px;
   padding: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1198,7 +1198,7 @@ function hideHealthTooltip() {
   content: '';
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--text-faint);
   flex-shrink: 0;
 }
@@ -1244,9 +1244,9 @@ function hideHealthTooltip() {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
   white-space: nowrap;
 }
 
@@ -1260,7 +1260,7 @@ function hideHealthTooltip() {
 }
 
 .dropdown-icon {
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1;
 }
 
@@ -1303,7 +1303,7 @@ function hideHealthTooltip() {
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -1344,10 +1344,10 @@ function hideHealthTooltip() {
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
 }
 
 .sort-trigger:hover {
@@ -1362,7 +1362,7 @@ function hideHealthTooltip() {
   width: 13px;
   height: 13px;
   color: var(--primary);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1;
   font-weight: 700;
 }
@@ -1385,11 +1385,11 @@ function hideHealthTooltip() {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
-  transition: background 0.1s;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .sort-dropdown button:hover {
@@ -1416,10 +1416,10 @@ function hideHealthTooltip() {
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -1435,7 +1435,7 @@ function hideHealthTooltip() {
   flex-wrap: wrap;
   gap: 4px 14px;
   padding: 8px 2px 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1472,7 +1472,7 @@ function hideHealthTooltip() {
 /* 更多菜单内的订阅配置 */
 .dropdown-section-label {
   padding: 7px 14px 3px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   font-weight: 600;
   text-transform: uppercase;
@@ -1484,7 +1484,7 @@ function hideHealthTooltip() {
   align-items: center;
   gap: 6px;
   padding: 5px 14px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
@@ -1514,7 +1514,7 @@ function hideHealthTooltip() {
   justify-content: space-between;
   gap: 10px;
   padding: 4px 14px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
   white-space: nowrap;
 }
@@ -1530,12 +1530,12 @@ function hideHealthTooltip() {
   width: calc(13ch * 1.1);
   flex: none;
   padding: 2px 4px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text);
   /* 原 --bg-input 从未定义，一直靠 fallback 落成 --bg-subtle；此处直接写下真实值 */
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .source-checkbox {
@@ -1560,7 +1560,7 @@ function hideHealthTooltip() {
   padding: 8px 0;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .bulk-count {
@@ -1575,13 +1575,13 @@ function hideHealthTooltip() {
   gap: 5px;
   padding: 4px 7px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.12s;
+  transition: all var(--dur-hover) var(--ease-out);
 }
 
 .bulk-btn-icon {
@@ -1595,7 +1595,7 @@ function hideHealthTooltip() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1;
   font-weight: 700;
 }

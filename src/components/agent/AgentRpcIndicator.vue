@@ -83,7 +83,7 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
   border-radius: 50%;
   background: var(--text-muted);
   opacity: 0.45;
-  transition: opacity 0.15s ease;
+  transition: opacity var(--dur-state) var(--ease-out);
 }
 .agent-ws-rpc-dot:hover::before {
   opacity: 1;
@@ -103,7 +103,8 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
 
 /* 状态菜单：Teleport 到 body 后 fixed 定位在灯正下方（坐标由 toggleRpcMenu 计算）。
  * header 贴窗口顶缘：absolute 上弹会被 Windows 窗口裁剪，下弹会被聊天区后续内容遮挡，
- * 故脱离文档流盖在最上层（与 chip-tooltip 同一策略，z-index 对齐 10002）。
+ * 故脱离文档流盖在最上层，与其它下拉取同一档（--z-menu）——它仍是「菜单」而非
+ * tooltip，不该跟着 chip-tooltip 抬到 --z-popover。
  * 双类选择器抬高特异性覆盖基类（.agent-ws-menu 基类在 agent-shared.css，非 scoped；
  * 单类时其 bottom: calc(100% - 8px)/max-height/overflow 反杀：inline top 与基类
  * bottom 双锚把高度拉伸成 0，菜单被压成窄条滚动区）——与 agent-ws-menu-model 同一策略。 */
@@ -114,7 +115,7 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
   min-width: 208px;
   max-height: none;
   overflow-y: visible;
-  z-index: 10002;
+  z-index: var(--z-menu);
 }
 /* 状态详情行（非交互，与操作项分区） */
 .agent-ws-rpc-status {
@@ -142,16 +143,16 @@ const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
   min-width: 0;
 }
 .agent-ws-rpc-status-main {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
 }
 .agent-ws-rpc-status-sub {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .agent-ws-menu-rpc .agent-ws-menu-item {
   border-top: 1px solid var(--border);
-  border-radius: 0 0 6px 6px;
+  border-radius: 0 0 var(--radius) var(--radius);
   margin-top: 2px;
 }
 </style>

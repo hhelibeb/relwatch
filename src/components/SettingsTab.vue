@@ -1033,11 +1033,11 @@ async function handleImportBackup() {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
   border-radius: var(--radius-sm);
   cursor: pointer;
   text-align: left;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--dur-state) var(--ease-out), color var(--dur-state) var(--ease-out);
 }
 
 .sidebar-dirty-dot {
@@ -1072,7 +1072,7 @@ async function handleImportBackup() {
 }
 
 .version-text {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -1088,7 +1088,7 @@ async function handleImportBackup() {
   color: var(--text-muted);
   cursor: pointer;
   border-radius: var(--radius-xs);
-  transition: color 0.15s, background 0.15s;
+  transition: color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
 }
 
 .version-github-btn:hover {
@@ -1125,7 +1125,7 @@ async function handleImportBackup() {
 }
 
 .setting-label {
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 500;
   display: inline-flex;
   align-items: center;
@@ -1135,7 +1135,7 @@ async function handleImportBackup() {
 .setting-label[data-dirty]::after {
   content: '●';
   color: var(--warning);
-  font-size: 10px;
+  font-size: var(--fs-caption);
   margin-left: 2px;
 }
 
@@ -1151,7 +1151,7 @@ async function handleImportBackup() {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   outline: none;
 }
 
@@ -1180,7 +1180,7 @@ async function handleImportBackup() {
   min-height: 120px;
   resize: vertical;
   font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 0.85em;
+  font-size: var(--fs-meta);
   line-height: 1.5;
 }
 
@@ -1201,7 +1201,7 @@ async function handleImportBackup() {
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm);
   font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 0.85em;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-muted);
   user-select: none;
@@ -1218,7 +1218,7 @@ async function handleImportBackup() {
 }
 
 .setting-input {
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
 }
 
 .setting-input:focus {
@@ -1227,13 +1227,13 @@ async function handleImportBackup() {
 }
 
 .setting-note {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   line-height: 1.4;
 }
 
 .setting-link {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--primary);
   text-decoration: none;
   cursor: pointer;
@@ -1282,7 +1282,7 @@ select.setting-input {
 }
 
 .settings-banner-text {
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
   line-height: 1.4;
 }
@@ -1296,12 +1296,12 @@ select.setting-input {
 .settings-banner-actions .btn-primary,
 .settings-banner-actions .btn-secondary {
   padding: 6px 14px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
 }
 
 .setting-section-title {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   margin: 0;
 }
@@ -1313,14 +1313,14 @@ select.setting-input {
 }
 
 .setting-section-desc {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   margin: 4px 0 12px;
   line-height: 1.5;
 }
 
 .setting-hint {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   line-height: 1.5;
   flex-basis: 100%;
@@ -1344,12 +1344,12 @@ select.setting-input {
 }
 
 .about-app-name {
-  font-size: 20px;
+  font-size: var(--fs-display);
   font-weight: 700;
 }
 
 .about-version {
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text-muted);
 }
 
@@ -1363,7 +1363,7 @@ select.setting-input {
   width: 100%;
   max-width: 320px;
   height: 6px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
   overflow: hidden;
@@ -1372,16 +1372,16 @@ select.setting-input {
 .update-progress-inner {
   height: 100%;
   background: var(--primary);
-  transition: width 0.2s ease;
+  transition: width var(--dur-overlay) var(--ease-out);
 }
 
 .update-status-ok {
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
 }
 
 .update-status-error {
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--warning);
   line-height: 1.5;
 }
@@ -1401,9 +1401,9 @@ select.setting-input {
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 500;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
 }
 
 .btn-secondary:hover {
@@ -1424,13 +1424,13 @@ select.setting-input {
   width: 100%;
   cursor: pointer;
   text-align: left;
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .theme-select-arrow {
   flex-shrink: 0;
   margin-left: 4px;
-  transition: transform 0.2s;
+  transition: transform var(--dur-overlay) var(--ease-out);
 }
 
 /* radius/shadow 覆盖公共基类（选择面板视觉更重） */
@@ -1445,10 +1445,10 @@ select.setting-input {
 
 .theme-select-option {
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   cursor: pointer;
   color: var(--text);
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .theme-select-option:hover,
@@ -1479,13 +1479,13 @@ select.setting-input {
   gap: 6px;
   padding: 5px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg-subtle);
 }
 .agent-skill-path {
   flex: 1;
   min-width: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-family: var(--mono-font);
   white-space: nowrap;
   overflow: hidden;
@@ -1503,7 +1503,7 @@ select.setting-input {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .agent-skill-remove:hover {
   color: var(--danger);

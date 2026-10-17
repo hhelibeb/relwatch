@@ -291,7 +291,7 @@ onUnmounted(() => {
 .ai-usage-overlay {
   position: fixed;
   inset: 0;
-  z-index: 10010;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -323,7 +323,7 @@ onUnmounted(() => {
 }
 
 .ai-usage-title {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
 }
 
@@ -337,7 +337,7 @@ onUnmounted(() => {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
@@ -364,16 +364,16 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
 .ai-usage-select {
   max-width: 200px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
 }
@@ -385,11 +385,11 @@ onUnmounted(() => {
 }
 
 .ai-usage-chip {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 2px 10px;
   white-space: nowrap;
 }
@@ -405,7 +405,7 @@ onUnmounted(() => {
 }
 
 .ai-usage-reload {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   padding: 4px 10px;
 }
 
@@ -422,7 +422,7 @@ onUnmounted(() => {
   padding: 40px 0;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .ai-usage-today {
@@ -438,12 +438,12 @@ onUnmounted(() => {
 }
 
 .ai-usage-today-label {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
 }
 
 .ai-usage-today-stat {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -471,14 +471,14 @@ onUnmounted(() => {
   display: inline-flex;
   gap: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
 .ai-usage-tab-buttons button,
 .ai-usage-dim-buttons button {
   padding: 4px 14px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -498,7 +498,7 @@ onUnmounted(() => {
 .ai-usage-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .ai-usage-table th,
@@ -521,7 +521,7 @@ onUnmounted(() => {
 .ai-usage-table th {
   color: var(--text-muted);
   font-weight: 600;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 
 .ai-usage-table td.strong {
@@ -542,14 +542,14 @@ onUnmounted(() => {
 
 .ai-usage-dim-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
 /* resize 手柄：与 ReleaseDetailModal 同款八向布局 */
 .resize-handle {
   position: absolute;
-  z-index: 10;
+  z-index: var(--z-sticky);
 }
 
 .resize-handle-n { top: -3px; left: 8px; right: 8px; height: 6px; cursor: n-resize; }

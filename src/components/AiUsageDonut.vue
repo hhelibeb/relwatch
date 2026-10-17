@@ -108,19 +108,19 @@ const hasData = computed(() => props.segments.some((s) => s.tokens > 0))
 }
 
 .donut-total {
-  font-size: 20px;
+  font-size: var(--fs-metric);
   font-weight: 700;
   color: var(--text);
 }
 
 .donut-total-label {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   margin-top: 2px;
 }
 
 .donut-empty {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   max-width: 90px;
   text-align: center;
@@ -141,13 +141,13 @@ const hasData = computed(() => props.segments.some((s) => s.tokens > 0))
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .donut-swatch {
   width: 10px;
   height: 10px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
 

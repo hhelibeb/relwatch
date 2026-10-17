@@ -81,7 +81,7 @@ const html = computed(() => {
 
 <style scoped>
 .markdown-body {
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.6;
   color: var(--text);
   word-break: break-word;
@@ -155,7 +155,7 @@ const html = computed(() => {
 .markdown-body :deep(pre code) {
   padding: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
 }
 
@@ -169,13 +169,13 @@ const html = computed(() => {
 .markdown-body :deep(img) {
   max-width: 100%;
   height: auto;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 
 .markdown-body :deep(table) {
   border-collapse: collapse;
   margin: 8px 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .markdown-body :deep(th),

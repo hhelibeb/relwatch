@@ -153,7 +153,7 @@ function handleOpenUrl(url: string) {
   cursor: pointer;
   user-select: none;
   border-radius: var(--radius-sm);
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .repo-group-header:hover {
@@ -162,7 +162,7 @@ function handleOpenUrl(url: string) {
 
 .repo-group-header .repo-name {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-title);
   flex: 1;
   /* 组头宽度不足时用省略号收尾（它自身的完整值靠 title）：长仓库名会把
      右侧的最新版本号/日期/计数整体挤出容器。不设 min-width 保底——
@@ -175,7 +175,7 @@ function handleOpenUrl(url: string) {
 
 .repo-group-header .repo-latest-tag {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--primary);
   /* 与卡片同一策略：等权收缩 + 省略号，不设 min-width（它会撑宽短版本号） */
   min-width: 0;
@@ -185,13 +185,13 @@ function handleOpenUrl(url: string) {
 }
 
 .repo-group-header .repo-latest-date {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
 
 .repo-group-header .repo-meta {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -207,7 +207,7 @@ function handleOpenUrl(url: string) {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition: transform 0.2s;
+  transition: transform var(--dur-overlay) var(--ease-out);
 }
 
 .repo-group-toggle svg {
@@ -234,7 +234,7 @@ function handleOpenUrl(url: string) {
 .toggle-all-icon {
   width: 12px;
   height: 12px;
-  transition: transform 0.2s;
+  transition: transform var(--dur-overlay) var(--ease-out);
 }
 
 .icon-collapse {

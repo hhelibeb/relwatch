@@ -218,8 +218,8 @@ let toastSwapTimer: ReturnType<typeof setTimeout> | null = null
 // 鼠标悬浮在 Toast 上时暂停消失计时。必须保留：错误详情、导出/备份路径这类内容
 // 用户要移过去选中复制，没有暂停就选不完。
 let toastHovered = false
-// 与 .toast-leave-active 过渡时长（0.3s）对齐，离场动画结束后再显示下一条
-const TOAST_SWAP_DELAY = 350
+// 需跟随 .toast-leave-active 的 --dur-overlay（220ms）+ 20ms 余量：早于离场动画换内容会看到新旧两条重叠
+const TOAST_SWAP_DELAY = 240
 const TOAST_MIN_DURATION = 2600
 const TOAST_MAX_DURATION = 6000
 // 按字数定停留时长：取中文默读约 5.7 字/秒 + 约 1.2s 反应余量，短按下限、超长封顶。
@@ -852,9 +852,9 @@ onUnmounted(() => {
   flex: 0 0 5px;
   cursor: col-resize;
   background: var(--border);
-  transition: background 0.15s ease;
+  transition: background var(--dur-state) var(--ease-out);
   position: relative;
-  z-index: 10;
+  z-index: var(--z-sticky);
 }
 .agent-divider:hover,
 .agent-divider.active {
@@ -869,12 +869,12 @@ onUnmounted(() => {
 .toast {
   position: fixed;
   bottom: 20px;
-  z-index: 9999;
+  z-index: var(--z-toast);
   padding: 9px 18px;
   background: var(--ink);
   color: var(--on-ink);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: var(--fs-body);
   box-shadow: var(--shadow-lg);
   /* right / max-width 由 toastStyle 绑定：面板打开时整块左移到面板左侧，
      避开面板底部的发送/附件按钮（详见 toastStyle 注释）。
@@ -887,11 +887,11 @@ onUnmounted(() => {
 }
 
 .toast-enter-active {
-  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all var(--dur-overlay) var(--ease-out);
 }
 
 .toast-leave-active {
-  transition: all 0.3s ease-in;
+  transition: all var(--dur-overlay) var(--ease-out);
 }
 
 .toast-enter-from {

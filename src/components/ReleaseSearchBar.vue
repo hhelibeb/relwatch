@@ -482,11 +482,11 @@ function clearAllFilters() {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
   pointer-events: none;
-  transition: right 0.15s ease;
+  transition: right var(--dur-state) var(--ease-out);
 }
 
 .release-count.has-clear {
@@ -502,10 +502,10 @@ function clearAllFilters() {
   height: 22px;
   padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1;
   cursor: pointer;
   white-space: nowrap;
@@ -565,10 +565,10 @@ function clearAllFilters() {
   min-width: 15px;
   height: 15px;
   padding: 0 4px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--primary);
   color: #fff;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   line-height: 15px;
   text-align: center;
   font-weight: 600;
@@ -597,7 +597,7 @@ function clearAllFilters() {
   padding: 6px 10px;
   border-top: 1px solid var(--border);
   border-radius: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   text-align: center;
 }
@@ -629,7 +629,7 @@ function clearAllFilters() {
 
 .filter-group-title {
   padding: 3px 14px 2px;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   user-select: none;
 }
@@ -642,7 +642,7 @@ function clearAllFilters() {
   align-items: center;
   gap: 6px;
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -651,7 +651,7 @@ function clearAllFilters() {
   border: none;
   background: none;
   color: var(--primary);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   text-decoration: underline;
   cursor: pointer;
 }
@@ -673,13 +673,13 @@ function clearAllFilters() {
   gap: 5px;
   padding: 2px 8px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
   cursor: pointer;
-  transition: background 0.1s, border-color 0.1s;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
 }
 
 .filter-chip:hover {
@@ -701,13 +701,13 @@ function clearAllFilters() {
 .filter-chip-dot {
   width: 8px;
   height: 8px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   flex-shrink: 0;
 }
 
 .filter-chip-x {
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--fs-caption);
   line-height: 1;
 }
 
@@ -730,7 +730,7 @@ function clearAllFilters() {
   width: 8px;
   height: 8px;
   margin-right: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   flex-shrink: 0;
 }
 

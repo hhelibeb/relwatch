@@ -218,7 +218,7 @@ function toolArgsSummary(args: string): string {
 .agent-ws-hint {
   text-align: center;
   opacity: 0.6;
-  font-size: 13px;
+  font-size: var(--fs-body);
   padding: 24px 0;
 }
 .agent-ws-hint-empty {
@@ -239,15 +239,15 @@ function toolArgsSummary(args: string): string {
 /* 气泡 */
 .agent-ws-bubble {
   max-width: 86%;
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 9px 12px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.55;
 }
 .agent-ws-bubble-user {
   background: var(--primary-soft-bg);
   border: 1px solid var(--primary-soft-border);
-  border-top-right-radius: 3px;
+  border-top-right-radius: var(--radius-xs);
   color: var(--text);
 }
 .agent-ws-bubble-assistant {
@@ -256,10 +256,10 @@ function toolArgsSummary(args: string): string {
   margin-right: 14px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-top-left-radius: 3px;
+  border-top-left-radius: var(--radius-xs);
 }
 .agent-ws-bubble-model {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   opacity: 0.5;
   margin-bottom: 4px;
   font-family: var(--mono-font);
@@ -283,10 +283,10 @@ function toolArgsSummary(args: string): string {
   gap: 6px;
   margin-top: 7px;
   padding: 5px 8px;
-  border-radius: 6px;
+  border-radius: var(--radius);
   border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   background: var(--danger-soft-bg);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   line-height: 1.45;
   max-width: 100%;
 }
@@ -326,7 +326,7 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-run-failed-actions .btn-sm {
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 /* 超时引导：行动建议独占一行 + 就地调时长 */
 .agent-ws-run-advice {
@@ -339,7 +339,7 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-run-advice-actions .btn-sm {
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 .agent-ws-run-advice-adjust {
   display: flex;
@@ -349,14 +349,14 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-run-advice-adjust .btn-sm {
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 .agent-ws-timeout-input {
   width: 72px;
   padding: 2px 6px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--bg);
   color: var(--text);
 }
@@ -368,16 +368,16 @@ function toolArgsSummary(args: string): string {
 /* 折叠块（思考 / 工具详情） */
 .agent-ws-fold {
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius);
   background: var(--bg-subtle);
   margin: 6px 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 .agent-ws-fold summary {
   padding: 5px 9px;
   cursor: pointer;
   opacity: 0.75;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   user-select: none;
 }
 .agent-ws-fold-thinking summary {
@@ -391,14 +391,14 @@ function toolArgsSummary(args: string): string {
   padding: 8px 10px;
   border-top: 1px solid var(--border);
   font-family: var(--mono-font);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 260px;
   overflow-y: auto;
   background: var(--bg);
-  border-radius: 0 0 7px 7px;
+  border-radius: 0 0 var(--radius) var(--radius);
 }
 
 /* 工具卡片（toolCall / toolResult / bash） */
@@ -407,9 +407,9 @@ function toolArgsSummary(args: string): string {
   margin-right: 14px;
   align-self: flex-start;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-subtle);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   overflow: hidden;
 }
 .agent-ws-tool-card.tool-error {
@@ -436,7 +436,7 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-tool-tag {
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   opacity: 0.55;
   flex-shrink: 0;
 }
@@ -444,7 +444,7 @@ function toolArgsSummary(args: string): string {
   padding: 5px 10px;
   border-top: 1px solid var(--border);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   opacity: 0.7;
   user-select: none;
 }

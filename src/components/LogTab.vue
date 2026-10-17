@@ -198,14 +198,14 @@ onUnmounted(() => {
 .log-search {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   padding: 0;
   background: var(--bg);
-  transition: top 0.15s ease;
+  transition: top var(--dur-state) var(--ease-out);
 }
 
 .btn-icon {
@@ -216,10 +216,10 @@ onUnmounted(() => {
   height: 32px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -250,7 +250,7 @@ onUnmounted(() => {
   padding: 7px 8px;
   background: transparent;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .log-level {
@@ -271,7 +271,7 @@ onUnmounted(() => {
 .log-date {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
 }
 
@@ -299,14 +299,14 @@ onUnmounted(() => {
   height: 26px;
   padding: 0 6px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--input-bg);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 24px;
   text-align: center;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color var(--dur-overlay) var(--ease-out);
 }
 
 .pagination-input:focus {
@@ -324,14 +324,14 @@ onUnmounted(() => {
 }
 
 .pagination-info {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text);
   white-space: nowrap;
   line-height: 26px;
 }
 
 .pagination-total {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }

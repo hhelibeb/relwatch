@@ -338,9 +338,9 @@ const emit = defineEmits<{
   flex: 1;
   resize: none;
   padding: 8px 10px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
@@ -355,8 +355,8 @@ const emit = defineEmits<{
   /* 对齐 composer 30px/8px 基线，覆盖全局 .btn-primary 的 padding/字号/圆角 */
   height: 30px;
   padding: 0 16px;
-  font-size: 12px;
-  border-radius: 8px;
+  font-size: var(--fs-meta);
+  border-radius: var(--radius-lg);
 }
 .agent-ws-submit.agent-ws-stop {
   background: var(--danger);
@@ -398,9 +398,9 @@ const emit = defineEmits<{
   color: var(--text-muted);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: border-color var(--dur-hover) var(--ease-out), background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
 }
 .agent-ws-attach-btn:hover {
   color: var(--text);
@@ -432,13 +432,13 @@ const emit = defineEmits<{
   max-width: 100%;
   height: 30px;
   padding: 0 9px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color var(--dur-hover) var(--ease-out), background var(--dur-hover) var(--ease-out);
 }
 .agent-ws-model-btn:hover,
 .agent-ws-model-btn.open {
@@ -461,7 +461,7 @@ const emit = defineEmits<{
   height: 11px;
   color: var(--text-muted);
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-hover) var(--ease-out);
 }
 .agent-ws-model-btn.open .agent-ws-model-caret {
   transform: rotate(180deg);
@@ -484,7 +484,7 @@ const emit = defineEmits<{
 .agent-ws-menu-check {
   flex-shrink: 0;
   width: 12px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--primary);
 }
 
@@ -494,7 +494,7 @@ const emit = defineEmits<{
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .agent-ws-usage-text {
@@ -507,15 +507,15 @@ const emit = defineEmits<{
 /* 引用 chip 全文悬浮提示（fixed 避免被消息区滚动容器裁剪） */
 .agent-ws-chip-tooltip {
   position: fixed;
-  z-index: 10002;
+  z-index: var(--z-popover);
   max-width: min(480px, calc(100vw - 32px));
   padding: 9px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg, 0 4px 16px rgba(0, 0, 0, 0.25));
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   overflow-wrap: anywhere;
   pointer-events: none;

@@ -119,7 +119,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   align-items: center;
   gap: 8px;
   padding: 6px 14px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   min-height: 38px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
@@ -210,7 +210,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   align-items: center;
   gap: 6px;
   padding: 4px 14px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--primary-soft-text);
   background: var(--primary-soft-bg);
   border-bottom: 1px solid var(--border);
@@ -241,7 +241,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 12;
+  z-index: var(--z-sticky);
   background: var(--bg);
   display: flex;
   flex-direction: column;
@@ -255,7 +255,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   flex-shrink: 0;
 }
 .agent-ws-history-title {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
 }
 .agent-ws-history-close {
@@ -269,7 +269,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 .agent-ws-history-close:hover {
   background: var(--bg-hover);
@@ -296,11 +296,11 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   gap: 8px;
   padding: 7px 9px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-subtle);
 }
 .agent-ws-history-status {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   flex-shrink: 0;
   min-width: 34px;
@@ -329,13 +329,13 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   gap: 2px;
 }
 .agent-ws-history-instr {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .agent-ws-history-meta {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   opacity: 0.6;
   white-space: nowrap;
   overflow: hidden;
@@ -347,12 +347,12 @@ function isTerminalRun(run: AgentRunSummary): boolean {
 }
 .agent-ws-history-actions .btn-sm {
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 .agent-ws-history-empty {
   padding: 20px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   opacity: 0.5;
 }
 </style>

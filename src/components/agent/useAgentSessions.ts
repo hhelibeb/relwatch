@@ -202,7 +202,7 @@ export function useAgentSessions(deps: {
 
   /** 会话 ⋯ 菜单：Teleport 到 body 后以触发按钮为锚 fixed 定位（useAnchoredMenu）。
    * 侧边栏宽仅 140px 且 overflow:hidden，absolute 定位的菜单超宽部分会被裁剪显示不全；
-   * 脱离文档流盖在最上层（与 RPC 状态菜单同一策略，z-index 对齐 10002）。 */
+   * 脱离文档流盖在最上层（与 RPC 状态菜单同一档：--z-menu）。 */
   const sessionMoreEls = new Map<string, HTMLElement>()
   function setSessionMoreEl(el: Element | ComponentPublicInstance | null, key: string) {
     if (el) sessionMoreEls.set(key, el as HTMLElement)
