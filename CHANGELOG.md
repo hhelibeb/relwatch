@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.19.1] - 2026-10-17
 
 ### Security
+- 升级 `rustls` 至 0.23.46，修 4 项 TLS 公告（RUSTSEC-2026-0346 / 0347 / 0348 / 0349：会话密钥经 `Debug` 外泄、ECH 拒绝后向外部服务器发送缓冲数据、Brotli 证书解压可预占至 1 GiB、未认证 ServerHello 可降级后续连接密钥交换）。(`5c41df6`)
 - 升级 `source-map-js` 至 1.2.2，修 GHSA-68fv-2mgg-jv7q（indexed source-map offsets 引发 event-loop DoS）。(`48b71f8`)
 - 日志文件不再明文写入凭据，YouTube `&key=`、代理 `user:pass@` 等在落盘前统一脱敏。(`0d286ed`)
 
