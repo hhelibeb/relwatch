@@ -3,6 +3,9 @@ import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import AiUsageHeatmap from './AiUsageHeatmap.vue'
 import AiUsageDonut from './AiUsageDonut.vue'
+import EmptyState from './common/EmptyState.vue'
+import ErrorBlock from './common/ErrorBlock.vue'
+import SkeletonList from './common/SkeletonList.vue'
 import {
   useAiUsageStats,
   buildSourceTsv,
@@ -195,9 +198,9 @@ onUnmounted(() => {
         </div>
 
         <div class="ai-usage-body">
-          <div v-if="loading" class="ai-usage-state">{{ t('aiUsage.loading') }}</div>
-          <div v-else-if="error" class="ai-usage-state ai-usage-error">{{ error }}</div>
-          <div v-else-if="!hasAnyData || !heatmap" class="ai-usage-state">{{ t('aiUsage.empty') }}</div>
+          <SkeletonList v-if="loading" variant="card" :rows="2" :label="t('common.loading')" />
+          <ErrorBlock v-else-if="error" :message="error" :retry-label="t('common.retry')" @retry="reload" />
+          <EmptyState v-else-if="!hasAnyData || !heatmap" :title="t('aiUsage.empty')" compact />
           <template v-else>
             <!-- 今日用量作为基本信息常驻顶部：热力图里今天只是一格，看不出具体数字 -->
             <div class="ai-usage-today">
@@ -291,7 +294,7 @@ onUnmounted(() => {
 .ai-usage-overlay {
   position: fixed;
   inset: 0;
-  z-index: 10010;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -323,7 +326,7 @@ onUnmounted(() => {
 }
 
 .ai-usage-title {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
 }
 
@@ -337,12 +340,12 @@ onUnmounted(() => {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: pointer;
 }
 
 .ai-usage-close:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   color: var(--text);
 }
 
@@ -364,16 +367,16 @@ onUnmounted(() => {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
 .ai-usage-select {
   max-width: 200px;
   padding: 4px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
 }
@@ -385,11 +388,11 @@ onUnmounted(() => {
 }
 
 .ai-usage-chip {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
   padding: 2px 10px;
   white-space: nowrap;
 }
@@ -405,7 +408,7 @@ onUnmounted(() => {
 }
 
 .ai-usage-reload {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   padding: 4px 10px;
 }
 
@@ -416,13 +419,6 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
-}
-
-.ai-usage-state {
-  padding: 40px 0;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 13px;
 }
 
 .ai-usage-today {
@@ -438,18 +434,14 @@ onUnmounted(() => {
 }
 
 .ai-usage-today-label {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
 }
 
 .ai-usage-today-stat {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.ai-usage-error {
-  color: var(--danger, #dc2626);
 }
 
 .ai-usage-bottom-tabs {
@@ -471,14 +463,14 @@ onUnmounted(() => {
   display: inline-flex;
   gap: 0;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
 .ai-usage-tab-buttons button,
 .ai-usage-dim-buttons button {
   padding: 4px 14px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -498,7 +490,7 @@ onUnmounted(() => {
 .ai-usage-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .ai-usage-table th,
@@ -521,7 +513,7 @@ onUnmounted(() => {
 .ai-usage-table th {
   color: var(--text-muted);
   font-weight: 600;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 
 .ai-usage-table td.strong {
@@ -542,14 +534,14 @@ onUnmounted(() => {
 
 .ai-usage-dim-hint {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
 /* resize 手柄：与 ReleaseDetailModal 同款八向布局 */
 .resize-handle {
   position: absolute;
-  z-index: 10;
+  z-index: var(--z-sticky);
 }
 
 .resize-handle-n { top: -3px; left: 8px; right: 8px; height: 6px; cursor: n-resize; }

@@ -4,7 +4,7 @@
 
 # Commit 工作流
 
-准备Commit时，必须先加载 `.pi/skills/commit/SKILL.md` 中的 commit skill
+未经用户允许，不要自行commit、push。准备Commit时，必须先加载 `.pi/skills/commit/SKILL.md` 中的 commit skill
 
 # 术语约定（重要，防误会）
 

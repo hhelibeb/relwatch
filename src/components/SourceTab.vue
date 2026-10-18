@@ -9,12 +9,15 @@ import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
+import EmptyState from './common/EmptyState.vue'
+import ErrorBlock from './common/ErrorBlock.vue'
+import SkeletonList from './common/SkeletonList.vue'
 import { AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
-const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean }>()
+const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean; /** 源列表加载中（App 侧状态）：仅在列表为空时渲染骨架 */ loading?: boolean; /** 源列表加载失败信息：列表为空时用错误块代替空态 */ loadError?: string }>()
 const emit = defineEmits<{
   update: []
   checkResult: [count: number]
@@ -24,7 +27,9 @@ const emit = defineEmits<{
 }>()
 
 const urlInput = ref('')
-const loading = ref(false)
+const urlInputEl = ref<HTMLInputElement | null>(null)
+/* 添加源的请求在途：与列表加载态（props.loading）分开 */
+const addBusy = ref(false)
 const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const openMoreId = ref<number | null>(null)
@@ -123,6 +128,12 @@ function toggleSelectionMode() {
 function toggleHeaderMode() {
   headerMode.value = headerMode.value === 'add' ? 'search' : 'add'
   track(headerMode.value === 'add' ? 'source.switch_add' : 'source.switch_search')
+}
+
+/* 空态出口：把用户直接送到输入框（搜索模式下它是隐藏的） */
+function focusAddInput() {
+  headerMode.value = 'add'
+  void nextTick(() => urlInputEl.value?.focus())
 }
 
 function selectSortField(field: SourceSortField) {
@@ -385,7 +396,7 @@ async function handleAdd() {
     showToast?.(t('source.exists'))
     return
   }
-  loading.value = true
+  addBusy.value = true
   try {
     const def = getSourceTypeDef(parsed.type)
     // 有专属配置 UI 的类型（YouTube 订阅复选框）才携带 config
@@ -415,7 +426,7 @@ async function handleAdd() {
     await message(tm('source.add_failed', { source_type: parsed.type, owner: parsed.owner, repo: parsed.repo, error: errMsg }), { title: t('settings.error'), kind: 'error' })
     emit('update')
   } finally {
-    loading.value = false
+    addBusy.value = false
   }
 }
 
@@ -610,6 +621,7 @@ function hideHealthTooltip() {
         <div class="input-clear-wrap">
           <input
             v-if="headerMode === 'add'"
+            ref="urlInputEl"
             v-model="urlInput"
             :placeholder="t('source.placeholder')"
             @keyup.enter="handleAdd"
@@ -641,7 +653,7 @@ function hideHealthTooltip() {
             @click="sourceSearch = ''"
           >✕</button>
         </div>
-        <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="loading || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
+        <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="addBusy || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
         <div class="sort-group">
           <button type="button" class="sort-trigger" :aria-expanded="openSort" aria-haspopup="menu" @click.stop="sortDropdown.toggle($event, true)" @keydown="sortDropdown.handleTriggerKeydown($event, true)">
             <span class="sort-direction-icon" aria-hidden="true">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
@@ -716,8 +728,35 @@ function hideHealthTooltip() {
       </div>
     </div>
     <div class="source-list">
-      <div v-if="props.sources.length === 0" class="empty">{{ t('source.empty') }}</div>
-      <div v-else-if="hasActiveSourceSearch && sortedSources.length === 0" class="empty source-search-status">{{ t('source.search_empty') }}</div>
+      <SkeletonList
+        v-if="props.loading && props.sources.length === 0"
+        :rows="3"
+        :label="t('common.loading')"
+      />
+      <ErrorBlock
+        v-else-if="props.loadError && props.sources.length === 0"
+        :message="props.loadError"
+        :retry-label="t('common.retry')"
+        @retry="emit('update')"
+      />
+      <EmptyState
+        v-else-if="props.sources.length === 0"
+        :title="t('source.empty')"
+        :description="t('source.empty_desc')"
+      >
+        <template #actions>
+          <button type="button" class="btn-sm" @click="focusAddInput">{{ t('source.empty_cta') }}</button>
+        </template>
+      </EmptyState>
+      <EmptyState
+        v-else-if="hasActiveSourceSearch && sortedSources.length === 0"
+        class="source-search-status"
+        :title="t('source.search_empty')"
+      >
+        <template #actions>
+          <button type="button" class="btn-sm" @click="sourceSearch = ''">{{ t('common.clear_search') }}</button>
+        </template>
+      </EmptyState>
       <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }" :draggable="agentEnabled && agentPanelOpen" @dragstart="handleDragStart($event, source)">
       <div v-if="selectionMode" class="source-checkbox">
         <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @change="toggleSelection(source.id)" />
@@ -758,8 +797,11 @@ function hideHealthTooltip() {
               </span>
             </template>
           </div>
-          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error" :title="translateError(source.last_check_message)">
-            {{ translateError(source.last_check_message) }}
+          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error-block">
+            <span class="source-error" :title="translateError(source.last_check_message)">
+              {{ translateError(source.last_check_message) }}
+            </span>
+            <button type="button" class="btn-sm source-error-retry" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)">{{ t('common.retry') }}</button>
           </div>
         </div>
         <div class="source-actions">
@@ -831,7 +873,7 @@ function hideHealthTooltip() {
           </div>
         </div>
       </div>
-      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="empty source-search-status">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
+      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="source-search-result-count">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
     </div>
     <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="contextMenuItems" @action="handleMenuAction" @close="closeContextMenu" />
     <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
@@ -844,13 +886,13 @@ function hideHealthTooltip() {
 .source-sticky-panel {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   margin-bottom: 12px;
-  transition: top 0.15s ease;
+  transition: top var(--dur-state) var(--ease-out);
 }
 
 :global(.app-main.is-scrolled .source-sticky-panel) {
-  top: calc(-1 * var(--app-padding-y, 16px));
+  top: calc(-1 * var(--app-padding-y));
 }
 
 /* 与版本/日志 tab 的 .log-search-row 对齐：无内边距、无分隔线，保证三个 tab 输入框位置一致 */
@@ -875,9 +917,9 @@ function hideHealthTooltip() {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
 }
 
 .source-header .input-clear-wrap input:focus {
@@ -897,11 +939,11 @@ function hideHealthTooltip() {
   right: 10px;
   top: 50%;
   transform: translateY(-50%);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
   pointer-events: none;
-  transition: right 0.15s ease;
+  transition: right var(--dur-state) var(--ease-out);
 }
 
 .source-count.has-clear {
@@ -915,10 +957,10 @@ function hideHealthTooltip() {
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 500;
   white-space: nowrap;
-  transition: background 0.15s ease, transform 0.1s ease;
+  transition: background var(--dur-state) var(--ease-out), transform var(--dur-hover) var(--ease-out);
 }
 
 .btn-add-source:hover:not(:disabled) {
@@ -943,16 +985,16 @@ function hideHealthTooltip() {
   height: 34px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text-muted);
   cursor: pointer;
   flex-shrink: 0;
-  transition: all 0.12s;
+  transition: all var(--dur-hover) var(--ease-out);
 }
 
 .btn-mode-toggle:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
   color: var(--text);
 }
@@ -970,7 +1012,7 @@ function hideHealthTooltip() {
   width: 7px;
   height: 7px;
   border: 2px solid var(--surface);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--primary);
 }
 
@@ -984,7 +1026,7 @@ function hideHealthTooltip() {
 }
 
 .mode-toggle-plus {
-  font-size: 20px;
+  font-size: var(--fs-display);
   line-height: 1;
   font-weight: 500;
 }
@@ -994,13 +1036,17 @@ function hideHealthTooltip() {
   flex-direction: column;
 }
 
+/* 搜索无结果：空态紧贴在搜索栏下方，不要 48px 图标把结果区顶出视区 */
 .source-search-status {
   padding-top: 30px;
 }
 
-/* 搜索结果计数行不显示空状态图标 */
-.source-search-status::before {
-  content: none;
+/* 搜索结果计数行：不是空态，仅一行行尾提示 */
+.source-search-result-count {
+  padding: 8px 0;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
 }
 
 .source-item {
@@ -1012,11 +1058,11 @@ function hideHealthTooltip() {
   background: transparent;
   border-bottom: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  transition: background 0.12s ease;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .source-item:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .source-main {
@@ -1083,7 +1129,7 @@ function hideHealthTooltip() {
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1098,10 +1144,10 @@ function hideHealthTooltip() {
   background: var(--primary-soft-bg);
   color: var(--primary-soft-text);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background var(--dur-state) var(--ease-out);
 }
 
 .source-pending-link:hover {
@@ -1119,13 +1165,13 @@ function hideHealthTooltip() {
 
 .source-health-tooltip {
   position: fixed;
-  z-index: 10002;
+  z-index: var(--z-popover);
   padding: 8px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   pointer-events: none;
   max-width: 360px;
@@ -1147,7 +1193,7 @@ function hideHealthTooltip() {
   position: relative;
   width: 7px;
   height: 7px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   flex-shrink: 0;
   background: var(--text-muted);
 }
@@ -1159,7 +1205,7 @@ function hideHealthTooltip() {
   left: -5px;
   right: -5px;
   bottom: -5px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
 }
 
 .health-ok {
@@ -1176,12 +1222,29 @@ function hideHealthTooltip() {
 }
 
 .source-error {
+  flex: 1;
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
-  color: var(--danger);
+  font-size: var(--fs-meta);
+  color: var(--danger-soft-text);
+}
+
+/* 检查失败：原因留在原位，右侧固定一个重试（旧版只有一行红字，说不出下一步） */
+.source-error-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 3px 4px 3px 8px;
+  background: var(--danger-soft-bg);
+  border-radius: var(--radius-xs);
+}
+
+.source-error-retry {
+  flex-shrink: 0;
 }
 
 .source-status {
@@ -1190,7 +1253,7 @@ function hideHealthTooltip() {
   gap: 5px;
   padding: 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1198,7 +1261,7 @@ function hideHealthTooltip() {
   content: '';
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--text-faint);
   flex-shrink: 0;
 }
@@ -1244,14 +1307,14 @@ function hideHealthTooltip() {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
   white-space: nowrap;
 }
 
 .dropdown-item:hover:not(:disabled) {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .dropdown-item:disabled {
@@ -1260,7 +1323,7 @@ function hideHealthTooltip() {
 }
 
 .dropdown-icon {
-  font-size: 14px;
+  font-size: var(--fs-body);
   line-height: 1;
 }
 
@@ -1303,7 +1366,7 @@ function hideHealthTooltip() {
   color: var(--text-muted);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -1312,8 +1375,9 @@ function hideHealthTooltip() {
   height: 16px;
 }
 
+/* 行内图标按钮取二级悬停面：父行 .source-item:hover 已抬到 --hover-surface */
 .btn-icon-action:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--hover-surface-nested);
   color: var(--text);
 }
 
@@ -1325,7 +1389,7 @@ function hideHealthTooltip() {
 .btn-check:hover:not(:disabled),
 .btn-pause:hover:not(:disabled),
 .btn-resume:hover:not(:disabled) {
-  background: var(--bg-hover);
+  background: var(--hover-surface-nested);
   color: var(--text);
 }
 
@@ -1344,14 +1408,14 @@ function hideHealthTooltip() {
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
 }
 
 .sort-trigger:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 
@@ -1362,7 +1426,7 @@ function hideHealthTooltip() {
   width: 13px;
   height: 13px;
   color: var(--primary);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1;
   font-weight: 700;
 }
@@ -1385,15 +1449,15 @@ function hideHealthTooltip() {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
-  transition: background 0.1s;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .sort-dropdown button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .sort-dropdown button.selected {
@@ -1416,15 +1480,15 @@ function hideHealthTooltip() {
   border-radius: var(--radius-sm);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s, border-color 0.12s;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
   flex-shrink: 0;
 }
 
 .btn-select:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 
@@ -1435,7 +1499,7 @@ function hideHealthTooltip() {
   flex-wrap: wrap;
   gap: 4px 14px;
   padding: 8px 2px 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1472,7 +1536,7 @@ function hideHealthTooltip() {
 /* 更多菜单内的订阅配置 */
 .dropdown-section-label {
   padding: 7px 14px 3px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   font-weight: 600;
   text-transform: uppercase;
@@ -1484,7 +1548,7 @@ function hideHealthTooltip() {
   align-items: center;
   gap: 6px;
   padding: 5px 14px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
@@ -1492,7 +1556,7 @@ function hideHealthTooltip() {
 }
 
 .yt-menu-option:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .yt-menu-option input[type="checkbox"] {
@@ -1514,7 +1578,7 @@ function hideHealthTooltip() {
   justify-content: space-between;
   gap: 10px;
   padding: 4px 14px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
   white-space: nowrap;
 }
@@ -1530,11 +1594,12 @@ function hideHealthTooltip() {
   width: calc(13ch * 1.1);
   flex: none;
   padding: 2px 4px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text);
-  background: var(--bg-input, var(--bg-subtle));
+  /* 原 --bg-input 从未定义，一直靠 fallback 落成 --bg-subtle；此处直接写下真实值 */
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .source-checkbox {
@@ -1559,7 +1624,7 @@ function hideHealthTooltip() {
   padding: 8px 0;
   background: var(--bg-subtle);
   border-bottom: 1px solid var(--border);
-  font-size: 12px;
+  font-size: var(--fs-meta);
 }
 
 .bulk-count {
@@ -1574,13 +1639,13 @@ function hideHealthTooltip() {
   gap: 5px;
   padding: 4px 7px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.12s;
+  transition: all var(--dur-hover) var(--ease-out);
 }
 
 .bulk-btn-icon {
@@ -1594,7 +1659,7 @@ function hideHealthTooltip() {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1;
   font-weight: 700;
 }

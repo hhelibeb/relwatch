@@ -119,7 +119,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   align-items: center;
   gap: 8px;
   padding: 6px 14px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   min-height: 38px;
   border-bottom: 1px solid var(--border);
   background: var(--bg-subtle);
@@ -136,7 +136,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   font-weight: 600;
 }
 .agent-ws-banner-error {
-  color: #d64545;
+  color: var(--danger);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -144,19 +144,20 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   flex-shrink: 1;
 }
 .agent-ws-banner-queue {
-  color: #b0882e;
+  color: var(--warning);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 260px;
   flex-shrink: 1;
 }
-.agent-ws-banner.status-running .agent-ws-banner-status { color: #2e6fd0; }
-.agent-ws-banner.status-pending .agent-ws-banner-status { color: #2e6fd0; }
-.agent-ws-banner.status-success .agent-ws-banner-status { color: #2e9e5b; }
-.agent-ws-banner.status-failed .agent-ws-banner-status { color: #d64545; }
-.agent-ws-banner.status-timeout .agent-ws-banner-status { color: #d08a2e; }
-.agent-ws-banner.status-cancelled .agent-ws-banner-status { color: #8a8a8a; }
+/* 状态色一律走语义 token：运行中/排队=品牌蓝，成功=绿，失败=红，超时=琥珀，取消=中性灰 */
+.agent-ws-banner.status-running .agent-ws-banner-status { color: var(--primary); }
+.agent-ws-banner.status-pending .agent-ws-banner-status { color: var(--primary); }
+.agent-ws-banner.status-success .agent-ws-banner-status { color: var(--success); }
+.agent-ws-banner.status-failed .agent-ws-banner-status { color: var(--danger); }
+.agent-ws-banner.status-timeout .agent-ws-banner-status { color: var(--warning); }
+.agent-ws-banner.status-cancelled .agent-ws-banner-status { color: var(--text-muted); }
 .agent-ws-banner-text {
   flex: 1;
   min-width: 0;
@@ -183,18 +184,18 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   text-underline-offset: 2px;
 }
 .agent-ws-banner-queue.clickable:hover {
-  color: #2e6fd0;
+  color: var(--primary);
 }
 .agent-ws-banner-actions .btn-sm.active {
-  background: rgba(46, 111, 208, 0.12);
-  border-color: rgba(46, 111, 208, 0.35);
-  color: #2e6fd0;
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
+  color: var(--primary-soft-text);
 }
 .agent-ws-banner-spinner {
   width: 12px;
   height: 12px;
-  border: 2px solid rgba(46, 111, 208, 0.25);
-  border-top-color: #2e6fd0;
+  border: 2px solid var(--primary-soft-border);
+  border-top-color: var(--primary);
   border-radius: 50%;
   animation: agent-ws-spin 0.8s linear infinite;
   flex-shrink: 0;
@@ -209,9 +210,9 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   align-items: center;
   gap: 6px;
   padding: 4px 14px;
-  font-size: 11px;
-  color: #2e6fd0;
-  background: rgba(46, 111, 208, 0.08);
+  font-size: var(--fs-caption);
+  color: var(--primary-soft-text);
+  background: var(--primary-soft-bg);
   border-bottom: 1px solid var(--border);
 }
 .agent-ws-pending-restart-icon {
@@ -219,7 +220,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #2e6fd0;
+  background: var(--primary);
   animation: agent-ws-pulse 1.4s ease-in-out infinite;
 }
 .agent-ws-pending-restart-text {
@@ -240,7 +241,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   left: 0;
   right: 0;
   bottom: 0;
-  z-index: 12;
+  z-index: var(--z-sticky);
   background: var(--bg);
   display: flex;
   flex-direction: column;
@@ -254,7 +255,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   flex-shrink: 0;
 }
 .agent-ws-history-title {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 600;
 }
 .agent-ws-history-close {
@@ -268,7 +269,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   background: none;
   color: var(--text-muted);
   cursor: pointer;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
 }
 .agent-ws-history-close:hover {
   background: var(--bg-hover);
@@ -295,30 +296,30 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   gap: 8px;
   padding: 7px 9px;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg-subtle);
 }
 .agent-ws-history-status {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   flex-shrink: 0;
   min-width: 34px;
 }
 .agent-ws-history-status.st-running,
 .agent-ws-history-status.st-pending {
-  color: #2e6fd0;
+  color: var(--primary);
 }
 .agent-ws-history-status.st-success {
-  color: #2e9e5b;
+  color: var(--success);
 }
 .agent-ws-history-status.st-failed {
-  color: #d64545;
+  color: var(--danger);
 }
 .agent-ws-history-status.st-timeout {
-  color: #d08a2e;
+  color: var(--warning);
 }
 .agent-ws-history-status.st-cancelled {
-  color: #8a8a8a;
+  color: var(--text-muted);
 }
 .agent-ws-history-main {
   flex: 1;
@@ -328,30 +329,30 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   gap: 2px;
 }
 .agent-ws-history-instr {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .agent-ws-history-meta {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   opacity: 0.6;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
 }
 .agent-ws-history-actions {
   flex-shrink: 0;
 }
 .agent-ws-history-actions .btn-sm {
   padding: 1px 7px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
 }
 .agent-ws-history-empty {
   padding: 20px;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   opacity: 0.5;
 }
 </style>

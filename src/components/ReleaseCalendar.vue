@@ -222,15 +222,15 @@ function handleNextMonth() {
   height: 28px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .calendar-nav button:hover:not(:disabled) {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .calendar-nav button:disabled {
@@ -244,7 +244,7 @@ function handleNextMonth() {
 }
 
 .calendar-nav .calendar-month-label {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   min-width: 120px;
   text-align: center;
@@ -262,7 +262,7 @@ function handleNextMonth() {
 
 .calendar-day-header {
   text-align: center;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   color: var(--text-muted);
   padding: 4px 0;
@@ -274,11 +274,11 @@ function handleNextMonth() {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  border-radius: 6px;
+  border-radius: var(--radius);
   cursor: default;
-  font-size: 13px;
+  font-size: var(--fs-body);
   position: relative;
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
   color: var(--text);
 }
 
@@ -287,7 +287,7 @@ function handleNextMonth() {
 }
 
 .calendar-cell.current-month:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .calendar-cell.other-month {
@@ -301,14 +301,14 @@ function handleNextMonth() {
 }
 
 .calendar-cell .cell-date {
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1;
 }
 
 /* 格内版本数量：配合热力底色让数值一目了然 */
 .calendar-cell .cell-count {
   margin-top: 3px;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   line-height: 1;
   color: var(--text);
@@ -321,7 +321,7 @@ function handleNextMonth() {
   justify-content: flex-end;
   gap: 10px;
   margin-top: 8px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -339,7 +339,7 @@ function handleNextMonth() {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   border: 1px solid var(--border);
 }
 
@@ -380,13 +380,13 @@ function handleNextMonth() {
 
 .calendar-tooltip {
   position: fixed;
-  z-index: 10001;
+  z-index: var(--z-popover);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 8px 12px;
   box-shadow: var(--shadow-lg);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   max-width: 260px;
   pointer-events: none;
 }

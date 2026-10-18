@@ -203,7 +203,7 @@ function handleKeydown(e: KeyboardEvent) {
 .stats-dev-overlay {
   position: fixed;
   inset: 0;
-  z-index: 20000;
+  z-index: var(--z-dev);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -234,7 +234,7 @@ function handleKeydown(e: KeyboardEvent) {
 
 .stats-dev-header h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
 }
 
@@ -246,21 +246,21 @@ function handleKeydown(e: KeyboardEvent) {
 .stats-dev-error {
   padding: 12px 16px;
   color: var(--danger);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .stats-dev-empty {
   padding: 40px 16px;
   text-align: center;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
 }
 
 .stats-dev-summary {
   display: flex;
   gap: 20px;
   padding: 12px 16px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text-muted);
   border-bottom: 1px solid var(--border);
 }
@@ -280,7 +280,7 @@ function handleKeydown(e: KeyboardEvent) {
   gap: 10px;
   align-items: center;
   padding: 6px 16px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border-bottom: 1px solid var(--border);
 }
 
@@ -290,7 +290,7 @@ function handleKeydown(e: KeyboardEvent) {
   background: var(--surface);
   color: var(--text-muted);
   font-weight: 600;
-  z-index: 1;
+  z-index: var(--z-sticky);
 }
 
 .col-key {
@@ -316,7 +316,7 @@ function handleKeydown(e: KeyboardEvent) {
   display: block;
   height: 8px;
   background: var(--bg-subtle);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
@@ -324,7 +324,7 @@ function handleKeydown(e: KeyboardEvent) {
   display: block;
   height: 100%;
   background: var(--primary);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   min-width: 2px;
 }
 
@@ -338,14 +338,14 @@ function handleKeydown(e: KeyboardEvent) {
 .trend-cell {
   width: 9px;
   height: 100%;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--primary);
 }
 
 .stats-dev-tip {
   margin: 0;
   padding: 10px 16px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   border-top: 1px solid var(--border);
 }

@@ -9,11 +9,16 @@ import { t } from '../i18n'
 import { formatDate } from '../utils'
 import { openReleaseUrl } from '../api/client'
 import { getSourceTypeDef, sourceRepoKey } from '../api/source-registry'
+import EmptyState from './common/EmptyState.vue'
 import ReleaseItem from './ReleaseItem.vue'
+import SkeletonList from './common/SkeletonList.vue'
 
 const props = defineProps<{
   releases: ReleaseInfo[]
   isFiltering: boolean
+  hasSearchQuery?: boolean
+  /** 目录加载中：仅列表为空时渲染骨架 */
+  loading?: boolean
 }>()
 
 /** 分组显示名：按注册表 displayName（YouTube 频道名），其余 owner/repo。 */
@@ -26,7 +31,21 @@ function repoGroupName(group: RepoGroup): string {
 
 // open-detail 携带导航序列：聚合视图使用当前仓库分组内的版本序列，
 // 保证弹窗「上一版本/下一版本」只在同仓库内导航，不跳到其他仓库
-const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]] }>()
+const emit = defineEmits<{
+  update: []
+  'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]
+  'clear-search': []
+  'clear-filters': []
+}>()
+
+// 空态分三级：与简单视图同一套口径（首次为空 / 搜索无结果 / 筛选无结果）
+const emptyTitle = computed(() =>
+  props.hasSearchQuery || props.isFiltering ? t('release.no_match') : t('release.empty'),
+)
+const emptyDescription = computed(() =>
+  props.hasSearchQuery || props.isFiltering ? t('release.no_match_desc') : t('release.empty_desc'),
+)
+const hasEmptyAction = computed(() => props.hasSearchQuery || props.isFiltering)
 
 function forwardOpenDetail(release: ReleaseInfo) {
   const key = sourceRepoKey(release.source_type, release.owner, release.repo)
@@ -103,9 +122,32 @@ function handleOpenUrl(url: string) {
 </script>
 
 <template>
-  <div v-if="repoGroups.length === 0" class="empty">
-    {{ props.isFiltering ? t('release.no_match') : t('release.empty') }}
-  </div>
+  <SkeletonList
+    v-if="props.loading && repoGroups.length === 0"
+    variant="card"
+    :rows="2"
+    :label="t('common.loading')"
+  />
+  <EmptyState
+    v-else-if="repoGroups.length === 0"
+    :title="emptyTitle"
+    :description="emptyDescription"
+  >
+    <template v-if="hasEmptyAction" #actions>
+      <button
+        v-if="props.hasSearchQuery"
+        type="button"
+        class="btn-sm"
+        @click="emit('clear-search')"
+      >{{ t('common.clear_search') }}</button>
+      <button
+        v-else-if="props.isFiltering"
+        type="button"
+        class="btn-sm"
+        @click="emit('clear-filters')"
+      >{{ t('release.filter_clear_all') }}</button>
+    </template>
+  </EmptyState>
   <div v-else class="repo-toolbar">
     <button class="btn-sm" @click="toggleAllRepos">
       <svg class="toggle-all-icon" :class="{ 'icon-collapse': allExpanded }"><use href="/icons.svg#chevron-down-icon"/></svg>
@@ -153,16 +195,16 @@ function handleOpenUrl(url: string) {
   cursor: pointer;
   user-select: none;
   border-radius: var(--radius-sm);
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .repo-group-header:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .repo-group-header .repo-name {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-title);
   flex: 1;
   /* 组头宽度不足时用省略号收尾（它自身的完整值靠 title）：长仓库名会把
      右侧的最新版本号/日期/计数整体挤出容器。不设 min-width 保底——
@@ -175,7 +217,7 @@ function handleOpenUrl(url: string) {
 
 .repo-group-header .repo-latest-tag {
   font-weight: 600;
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--primary);
   /* 与卡片同一策略：等权收缩 + 省略号，不设 min-width（它会撑宽短版本号） */
   min-width: 0;
@@ -185,13 +227,13 @@ function handleOpenUrl(url: string) {
 }
 
 .repo-group-header .repo-latest-date {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
 
 .repo-group-header .repo-meta {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -207,7 +249,7 @@ function handleOpenUrl(url: string) {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition: transform 0.2s;
+  transition: transform var(--dur-overlay) var(--ease-out);
 }
 
 .repo-group-toggle svg {
@@ -234,7 +276,7 @@ function handleOpenUrl(url: string) {
 .toggle-all-icon {
   width: 12px;
   height: 12px;
-  transition: transform 0.2s;
+  transition: transform var(--dur-overlay) var(--ease-out);
 }
 
 .icon-collapse {
@@ -255,8 +297,7 @@ function handleOpenUrl(url: string) {
 }
 
 .repo-group-body .release-item:hover {
-  border-color: var(--border);
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .repo-group-body .release-item:last-child {

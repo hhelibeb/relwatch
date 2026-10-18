@@ -129,7 +129,7 @@ function handleKeydown(e: KeyboardEvent) {
 <style scoped>
 .context-menu {
   position: fixed;
-  z-index: 10000;
+  z-index: var(--z-menu);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -147,13 +147,13 @@ function handleKeydown(e: KeyboardEvent) {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 .context-menu button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 .context-menu-icon {
   display: inline-flex;

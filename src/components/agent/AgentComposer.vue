@@ -293,21 +293,21 @@ const emit = defineEmits<{
 /* 引用加入的就地高亮。只做描边/底色 + 光晕，不改尺寸位移，
    避免 chip 换行引起输入区抖动。动画时长须与脚本里的 FLASH_DURATION（1200ms）保持一致 */
 .agent-ws-chip-attached.is-new {
-  border-color: var(--accent, #2e6fd0);
-  background: rgba(46, 111, 208, 0.14);
+  border-color: var(--primary);
+  background: var(--primary-soft-bg);
   animation: agent-ws-chip-flash 1.2s ease-out;
 }
 @keyframes agent-ws-chip-flash {
   0% {
-    background: rgba(46, 111, 208, 0.28);
-    box-shadow: 0 0 0 0 rgba(46, 111, 208, 0.45);
+    background: color-mix(in srgb, var(--primary) 28%, transparent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent);
   }
   35% {
-    box-shadow: 0 0 0 3px rgba(46, 111, 208, 0.18);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 18%, transparent);
   }
   100% {
-    background: rgba(46, 111, 208, 0.14);
-    box-shadow: 0 0 0 0 rgba(46, 111, 208, 0);
+    background: var(--primary-soft-bg);
+    box-shadow: 0 0 0 0 transparent;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -338,9 +338,9 @@ const emit = defineEmits<{
   flex: 1;
   resize: none;
   padding: 8px 10px;
-  font-size: 13px;
+  font-size: var(--fs-body);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   background: var(--bg);
   color: var(--text);
   line-height: 1.5;
@@ -348,23 +348,23 @@ const emit = defineEmits<{
 }
 .agent-ws-textarea:focus {
   outline: none;
-  border-color: var(--accent, #2e6fd0);
+  border-color: var(--primary);
 }
 .agent-ws-submit {
   flex-shrink: 0;
   /* 对齐 composer 30px/8px 基线，覆盖全局 .btn-primary 的 padding/字号/圆角 */
   height: 30px;
   padding: 0 16px;
-  font-size: 12px;
-  border-radius: 8px;
+  font-size: var(--fs-meta);
+  border-radius: var(--radius-lg);
 }
 .agent-ws-submit.agent-ws-stop {
-  background: #d64545;
-  border-color: #d64545;
+  background: var(--danger);
+  border-color: var(--danger);
 }
 .agent-ws-submit.agent-ws-stop:hover {
-  background: #c0392b;
-  border-color: #c0392b;
+  background: var(--danger-hover);
+  border-color: var(--danger-hover);
 }
 
 /* 底部操作行：模型选择（最左）+ 附件/发送（右侧成组），共占一行。
@@ -398,14 +398,14 @@ const emit = defineEmits<{
   color: var(--text-muted);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+  transition: border-color var(--dur-hover) var(--ease-out), background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
 }
 .agent-ws-attach-btn:hover {
   color: var(--text);
-  border-color: var(--accent, #2e6fd0);
-  background: rgba(46, 111, 208, 0.08);
+  border-color: var(--primary);
+  background: var(--primary-soft-bg);
 }
 .agent-ws-attach-btn svg {
   width: 14px;
@@ -432,23 +432,23 @@ const emit = defineEmits<{
   max-width: 100%;
   height: 30px;
   padding: 0 9px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text);
   background: var(--bg-subtle);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: border-color var(--dur-hover) var(--ease-out), background var(--dur-hover) var(--ease-out);
 }
 .agent-ws-model-btn:hover,
 .agent-ws-model-btn.open {
-  border-color: var(--accent, #2e6fd0);
-  background: rgba(46, 111, 208, 0.08);
+  border-color: var(--primary);
+  background: var(--primary-soft-bg);
 }
 .agent-ws-model-icon {
   width: 12px;
   height: 12px;
-  color: var(--accent, #2e6fd0);
+  color: var(--primary);
   flex-shrink: 0;
 }
 .agent-ws-model-label {
@@ -461,7 +461,7 @@ const emit = defineEmits<{
   height: 11px;
   color: var(--text-muted);
   flex-shrink: 0;
-  transition: transform 0.12s ease;
+  transition: transform var(--dur-hover) var(--ease-out);
 }
 .agent-ws-model-btn.open .agent-ws-model-caret {
   transform: rotate(180deg);
@@ -484,8 +484,8 @@ const emit = defineEmits<{
 .agent-ws-menu-check {
   flex-shrink: 0;
   width: 12px;
-  font-size: 11px;
-  color: #2e6fd0;
+  font-size: var(--fs-caption);
+  color: var(--primary);
 }
 
 /* 会话上下文水位（数字由后端按 pi footer 同口径算好） */
@@ -494,7 +494,7 @@ const emit = defineEmits<{
   align-items: center;
   gap: 6px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 .agent-ws-usage-text {
@@ -507,15 +507,15 @@ const emit = defineEmits<{
 /* 引用 chip 全文悬浮提示（fixed 避免被消息区滚动容器裁剪） */
 .agent-ws-chip-tooltip {
   position: fixed;
-  z-index: 10002;
+  z-index: var(--z-popover);
   max-width: min(480px, calc(100vw - 32px));
   padding: 9px 12px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm, 8px);
+  border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg, 0 4px 16px rgba(0, 0, 0, 0.25));
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.55;
   overflow-wrap: anywhere;
   pointer-events: none;

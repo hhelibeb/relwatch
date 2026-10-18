@@ -7,6 +7,9 @@ import { translateError } from '../api/client'
 import { formatDate, logLevelClass } from '../utils'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
+import EmptyState from './common/EmptyState.vue'
+import ErrorBlock from './common/ErrorBlock.vue'
+import SkeletonList from './common/SkeletonList.vue'
 
 const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ update: [] }>()
@@ -19,6 +22,8 @@ const loading = ref(false)
 const searchKeyword = ref('')
 const levelFilter = ref('all')
 const pageInput = ref('')
+/* 查询失败不再只清空列表：空列表配「暂无日志」会把拉取失败说成没有数据 */
+const error = ref('')
 const debounceTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
 const openFilter = ref(false)
@@ -46,11 +51,13 @@ async function loadData() {
     logs.value = result.entries
     totalLogs.value = result.total
     pageInput.value = String(currentPage.value)
-  } catch {
-    // 查询失败时清空列表（仅最新调用负责），交给空状态 UI 呈现，避免未捕获 rejection
+    error.value = ''
+  } catch (e: unknown) {
+    // 查询失败时清空列表（仅最新调用负责），失败原因留在原位供重试
     if (id === loadId) {
       logs.value = []
       totalLogs.value = 0
+      error.value = t('app.load_failed', e instanceof Error ? e.message : String(e))
     }
   } finally {
     // 仅最新调用负责复位 loading，避免被陈旧响应提前清除
@@ -84,6 +91,17 @@ function onSearchInput() {
 
 function clearSearch() {
   searchKeyword.value = ''
+  currentPage.value = 1
+  loadData()
+}
+
+// 空态出口：搜索与级别筛选一起清掉（只清一项时结果仍可能为空，用户会以为兜底没生效）
+const hasLogSearch = computed(() => searchKeyword.value.trim() !== '')
+const hasLogFilter = computed(() => hasLogSearch.value || levelFilter.value !== 'all')
+
+function clearLogFilters() {
+  searchKeyword.value = ''
+  levelFilter.value = 'all'
   currentPage.value = 1
   loadData()
 }
@@ -175,9 +193,20 @@ onUnmounted(() => {
       </button>
     </div>
     <div class="log-list">
-      <div v-if="loading" class="empty">{{ t('log.loading') }}</div>
-      <div v-else-if="logs.length === 0" class="empty">{{ searchKeyword ? t('log.no_match') : t('log.no_records') }}</div>
-      <div v-for="entry in logs" :key="entry.id" class="log-item">
+      <SkeletonList v-if="loading && logs.length === 0" :rows="3" :label="t('common.loading')" />
+      <ErrorBlock v-else-if="error" :message="error" :retry-label="t('common.retry')" @retry="loadData" />
+      <EmptyState
+        v-else-if="logs.length === 0"
+        :title="hasLogFilter ? t('log.no_match') : t('log.no_records')"
+        :description="hasLogFilter ? t('log.no_match_desc') : ''"
+      >
+        <template v-if="hasLogFilter" #actions>
+          <button type="button" class="btn-sm" @click="clearLogFilters">
+            {{ hasLogSearch ? t('common.clear_search') : t('release.filter_clear_all') }}
+          </button>
+        </template>
+      </EmptyState>
+      <div v-for="entry in logs" :key="entry.id" class="log-item" :class="logLevelClass(entry.level)">
         <span class="log-level" :class="logLevelClass(entry.level)">{{ entry.level }}</span>
         <span class="log-msg">{{ renderMessage(entry) }}</span>
         <span class="log-date">{{ formatDate(entry.created_at) }}</span>
@@ -198,14 +227,14 @@ onUnmounted(() => {
 .log-search {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   padding: 0;
   background: var(--bg);
-  transition: top 0.15s ease;
+  transition: top var(--dur-state) var(--ease-out);
 }
 
 .btn-icon {
@@ -216,10 +245,10 @@ onUnmounted(() => {
   height: 32px;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out);
   flex-shrink: 0;
 }
 
@@ -247,21 +276,30 @@ onUnmounted(() => {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 7px 8px;
+  /* 左侧 2px 留给级别色条，padding-left 相应减 2，文本左边界与原来对齐 */
+  padding: 7px 8px 7px 6px;
   background: transparent;
+  border-left: 2px solid transparent;
   border-bottom: 1px solid var(--border);
-  font-size: 13px;
+  font-size: var(--fs-body);
+  transition: background-color var(--dur-hover) var(--ease-out);
 }
+
+.log-item:hover {
+  background: var(--hover-surface);
+}
+
+/* 级别由左侧色条编码，文字统一退回 muted：
+   红字配红条是同一信息两处编码，一行里只会更吵。 */
+.log-item.log-error { border-left-color: var(--danger); }
+.log-item.log-warn { border-left-color: var(--warning); }
 
 .log-level {
   font-weight: 600;
   flex-shrink: 0;
   min-width: 42px;
+  color: var(--text-muted);
 }
-
-.log-error { color: var(--danger); }
-.log-warn { color: var(--warning); }
-.log-info { color: var(--text-muted); }
 
 .log-msg {
   flex: 1;
@@ -271,7 +309,7 @@ onUnmounted(() => {
 .log-date {
   flex-shrink: 0;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
 }
 
@@ -299,14 +337,14 @@ onUnmounted(() => {
   height: 26px;
   padding: 0 6px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--input-bg);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 24px;
   text-align: center;
   outline: none;
-  transition: border-color 0.2s;
+  transition: border-color var(--dur-overlay) var(--ease-out);
 }
 
 .pagination-input:focus {
@@ -324,14 +362,14 @@ onUnmounted(() => {
 }
 
 .pagination-info {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text);
   white-space: nowrap;
   line-height: 26px;
 }
 
 .pagination-total {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }

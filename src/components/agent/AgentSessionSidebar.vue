@@ -149,7 +149,7 @@ const emit = defineEmits<{
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  transition: width 0.18s ease, opacity 0.18s ease, border-left-width 0.18s ease;
+  transition: width var(--dur-state) var(--ease-out), opacity var(--dur-state) var(--ease-out), border-left-width var(--dur-state) var(--ease-out);
 }
 .agent-ws-sidebar.collapsed {
   width: 0;
@@ -165,7 +165,7 @@ const emit = defineEmits<{
 }
 .agent-ws-sidebar-title {
   padding: 10px 12px 6px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   opacity: 0.55;
   letter-spacing: 0.04em;
@@ -183,7 +183,7 @@ const emit = defineEmits<{
 .agent-ws-session-item {
   position: relative;
   padding: 7px 8px;
-  border-radius: 7px;
+  border-radius: var(--radius);
   cursor: pointer;
   display: flex;
   flex-direction: column;
@@ -194,11 +194,11 @@ const emit = defineEmits<{
   background: var(--bg-hover);
 }
 .agent-ws-session-item.active {
-  background: rgba(46, 111, 208, 0.12);
-  border-color: rgba(46, 111, 208, 0.35);
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
 }
 .agent-ws-session-name {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -214,40 +214,40 @@ const emit = defineEmits<{
   display: inline-block;
   margin-left: 4px;
   padding: 0 4px;
-  font-size: 9px;
+  font-size: var(--fs-caption);
   line-height: 14px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   vertical-align: 1px;
   white-space: nowrap;
 }
 .agent-ws-session-dot.st-running {
-  color: #2e6fd0;
-  background: rgba(46, 111, 208, 0.14);
+  color: var(--primary-soft-text);
+  background: var(--primary-soft-bg);
 }
 .agent-ws-session-dot.st-pending {
-  color: #b0882e;
-  background: rgba(214, 158, 46, 0.16);
+  color: var(--warning-soft-text);
+  background: var(--warning-soft-bg);
 }
 /* 「已恢复」标记：磁盘发现补入的会话（localStorage 索引曾丢失） */
 .agent-ws-session-badge {
   display: inline-block;
   margin-left: 4px;
   padding: 0 4px;
-  font-size: 9px;
+  font-size: var(--fs-caption);
   line-height: 14px;
   vertical-align: 1px;
-  color: #8a6d1f;
-  background: rgba(214, 158, 46, 0.16);
-  border-radius: 3px;
+  color: var(--warning-soft-text);
+  background: var(--warning-soft-bg);
+  border-radius: var(--radius-xs);
   white-space: nowrap;
 }
 .agent-ws-session-time {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   opacity: 0.5;
 }
 .agent-ws-session-empty {
   padding: 12px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   opacity: 0.5;
   text-align: center;
 }
@@ -261,16 +261,16 @@ const emit = defineEmits<{
   box-sizing: border-box;
   height: 24px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-family: inherit;
   color: var(--text);
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   outline: none;
 }
 .agent-ws-session-search-input:focus {
-  border-color: #2e6fd0;
+  border-color: var(--primary);
 }
 .agent-ws-session-search-input::placeholder {
   color: var(--text-muted);
@@ -307,7 +307,7 @@ const emit = defineEmits<{
 }
 /* 会话 ⋯ 菜单：Teleport 到 body 后 fixed 定位，坐标由 toggleSessionMenu 计算。
  * 侧边栏宽仅 140px 且 overflow:hidden，absolute 定位会被裁剪显示不全；
- * 脱离文档流盖在聊天区上层完整展示（与 RPC 状态菜单同一策略，z-index 对齐 10002）。
+ * 脱离文档流盖在聊天区上层完整展示（与 RPC 状态菜单同一档：--z-menu）。
  * 双类选择器抬高特异性：基类 .agent-ws-menu 在 agent-shared.css（非 scoped），单类时其
  * bottom/left/right/max-height/overflow 会反杀这里的重置（top 与 bottom 双锚
  * 同样把高度拉伸成 0）——与 agent-ws-menu-rpc 同一策略。 */
@@ -320,33 +320,33 @@ const emit = defineEmits<{
   min-width: 148px;
   max-height: none;
   overflow-y: visible;
-  z-index: 10002;
+  z-index: var(--z-menu);
 }
 .agent-ws-menu-item.danger .agent-ws-menu-main {
-  color: #d64545;
+  color: var(--danger);
 }
 .agent-ws-menu-item.danger:hover {
-  background: rgba(214, 69, 69, 0.08);
+  background: var(--danger-soft-bg);
 }
 .agent-ws-rename-input {
   width: 100%;
   box-sizing: border-box;
   height: 22px;
   padding: 0 6px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-family: inherit;
   color: var(--text);
   background: var(--bg);
-  border: 1px solid #2e6fd0;
-  border-radius: 5px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-sm);
   outline: none;
 }
 .agent-ws-session-clear {
   margin: 2px 8px 10px;
   padding: 6px 8px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -357,8 +357,8 @@ const emit = defineEmits<{
   flex-shrink: 0;
 }
 .agent-ws-session-clear:hover {
-  color: #d64545;
-  border-color: rgba(214, 69, 69, 0.4);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
   background: var(--bg-hover);
 }
 .agent-ws-session-clear svg {

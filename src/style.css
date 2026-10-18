@@ -16,9 +16,24 @@
   --input-bg: #ffffff;
   --control-active: #ffffff;
 
+  /* 悬停面：所有 hover 的背景都取它，不复用 --bg-subtle。
+     深色下 --bg-subtle(#1b1b20) 与 --surface(#18181c) 只差 1.03:1，
+     整行/整项扫过时等于没有反馈。浅色沿用原值，观感不变。 */
+  --hover-surface: #f4f4f5;
+
+  /* 第二级悬停面：嵌在已抬升容器内的可点块（卡片里的摘要文本、行内按钮）。
+     它们若与容器的 hover 同色，就被容器自身底色吃掉；再抬一档后，
+     深浅两套都保持相对 --hover-surface 约 1.10:1 的一步，与「底 → 一级悬停」同幅度。 */
+  --hover-surface-nested: #e9e9ec;
+
   /* 唯一强调色：只用于链接、版本号、焦点与关键选中态 */
   --primary: #3e63dd;
   --primary-hover: #3457c9;
+  /* 兼容别名：历史上 13 处 var(--accent, #2e6fd0) 靠 fallback 存活，组件现已统一改用
+     --primary；保留定义是为了让任何遗漏/新增引用都落到品牌色，而不是回退成旧的第二套蓝。
+     能随主题切换的前提是 data-theme 挂在 <html>（与 :root 同一元素），
+     若主题改挂到 body 或某个包裹 div，这里会固化成浅色值并继承下去。 */
+  --accent: var(--primary);
 
   /* 墨色实心按钮（主操作） */
   --ink: #26262b;
@@ -35,6 +50,8 @@
   --success: #15803d;
   --warning: #a16207;
   --danger: #b91c1c;
+  /* 危险实心按钮的 hover：浅色再压一档明度，深色反而提亮（与 --primary-hover 同向） */
+  --danger-hover: #991b1b;
 
   /* 语义软色对：徽章/提示的底与字，深浅主题各自取值 */
   --primary-soft-bg: #eef1fc;
@@ -61,11 +78,50 @@
   --heat-3: #a9baf0;
   --heat-4: #7f98e8;
 
+  /* 等宽字族：工具输出、代码块、时间戳 */
+  --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 主滚动区纵向内边距；sticky 贴顶时按此值抵消（见 .app-main 与 .log-search-*） */
+  --app-padding-y: 16px;
+
+  /* 字号：6 档，组件内不再出现裸 px。此前实际用着 9 档（9/10/11/12/13/14/15/16/20），
+     其中正文 13px 与元信息 12px 只差 1px——层级实际由颜色单独承担，扫视时
+     标题/正文/注释拉不开。收口后每档只承担一种角色。 */
+  --fs-caption: 11px; /* 徽标、图例、分组标题、表头 */
+  --fs-meta: 12px; /* 时间、计数、辅助说明 */
+  --fs-body: 13px; /* 正文、列表主文本 */
+  --fs-title: 15px; /* 区块标题、弹窗标题、卡片主信息 */
+  --fs-display: 18px; /* 页面级标题 */
+  --fs-metric: 22px; /* 强调数字 */
+
   /* 圆角数级 */
   --radius-xs: 3px;
   --radius-sm: 5px;
   --radius: 6px;
   --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  /* 层级：7 档。不变量比档位本身重要——弹窗必须盖住全局浮层（ReleaseDetailModal
+     的 bodyMenu 与列表 tooltip 曾靠「10010 > 10002 > 10000」口头比大小成立）。
+     因此 popover < toast < modal < popover-modal；新增浮层取现有档位，
+     不要靠累加数字表达优先级。 */
+  --z-sticky: 10; /* 吸顶面板；容器内的定位层（resize 手柄、拖拽提示） */
+  --z-menu: 100; /* 下拉、右键菜单、面板内菜单 */
+  --z-popover: 1000; /* 全局 tooltip（fixed，Teleport 到 body） */
+  /* 原来的 9999 在这里站不住：它高于 --z-modal 2000，等于让 Toast 盖住弹窗操作区，
+     与上面「弹窗必须盖住浮层」的不变量相反。取 1500 让它落在浮层与弹窗之间。 */
+  --z-toast: 1500;
+  --z-modal: 2000; /* 弹窗遮罩 */
+  --z-popover-modal: 2500; /* 弹窗内部 tooltip，同属一个遮罩内的层叠 */
+  --z-dev: 20000; /* 统计调试面板：永远最上层 */
+
+  /* 动效：3 档时长 + 1 条缓动。原 7 种时长按值收敛——0.1/0.12 → hover，
+     0.15/0.18 → state，0.2/0.3/0.35 → overlay；只有浮层那档略快，
+     收掉的是 0.3/0.35 两只长尾，其余保持原有快慢关系。 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-hover: 120ms;
+  --dur-state: 160ms;
+  --dur-overlay: 220ms;
 
   /* 阴影数级：仅浮层（下拉/菜单/Toast/Tooltip）使用，内容层一律无阴影 */
   --shadow-sm: none;
@@ -96,6 +152,15 @@
   --input-bg: #1b1b20;
   --control-active: #2a2a31;
 
+  /* 比 --bg-subtle 亮一档：值按「同时压过 --surface(#18181c) 与画布 #101013」
+     取，实测 1.12:1 / 1.20:1，与浅色下的 1.10:1 观感相当；再亮就接近 --bg-hover
+     (#26262c)，整行会显得过重。 */
+  --hover-surface: #222228;
+
+  /* 深色若沿用 --bg-hover(#26262c)，相对 --hover-surface 只有 1.05:1——行内按钮压上去
+     等于没反馈；#2a2a32 提到 1.11:1，与浅色的 1.10:1 对齐。 */
+  --hover-surface-nested: #2a2a32;
+
   --primary: #9aaef2;
   --primary-hover: #b3c1f6;
 
@@ -112,6 +177,7 @@
   --success: #4cc38a;
   --warning: #e0b45c;
   --danger: #e56d68;
+  --danger-hover: #ef8f8b;
 
   /* 软色对：深色主题用半透明底 + 亮色字，保证对比度 */
   --primary-soft-bg: rgba(154, 174, 242, 0.12);
@@ -159,12 +225,13 @@ body {
   font-family: 'Segoe UI', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
   background: var(--bg);
   color: var(--text);
-  font-size: 14px;
+  /* 所有未显式声明字号的文本都落在这档，若留着 14px 就成了绕过 token 的隐性第 10 档 */
+  font-size: var(--fs-body);
   line-height: 1.5;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
   font-feature-settings: 'tnum';
-  transition: background-color 0.2s ease, color 0.2s ease;
+  transition: background-color var(--dur-overlay) var(--ease-out), color var(--dur-overlay) var(--ease-out);
 }
 
 ::selection {
@@ -201,7 +268,7 @@ html {
 ::-webkit-scrollbar-thumb {
   background: var(--border-strong);
   border: 3px solid transparent;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background-clip: content-box;
 }
 
@@ -248,7 +315,7 @@ html {
 }
 
 .app-header h1 {
-  font-size: 16px;
+  font-size: var(--fs-display);
   font-weight: 600;
   letter-spacing: 0.01em;
   color: var(--text);
@@ -269,8 +336,8 @@ html {
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 13px;
-  transition: color 0.15s ease, border-color 0.15s ease;
+  font-size: var(--fs-body);
+  transition: color var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out);
 }
 
 .tabs button:hover {
@@ -298,9 +365,9 @@ html {
   border: none;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 500;
-  transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+  transition: background var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out), transform var(--dur-hover) var(--ease-out);
 }
 
 .btn-primary:hover:not(:disabled) {
@@ -319,7 +386,7 @@ html {
 .countdown-text {
   margin-left: auto;
   margin-right: 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -332,7 +399,7 @@ html {
 .app-main {
   flex: 1;
   overflow-y: auto;
-  padding: var(--app-padding-y, 16px) 20px;
+  padding: var(--app-padding-y) 20px;
   scrollbar-gutter: stable;
 }
 
@@ -342,23 +409,165 @@ html {
 }
 
 /* ── 空状态 ───────────────────────────────────── */
+/* 空态骨架：图标 + 标题 + 说明 + 动作。此前 8 处 .empty 与 3 处自建空态共用同一个
+   36px 半透明灰图标（与白底合成 ≈1.61:1，等于看不见），加载态也借道这里，
+   于是「看不见的图标 + 一行灰字」同时当了空态与加载态。 */
 .empty {
-  text-align: center;
-  color: var(--text-muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
   padding: 48px 20px;
-  font-size: 13px;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+  text-align: center;
 }
 
-.empty::before {
-  content: '';
-  display: block;
-  width: 36px;
-  height: 36px;
-  margin: 0 auto 10px;
+/* 描边图标：48px，用实色代替 opacity 叠加（1.61:1 → 2.56:1）。
+   图标本身是装饰（aria-hidden），空态的语义由标题文字承担，故不追求 4.5:1。
+   遮罩用描边而非填充的 SVG，缩放后仍是一条细线，不会糊成一团灰块。 */
+.empty-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
   background: var(--text-faint);
-  opacity: 0.55;
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.empty-title {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.empty-desc {
+  max-width: 420px;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 紧凑档：弹窗内部或已有容器的空位，不要 48px 图标把内容顶出视区 */
+.empty.empty-compact {
+  padding: 24px 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+}
+
+/* ── 骨架屏 ───────────────────────────────────── */
+/* 延迟 100ms 出现：本地数据常在 100ms 内返回，骨架闪一帧比空白更刺眼。
+   只渲染在「列表为空 + 加载中」的组合上，刷新已有列表时不重放。 */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: skeleton-in var(--dur-state) var(--ease-out) 100ms both;
+}
+
+.skeleton-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.skeleton-card .skeleton-item {
+  padding: 14px;
+}
+
+.skeleton-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+}
+
+.skeleton-lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-line {
+  height: 10px;
+  border-radius: var(--radius-xs);
+}
+
+.skeleton-line-lg {
+  width: 62%;
+}
+
+.skeleton-line-sm {
+  width: 34%;
+}
+
+.skeleton-avatar,
+.skeleton-line {
+  background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--bg-hover) 37%, var(--bg-subtle) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+@keyframes skeleton-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 呼吸感是装饰：减弱动效下保留色块，去掉位移与闪烁 */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-avatar,
+  .skeleton-line {
+    animation: none;
+  }
+}
+
+/* ── 统一错误块 ───────────────────────────────── */
+/* 交替给「一行红字」与 Toast：前者说不出怎么办，后者会消失。
+   错误块把原因留在原位，右侧固定一个重试出口。 */
+.error-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--danger-soft-bg);
+  border-radius: var(--radius-sm);
+  color: var(--danger-soft-text);
+  font-size: var(--fs-meta);
+}
+
+.error-block-msg {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-block-retry {
+  flex-shrink: 0;
 }
 
 .btn-sm {
@@ -368,12 +577,12 @@ html {
   color: var(--text);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 12px;
-  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+  font-size: var(--fs-meta);
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
 }
 
 .btn-sm:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 
@@ -412,9 +621,9 @@ html {
   border-radius: var(--radius-sm);
   background: var(--input-bg);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
 }
 
 .search-input:focus {
@@ -444,11 +653,11 @@ html {
   justify-content: center;
   padding: 0;
   border: none;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1;
   transform: translateY(-50%);
 }
@@ -473,7 +682,7 @@ html {
   background: none;
   cursor: pointer;
   color: var(--text-muted);
-  transition: color 0.15s;
+  transition: color var(--dur-state) var(--ease-out);
 }
 
 .btn-icon-link svg {
@@ -494,7 +703,7 @@ html {
 .filter-group {
   display: inline-flex;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   overflow: visible;
   flex-shrink: 0;
 }
@@ -504,11 +713,11 @@ html {
 }
 
 .filter-field:first-child .filter-trigger {
-  border-radius: 5px 0 0 5px;
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
 }
 
 .filter-field:last-child .filter-trigger {
-  border-radius: 0 5px 5px 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
 }
 
 .filter-trigger {
@@ -519,15 +728,15 @@ html {
   border: none;
   background: var(--surface);
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.12s;
+  transition: background var(--dur-hover) var(--ease-out);
   height: 100%;
 }
 
 .filter-trigger:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .filter-divider {
@@ -537,7 +746,7 @@ html {
 }
 
 .filter-label {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -562,7 +771,7 @@ html {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-md);
-  z-index: 100;
+  z-index: var(--z-menu);
 }
 
 .filter-dropdown {
@@ -582,18 +791,18 @@ html {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   /* 固定行高：避免中英文混排时行高随字体变化（中文 fallback 行高更大），
      导致选项按钮高度不一（如「哔哩哔哩」比其他选项高） */
   line-height: 1.4;
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
-  transition: background 0.1s;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .filter-dropdown button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .filter-dropdown button.selected {
@@ -610,20 +819,20 @@ html {
   flex-shrink: 0;
   padding: 6px 8px;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: var(--surface);
   color: var(--text);
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
 }
 .release-agent-btn:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
   border-color: var(--border-strong);
 }
 /* 展开态：与工作区激活项同源的 accent 高亮，提示面板当前已打开 */
 .release-agent-btn.open {
-  background: rgba(46, 111, 208, 0.1);
-  border-color: rgba(46, 111, 208, 0.4);
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
 }
 .release-agent-btn-icon {
   width: 14px;
@@ -635,17 +844,17 @@ html {
   color: var(--text-muted);
 }
 .release-agent-btn.open .release-agent-btn-arrow {
-  color: var(--primary, #2e6fd0);
+  color: var(--primary);
 }
 /* 版本页搜索/筛选区 sticky 容器：含筛选行与激活筛选 chips 行。
    LogTab 仍直接用 .log-search-row 自身 sticky，互不影响。 */
 .log-search-sticky {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   margin-bottom: 12px;
   background: var(--bg);
-  transition: top 0.15s ease;
+  transition: top var(--dur-state) var(--ease-out);
 }
 
 /* ReleaseSearchBar 内的行不再自身 sticky（由 wrapper 统一承担） */
@@ -656,20 +865,20 @@ html {
 
 /* 滚动后 sticky 元素贴顶 */
 .app-main.is-scrolled .log-search-sticky {
-  top: calc(-1 * var(--app-padding-y, 16px));
+  top: calc(-1 * var(--app-padding-y));
 }
 
 .log-search-row {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   display: flex;
   gap: 8px;
   align-items: center;
   margin-bottom: 12px;
   padding: 0;
   background: var(--bg);
-  transition: top 0.15s ease;
+  transition: top var(--dur-state) var(--ease-out);
 }
 
 .log-search-row .search-input {
@@ -687,7 +896,7 @@ html {
 
 /* 滚动后 sticky 元素贴顶 */
 .app-main.is-scrolled .log-search-row {
-  top: calc(-1 * var(--app-padding-y, 16px));
+  top: calc(-1 * var(--app-padding-y));
 }
 
 /* ── 发布徽标 / 状态灯（ReleaseItem 与 ReleaseDetailModal 共用，
@@ -698,7 +907,7 @@ html {
   background: transparent;
   border: 1px solid var(--border);
   border-radius: var(--radius-xs);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   line-height: 16px;
   color: var(--text-muted);
   /* 头部宽度不足时，flex 会按基础宽比例分摊收缩量：不设保底时这个 11px 小徽标
@@ -714,7 +923,7 @@ html {
   flex-shrink: 0;
   padding: 0 6px;
   border-radius: var(--radius-xs);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   line-height: 16px;
 }
@@ -739,7 +948,7 @@ html {
   align-items: center;
   gap: 5px;
   padding: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   flex-shrink: 0;
 }
@@ -748,7 +957,7 @@ html {
   content: '';
   width: 6px;
   height: 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--text-faint);
   flex-shrink: 0;
 }

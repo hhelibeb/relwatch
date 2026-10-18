@@ -746,7 +746,9 @@ const youtubeViewTitle = computed(() =>
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  transition: border-color 0.15s ease;
+  /* hover 只抬背景、不动边框：与源列表 / 日志行同一套反馈语言。
+     边框留给静态分组，不再兼任交互态（它也是 highlight 强调边框的专用属性）。 */
+  transition: background-color var(--dur-hover) var(--ease-out);
   /* 头部信息密度按「卡片实宽」分级，而不是视口宽：同一个卡片在简单列表、
      聚合视图（内缩进 + 更小 padding）、日历日期详情里的宽度各不相同，
      媒体查询会判错（见下方 @container）。
@@ -757,7 +759,7 @@ const youtubeViewTitle = computed(() =>
 }
 
 .release-item:hover {
-  border-color: var(--border-strong);
+  background: var(--hover-surface);
 }
 
 /* 通知定位高亮：短暂呼吸动画后停留在强调边框，不抢焦点、不影响布局 */
@@ -801,7 +803,7 @@ const youtubeViewTitle = computed(() =>
    会把短内容反而撑宽（实测：短频道名被 12ch 撑到 87px，后面凭空多出一片空白），
    已踩过这个坑。省略号已足够表达「被截断」。 */
 .release-repo {
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text);
   min-width: 0;
@@ -814,7 +816,7 @@ const youtubeViewTitle = computed(() =>
    完整值由 title 与详情弹窗兜底（同样不设 min-width）。 */
 .release-tag {
   font-weight: 600;
-  font-size: 14px;
+  font-size: var(--fs-title);
   color: var(--primary);
   min-width: 0;
   overflow: hidden;
@@ -823,7 +825,7 @@ const youtubeViewTitle = computed(() =>
 }
 
 .release-title {
-  font-size: 13px;
+  font-size: var(--fs-body);
   color: var(--text);
   margin: 2px 0 4px;
 }
@@ -836,7 +838,7 @@ const youtubeViewTitle = computed(() =>
   overflow: hidden;
   line-height: 1.5;
   margin: 0;
-  font-size: 14px;
+  font-size: var(--fs-title);
   font-weight: 600;
   width: 100%;
 }
@@ -846,7 +848,7 @@ const youtubeViewTitle = computed(() =>
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   font-weight: 500;
   color: var(--text-muted);
   white-space: nowrap;
@@ -928,7 +930,7 @@ const youtubeViewTitle = computed(() =>
   border-radius: var(--radius-xs);
   background: #ff0000;
   color: #ffffff;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   letter-spacing: 0.04em;
   line-height: 14px;
@@ -943,7 +945,7 @@ const youtubeViewTitle = computed(() =>
   border-radius: var(--radius-xs);
   background: rgba(0, 0, 0, 0.75);
   color: #ffffff;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 14px;
@@ -965,20 +967,21 @@ const youtubeViewTitle = computed(() =>
   -webkit-box-orient: vertical;
   overflow: hidden;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.6;
   cursor: pointer;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   width: 100%;
 }
 
 .yt-desc:hover {
   color: var(--text);
-  background: var(--bg-subtle);
+  /* 二级悬停面：卡片自身已抬到 --hover-surface，同色会把这里的可点提示吃掉 */
+  background: var(--hover-surface-nested);
 }
 
 .release-date {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -1053,21 +1056,28 @@ const youtubeViewTitle = computed(() =>
 .release-body-text {
   margin-top: 4px;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.6;
   max-height: 9em;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .release-body-text:hover {
-  background: var(--bg-subtle);
+  /* 同 .yt-desc：否则「点击阅读全文」的提示被卡片 hover 吃掉 */
+  background: var(--hover-surface-nested);
 }
 
 .release-expand-btn {
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
+}
+
+/* 行内按钮一律取二级悬停面：全局 .btn-sm:hover 与卡片 hover 同为 --hover-surface，
+   不覆盖的话指针压到按钮上看不见它自己的反馈 */
+.release-item .btn-sm:hover {
+  background: var(--hover-surface-nested);
 }
 
 /* 摘要行内按钮：默认独立成行右对齐 */
@@ -1090,7 +1100,7 @@ const youtubeViewTitle = computed(() =>
   margin-top: 4px;
   padding: 12px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
   text-align: center;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
@@ -1103,7 +1113,7 @@ const youtubeViewTitle = computed(() =>
   -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .release-summary-text:focus-visible {
@@ -1113,7 +1123,7 @@ const youtubeViewTitle = computed(() =>
 
 .release-summary-tooltip {
   position: fixed;
-  z-index: 10002;
+  z-index: var(--z-popover);
   max-width: min(520px, calc(100vw - 32px));
   padding: 9px 12px;
   background: var(--surface);
@@ -1121,14 +1131,14 @@ const youtubeViewTitle = computed(() =>
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-lg);
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.6;
   overflow-wrap: anywhere;
   pointer-events: none;
 }
 
 .release-status-meta {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
@@ -1136,7 +1146,7 @@ const youtubeViewTitle = computed(() =>
   width: 28px;
   height: 28px;
   margin: 0;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 
 /* 用户旗标：卡片行内贴纸（已标记时常驻）与右上按钮；颜色经 currentColor 注入 */
@@ -1168,7 +1178,7 @@ const youtubeViewTitle = computed(() =>
 }
 
 .release-link-action:hover {
-  background: var(--bg-hover);
+  background: var(--hover-surface-nested);
 }
 
 </style>

@@ -36,6 +36,12 @@ function onMainScroll(e: Event) {
 
 const sources = ref<Source[]>([])
 const releases = ref<ReleaseInfo[]>([])
+/* 加载态与错误态：列表为空时用来把「正在拉取」「拉取失败」「真的没有数据」
+   三种情况分开（此前三者都渲染同一个空态）。 */
+const sourcesLoading = ref(false)
+const sourcesError = ref('')
+const releasesLoading = ref(false)
+const releasesError = ref('')
 const logRefreshKey = ref(0)
 const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
 // Agent 全局配置（独立于 AppSettings：含 JSON 数组字段，不走设置注册表）
@@ -218,8 +224,8 @@ let toastSwapTimer: ReturnType<typeof setTimeout> | null = null
 // 鼠标悬浮在 Toast 上时暂停消失计时。必须保留：错误详情、导出/备份路径这类内容
 // 用户要移过去选中复制，没有暂停就选不完。
 let toastHovered = false
-// 与 .toast-leave-active 过渡时长（0.3s）对齐，离场动画结束后再显示下一条
-const TOAST_SWAP_DELAY = 350
+// 需跟随 .toast-leave-active 的 --dur-overlay（220ms）+ 20ms 余量：早于离场动画换内容会看到新旧两条重叠
+const TOAST_SWAP_DELAY = 240
 const TOAST_MIN_DURATION = 2600
 const TOAST_MAX_DURATION = 6000
 // 按字数定停留时长：取中文默读约 5.7 字/秒 + 约 1.2s 反应余量，短按下限、超长封顶。
@@ -434,17 +440,29 @@ async function loadAll() {
 }
 
 async function loadSources() {
+  sourcesLoading.value = true
   try {
     sources.value = await listSources()
+    sourcesError.value = ''
   } catch (e: unknown) {
-    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+    const detail = e instanceof Error ? e.message : String(e)
+    sourcesError.value = t('app.load_failed', detail)
+    showToast(t('app.load_failed', detail))
+  } finally {
+    sourcesLoading.value = false
   }
 }
 async function loadReleases() {
+  releasesLoading.value = true
   try {
     releases.value = await getReleaseCatalog()
+    releasesError.value = ''
   } catch (e: unknown) {
-    showToast(t('app.load_failed', e instanceof Error ? e.message : String(e)))
+    const detail = e instanceof Error ? e.message : String(e)
+    releasesError.value = t('app.load_failed', detail)
+    showToast(t('app.load_failed', detail))
+  } finally {
+    releasesLoading.value = false
   }
 }
 
@@ -767,6 +785,7 @@ onUnmounted(() => {
     <main class="app-main" :class="{ 'is-scrolled': mainScrolled }" @scroll.passive="onMainScroll">
       <div v-show="activeTab === 'sources'">
         <SourceTab :sources="sources" :polling="polling || sourceChecking" :unread-release-counts="unreadReleaseCounts" :total-release-counts="totalReleaseCounts" :show-source-type-icons="settings.show_source_type_icons"
+          :loading="sourcesLoading" :load-error="sourcesError"
           @update="loadSources(); scheduleLoadReleases(); scheduleRefreshLogs()"
           @check-result="handleSourceCheckResult"
           @check-busy="sourceChecking = $event"
@@ -774,7 +793,7 @@ onUnmounted(() => {
           @open-unread-releases="openSourceUnreadReleases" />
       </div>
       <div v-show="activeTab === 'releases'">
-        <ReleaseTab v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
+        <ReleaseTab v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" :loading="releasesLoading" :load-error="releasesError" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @reload="loadReleases" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
       </div>
       <div v-show="activeTab === 'logs'">
         <LogTab :refresh-key="logRefreshKey" @update="refreshLogs()" />
@@ -852,13 +871,13 @@ onUnmounted(() => {
   flex: 0 0 5px;
   cursor: col-resize;
   background: var(--border);
-  transition: background 0.15s ease;
+  transition: background var(--dur-state) var(--ease-out);
   position: relative;
-  z-index: 10;
+  z-index: var(--z-sticky);
 }
 .agent-divider:hover,
 .agent-divider.active {
-  background: var(--accent, #2e6fd0);
+  background: var(--primary);
 }
 .agent-divider::after {
   content: '';
@@ -869,12 +888,12 @@ onUnmounted(() => {
 .toast {
   position: fixed;
   bottom: 20px;
-  z-index: 9999;
+  z-index: var(--z-toast);
   padding: 9px 18px;
   background: var(--ink);
   color: var(--on-ink);
   border-radius: var(--radius);
-  font-size: 13px;
+  font-size: var(--fs-body);
   box-shadow: var(--shadow-lg);
   /* right / max-width 由 toastStyle 绑定：面板打开时整块左移到面板左侧，
      避开面板底部的发送/附件按钮（详见 toastStyle 注释）。
@@ -887,11 +906,11 @@ onUnmounted(() => {
 }
 
 .toast-enter-active {
-  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all var(--dur-overlay) var(--ease-out);
 }
 
 .toast-leave-active {
-  transition: all 0.3s ease-in;
+  transition: all var(--dur-overlay) var(--ease-out);
 }
 
 .toast-enter-from {

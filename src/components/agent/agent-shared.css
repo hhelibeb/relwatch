@@ -15,16 +15,16 @@
   overflow-y: auto;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   padding: 6px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  z-index: 20;
+  z-index: var(--z-menu);
 }
 .agent-ws-menu-title {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   opacity: 0.6;
   padding: 2px 8px 4px;
@@ -33,7 +33,7 @@
   display: flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   opacity: 0.5;
   padding: 6px 8px 2px;
@@ -48,12 +48,12 @@
   gap: 1px;
   text-align: left;
   padding: 6px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   border: none;
   background: none;
   color: var(--text);
   cursor: pointer;
-  border-radius: 6px;
+  border-radius: var(--radius);
 }
 .agent-ws-menu-item:hover,
 .agent-ws-menu-item.selected {
@@ -65,16 +65,16 @@
   text-overflow: ellipsis;
 }
 .agent-ws-menu-sub {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   opacity: 0.55;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-family: var(--mono-font, monospace);
+  font-family: var(--mono-font);
 }
 .agent-ws-menu-empty {
   padding: 10px 8px;
-  font-size: 12px;
+  font-size: var(--fs-meta);
   opacity: 0.6;
   text-align: center;
 }
@@ -85,9 +85,9 @@
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--bg-subtle);
   white-space: nowrap;
   /* 截断限制放在 .agent-ws-chip-text 上——放在这里会连删除按钮一起裁掉 */
@@ -115,7 +115,7 @@
   flex-shrink: 0;
 }
 .agent-ws-chip-remove:hover {
-  color: #d64545;
+  color: var(--danger);
   background: var(--bg-hover);
 }
 .agent-ws-chip-remove svg {
@@ -127,10 +127,10 @@
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  font-size: 11px;
-  border-radius: 999px;
-  background: rgba(46, 111, 208, 0.12);
-  color: #2e6fd0;
+  font-size: var(--fs-caption);
+  border-radius: var(--radius-pill);
+  background: var(--primary-soft-bg);
+  color: var(--primary-soft-text);
   max-width: 220px;
   white-space: nowrap;
   overflow: hidden;

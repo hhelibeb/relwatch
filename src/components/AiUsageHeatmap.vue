@@ -176,7 +176,7 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
   display: grid;
   gap: 0 3px;
   margin-left: 26px;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
   line-height: 1;
 }
@@ -194,7 +194,7 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
   position: relative;
   width: 22px;
   height: calc(7 * 11px + 6 * 3px);
-  font-size: 10px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -213,7 +213,7 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
 .heatmap-cell {
   width: 11px;
   height: 11px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   background: var(--heat-1);
 }
 
@@ -245,7 +245,7 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
   justify-content: flex-end;
   gap: 4px;
   margin-top: 6px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-muted);
 }
 
@@ -259,13 +259,13 @@ function levelClass(cell: { tokens: number; isFuture: boolean }): string {
 
 .heatmap-tooltip {
   position: fixed;
-  z-index: 10020;
+  z-index: var(--z-popover-modal);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   padding: 6px 10px;
   box-shadow: var(--shadow-lg);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   pointer-events: none;
   white-space: nowrap;
 }

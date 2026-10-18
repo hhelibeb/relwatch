@@ -58,15 +58,15 @@ const SearchBarStub = defineComponent({
 
 const SimpleListStub = defineComponent({
   name: 'ReleaseSimpleListStub',
-  props: ['releases', 'isFiltering', 'hasSearchQuery', 'deepSearch'],
-  emits: ['update', 'openDetail', 'enableDeep'],
+  props: ['releases', 'isFiltering', 'hasSearchQuery', 'deepSearch', 'loading'],
+  emits: ['update', 'openDetail', 'enableDeep', 'clearSearch', 'clearFilters'],
   template: '<div class="simple-stub" />',
 })
 
 const AggregatedListStub = defineComponent({
   name: 'ReleaseAggregatedListStub',
-  props: ['releases', 'isFiltering'],
-  emits: ['update', 'openDetail'],
+  props: ['releases', 'isFiltering', 'hasSearchQuery', 'loading'],
+  emits: ['update', 'openDetail', 'clearSearch', 'clearFilters'],
   methods: { expandAll },
   template: '<div class="agg-stub" />',
 })
@@ -1062,5 +1062,35 @@ describe('ReleaseTab 通知定位（focusTarget）', () => {
 
     expect(focusReleaseId).toHaveBeenCalledTimes(1)
     expect(wrapper.emitted('focus-consumed')).toHaveLength(1)
+  })
+})
+
+/**
+ * 目录加载失败 / 加载中：把「拉取失败」「正在拉取」与「暂无版本」分开。
+ * 此前三种情况都落到同一个空态，失败会被说成「暂无版本记录」。
+ */
+describe('ReleaseTab.vue — 加载与失败态', () => {
+  it('列表为空 + 加载失败：用错误块替代空态，可重试', async () => {
+    const wrapper = mountTab({ releases: [], loadError: '数据加载失败: timeout' })
+
+    expect(wrapper.find('.empty').exists()).toBe(false)
+    expect(wrapper.get('.error-block').text()).toContain('数据加载失败: timeout')
+
+    await wrapper.get('.error-block-retry').trigger('click')
+    expect(wrapper.emitted('reload')).toHaveLength(1)
+  })
+
+  it('已有数据时错误块不占位（旧内容继续可读）', () => {
+    const wrapper = mountTab({ loadError: '数据加载失败: timeout' })
+
+    expect(wrapper.find('.error-block').exists()).toBe(false)
+    expect(wrapper.find('.simple-stub').exists()).toBe(true)
+  })
+
+  it('加载中经列表下发 loading（骨架由列表在空列表时渲染）', () => {
+    const wrapper = mountTab({ releases: [], loading: true })
+
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('loading')).toBe(true)
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('hasSearchQuery')).toBe(false)
   })
 })

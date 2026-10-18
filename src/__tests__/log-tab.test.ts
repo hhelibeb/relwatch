@@ -462,14 +462,16 @@ describe('LogTab.vue — 并发竞态保护', () => {
 })
 
 describe('LogTab.vue — 错误处理', () => {
-  it('searchLogs 抛错时清空列表并显示空状态（无未捕获 rejection）', async () => {
+  it('searchLogs 抛错时清空列表并给出错误块与重试（无未捕获 rejection）', async () => {
     vi.mocked(searchLogs).mockRejectedValueOnce(new Error('db error'))
     const wrapper = await mountLogTab()
     await flushPromises()
 
-    // 错误已被 catch，列表为空，显示空状态提示
+    // 错误已被 catch：列表为空，且不再冒充「暂无日志」（空列表 + 空态会把拉取失败说成没数据）
     expect(wrapper.findAll('.log-item')).toHaveLength(0)
-    expect(wrapper.find('.empty').text()).toContain(t('log.no_records'))
+    expect(wrapper.find('.empty').exists()).toBe(false)
+    expect(wrapper.find('.error-block').text()).toContain(t('app.load_failed', 'db error'))
+    expect(wrapper.find('.error-block-retry').exists()).toBe(true)
   })
 })
 
@@ -494,5 +496,33 @@ describe('LogTab.vue — 定时器清理', () => {
 
     expect(searchLogs).not.toHaveBeenCalled()
     vi.useRealTimers()
+  })
+})
+
+describe('LogTab.vue — 四态', () => {
+  it('加载中且无数据时渲染骨架，不冒充空态', async () => {
+    vi.mocked(searchLogs).mockReturnValue(new Promise(() => {}))
+    const wrapper = mount(LogTab, { props: { refreshKey: 0 } })
+    await flushPromises()
+
+    expect(wrapper.find('.skeleton').exists()).toBe(true)
+    expect(wrapper.find('.empty').exists()).toBe(false)
+    expect(wrapper.findAll('.log-item')).toHaveLength(0)
+  })
+
+  it('级别筛选无结果：空态给清空筛选出口，点击后回到无筛选查询', async () => {
+    vi.mocked(searchLogs).mockResolvedValue(createSearchResult([], 0))
+    const wrapper = await mountLogTab()
+
+    await wrapper.find('.filter-trigger').trigger('click')
+    await wrapper.findAll('.filter-dropdown button')[3].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.empty').text()).toContain(t('log.no_match'))
+    await wrapper.get('.empty-actions button').trigger('click')
+    await flushPromises()
+
+    expect(searchLogs).toHaveBeenLastCalledWith('', 1, 50, undefined)
+    expect(wrapper.find('.empty').text()).toContain(t('log.no_records'))
   })
 })

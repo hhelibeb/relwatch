@@ -4,6 +4,7 @@ import type { ReleaseInfo } from '../api/releases'
 import { getLocale, t } from '../i18n'
 import { parseDateKey, toDateKey } from '../utils/dateKey'
 import { track } from '../composables/useUsageTracking'
+import EmptyState from './common/EmptyState.vue'
 import ReleaseItem from './ReleaseItem.vue'
 
 const props = defineProps<{
@@ -42,7 +43,11 @@ function handleBack() {
   </button>
   <div class="date-detail-title">{{ dateDetailTitle }}</div>
   <div class="release-list">
-    <div v-if="dateDetailReleases.length === 0" class="empty">{{ t('release.no_match') }}</div>
+    <EmptyState
+      v-if="dateDetailReleases.length === 0"
+      :title="t('release.no_match')"
+      :description="t('release.no_match_desc')"
+    />
     <ReleaseItem
       v-for="release in dateDetailReleases"
       :key="release.id"
@@ -70,9 +75,9 @@ function handleBack() {
   color: var(--text);
   border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--fs-body);
   margin-bottom: 12px;
-  transition: background 0.1s;
+  transition: background var(--dur-hover) var(--ease-out);
 }
 
 .calendar-back:hover {
@@ -85,7 +90,7 @@ function handleBack() {
 }
 
 .date-detail-title {
-  font-size: 15px;
+  font-size: var(--fs-title);
   font-weight: 600;
   margin-bottom: 12px;
   padding-left: 4px;

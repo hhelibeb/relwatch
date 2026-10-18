@@ -473,7 +473,7 @@ async function applyFlag(flag: number) {
 .release-detail-overlay {
   position: fixed;
   inset: 0;
-  z-index: 10010; /* 高于列表 tooltip(10002) 与 ContextMenu(10000) */
+  z-index: var(--z-modal); /* 必须高于全局浮层（--z-popover）与右键菜单（--z-menu） */
   display: flex;
   align-items: center;
   justify-content: center;
@@ -497,7 +497,7 @@ async function applyFlag(flag: number) {
 /* 八向 resize 手柄：透明的边缘/角落热区，右下角带可见握把 */
 .resize-handle {
   position: absolute;
-  z-index: 2;
+  z-index: var(--z-sticky);
   touch-action: none;
 }
 
@@ -599,7 +599,7 @@ async function applyFlag(flag: number) {
 /* 仓库名/版本号：与卡片同一套策略——等权收缩、不设 min-width 保底
    （min-width 会把短内容反而撑宽），完整值靠 title */
 .release-detail-repo {
-  font-size: 13px;
+  font-size: var(--fs-body);
   font-weight: 600;
   color: var(--text);
   min-width: 0;
@@ -610,7 +610,7 @@ async function applyFlag(flag: number) {
 
 .release-detail-tag {
   font-weight: 600;
-  font-size: 15px;
+  font-size: var(--fs-title);
   color: var(--primary);
   min-width: 0;
   overflow: hidden;
@@ -626,7 +626,7 @@ async function applyFlag(flag: number) {
   height: 28px;
   padding: 0;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius);
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -671,15 +671,15 @@ async function applyFlag(flag: number) {
   border: none;
   background: transparent;
   color: var(--text);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.4;
   cursor: pointer;
   text-align: left;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .flag-popover button:hover {
-  background: var(--bg-subtle);
+  background: var(--hover-surface);
 }
 
 .flag-popover button.selected {
@@ -720,13 +720,13 @@ async function applyFlag(flag: number) {
 }
 
 .release-detail-date {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
 }
 
 .release-detail-title {
   padding: 4px 16px 0;
-  font-size: 14px;
+  font-size: var(--fs-title);
   font-weight: 600;
   color: var(--text);
 }
@@ -744,14 +744,14 @@ async function applyFlag(flag: number) {
 
 .release-detail-markdown {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-body);
   line-height: 1.6;
 }
 
 .release-detail-translating {
   padding: 24px 12px;
   color: var(--text-muted);
-  font-size: 13px;
+  font-size: var(--fs-body);
   text-align: center;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
@@ -764,7 +764,7 @@ async function applyFlag(flag: number) {
   background: var(--danger-soft-bg);
   color: var(--danger-soft-text);
   border-radius: var(--radius-xs);
-  font-size: 12px;
+  font-size: var(--fs-meta);
   line-height: 1.5;
 }
 
@@ -796,7 +796,7 @@ async function applyFlag(flag: number) {
 }
 
 .release-detail-position {
-  font-size: 12px;
+  font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
 }
@@ -820,10 +820,10 @@ async function applyFlag(flag: number) {
   border: none;
   background: transparent;
   color: var(--text-muted);
-  font-size: 11px;
-  border-radius: 4px;
+  font-size: var(--fs-caption);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--dur-state) var(--ease-out), color var(--dur-state) var(--ease-out);
 }
 
 .release-view-tab:hover {
