@@ -122,6 +122,9 @@
   --dur-hover: 120ms;
   --dur-state: 160ms;
   --dur-overlay: 220ms;
+  /* 退场迟滞：hover 收起方向上先用它压住一档，再走时长。列表卡片之间有间距，
+     指针跨卡时必然经过不属于任何卡的空白，没有延时会看到一暗一明的闪烁。 */
+  --delay-hover-out: 120ms;
 
   /* 阴影数级：仅浮层（下拉/菜单/Toast/Tooltip）使用，内容层一律无阴影 */
   --shadow-sm: none;
