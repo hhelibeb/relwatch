@@ -7,7 +7,7 @@ import { type NotificationStatus, type ReleaseInfo, setNotificationState, delete
 import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
-import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
+import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease, releaseTitleRedundant } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
 import { mediaUrlOrEmpty } from '../utils/imageProxy'
 import { registerCloser, unregisterCloser, closeAllContextMenus, isTransientUiInvalidated } from '../composables/contextMenuBus'
@@ -512,6 +512,14 @@ const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_typ
 // 显示真实频道名（source_description，兼容旧版 "YouTube channel: " 前缀）
 const isYoutube = computed(() => getSourceTypeDef(props.release.source_type)?.youtubeLayout === true)
 const showReleaseTag = computed(() => getSourceTypeDef(props.release.source_type)?.showTag !== false)
+
+// 通用布局的第二行标题：与版本号只是换种写法时不渲染（v3.6.0 vs v3.6.0 "Vapor"）。
+// YouTube/B 站走 yt-layout 分支，那里的 release_name 是视频标题、tag 是 videoId，
+// 两者语义不同，不能套用这条删减规则。
+const cardTitle = computed(() => {
+  if (isYoutube.value) return ''
+  return releaseTitleRedundant(props.release) ? '' : releaseDisplayTitle(props.release)
+})
 const youtubeChannelName = computed(() => {
   const def = getSourceTypeDef(props.release.source_type)
   return def?.displayName?.(props.release.owner, props.release.repo, props.release.source_description)
@@ -623,7 +631,7 @@ const youtubeViewTitle = computed(() =>
       </div>
       <div class="release-header-right">
         <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-        <button class="btn-sm" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
+        <button class="btn-sm release-snooze-btn" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
         <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
         <button ref="flagButtonRef" class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" aria-haspopup="menu" :aria-expanded="flagMenu !== null" @click="toggleFlag" @contextmenu.prevent.stop="openFlagMenu" @keydown="handleFlagTriggerKeydown">
           <svg><use href="/icons.svg#flag-tag-icon"/></svg>
@@ -679,7 +687,7 @@ const youtubeViewTitle = computed(() =>
     </div>
     <!-- 其它源：标题 + 摘要/原文预览 -->
     <template v-else>
-      <div v-if="releaseDisplayTitle(release)" class="release-title">{{ releaseDisplayTitle(release) }}</div>
+      <div v-if="cardTitle" class="release-title">{{ cardTitle }}</div>
       <div v-if="previewContent" class="release-content">
         <!-- 摘要：3 行 clamp + 悬浮提示；前两行满行，阅读全文按钮悬浮第三行右侧（不足两行时独立成行） -->
         <div v-if="previewKind === 'summary'" class="release-summary-line" :class="{ 'has-third-line': summaryHasThirdLine }">
@@ -1072,6 +1080,32 @@ const youtubeViewTitle = computed(() =>
 .release-expand-btn {
   margin-top: 4px;
   font-size: var(--fs-caption);
+}
+
+/* 「稍后提醒」与「阅读全文」默认收起，hover 或键盘聚焦时才淡入：
+   两个按钮每张卡都渲染一遍，常驻时整列是同一串重复文字。
+   只过渡 opacity、不用 display 切换——按钮占位保留，卡片高度与文字排布在
+   指针移入移出时不变，不会出现内容跳动。
+
+   整块包在 (hover: hover) 里：触摸设备没有 hover 态，显隐无从触发，
+   pointer-events: none 还会让点击穿透到卡片内容上（在按钮位置触碰到的是
+   “阅读全文”的打开详情）。默认可见、只在有 hover 能力时才收起，
+   媒体特性不可用或判定不出时也落到“可见”这一侧。 */
+@media (hover: hover) {
+  .release-item .release-snooze-btn,
+  .release-expand-btn {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-hover) var(--ease-out);
+  }
+
+  .release-item:hover .release-snooze-btn,
+  .release-item:hover .release-expand-btn,
+  .release-item:has(:focus-visible) .release-snooze-btn,
+  .release-item:has(:focus-visible) .release-expand-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 /* 行内按钮一律取二级悬停面：全局 .btn-sm:hover 与卡片 hover 同为 --hover-surface，
