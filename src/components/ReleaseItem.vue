@@ -1090,13 +1090,18 @@ const youtubeViewTitle = computed(() =>
    整块包在 (hover: hover) 里：触摸设备没有 hover 态，显隐无从触发，
    pointer-events: none 还会让点击穿透到卡片内容上（在按钮位置触碰到的是
    “阅读全文”的打开详情）。默认可见、只在有 hover 能力时才收起，
-   媒体特性不可用或判定不出时也落到“可见”这一侧。 */
+   媒体特性不可用或判定不出时也落到“可见”这一侧。
+
+   收起方向带退场迟滞（--delay-hover-out）：卡片之间有间距，指针从一张卡移到
+   下一张时必然经过不属于任何卡的空白，而 8px 的穿越时间（十几毫秒）远短于
+   淡出时长——没有迟滞就是一暗一明的闪烁。展开方向不吃这个延时，落点立刻可见。
+   这张卡一旦不是指针所在的那张，迟滞立刻失效（见下方互斥规则）。 */
 @media (hover: hover) {
   .release-item .release-snooze-btn,
   .release-expand-btn {
     opacity: 0;
     pointer-events: none;
-    transition: opacity var(--dur-hover) var(--ease-out);
+    transition: opacity var(--dur-hover) var(--ease-out) var(--delay-hover-out);
   }
 
   .release-item:hover .release-snooze-btn,
@@ -1105,6 +1110,19 @@ const youtubeViewTitle = computed(() =>
   .release-item:has(:focus-visible) .release-expand-btn {
     opacity: 1;
     pointer-events: auto;
+    transition: opacity var(--dur-hover) var(--ease-out);
+  }
+
+  /* 互斥：一张卡展开着，其余卡片的按钮立刻让位，不走迟滞。
+     迟滞只该压住“指针暂时离开卡片”（擦过、停在卡间缝隙里），不该让上一张卡的
+     按钮陪着下一张卡一起亮——两套按钮同屏会被读成卡顿。
+     范围挂在整个页面上判定，不逐容器枚举：三视图 v-if 互斥，全局同时只有一处
+     列表；枚举则需把 `.release-list` / `.repo-group-body` 都写上，而聚合视图
+     跨 repo 分组移动时仍会漏。将来若出现同屏两份列表，这里需改回逐容器判定。
+     让位时长取 hover 动画的一半：旧钮退得比新钮进得快，读作一次交接。 */
+  body:has(.release-item:hover) .release-item:not(:hover) .release-snooze-btn,
+  body:has(.release-item:hover) .release-item:not(:hover) .release-expand-btn {
+    transition: opacity calc(var(--dur-hover) / 2) var(--ease-out);
   }
 }
 
