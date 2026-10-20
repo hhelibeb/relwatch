@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import { ShowImportanceKey } from '../injection-keys'
@@ -163,6 +163,11 @@ afterEach(() => {
   resetBackend()
 })
 
+// 深度搜索的正文预取是跳帧异步循环（每块让一帧）。用例提前失败时，未卸载的
+// 组件仍会把后续请求写进共享的 backend 账本，污染下一个用例的断言——
+// 表现为相邻两个用例的 chunkCalls 互相“多一次 / 少一次”。
+enableAutoUnmount(afterEach)
+
 // ── 视图渲染与过滤 ───────────────────────────────────────────────
 
 describe('ReleaseTab 渲染与过滤', () => {
@@ -237,6 +242,27 @@ describe('ReleaseTab 深度搜索', () => {
     return new Promise<void>(resolve => setTimeout(resolve, 25))
   }
 
+  /** 等到正文索引同步收敛：预取每块让一帧，固定 sleep 在慢 runner 上会踩到
+   *  “帧已过、下一块还没发”或“上一用例的循环还在跑”的边界。轮询到请求数连续三轮
+   *  不再变化、且 deepSearching 已转 false 才返回。 */
+  async function settle(wrapper: VueWrapper) {
+    const bar = () => wrapper.findComponent({ name: 'ReleaseSearchBarStub' })
+    let prev = ''
+    let stable = 0
+    for (let i = 0; i < 60; i++) {
+      await flushRaf()
+      await nextTick()
+      const snap = `${backend.chunkCalls.length}/${backend.byIdsCalls.length}/${bar().props('deepSearching')}`
+      stable = snap === prev ? stable + 1 : 0
+      prev = snap
+      if (stable >= 2) return
+    }
+    // 超时不能静默返回：否则后续断言在一个未收敛的索引上跑，失败点会漂到
+    // 不相干的下游（表现为「expected [] to deeply equal [4]」这类业务断言报错，
+    // 真正的成因是等待窗口不够）。把 snapshot 一并报出，直接定位卡在哪。
+    throw new Error(`正文索引同步未在 60 帧内收敛：${prev}`)
+  }
+
   /** 目录项：正文只是预览片段（全文只在分块接口里），搜索命中必须来自索引而非目录 */
   function deepRelease(id: number, overrides: Partial<ReleaseInfo> = {}) {
     return createRelease({ id, owner: 'tauri-apps', repo: 'tauri', body: '预览片段', ...overrides })
@@ -259,7 +285,7 @@ describe('ReleaseTab 深度搜索', () => {
 
     // 开启深度搜索 → 从最大 id 起步取一块 → 命中
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
     expect(list.props('deepSearch')).toBe(true)
@@ -274,7 +300,7 @@ describe('ReleaseTab 深度搜索', () => {
 
     // 重新开启不重拉：已取到的块在会话内驻留
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     expect(backend.chunkCalls).toEqual([Number.MAX_SAFE_INTEGER, 4])
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('releases').map((r: ReleaseInfo) => r.id)).toEqual([4])
@@ -290,7 +316,7 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     const list = () => wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
@@ -301,7 +327,7 @@ describe('ReleaseTab 深度搜索', () => {
 
     // 换搜更早那条的关键词 → 搜不到（水位之外），能力边界已显式标注
     await wrapper.setProps({ search: 'keyword-old' } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     expect(list().props('releases')).toEqual([])
     expect(backend.byIdsCalls).toEqual([])
@@ -315,14 +341,14 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('releases').map((r: ReleaseInfo) => r.id)).toEqual([4])
 
     const chunkCallsBefore = backend.chunkCalls.length
     // 模拟 App.vue：整体替换数组引用，但内容不变（轮询完成 / 标记已读后重拉）
     await wrapper.setProps({ releases: [...releases, deepRelease(4)] } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
@@ -340,14 +366,14 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     const chunkCallsBefore = backend.chunkCalls.length
 
     // 轮询采到新版本：id 更大，正文接口返回它
     backend.bodies.set(9, { body: 'another Major release note', body_translated: null })
     await wrapper.setProps({ releases: [...releases, deepRelease(4), deepRelease(9)] } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     // 不倒序重走游标（新行在游标起点之上，游标取不到），只按 id 补这一条
@@ -367,14 +393,14 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     // 同一渲染帧内两次目录刷新（轮询完成与 release-state-changed 各触发一次重拉）
     backend.bodies.set(9, { body: 'Major release nine', body_translated: null })
     await wrapper.setProps({ releases: [...releases, deepRelease(4), deepRelease(9)] } as Parameters<typeof wrapper.setProps>[0])
     await wrapper.setProps({ releases: [...releases, deepRelease(4), deepRelease(9)] } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     expect(backend.byIdsCalls).toEqual([[9]])
@@ -388,7 +414,7 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     // 翻译落库：目录里的 body_translated 由 null 变为非 null（预览），正文接口返回完整译文
@@ -397,7 +423,7 @@ describe('ReleaseTab 深度搜索', () => {
       releases: [...releases, deepRelease(4, { body_translated: '完整译文…' })],
       search: '完整译文',
     } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     expect(backend.byIdsCalls).toEqual([[4]])
@@ -417,7 +443,7 @@ describe('ReleaseTab 深度搜索', () => {
     expect(bar.props('bodyTruncated')).toBe(false)
 
     await bar.vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     expect(backend.chunkCalls).toEqual([Number.MAX_SAFE_INTEGER])
@@ -432,7 +458,7 @@ describe('ReleaseTab 深度搜索', () => {
     expect(list.props('deepSearch')).toBe(false)
 
     await list.vm.$emit('enableDeep')
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('deepSearch')).toBe(true)
   })
@@ -446,7 +472,7 @@ describe('ReleaseTab 深度搜索', () => {
     await nextTick()
 
     await wrapper.setProps({ releases: [...releases, deepRelease(4)] } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     // 未开启深度搜索 → 不因 releases 变化而偷偷取正文 / 启用 Tier2
@@ -465,7 +491,7 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     const chunkCallsBefore = backend.chunkCalls.length
 
@@ -476,7 +502,7 @@ describe('ReleaseTab 深度搜索', () => {
     // 随后 releases 刷新：deepSearch 已为 false，不应再同步
     backend.bodies.set(9, { body: 'Major release nine', body_translated: null })
     await wrapper.setProps({ releases: [...releases, deepRelease(4), deepRelease(9)] } as Parameters<typeof wrapper.setProps>[0])
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     const list = wrapper.findComponent({ name: 'ReleaseSimpleListStub' })
@@ -493,7 +519,7 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('deepSearch')).toBe(true)
 
@@ -514,7 +540,7 @@ describe('ReleaseTab 深度搜索', () => {
     })
     await nextTick()
     await wrapper.findComponent({ name: 'ReleaseSearchBarStub' }).vm.$emit('update:deepSearch', true)
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
     const chunkCallsBefore = backend.chunkCalls.length
 
@@ -522,7 +548,7 @@ describe('ReleaseTab 深度搜索', () => {
     backend.bodies.set(9, { body: 'Major release nine', body_translated: null })
     await wrapper.setProps({ releases: [...releases, deepRelease(4), deepRelease(9)] } as Parameters<typeof wrapper.setProps>[0])
     wrapper.unmount()
-    await flushRaf()
+    await settle(wrapper)
     await nextTick()
 
     // 卸载后不应再发任何取正文请求

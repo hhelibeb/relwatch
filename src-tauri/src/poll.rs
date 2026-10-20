@@ -2699,19 +2699,21 @@ mod tests {
 
         schedule_translations_background(&pool, &sem, &emitter);
 
-        // fire-and-forget：轮询等待后台批完成（最多 5s）
-        let mut done = false;
+        // fire-and-forget：轮询等后台批收尾（最多 5s）。等的是 emit 而不是 DB：
+        // 译文在批内子任务里先落库，emitter 要到批收尾才触发，等 DB 会正好卡在
+        // 两者之间的窗口上（CI 慢机上必现：落库了但 emit 记录还是空）。
+        let mut emitted = false;
         for _ in 0..50 {
-            if release_translated(&pool, id) {
-                done = true;
+            if noop.state_changed_ids().contains(&id) {
+                emitted = true;
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        assert!(done, "后台翻译批应在超时前把译文写入 DB");
+        assert!(release_translated(&pool, id), "后台翻译批应在超时前把译文写入 DB");
         // 成功落库 → 触发 release-state-changed 刷新
         assert!(
-            noop.state_changed_ids().contains(&id),
+            emitted,
             "成功落库后应 emit release-state-changed, 实际: {:?}",
             noop.state_changed_ids()
         );
