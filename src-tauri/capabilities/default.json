@@ -10,6 +10,7 @@
     "core:webview:allow-create-webview-window",
     "core:webview:allow-set-webview-zoom",
     "core:window:allow-set-size",
+    "core:window:allow-set-min-size",
     "notification:default",
     "notification:allow-is-permission-granted",
     "notification:allow-request-permission",

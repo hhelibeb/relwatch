@@ -7,18 +7,22 @@ import { t, setLocale } from '../i18n'
 import { defaultSettings } from './helpers'
 
 // ========== Tauri 边界 Mocks（应用内模块一律走真实实现） ==========
-const { mockUnlisten, mockListen, mockWindow } = vi.hoisted(() => {
+const { mockUnlisten, mockListen, mockWindow, mockCurrentMonitor } = vi.hoisted(() => {
   const mockUnlisten = vi.fn()
   const mockListen = vi.fn((_event: string, _handler: (...args: unknown[]) => void) => Promise.resolve(mockUnlisten))
   const mockWindow = {
     innerSize: vi.fn(),
     scaleFactor: vi.fn(),
     setSize: vi.fn(),
+    setMinSize: vi.fn().mockResolvedValue(undefined),
     isMaximized: vi.fn().mockResolvedValue(false),
     outerPosition: vi.fn().mockResolvedValue({ x: 0, y: 0 }),
+    outerSize: vi.fn().mockResolvedValue({ width: 0, height: 0 }),
     onResized: vi.fn().mockResolvedValue(mockUnlisten),
   }
-  return { mockUnlisten, mockListen, mockWindow }
+  // null = 拿不到显示器信息：面板展开时不做屏幕空间截断
+  const mockCurrentMonitor = vi.fn().mockResolvedValue(null)
+  return { mockUnlisten, mockListen, mockWindow, mockCurrentMonitor }
 })
 vi.mock('@tauri-apps/api/event', () => ({ listen: mockListen }))
 vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ readText: vi.fn() }))
@@ -26,6 +30,7 @@ vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }))
 vi.mock('@tauri-apps/plugin-opener', () => ({ openUrl: vi.fn() }))
 vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: () => mockWindow,
+  currentMonitor: mockCurrentMonitor,
   LogicalSize: class {
     constructor(public width: number, public height: number) {}
   },
@@ -73,6 +78,7 @@ vi.mock('../composables/useEscapeToTray', () => ({ useEscapeToTray: vi.fn() }))
 import { listSources } from '../api/sources'
 import { getReleaseCatalog, getPollCountdown, triggerPoll } from '../api/releases'
 import { getSettings } from '../api/settings'
+import { getAgentConfig } from '../api/agent'
 import { invoke } from '@tauri-apps/api/core'
 import { useEscapeToTray } from '../composables/useEscapeToTray'
 import { closeAllContextMenus } from '../composables/contextMenuBus'
@@ -109,11 +115,12 @@ const LogTabStub = defineComponent({
 const SettingsTabStub = defineComponent({
   name: 'SettingsTab',
   props: ['settings'],
-  emits: ['update'],
+  emits: ['update', 'agent-config-changed'],
   template: `
     <div class="stub-settingstab">
       <button class="stub-settings-restart" @click="$emit('update', true, false)">restart-countdown</button>
       <button class="stub-settings-reload" @click="$emit('update', false, true)">reload-all</button>
+      <button class="stub-agent-config-changed" @click="$emit('agent-config-changed')">agent-config-changed</button>
     </div>`,
 })
 
@@ -131,6 +138,11 @@ const TransitionStub = defineComponent({
   name: 'Transition',
   template: '<div><slot /></div>',
 })
+
+// jsdom 的 innerWidth 固定 1024，与用例设定的窗口逻辑宽不一致会算出错位的列宽
+function setInnerWidth(w: number) {
+  Object.defineProperty(window, 'innerWidth', { value: w, configurable: true, writable: true })
+}
 
 // 真实 App.vue 挂载（子组件用上述 stub 替换，交互走事件入口）
 async function mountRealApp() {
@@ -160,6 +172,8 @@ beforeEach(() => {
   vi.mocked(getPollCountdown).mockResolvedValue(300)
   vi.mocked(getSettings).mockResolvedValue(defaultSettings)
   vi.mocked(triggerPoll).mockResolvedValue({ new_releases: [] })
+  // 真实 invoke 恒返回 Promise；默认实现也必须是 async，否则调用方 .catch 会炸
+  vi.mocked(invoke).mockImplementation(async () => undefined)
 
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
@@ -167,12 +181,19 @@ beforeEach(() => {
   })
   // 默认：非最大化（最大化测试会覆盖，beforeEach 复位防残留串扰）
   mockWindow.isMaximized.mockResolvedValue(false)
+  // 下面几个 mock 有用例自定义过实现，复位防止外溢到后续用例
+  mockWindow.setMinSize.mockImplementation(async () => undefined)
+  mockWindow.outerPosition.mockResolvedValue({ x: 0, y: 0 })
+  mockWindow.outerSize.mockResolvedValue({ width: 0, height: 0 })
+  mockCurrentMonitor.mockResolvedValue(null)
   document.documentElement.dataset.theme = ''
   setLocale('zh-CN')
 })
 
 afterEach(() => {
   vi.useRealTimers()
+  // 用例可能改写 innerWidth（壳布局按视口宽算列宽），复位避免串扰
+  Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true })
   document.documentElement.dataset.theme = ''
   setLocale('zh-CN')
 })
@@ -435,6 +456,7 @@ describe('App.vue — Toast 系统', () => {
 
   it('Agent 面板打开时 Toast 左移到面板左侧，不压住输入区按钮', async () => {
     vi.useFakeTimers()
+    setInnerWidth(1920)
     mockWindow.innerSize.mockResolvedValue({ width: 1920, height: 1080 })
     mockWindow.scaleFactor.mockResolvedValue(1)
     mockWindow.setSize.mockResolvedValue(undefined)
@@ -1216,102 +1238,382 @@ describe('App.vue — SettingsTab update 回调（事件入口）', () => {
   })
 })
 
-describe('App.vue — Agent 工作区窗口尺寸', () => {
-  it('窄窗口（<900+440）展开：窗口加宽、收起缩窄、多次开关循环尺寸稳定', async () => {
-    // 高 DPI 环境：窗口缩放 1.25，innerSize 返回物理像素 1600×900 → 逻辑 1280
-    // 1280 < 900+440=1340 → 走「加宽窗口」分支
-    mockWindow.innerSize.mockResolvedValue({ width: 1600, height: 900 })
-    mockWindow.scaleFactor.mockResolvedValue(1.25)
-    mockWindow.setSize.mockResolvedValue(undefined)
+describe('App.vue — Agent 工作区窗口尺寸（L / R / W 三个宽度的账）', () => {
+  // 面板展开期间窗口的最小宽度：主界面列宽 + 分隔线 + 面板 280
+  const minWidthFor = (mainW: number) => mainW + 5 + 280
+
+  // 动态 innerSize：setSize 后窗口真的变宽，开关循环的数字才自洽。
+  // setWidth 用于模拟用户拖窗口边缘（物理 px）。
+  function trackWindow(initial: { width: number; height: number }, scale = 1) {
+    let inner = { ...initial }
+    mockWindow.innerSize.mockImplementation(async () => ({ ...inner }))
+    mockWindow.scaleFactor.mockResolvedValue(scale)
+    mockWindow.setSize.mockImplementation(async (size: { width: number; height: number }) => {
+      inner = { width: Math.round(size.width * scale), height: Math.round(size.height * scale) }
+    })
+    return Object.assign(() => ({ ...inner }), {
+      setWidth(width: number) {
+        inner = { ...inner, width: Math.round(width * scale) }
+      },
+    })
+  }
+
+  it('展开加宽（面板 + 分隔线）、收起缩窄，主界面列宽不变，多次开关尺寸稳定', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
 
     const wrapper = await mountRealApp()
     const btn = wrapper.find('.release-agent-btn')
     const calls = () => mockWindow.setSize.mock.calls.map((c) => [c[0].width, c[0].height])
 
-    await btn.trigger('click') // 1. 展开：宽度 1280+440，高度不变
+    await btn.trigger('click') // 展开：面板 440 + 分隔线 5，主界面仍是 1280
     await flushPromises()
-    expect(calls()).toEqual([[1600 / 1.25 + 440, 900 / 1.25]])
+    expect(calls()[0]).toEqual([1280 + 445, 900])
+    expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(440)
 
-    await btn.trigger('click') // 2. 收起：当前窗口宽 1280 − 面板 440 = 840
+    await btn.trigger('click') // 收起：缩掉面板与分隔线，回到 1280
     await flushPromises()
-    expect(calls()[1]).toEqual([1600 / 1.25 - 440, 900 / 1.25])
+    expect(calls()[1]).toEqual([1280, 900])
 
-    // 3-6. 再开关两次：尺寸参数完全一致，不累积放大（每次都基于当前 innerSize，不会越缩越小）
-    const open = 1600 / 1.25 + 440
-    const close = 1600 / 1.25 - 440
-    await btn.trigger('click')
-    await flushPromises()
-    await btn.trigger('click')
-    await flushPromises()
-    await btn.trigger('click')
-    await flushPromises()
-    await btn.trigger('click')
-    await flushPromises()
-    expect(calls()[2]).toEqual([open, 900 / 1.25])
-    expect(calls()[3]).toEqual([close, 900 / 1.25])
-    expect(calls()[4]).toEqual([open, 900 / 1.25])
-    expect(calls()[5]).toEqual([close, 900 / 1.25])
-
+    for (let i = 0; i < 3; i++) {
+      await btn.trigger('click')
+      await flushPromises()
+      await btn.trigger('click')
+      await flushPromises()
+    }
+    // 不累积放大，也不越缩越小
+    const expected: number[][] = []
+    for (let i = 0; i < 3; i++) expected.push([1725, 900], [1280, 900])
+    expect(calls().slice(2)).toEqual(expected)
     wrapper.unmount()
   })
 
-  it('宽窗口（≥900+440）展开：不加宽窗口（内部弹出），收起不缩窄', async () => {
-    // 窗口逻辑宽 1920 ≥ 1340 → 内部弹出，setSize 零调用
-    mockWindow.innerSize.mockResolvedValue({ width: 1920, height: 1080 })
-    mockWindow.scaleFactor.mockResolvedValue(1)
-    mockWindow.setSize.mockResolvedValue(undefined)
+  it('拖中间分隔线：只改主界面列宽，面板吸收差额，窗口不重设尺寸', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
+
+    const wrapper = await mountRealApp()
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+    mockWindow.setSize.mockClear()
+
+    const ws = () => wrapper.findComponent({ name: 'AgentWorkspace' })
+    expect(ws().props('width')).toBe(440)
+
+    await wrapper.find('.agent-divider').trigger('mousedown', { clientX: 900 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 950 })) // 向右拖 50
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(390) // 主界面 1280→1330，面板 440→390
+
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await flushPromises()
+    expect(ws().props('width')).toBe(390)
+    expect(mockWindow.setSize).not.toHaveBeenCalled()
+    // 主界面变宽 → 展开期间的最小窗宽跟着抬高（面板 280 的保底跟着走）
+    expect(mockWindow.setMinSize).toHaveBeenLastCalledWith(
+      expect.objectContaining({ width: minWidthFor(1330) }),
+    )
+
+    // 松开后的 mousemove 不再生效
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 1200 }))
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(390)
+    wrapper.unmount()
+  })
+
+  it('挂载时把窗口最小宽度拉回 710（前端重载后的残留自愈）', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
+
+    const wrapper = await mountRealApp()
+    expect(mockWindow.setMinSize).toHaveBeenCalledWith(
+      expect.objectContaining({ width: 710, height: 450 }),
+    )
+    wrapper.unmount()
+  })
+
+  it('面板展开期间抬高窗口最小宽度，收起后复位', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
 
     const wrapper = await mountRealApp()
     const btn = wrapper.find('.release-agent-btn')
 
-    await btn.trigger('click') // 展开
+    await btn.trigger('click')
     await flushPromises()
-    expect(mockWindow.setSize).not.toHaveBeenCalled()
-    // 面板已打开：分隔线存在
+    expect(mockWindow.setMinSize).toHaveBeenCalledWith(
+      expect.objectContaining({ width: minWidthFor(1280), height: 450 }),
+    )
+
+    await btn.trigger('click')
+    await flushPromises()
+    expect(mockWindow.setMinSize).toHaveBeenLastCalledWith(
+      expect.objectContaining({ width: 710, height: 450 }),
+    )
+    wrapper.unmount()
+  })
+
+  it('面板打开期间禁用 Agent：自动收回面板并复位窗口最小宽度', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
+
+    const wrapper = await mountRealApp()
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
     expect(wrapper.find('.agent-divider').exists()).toBe(true)
+    expect(mockWindow.setMinSize).toHaveBeenLastCalledWith(
+      expect.objectContaining({ width: minWidthFor(1280) }),
+    )
+
+    // 设置页关掉 Agent 总开关 → loadAgentConfig 读到 enabled=false
+    vi.mocked(getAgentConfig).mockResolvedValueOnce({
+      enabled: false,
+      agent_type: 'pi',
+      binary: null,
+      model: null,
+      working_dir: null,
+      prompt_suffix: null,
+      timeout_seconds: 300,
+      skills: [],
+      max_concurrency: 3,
+    })
+    await wrapper.find('.stub-agent-config-changed').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.agent-divider').exists()).toBe(false)
+    expect(mockWindow.setMinSize).toHaveBeenLastCalledWith(
+      expect.objectContaining({ width: 710, height: 450 }),
+    )
+    wrapper.unmount()
+  })
+
+  it('宽窗口展开：同样只加宽窗口，不挤压主界面', async () => {
+    setInnerWidth(1920)
+    trackWindow({ width: 1920, height: 1080 })
+    mockCurrentMonitor.mockResolvedValue({
+      position: { x: 0, y: 0 },
+      size: { width: 3840, height: 2160 },
+      scaleFactor: 1,
+    })
+    mockWindow.outerPosition.mockResolvedValue({ x: 0, y: 0 })
+    mockWindow.outerSize.mockResolvedValue({ width: 1920, height: 1080 })
+
+    const wrapper = await mountRealApp()
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+
+    expect(mockWindow.setSize).toHaveBeenCalledTimes(1)
+    expect(mockWindow.setSize.mock.calls[0][0]).toMatchObject({ width: 1920 + 445, height: 1080 })
+    expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(440)
+    wrapper.unmount()
+  })
+
+  it('窗口贴着显示器右边缘：加宽量被截断，缺口由主界面让位；关闭后窗口回到打开前', async () => {
+    setInnerWidth(1920)
+    trackWindow({ width: 1920, height: 1080 })
+    mockCurrentMonitor.mockResolvedValue({
+      position: { x: 0, y: 0 },
+      size: { width: 2000, height: 1080 },
+      scaleFactor: 1,
+    })
+    mockWindow.outerPosition.mockResolvedValue({ x: 0, y: 0 })
+    mockWindow.outerSize.mockResolvedValue({ width: 1920, height: 1080 })
+
+    const wrapper = await mountRealApp()
+    const btn = wrapper.find('.release-agent-btn')
+
+    await btn.trigger('click') // 展开：只有 80px 可用空间
+    await flushPromises()
+    // 窗口加宽到屏幕宽；面板仍按保存值 440，缺口 365 从主界面让出
+    expect(mockWindow.setSize.mock.calls[0][0]).toMatchObject({ width: 2000, height: 1080 })
+    expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(440)
 
     await btn.trigger('click') // 收起
     await flushPromises()
-    expect(mockWindow.setSize).not.toHaveBeenCalled()
-    // 面板已关闭：分隔线消失
-    expect(wrapper.find('.agent-divider').exists()).toBe(false)
+    // 收起后窗宽 = 主界面列宽 1555（打开时让位后的值），不再是打开前的 1920
+    expect(mockWindow.setSize.mock.calls[1][0]).toMatchObject({ width: 1555, height: 1080 })
     wrapper.unmount()
   })
 
-  it('最大化时展开：不调用 setSize，面板在窗口内弹出', async () => {
-    mockWindow.isMaximized.mockResolvedValue(true)
-    mockWindow.innerSize.mockResolvedValue({ width: 1920, height: 1080 })
-    mockWindow.scaleFactor.mockResolvedValue(1)
-    mockWindow.setSize.mockResolvedValue(undefined)
+  it('拖窗口边缘把面板拉宽后再关闭：主界面不跟着变宽（回归）', async () => {
+    setInnerWidth(1280)
+    const read = trackWindow({ width: 1280, height: 900 })
 
     const wrapper = await mountRealApp()
     const btn = wrapper.find('.release-agent-btn')
+    const ws = () => wrapper.findComponent({ name: 'AgentWorkspace' })
 
-    await btn.trigger('click')
+    await btn.trigger('click') // 展开：1280 → 1725（面板 440）
     await flushPromises()
-    expect(mockWindow.setSize).not.toHaveBeenCalled()
+    expect(read().width).toBe(1725)
+    expect(ws().props('width')).toBe(440)
 
-    await btn.trigger('click') // 收起：最大化时不缩窄
+    // 用户拖窗口右边缘把面板拉宽 300：主界面不动，面板吃满
+    read.setWidth(2025)
+    setInnerWidth(2025)
+    window.dispatchEvent(new Event('resize'))
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(740)
+
+    await btn.trigger('click') // 关闭
     await flushPromises()
-    expect(mockWindow.setSize).not.toHaveBeenCalled()
+    // 回到打开前的窗宽：面板那 300px 不会落到主界面上
+    expect(mockWindow.setSize.mock.calls.at(-1)![0]).toMatchObject({ width: 1280, height: 900 })
+    expect(read().width).toBe(1280)
     wrapper.unmount()
   })
 
-  it('最大化时窄窗口展开：面板压缩到窗口内可容纳宽度（主界面保 710）', async () => {
-    mockWindow.isMaximized.mockResolvedValue(true)
-    // 窗口逻辑宽 1000（<900+440 但 ≥710+280），面板压缩到 1000−710=290
-    mockWindow.innerSize.mockResolvedValue({ width: 1000, height: 800 })
-    mockWindow.scaleFactor.mockResolvedValue(1)
-    mockWindow.setSize.mockResolvedValue(undefined)
+  it('展开 → 调宽窗口 → 拖分隔条 → 收起 → 再展开：L 与 R 都被记住', async () => {
+    // 用假 DB 承接面板宽的读写，验证「上次关闭时的 R」被原样恢复
+    let savedPanelW = 0
+    vi.mocked(invoke).mockImplementation(async (cmd: string, args?: unknown) => {
+      if (cmd === 'get_agent_ws_width') return savedPanelW
+      if (cmd === 'save_agent_ws_width') {
+        savedPanelW = (args as { width: number }).width
+        return undefined
+      }
+      return undefined
+    })
+    setInnerWidth(1280)
+    const read = trackWindow({ width: 1280, height: 900 })
 
     const wrapper = await mountRealApp()
     const btn = wrapper.find('.release-agent-btn')
+    const ws = () => wrapper.findComponent({ name: 'AgentWorkspace' })
+    const lastSize = () => mockWindow.setSize.mock.calls.at(-1)![0] as { width: number; height: number }
 
+    await btn.trigger('click') // 1. 展开：L 1280 + 分隔线 + R 440
+    await flushPromises()
+    expect(read().width).toBe(1725)
+    expect(ws().props('width')).toBe(440)
+
+    read.setWidth(2025) // 2. 整体调宽 300：只加到面板上
+    setInnerWidth(2025)
+    window.dispatchEvent(new Event('resize'))
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(740)
+
+    // 3. 拖分隔条右移 100：L 1280→1380、R 740→640，两边都变
+    await wrapper.find('.agent-divider').trigger('mousedown', { clientX: 1300 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 1400 }))
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(640)
+    document.dispatchEvent(new MouseEvent('mouseup'))
+    await flushPromises()
+
+    // 4. 收起：窗口变成主界面列宽 1380（不是打开前的 1280），R 640 落库
     await btn.trigger('click')
     await flushPromises()
-    expect(mockWindow.setSize).not.toHaveBeenCalled()
-    const ws = wrapper.findComponent({ name: 'AgentWorkspace' })
-    expect(ws.props('width')).toBe(290)
+    expect(lastSize()).toMatchObject({ width: 1380, height: 900 })
+    expect(read().width).toBe(1380)
+    expect(savedPanelW).toBe(640)
+
+    // 5. 收起期间调窗口宽度只改 L，不影响下一次的 R
+    read.setWidth(1000)
+    setInnerWidth(1000)
+    window.dispatchEvent(new Event('resize'))
+    await wrapper.vm.$nextTick()
+
+    // 6. 再展开：L 跟随当前窗宽 1000，R 恢复上次关闭时的 640
+    await btn.trigger('click')
+    await flushPromises()
+    expect(lastSize()).toMatchObject({ width: 1000 + 645, height: 900 })
+    expect(ws().props('width')).toBe(640)
+    wrapper.unmount()
+  })
+
+  it('展开途中到达的 resize 事件不会把 L 反写成整窗宽（竞态回归）', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
+    // setSize 已生效、resize 事件在 open() 还没落位时到达
+    mockWindow.setMinSize.mockImplementation(async (size: { width: number }) => {
+      if (size.width === minWidthFor(1280)) {
+        setInnerWidth(1725)
+        window.dispatchEvent(new Event('resize'))
+      }
+    })
+
+    const wrapper = await mountRealApp()
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+
+    // L 仍是 1280，面板 440（若被反写成 1725，面板会被压到 280）
+    expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(440)
+    wrapper.unmount()
+  })
+
+  it('最大化时展开：不调用 setSize，保存的面板宽度仍生效（主界面让位）', async () => {
+    mockWindow.isMaximized.mockResolvedValue(true)
+    setInnerWidth(1000)
+    trackWindow({ width: 1000, height: 800 })
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'get_agent_ws_width' ? 700 : undefined,
+    )
+    try {
+      const wrapper = await mountRealApp()
+      const btn = wrapper.find('.release-agent-btn')
+
+      await btn.trigger('click')
+      await flushPromises()
+      expect(mockWindow.setSize).not.toHaveBeenCalled()
+      // 窗口 1000 装不下 主界面 710 + 面板 700：面板压到剩余宽度，而不是固定 280
+      expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(285)
+
+      await btn.trigger('click') // 收起：最大化时不缩窄
+      await flushPromises()
+      expect(mockWindow.setSize).not.toHaveBeenCalled()
+      wrapper.unmount()
+    } finally {
+      vi.mocked(invoke).mockImplementation(async () => undefined)
+    }
+  })
+
+  it('最大化在宽屏上展开：保存的面板宽度完整生效', async () => {
+    mockWindow.isMaximized.mockResolvedValue(true)
+    setInnerWidth(1920)
+    trackWindow({ width: 1920, height: 1080 })
+    vi.mocked(invoke).mockImplementation(async (cmd: string) =>
+      cmd === 'get_agent_ws_width' ? 700 : undefined,
+    )
+    try {
+      const wrapper = await mountRealApp()
+      await wrapper.find('.release-agent-btn').trigger('click')
+      await flushPromises()
+      expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(700)
+      wrapper.unmount()
+    } finally {
+      vi.mocked(invoke).mockImplementation(async () => undefined)
+    }
+  })
+
+  it('窗口变窄再变宽：主界面列宽回到用户设定，不被永久改写', async () => {
+    setInnerWidth(1920)
+    trackWindow({ width: 1920, height: 1080 })
+    mockCurrentMonitor.mockResolvedValue({
+      position: { x: 0, y: 0 },
+      size: { width: 3840, height: 2160 },
+      scaleFactor: 1,
+    })
+    mockWindow.outerPosition.mockResolvedValue({ x: 0, y: 0 })
+    mockWindow.outerSize.mockResolvedValue({ width: 1920, height: 1080 })
+
+    const wrapper = await mountRealApp()
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+    const ws = () => wrapper.findComponent({ name: 'AgentWorkspace' })
+    expect(ws().props('width')).toBe(440)
+
+    // 窗口被拖窄到 1000：面板先压到最小 280（主界面由 flex 临时挤压）
+    setInnerWidth(1000)
+    window.dispatchEvent(new Event('resize'))
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(280)
+
+    // 再拖回原宽：主界面恢复原设定，面板回到 440（而不是把主界面永久压成 710）
+    setInnerWidth(1920 + 445)
+    window.dispatchEvent(new Event('resize'))
+    await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(440)
     wrapper.unmount()
   })
 
@@ -1325,22 +1627,21 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     const btn = wrapper.find('.release-agent-btn')
     const calls = () => mockWindow.setSize.mock.calls.map((c) => [c[0].width, c[0].height])
 
-    await btn.trigger('click') // 800 逻辑 < 1340 → 加宽
+    await btn.trigger('click') // 800 逻辑宽 → 加宽
     await flushPromises()
-    // 展开：物理 1200/1.5=800 逻辑 +440，高度 800/1.5≈533.33 逻辑（Tauri 内部再乘 1.5 还原物理 800）
+    // 展开：高度 800/1.5≈533.33 逻辑（Tauri 内部再乘 1.5 还原物理 800）
     expect(calls()[0][1]).toBeCloseTo(800 / 1.5)
     await btn.trigger('click')
     await flushPromises()
-    // 收起：恢复原始逻辑尺寸，高度仍是 533.33（物理 800），不放大
+    // 收起：高度仍是 533.33（物理 800），不放大
     expect(calls()[1][1]).toBeCloseTo(800 / 1.5)
     wrapper.unmount()
   })
 
   it('窄窗口打开时完整恢复保存的面板宽度，不被当前窗口宽压缩（回归）', async () => {
     // 应用默认启动窗口宽 750 逻辑 px，DB 中已保存面板宽 700
-    mockWindow.innerSize.mockResolvedValue({ width: 750, height: 750 })
-    mockWindow.scaleFactor.mockResolvedValue(1)
-    mockWindow.setSize.mockResolvedValue(undefined)
+    setInnerWidth(750)
+    trackWindow({ width: 750, height: 750 })
     vi.mocked(invoke).mockImplementation(async (cmd: string) =>
       cmd === 'get_agent_ws_width' ? 700 : undefined,
     )
@@ -1349,12 +1650,9 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
       await wrapper.find('.release-agent-btn').trigger('click')
       await flushPromises()
 
-      // 面板恢复保存值 700（而非被当前窗口宽 750 压缩到 280），窗口加宽到 750+700
-      const openCall = mockWindow.setSize.mock.calls[0][0] as { width: number; height: number }
-      expect(openCall.width).toBe(750 + 700)
-      // AgentWorkspace 收到的宽度 prop 为保存值
-      const ws = wrapper.findComponent({ name: 'AgentWorkspace' })
-      expect(ws.props('width')).toBe(700)
+      // 窗口加宽 面板 700 + 分隔线 5（而非被当前窗口宽压缩到 280）
+      expect(mockWindow.setSize.mock.calls[0][0]).toMatchObject({ width: 750 + 705, height: 750 })
+      expect(wrapper.findComponent({ name: 'AgentWorkspace' }).props('width')).toBe(700)
       wrapper.unmount()
     } finally {
       vi.mocked(invoke).mockImplementation(async () => undefined)
@@ -1365,19 +1663,13 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     // 模拟 Tauri 真实语义（tauri-runtime-wry 源码 WindowMessage::SetSize → set_inner_size）：
     // setSize 设置的是 inner（内容区）；outer = inner + 标题栏/边框。
     // 若代码读写口径混用（如读 outer 当 inner 目标），本测试会因 outer 逐次累积而失败。
-    const SCALE = 1.25
+    const SCALE = 2 // 200% 缩放：逻辑宽 1280 → inner 2560，全程整数
     const BORDER_X = 8 // 左右边框总宽（物理 px）
     const CHROME_Y = 39 // 标题栏 + 上下边框总高（物理 px）
-    let inner = { width: 1592, height: 861 } // 初始 outer 1600×900 对应的 inner（1592/1.25≈1274 < 1340 → 加宽分支）
-    const initialOuter = { width: 1600, height: 900 }
-
-    mockWindow.innerSize.mockImplementation(async () => ({ ...inner }))
-    mockWindow.scaleFactor.mockResolvedValue(SCALE)
-    mockWindow.setSize.mockImplementation(async (size: { width: number; height: number }) => {
-      // Logical → Physical，且 setSize 作用于 inner
-      inner = { width: Math.round(size.width * SCALE), height: Math.round(size.height * SCALE) }
-    })
-    const outerOf = () => ({ width: inner.width + BORDER_X, height: inner.height + CHROME_Y })
+    const initialOuter = { width: 2560 + BORDER_X, height: 1722 + CHROME_Y }
+    setInnerWidth(1280)
+    const read = trackWindow({ width: 2560, height: 1722 }, SCALE)
+    const outer = () => ({ width: read().width + BORDER_X, height: read().height + CHROME_Y })
 
     const wrapper = await mountRealApp()
     const btn = wrapper.find('.release-agent-btn')
@@ -1385,12 +1677,12 @@ describe('App.vue — Agent 工作区窗口尺寸', () => {
     for (let i = 0; i < 5; i++) {
       await btn.trigger('click') // 展开
       await flushPromises()
-      expect(outerOf().width).toBe(initialOuter.width + 440 * SCALE) // 仅宽度 +440 逻辑
-      expect(outerOf().height).toBe(initialOuter.height) // 高度严格不变
+      expect(outer().width).toBe(initialOuter.width + 445 * SCALE) // 仅宽度 +面板+分隔线
+      expect(outer().height).toBe(initialOuter.height) // 高度严格不变
       await btn.trigger('click') // 收起
       await flushPromises()
-      expect(outerOf().width).toBe(initialOuter.width) // 完全恢复
-      expect(outerOf().height).toBe(initialOuter.height)
+      expect(outer().width).toBe(initialOuter.width) // 完全恢复
+      expect(outer().height).toBe(initialOuter.height)
     }
     wrapper.unmount()
   })

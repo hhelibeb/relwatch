@@ -23,7 +23,7 @@ import ReleaseTab from './components/ReleaseTab.vue'
 import LogTab from './components/LogTab.vue'
 import SettingsTab from './components/SettingsTab.vue'
 import AgentWorkspace from './components/AgentWorkspace.vue'
-import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
+import { getCurrentWindow, LogicalSize, currentMonitor } from '@tauri-apps/api/window'
 import { getAgentConfig, type AgentConfig } from './api/agent'
 
 const activeTab = ref<'sources' | 'releases' | 'logs' | 'settings'>('sources')
@@ -47,44 +47,89 @@ const settings = ref<AppSettings>({ ...DEFAULT_SETTINGS })
 // Agent 全局配置（独立于 AppSettings：含 JSON 数组字段，不走设置注册表）
 const agentConfig = ref<AgentConfig | null>(null)
 
-// ── Agent 工作区右栏：窗口整体加宽，主界面宽度不变，工作区占新增宽度 ──
+// ── Agent 工作区右栏：三个宽度、一份账 ──
+//   L = 主界面列宽（mainWidth，记住的）
+//   R = Agent 面板宽（agentPanelWidth，记住的，持久化到 app_settings.agent_ws_width）
+//   W = 窗口宽（由原生窗口决定）
+// 不变式：面板收起时 W == L；面板展开时 W == L + 分隔线 + R。
+//   · 面板收起：拖窗口边缘改的是 L，R 不动 → 下次打开仍按上次的 R 展开
+//   · 面板展开：拖窗口边缘改的是 R（L 不动）；拖分隔条时 L、R 同时变，两者都记住
+//   · 打开：W → L + 分隔线 + R；关闭：W → L（主界面宽度不因开关而变化）
 const AGENT_PANEL_DEFAULT_WIDTH = 440
 const AGENT_PANEL_MIN_WIDTH = 280
 const MAIN_MIN_WIDTH = 710
+// 与 src-tauri/src/lib.rs 的 min_inner_size 保持同步
+const MAIN_MIN_HEIGHT = 450
+const AGENT_DIVIDER_WIDTH = 5
 const agentPanelOpen = ref(false)
 const agentPanelSeed = ref<AgentWorkspaceSeed | null>(null)
-// Agent 工作区当前宽度（逻辑 px）：分隔线拖拽调节，持久化到 app_settings
-const agentPanelWidth = ref(AGENT_PANEL_DEFAULT_WIDTH)
-// 本次打开是否加宽过窗口：仅加宽过的关闭时才缩窄，避免「打开没加宽、关闭却缩窄」错位
-const panelWidened = ref(false)
+const mainWidth = ref(window.innerWidth)
+// 视口宽（布局 px）：窗口边缘拖拽时随原生 resize 更新
+const viewportWidth = ref(window.innerWidth)
+// 面板宽 = 视口 − 主界面 − 分隔线（面板收起时不参与渲染，也不参与持久化）
+const agentPanelWidth = computed(() =>
+  Math.max(AGENT_PANEL_MIN_WIDTH, viewportWidth.value - mainWidth.value - AGENT_DIVIDER_WIDTH),
+)
 // 开关互斥锁：innerSize/setSize 是异步的，防快速连点导致交错竞态
 let panelBusy = false
 let panelWidthSaveTimer: ReturnType<typeof setTimeout> | null = null
 
-function clampPanelWidth(w: number, windowW: number): number {
-  // 下限保证可读性；上限为主界面最小宽度之外的剩余空间（主界面永不被挤爆）
-  const maxW = Math.max(AGENT_PANEL_MIN_WIDTH, windowW - MAIN_MIN_WIDTH)
-  return Math.round(Math.min(Math.max(w, AGENT_PANEL_MIN_WIDTH), maxW))
+function onViewportResize() {
+  viewportWidth.value = window.innerWidth
+  // 开/关途中：setSize 自己触发的 resize 不能反写 L，L 由 open/close 算完再落定
+  if (panelBusy) return
+  if (!agentPanelOpen.value) {
+    // 面板收起：窗口宽度就是主界面宽度，跟着改；下次展开的面板宽不受影响
+    mainWidth.value = viewportWidth.value
+    return
+  }
+  // 面板展开：窗口边缘的拖拽只改面板宽度，改完要记住
+  schedulePanelWidthSave()
+}
+
+function clampMainWidth(w: number, totalW: number): number {
+  // 下限保证主界面可读；上限给面板留出最小宽度
+  const maxW = Math.max(MAIN_MIN_WIDTH, totalW - AGENT_DIVIDER_WIDTH - AGENT_PANEL_MIN_WIDTH)
+  return Math.round(Math.min(Math.max(w, MAIN_MIN_WIDTH), maxW))
+}
+
+/** 面板展开期间窗口的最小宽度：主界面列宽 + 分隔线 + 面板最小宽度 */
+function agentWindowMinWidth(mainW: number): number {
+  return mainW + AGENT_DIVIDER_WIDTH + AGENT_PANEL_MIN_WIDTH
+}
+
+function cancelPanelWidthSave() {
+  if (panelWidthSaveTimer) {
+    clearTimeout(panelWidthSaveTimer)
+    panelWidthSaveTimer = null
+  }
+}
+
+function persistPanelWidth(w: number) {
+  void commands.saveAgentWsWidth(w).catch(() => {})
 }
 
 function schedulePanelWidthSave() {
-  if (panelWidthSaveTimer) clearTimeout(panelWidthSaveTimer)
+  cancelPanelWidthSave()
+  const w = agentPanelWidth.value
   panelWidthSaveTimer = setTimeout(() => {
     panelWidthSaveTimer = null
-    void commands.saveAgentWsWidth(agentPanelWidth.value).catch(() => {})
+    persistPanelWidth(w)
   }, 600)
 }
 
-// ── 分隔线拖拽：主界面与 Agent 工作区之间直接拖拽调节宽度（窗口总宽不变）──
+// ── 分隔线拖拽：只改主界面列宽，面板吸收差额（窗口总宽不变）──
 let dividerDragging = false
 let dividerStartX = 0
-let dividerStartWidth = 0
+let dividerStartMainWidth = 0
 
 function onDividerMouseDown(e: MouseEvent) {
   e.preventDefault()
   dividerDragging = true
   dividerStartX = e.clientX
-  dividerStartWidth = agentPanelWidth.value
+  // 窗口被挤窄时渲染宽度已小于 mainWidth：先对齐再起拖，否则开头一段拖动是死的
+  dividerStartMainWidth = clampMainWidth(mainWidth.value, viewportWidth.value)
+  mainWidth.value = dividerStartMainWidth
   document.addEventListener('mousemove', onDividerMouseMove)
   document.addEventListener('mouseup', onDividerMouseUp)
   document.body.classList.add('agent-resizing')
@@ -92,12 +137,11 @@ function onDividerMouseDown(e: MouseEvent) {
 
 function onDividerMouseMove(e: MouseEvent) {
   if (!dividerDragging) return
-  // 向左拖（clientX 减小）→ 面板变宽；向右拖 → 面板变窄
-  const delta = dividerStartX - e.clientX
-  const next = clampPanelWidth(dividerStartWidth + delta, window.innerWidth)
-  if (next !== agentPanelWidth.value) {
-    agentPanelWidth.value = next
-  }
+  // 向右拖 → 主界面变宽、面板变窄；向左拖反之
+  mainWidth.value = clampMainWidth(
+    dividerStartMainWidth + (e.clientX - dividerStartX),
+    viewportWidth.value,
+  )
 }
 
 function onDividerMouseUp() {
@@ -106,19 +150,60 @@ function onDividerMouseUp() {
   document.removeEventListener('mousemove', onDividerMouseMove)
   document.removeEventListener('mouseup', onDividerMouseUp)
   document.body.classList.remove('agent-resizing')
+  // L 变了：面板宽记住，窗口最小宽度跟着抬高（面板 280 的保底）
   schedulePanelWidthSave()
+  syncWindowMinWidth()
 }
 
-// ── 宽度决策 ──
-// 主界面内容在窗口内居中且最大 900px（.header-top/.header-bottom/.tab-content 的
-// max-width:900px + margin:0 auto）。窗口足够宽时两侧本就有空白，面板直接在
-// 内部弹出（不再加宽窗口）；不足时才加宽窗口。最大化场景（窗口尺寸固定）下无论
-// 多宽都无需加宽，面板在窗口内挤压主界面（主界面有 710 下限保护）。
-const mainMaxWidth = 900
+async function loadSavedPanelWidth(): Promise<number> {
+  try {
+    const saved = await commands.getAgentWsWidth()
+    return saved > 0 ? saved : AGENT_PANEL_DEFAULT_WIDTH
+  } catch {
+    return AGENT_PANEL_DEFAULT_WIDTH
+  }
+}
 
-/** 当前窗口宽度下，面板能否在内部弹出（≥900+面板宽+分隔线余量）。 */
-function canFitPanelInside(windowW: number): boolean {
-  return windowW >= mainMaxWidth + agentPanelWidth.value
+// 最近一次下发成功的窗口最小宽度：去重用，避免每像素一次 IPC
+let lastMinWidth = -1
+
+/**
+ * 下发窗口最小宽度。面板展开期间下限抬到 L + 分隔线 + 面板 280（主界面列宽才不会被
+ * 窗口边缘拖拽压扁），收起时回到 Rust 侧的 710。
+ */
+async function setWindowMinWidth(win: ReturnType<typeof getCurrentWindow>, width: number) {
+  if (width === lastMinWidth) return
+  lastMinWidth = width
+  try {
+    await win.setMinSize(new LogicalSize(width, MAIN_MIN_HEIGHT))
+  } catch {
+    // 权限缺失/平台不支持：退回「窗口太窄时先压主界面」，不影响开合
+    lastMinWidth = -1
+  }
+}
+
+/** 按当前状态重算窗口最小宽度（幂等，可在任意时机调用）。 */
+function syncWindowMinWidth() {
+  const w = agentPanelVisible.value
+    ? agentWindowMinWidth(mainWidth.value)
+    : MAIN_MIN_WIDTH
+  void setWindowMinWidth(getCurrentWindow(), w)
+}
+
+/** 窗口右侧到显示器边缘的可用逻辑宽度；拿不到显示器信息时视为不限。 */
+async function rightFreeSpace(win: ReturnType<typeof getCurrentWindow>): Promise<number> {
+  try {
+    const monitor = await currentMonitor()
+    if (!monitor) return Number.POSITIVE_INFINITY
+    const scale = monitor.scaleFactor || 1
+    const pos = await win.outerPosition()
+    const size = await win.outerSize()
+    const monitorRight = (monitor.position.x + monitor.size.width) / scale
+    const windowRight = (pos.x + size.width) / scale
+    return Math.max(0, monitorRight - windowRight)
+  } catch {
+    return Number.POSITIVE_INFINITY
+  }
 }
 
 // 打开（或聚焦）右侧工作区；预置实体经 seed 直接注入（同一窗口，无事件桥）
@@ -127,31 +212,34 @@ async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
   if (agentPanelOpen.value || panelBusy) return
   panelBusy = true
   try {
-    // 读取上次保存的面板宽度（未设置/失败回退默认 440）
-    try {
-      const saved = await commands.getAgentWsWidth()
-      if (saved > 0) agentPanelWidth.value = saved
-    } catch { /* 保持默认 */ }
+    // 读取上次关闭时的面板宽度（未设置/失败回退默认 440）
+    const panelTarget = Math.max(await loadSavedPanelWidth(), AGENT_PANEL_MIN_WIDTH)
     const win = getCurrentWindow()
     const size = await win.innerSize() // 物理像素（inner，与 setSize 口径一致）
     // 缩放用窗口 scaleFactor（与 setSize 内部换算一致）；window.devicePixelRatio
     // 在高 DPI 环境可能与窗口缩放不同步，导致尺寸换算失真。
     const scale = await win.scaleFactor()
     const windowW = size.width / scale
-    panelWidened.value = false
-    if (await win.isMaximized()) {
-      // 最大化：窗口尺寸固定，只能压缩面板到窗口内可容纳的宽度（主界面保 710 下限）
-      agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW)
-    } else if (canFitPanelInside(windowW)) {
-      agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, windowW)
-    } else {
-      // 窄窗口：加宽窗口，主界面宽度不变（clamp 上限按加宽后的窗口计算，
-      // 保存的宽度可完整恢复，不被当前窗口宽压缩）
-      const widenedW = windowW + agentPanelWidth.value
-      agentPanelWidth.value = clampPanelWidth(agentPanelWidth.value, widenedW)
-      await win.setSize(new LogicalSize(windowW + agentPanelWidth.value, size.height / scale))
-      panelWidened.value = true
+    const height = size.height / scale
+    // 主界面当前布局宽度（CSS px）；font_scale 会页面缩放，CSS px 与窗口逻辑 px 不等值
+    const layoutW = window.innerWidth
+    // 逻辑 px → CSS px 的换算比（缩放 100% 时为 1）
+    const pxPerLogical = windowW > 0 ? layoutW / windowW : 1
+    let grow = 0
+    if (!(await win.isMaximized())) {
+      // 窗口加宽「面板 + 分隔线」，按屏幕剩余空间截断
+      grow = Math.max(
+        0,
+        Math.min(panelTarget + AGENT_DIVIDER_WIDTH, await rightFreeSpace(win)),
+      )
+      if (grow > 0) await win.setSize(new LogicalSize(windowW + grow, height))
     }
+    // 面板优先拿回记住的宽度，不够的部分才从主界面让位（贴屏幕右边缘 / 最大化）
+    const availableW = layoutW + grow * pxPerLogical
+    mainWidth.value = clampMainWidth(availableW - panelTarget - AGENT_DIVIDER_WIDTH, availableW)
+    viewportWidth.value = availableW
+    // 展开期间抬高窗口最小宽度：主界面列宽不会被窗口边缘拖拽压缩
+    await setWindowMinWidth(win, agentWindowMinWidth(mainWidth.value))
     agentPanelOpen.value = true
   } catch (e) {
     showToast(String(e))
@@ -173,17 +261,20 @@ async function toggleAgentWorkspace() {
 async function closeAgentPanel() {
   if (panelBusy) return
   panelBusy = true
+  // 面板宽（含展开期间被窗口边缘拖拽改变的部分）先落库：下次打开按它恢复
+  cancelPanelWidthSave()
+  persistPanelWidth(agentPanelWidth.value)
   agentPanelOpen.value = false
   try {
     const win = getCurrentWindow()
+    // 先复位最小宽度：否则关闭后窗口仍被卡在展开期间的最小宽度
+    await setWindowMinWidth(win, MAIN_MIN_WIDTH)
     // 最大化时边框不可拖、宽度调节无意义：保持最大化，不缩窄窗口
     if (await win.isMaximized()) return
-    // 仅本次打开加宽过窗口才缩窄；内部弹出（未加宽）时窗口尺寸不动
-    if (!panelWidened.value) return
     const scale = await win.scaleFactor()
     const size = await win.innerSize()
-    // 窗口缩窄 Agent 面板宽度 → 主界面宽度保持不变
-    const targetW = Math.max(size.width / scale - agentPanelWidth.value, MAIN_MIN_WIDTH)
+    // 收起后窗口宽度 = 主界面列宽：主界面宽度不因开关而变化
+    const targetW = Math.max(mainWidth.value, MAIN_MIN_WIDTH)
     await win.setSize(new LogicalSize(targetW, size.height / scale))
   } catch {
     // 恢复尺寸失败不影响面板关闭
@@ -239,10 +330,9 @@ function toastDuration(message: string): number {
 // 故面板可见时整块左移到面板左侧。不能用 pointer-events: none 穿透：按钮视觉上仍被盖住，
 // 且 Toast 里的错误信息、导出路径会无法选中复制。面板宽度可拖拽，故宽度用响应式状态算而非硬编码。
 const TOAST_GAP = 20
-const AGENT_DIVIDER_WIDTH = 5
+const agentPanelVisible = computed(() => agentPanelOpen.value && (agentConfig.value?.enabled ?? false))
 const toastStyle = computed(() => {
-  const panelVisible = agentPanelOpen.value && agentConfig.value?.enabled
-  const right = panelVisible
+  const right = agentPanelVisible.value
     ? agentPanelWidth.value + AGENT_DIVIDER_WIDTH + TOAST_GAP
     : TOAST_GAP
   return {
@@ -407,6 +497,16 @@ watch(
     }
   },
 )
+
+// 窗口最小宽度只跟「面板是否可见 + 主界面列宽」有关。immediate 让挂载时就把残留值
+// 拉回 710——前端重载（HMR/整页刷新）会丢掉 agentPanelOpen，但 OS 的窗口最小宽度
+// 是窗口实例级的，不在这里复位就会一直卡在展开期间的大值上。
+watch(agentPanelVisible, (visible) => {
+  syncWindowMinWidth()
+  if (visible) return
+  // 不可见但状态还说开着（如关面板时正有开关在飞），补齐关闭流程
+  if (agentPanelOpen.value) void closeAgentPanel()
+}, { immediate: true })
 
 function repoKey(sourceType: string, owner: string, repo: string): string {
   return sourceRepoKey(sourceType, owner, repo)
@@ -624,6 +724,10 @@ onMounted(async () => {
   watchSystemTheme()
   startCountdown()
 
+  // 视口宽跟随窗口边缘拖拽：面板宽度、Toast 偏移都靠它算
+  window.addEventListener('resize', onViewportResize)
+  unlisteners.push(() => window.removeEventListener('resize', onViewportResize))
+
   const handleContextMenu = (e: MouseEvent) => {
     const target = e.target as HTMLElement
     const tag = target.tagName
@@ -744,7 +848,10 @@ onUnmounted(() => {
 
 <template>
   <div class="app-shell">
-    <div class="app-main-col">
+    <div
+      class="app-main-col"
+      :style="agentPanelVisible ? { flex: '0 1 auto', width: mainWidth + 'px' } : undefined"
+    >
       <div class="app">
         <header class="app-header">
       <div class="header-top">
@@ -824,12 +931,12 @@ onUnmounted(() => {
       </div>
     </div>
     <div
-      v-if="agentPanelOpen && agentConfig?.enabled"
+      v-if="agentPanelVisible"
       class="agent-divider"
-      title="拖拽调节宽度"
+      title="拖拽调节主界面宽度"
       @mousedown="onDividerMouseDown"
     ></div>
-    <AgentWorkspace v-if="agentPanelOpen && agentConfig?.enabled" :seed="agentPanelSeed" :width="agentPanelWidth" @close="closeAgentPanel" />
+    <AgentWorkspace v-if="agentPanelVisible" :seed="agentPanelSeed" :width="agentPanelWidth" @close="closeAgentPanel" />
   </div>
 </template>
 
@@ -840,6 +947,9 @@ onUnmounted(() => {
   display: flex;
   overflow: hidden;
 }
+/* 面板关闭时主界面占满窗口；打开时列宽由 mainWidth 内联给定，窗口边缘拖拽的
+   增量全部落到 Agent 面板。shrink 保留 1 —— 窗口窄到放不下时先让主界面收缩，
+   下限由 min-width（与 App.vue 的 MAIN_MIN_WIDTH 同步）兜底 */
 .app-main-col {
   flex: 1 1 auto;
   min-width: 710px;

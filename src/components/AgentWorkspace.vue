@@ -32,7 +32,7 @@ import AgentComposer from './agent/AgentComposer.vue'
 const props = defineProps<{ seed?: AgentWorkspaceSeed | null; width?: number }>()
 const emit = defineEmits<{ close: [] }>()
 const showToast = inject(ShowToastKey, () => {})
-// 面板宽度：默认 440（CSS 兜底同值），App.vue 展开时传入持久化宽度
+// 面板宽度：默认 440；App.vue 传入的是壳布局算出的当前面板宽（视口 − 主界面 − 分隔线）
 const panelWidth = computed(() => props.width ?? 440)
 
 // ── 数据源：全局 skill 列表 + 实体目录（[[]] 菜单/名称映射）────
@@ -807,7 +807,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="agent-ws" :style="{ width: panelWidth + 'px', flexBasis: panelWidth + 'px' }">
+  <div class="agent-ws" :style="{ flexBasis: panelWidth + 'px' }">
     <!-- 头部标题栏：拖入 = 新建会话并放入引用。
          注意 @dragover / @drop **不加 .prevent 修饰符**——是否拦截由处理器内部
          按拖拽类型决定（非实体拖拽放行给原生，见 onHeaderDragOver / handleDropNewSession）。 -->
@@ -909,10 +909,9 @@ onUnmounted(() => {
 <style src="./agent/agent-shared.css"></style>
 <style scoped>
 .agent-ws {
-  width: 440px;
-  flex: 0 0 440px;
-  /* 与 App.vue AGENT_PANEL_MIN_WIDTH 同步：窗口过窄时主界面先被 min-width 710 保护，
-   * 剩余压缩不再由面板承担（flex-shrink 默认 1 会把面板压到很窄，且显示与状态宽度脱节） */
+  /* 宽度由壳布局（App.vue）决定：flex-basis 取当前面板宽，grow 吃掉窗口边缘拖拽的全部增量，
+   * 窗口变窄时先压到 min-width 280，再把主界面挤到它的 min-width（710） */
+  flex: 1 1 280px;
   min-width: 280px;
   height: 100%;
   display: flex;
