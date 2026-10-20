@@ -269,7 +269,7 @@ function handleNextMonth() {
 }
 
 .calendar-cell {
-  aspect-ratio: 17 / 14;
+  height: 58px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -297,7 +297,6 @@ function handleNextMonth() {
 
 .calendar-cell.today {
   font-weight: 700;
-  box-shadow: inset 0 0 0 2px var(--primary);
 }
 
 .calendar-cell .cell-date {
@@ -305,14 +304,26 @@ function handleNextMonth() {
   line-height: 1;
 }
 
-/* 格内版本数量：配合热力底色让数值一目了然 */
+/* 今日用反色药丸标记：热力填充已占满整格，描边叠在同色系蓝底上只有 2:1 */
+.calendar-cell.today .cell-date {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--primary);
+  color: var(--bg);
+}
+
+/* 格内版本数量：不再压 0.75 透明度，否则在 --heat-4 上只剩 4.3:1（深色 3.2:1） */
 .calendar-cell .cell-count {
-  margin-top: 3px;
+  margin-top: 4px;
   font-size: var(--fs-caption);
   font-weight: 600;
   line-height: 1;
   color: var(--text);
-  opacity: 0.75;
 }
 
 .calendar-legend {
