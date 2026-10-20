@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-20
+
+### Added
+- 列表补齐空、加载、失败三态：加载显示骨架屏，失败给出错误原因与重试入口。(`e199d90`)
+
+### Fixed
+- 修复月历视图在 980px 窗口下要看全一个月仍需滚动的问题。(`39f0081`)
+- 修复热力图格内的今日标记与条目数量对比度不足、难以辨认的问题。(`39f0081`)
+- 修复拖动 Agent 面板宽度会连带改变主界面宽度、面板宽度收起后丢失的问题。(`5ef4cfa`)
+
+### Changed
+- 界面配色与尺度统一：全站收敛为一套色板，字号、圆角、层级、动效分档。(`e199d90`)
+- 列表悬停反馈统一为背景抬升，日志级别改由左侧色条区分。(`e199d90`)
+- 版本列表的「稍后提醒」「阅读全文」改为悬停时显示，与版本号重复的标题不再渲染。(`1f2ccb4`)
+- 依赖升级（`vite`、`vue`、`dompurify`、`marked` 等 patch / minor 版本）。(`da9fa43`)
+
 ## [1.19.1] - 2026-10-17
 
 ### Security
@@ -515,7 +531,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.19.1...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.20.0...HEAD
+[1.20.0]: https://github.com/hhelibeb/relwatch/compare/v1.19.1...v1.20.0
 [1.19.1]: https://github.com/hhelibeb/relwatch/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/hhelibeb/relwatch/compare/v1.18.0...v1.19.0
 [1.18.0]: https://github.com/hhelibeb/relwatch/compare/v1.17.3...v1.18.0
