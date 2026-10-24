@@ -217,7 +217,7 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-hint {
   text-align: center;
-  opacity: 0.6;
+  color: var(--text-muted);
   font-size: var(--fs-body);
   padding: 24px 0;
 }
@@ -260,7 +260,7 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-bubble-model {
   font-size: var(--fs-caption);
-  opacity: 0.5;
+  color: var(--text-muted);
   margin-bottom: 4px;
   font-family: var(--mono-font);
 }
@@ -275,7 +275,8 @@ function toolArgsSummary(args: string): string {
   white-space: pre-wrap;
   word-break: break-word;
 }
-/* 非成功终态内联备注 + 重试入口（挂在对应 user 气泡下） */
+/* 非成功终态内联备注 + 重试入口（挂在对应 user 气泡下）。
+   这一块是任务相关内容（为什么挂了 / 怎么重试），至少取 --fs-meta */
 .agent-ws-run-failed {
   display: flex;
   align-items: baseline;
@@ -286,7 +287,7 @@ function toolArgsSummary(args: string): string {
   border-radius: var(--radius);
   border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
   background: var(--danger-soft-bg);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-meta);
   line-height: 1.45;
   max-width: 100%;
 }
@@ -312,8 +313,9 @@ function toolArgsSummary(args: string): string {
 .agent-ws-run-failed.run-cancelled .agent-ws-run-failed-status {
   color: var(--text-muted);
 }
+/* 失败原因不是次要注释：压在三种底色（红/灰/琥珀）上都用正文色 */
 .agent-ws-run-failed-text {
-  color: var(--text-muted);
+  color: var(--text);
   word-break: break-word;
   flex: 1;
   min-width: 60px;
@@ -326,12 +328,11 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-run-failed-actions .btn-sm {
   padding: 1px 7px;
-  font-size: var(--fs-caption);
 }
 /* 超时引导：行动建议独占一行 + 就地调时长 */
 .agent-ws-run-advice {
   flex-basis: 100%;
-  color: var(--text-muted);
+  color: var(--text);
   word-break: break-word;
 }
 .agent-ws-run-advice-actions {
@@ -339,7 +340,6 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-run-advice-actions .btn-sm {
   padding: 1px 7px;
-  font-size: var(--fs-caption);
 }
 .agent-ws-run-advice-adjust {
   display: flex;
@@ -349,12 +349,11 @@ function toolArgsSummary(args: string): string {
 }
 .agent-ws-run-advice-adjust .btn-sm {
   padding: 1px 7px;
-  font-size: var(--fs-caption);
 }
 .agent-ws-timeout-input {
   width: 72px;
   padding: 2px 6px;
-  font-size: var(--fs-caption);
+  font-size: var(--fs-meta);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg);
@@ -363,6 +362,7 @@ function toolArgsSummary(args: string): string {
 .agent-ws-timeout-input:focus {
   outline: none;
   border-color: var(--primary);
+  box-shadow: var(--focus-ring);
 }
 
 /* 折叠块（思考 / 工具详情） */
@@ -373,10 +373,12 @@ function toolArgsSummary(args: string): string {
   margin: 6px 0;
   font-size: var(--fs-meta);
 }
+/* 折叠标题是控件标签而不是说明文字：取 --fs-caption 但用实色，
+   不再叠 opacity（叠完只有 3.4:1）*/ 
 .agent-ws-fold summary {
   padding: 5px 9px;
   cursor: pointer;
-  opacity: 0.75;
+  color: var(--text-muted);
   font-size: var(--fs-caption);
   user-select: none;
 }
@@ -391,7 +393,7 @@ function toolArgsSummary(args: string): string {
   padding: 8px 10px;
   border-top: 1px solid var(--border);
   font-family: var(--mono-font);
-  font-size: var(--fs-caption);
+  font-size: var(--fs-meta);
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
@@ -437,7 +439,7 @@ function toolArgsSummary(args: string): string {
 .agent-ws-tool-tag {
   margin-left: auto;
   font-size: var(--fs-caption);
-  opacity: 0.55;
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 .agent-ws-tool-card details summary {
@@ -445,7 +447,7 @@ function toolArgsSummary(args: string): string {
   border-top: 1px solid var(--border);
   cursor: pointer;
   font-size: var(--fs-caption);
-  opacity: 0.7;
+  color: var(--text-muted);
   user-select: none;
 }
 </style>

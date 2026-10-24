@@ -164,17 +164,17 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  opacity: 0.75;
 }
 .agent-ws-banner-actions {
   display: flex;
   gap: 6px;
 }
+/* 折叠/展开按钮是控件，层次用颜色而不是叠透明度（叠完 2.9:1） */
 .agent-ws-banner-toggle {
-  opacity: 0.6;
+  color: var(--text-muted);
 }
 .agent-ws-banner-toggle:hover {
-  opacity: 1;
+  color: var(--text);
 }
 /* 排队提示可点击（被其他会话占用时）：虚线强调 + hover 变 accent */
 .agent-ws-banner-queue.clickable {
@@ -336,7 +336,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
 }
 .agent-ws-history-meta {
   font-size: var(--fs-caption);
-  opacity: 0.6;
+  color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -353,6 +353,6 @@ function isTerminalRun(run: AgentRunSummary): boolean {
   padding: 20px;
   text-align: center;
   font-size: var(--fs-meta);
-  opacity: 0.5;
+  color: var(--text-muted);
 }
 </style>

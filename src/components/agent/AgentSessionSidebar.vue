@@ -167,7 +167,7 @@ const emit = defineEmits<{
   padding: 10px 12px 6px;
   font-size: var(--fs-caption);
   font-weight: 600;
-  opacity: 0.55;
+  color: var(--text-muted);
   letter-spacing: 0.04em;
 }
 .agent-ws-session-list {
@@ -206,7 +206,7 @@ const emit = defineEmits<{
 }
 /* 未提交草稿会话（新建即登记）：弱化样式以示「还没对话」 */
 .agent-ws-session-item.draft .agent-ws-session-name {
-  opacity: 0.65;
+  color: var(--text-muted);
   font-style: italic;
 }
 /* 运行状态点：执行中（蓝）/ 排队第 N 位（橙），全局队列驱动 */
@@ -243,12 +243,12 @@ const emit = defineEmits<{
 }
 .agent-ws-session-time {
   font-size: var(--fs-caption);
-  opacity: 0.5;
+  color: var(--text-muted);
 }
 .agent-ws-session-empty {
   padding: 12px 8px;
   font-size: var(--fs-meta);
-  opacity: 0.5;
+  color: var(--text-muted);
   text-align: center;
 }
 
@@ -271,10 +271,10 @@ const emit = defineEmits<{
 }
 .agent-ws-session-search-input:focus {
   border-color: var(--primary);
+  box-shadow: var(--focus-ring);
 }
 .agent-ws-session-search-input::placeholder {
   color: var(--text-muted);
-  opacity: 0.6;
 }
 
 /* 会话 ⋯ 更多菜单（重命名 / 导出 / 删除）*/

@@ -233,7 +233,7 @@ const emit = defineEmits<{
       <div class="agent-ws-menu-title">{{ t('agent.entity_pick') }}</div>
       <template v-if="filteredSources.length">
         <div class="agent-ws-menu-group">
-          <svg class="agent-ws-menu-group-icon"><use href="/icons.svg#source-icon" /></svg>
+          <svg class="agent-ws-menu-group-icon"><use href="/icons.svg#sources-icon" /></svg>
           {{ t('agent.entity_source') }} ({{ filteredSourcesCount }})
         </div>
         <button
@@ -349,6 +349,7 @@ const emit = defineEmits<{
 .agent-ws-textarea:focus {
   outline: none;
   border-color: var(--primary);
+  box-shadow: var(--focus-ring);
 }
 .agent-ws-submit {
   flex-shrink: 0;
@@ -521,11 +522,11 @@ const emit = defineEmits<{
   pointer-events: none;
 }
 
-/* 估算标记：pi 未上报用量时，词元数是按字符数估的，标一个 ≈ 免得被当成精确计费值 */
+/* 估算标记：pi 未上报用量时，词元数是按字符数估的，标一个 ≈ 免得被当成精确计费值。
+   不再单给一档透明度：叠完只有 2.5:1，与左侧数字同色同重即可，语义由 ≈ 本身承担 */
 .agent-ws-usage-est {
   flex-shrink: 0;
   font-style: normal;
-  opacity: 0.65;
   cursor: help;
 }
 </style>
