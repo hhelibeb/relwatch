@@ -8,15 +8,19 @@ import { t } from '../i18n'
 // 百分比表达，免去角度/弧长计算；hover 用原生 <title> 提示。
 const props = defineProps<{ segments: DonutSegment[]; totalTokens: number }>()
 
-// 固定调色板（亮暗主题均可读）；「其他」固定灰色置于末位
-const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#84cc16']
-const OTHER_COLOR = '#9ca3af'
+// 系列数上限与 --data-series-* 的档数一致；取值走 token，深浅主题各有一套低饱和值
+const SERIES_COUNT = 6
+const OTHER_COLOR = 'var(--data-series-other)'
 
 const R = 15.915
 
+function seriesColor(index: number): string {
+  return `var(--data-series-${(index % SERIES_COUNT) + 1})`
+}
+
 function segColor(index: number, seg: DonutSegment): string {
   if (seg.key === 'other') return OTHER_COLOR
-  return PALETTE[index % PALETTE.length]
+  return seriesColor(index)
 }
 
 /** 每段起始偏移：25 让 0% 落在 12 点方向，再减去前面各段的累计份额。 */
@@ -42,7 +46,7 @@ const hasData = computed(() => props.segments.some((s) => s.tokens > 0))
           :r="R"
           fill="none"
           stroke-width="5"
-          :stroke="segColor(i, seg)"
+          :style="{ stroke: segColor(i, seg) }"
           :stroke-dasharray="`${seg.share * 100} ${100 - seg.share * 100}`"
           :stroke-dashoffset="dashOffset(i)"
         >

@@ -29,6 +29,9 @@
   /* 唯一强调色：只用于链接、版本号、焦点与关键选中态 */
   --primary: #3e63dd;
   --primary-hover: #3457c9;
+  /* 压在主色实心底上的文字与图标。深色主题的 --primary 是浅蓝，
+     沿用白字只有 2.1:1；与 --on-ink 同一套语义，不随主题漂移 */
+  --on-primary: #ffffff;
   /* 兼容别名：历史上 13 处 var(--accent, #2e6fd0) 靠 fallback 存活，组件现已统一改用
      --primary；保留定义是为了让任何遗漏/新增引用都落到品牌色，而不是回退成旧的第二套蓝。
      能随主题切换的前提是 data-theme 挂在 <html>（与 :root 同一元素），
@@ -77,6 +80,18 @@
   --heat-2: #d3dcf4;
   --heat-3: #a9baf0;
   --heat-4: #7f98e8;
+
+  /* 图表系列色：与整体低饱和语言同源（色相取自语义色与旗标色板，压明度），
+     但不复用 --primary / --danger 本身——那两个带交互与状态语义，
+     画进图里会被读成「选中」或「出错」。
+     「其他」固定中性灰并置于末位，不参与色相循环 */
+  --data-series-1: #4a6cc4;
+  --data-series-2: #2f7d78;
+  --data-series-3: #a2701c;
+  --data-series-4: #7d5cad;
+  --data-series-5: #2f7d4f;
+  --data-series-6: #9c5a4a;
+  --data-series-other: #8b8b94;
 
   /* 等宽字族：工具输出、代码块、时间戳 */
   --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -166,6 +181,7 @@
 
   --primary: #9aaef2;
   --primary-hover: #b3c1f6;
+  --on-primary: #18181c;
 
   --ink: #e4e4e7;
   --ink-hover: #fafafa;
@@ -205,6 +221,15 @@
   --heat-2: rgba(154, 174, 242, 0.24);
   --heat-3: rgba(154, 174, 242, 0.36);
   --heat-4: rgba(154, 174, 242, 0.50);
+
+  /* 深底上按同色相提亮、降饱和；黑底直接压深色会糊成一片 */
+  --data-series-1: #8fa6e0;
+  --data-series-2: #62b0a8;
+  --data-series-3: #d4a259;
+  --data-series-4: #a893d6;
+  --data-series-5: #6cba8e;
+  --data-series-6: #c98a78;
+  --data-series-other: #7c7c86;
 
   --shadow-sm: none;
   --shadow-md: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
@@ -358,6 +383,15 @@ html {
   height: 14px;
   margin-right: 5px;
   flex-shrink: 0;
+}
+
+/* ── 键盘焦点基线 ───────────────────────────── */
+/* 此前只有主按钮、搜索框与输入框清除按钮带焦点样式，Tab 遍历到页签、筛选、
+   菜单项、日历翻页时看不到任何反馈。用 :where() 把特异性压到 0，
+   组件自带的焦点规则（如 .btn-primary 的 box-shadow）仍能覆盖它。 */
+:where(a, button, summary, [role='menuitem'], [role='option'], [role='tab'], [tabindex]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
 }
 
 /* ── 按钮 ─────────────────────────────────────── */

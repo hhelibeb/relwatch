@@ -344,11 +344,12 @@ onUnmounted(() => {
   line-height: 24px;
   text-align: center;
   outline: none;
-  transition: border-color var(--dur-overlay) var(--ease-out);
+  transition: border-color var(--dur-overlay) var(--ease-out), box-shadow var(--dur-overlay) var(--ease-out);
 }
 
 .pagination-input:focus {
   border-color: var(--primary);
+  box-shadow: var(--focus-ring);
 }
 
 .pagination-input::-webkit-outer-spin-button,

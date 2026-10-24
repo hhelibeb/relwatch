@@ -567,7 +567,7 @@ function clearAllFilters() {
   padding: 0 4px;
   border-radius: var(--radius-pill);
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   font-size: var(--fs-caption);
   line-height: 15px;
   text-align: center;

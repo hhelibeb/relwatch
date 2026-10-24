@@ -314,7 +314,7 @@ function handleNextMonth() {
   padding: 0 5px;
   border-radius: var(--radius-pill);
   background: var(--primary);
-  color: var(--bg);
+  color: var(--on-primary);
 }
 
 /* 格内版本数量：不再压 0.75 透明度，否则在 --heat-4 上只剩 4.3:1（深色 3.2:1） */

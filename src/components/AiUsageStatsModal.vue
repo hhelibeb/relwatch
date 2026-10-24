@@ -480,7 +480,7 @@ onUnmounted(() => {
 .ai-usage-tab-buttons button.active,
 .ai-usage-dim-buttons button.active {
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
 }
 
 .ai-usage-table-wrap {
