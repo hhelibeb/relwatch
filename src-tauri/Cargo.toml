@@ -10,7 +10,7 @@ rust-version = "1.77.2"
 
 [lib]
 name = "app_lib"
-crate-type = ["staticlib", "rlib"]
+crate-type = ["rlib"]
 
 [build-dependencies]
 tauri-build = { version = "~2.6.1", features = [] }
@@ -87,6 +87,9 @@ windows = { version = "0.61", features = [
 
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 notify-rust = "4"
+
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 lto = true

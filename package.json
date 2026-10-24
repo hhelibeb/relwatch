@@ -12,7 +12,7 @@
     "tauri": "tauri",
     "lint": "eslint src/",
     "coverage": "vitest run --coverage",
-    "coverage:rs": "cd src-tauri && cargo llvm-cov --all-features",
+    "coverage:rs": "cd src-tauri && cargo llvm-cov --all-features && cargo llvm-cov clean --workspace",
     "coverage:rs:html": "cd src-tauri && cargo llvm-cov --all-features --html",
     "coverage:all": "pnpm run coverage && pnpm run coverage:rs"
   },
