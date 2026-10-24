@@ -137,7 +137,7 @@ const html = computed(() => {
 }
 
 .markdown-body :deep(code) {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--mono-font);
   font-size: 0.9em;
   padding: 1px 4px;
   background: var(--bg-subtle);

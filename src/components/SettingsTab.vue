@@ -1179,7 +1179,7 @@ async function handleImportBackup() {
   width: 100%;
   min-height: 120px;
   resize: vertical;
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: var(--mono-font);
   font-size: var(--fs-meta);
   line-height: 1.5;
 }
@@ -1200,7 +1200,7 @@ async function handleImportBackup() {
   background: var(--bg-subtle);
   border: 1px dashed var(--border-strong);
   border-radius: var(--radius-sm);
-  font-family: 'Consolas', 'Courier New', monospace;
+  font-family: var(--mono-font);
   font-size: var(--fs-meta);
   line-height: 1.5;
   color: var(--text-muted);
