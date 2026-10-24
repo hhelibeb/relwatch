@@ -33,6 +33,7 @@ const LEGACY_PALETTE = [
 const THEMED_TOKENS = [
   '--primary',
   '--primary-hover',
+  '--on-primary',
   '--primary-soft-bg',
   '--primary-soft-border',
   '--primary-soft-text',
@@ -354,5 +355,230 @@ describe('列表 hover 语言守卫', () => {
         `background: var(${HOVER_TOKENS.nested})`,
       )
     }
+  })
+})
+
+/**
+ * 主色实心控件的前景守卫。
+ *
+ * 背景：深色主题的 --primary 是浅蓝 (#9aaef2)，压白字只有 2.1:1——筛选器计数徽标、
+ * 统计弹窗选中页签、日历今日标记在深色下都读不出来。修法不是逐处换色，而是新增
+ * --on-primary 语义 token，再用这两条钉住：token 两套主题都得有；任何
+ * background: var(--primary) 的规则不得自带写死的白字。
+ */
+describe('主色实心控件的前景守卫', () => {
+  it('--on-primary 在深浅两套主题下都有定义', () => {
+    expect(THEMED_TOKENS).toContain('--on-primary')
+  })
+
+  it('主色实心底上不再写死白字', () => {
+    const block = /([^{}]+)\{([^{}]*)\}/g
+    const offenders = allStyleSources().flatMap(({ file, css }) =>
+      [...css.matchAll(block)]
+        .filter(
+          (m) =>
+            /background(-color)?:\s*var\(--primary\)/.test(m[2]) &&
+            /color:\s*(#fff(?:fff)?|white)\b/.test(m[2]),
+        )
+        .map((m) => `${file}: ${m[1].trim().replace(/\s+/g, ' ')}`),
+    )
+    expect(offenders).toEqual([])
+  })
+})
+
+/**
+ * 图表系列色守卫。
+ *
+ * 背景：圆环图原用 #3b82f6/#10b981/#f59e0b 一类高饱和 UI 框架色，与主界面刻意
+ * 低饱和的灰阶割裂，且没有 dark 变体（深底上刺眼）。收敛成 --data-series-* 后，
+ * 这条同时钉住「两套主题都定义」与「每段对背景至少 3:1」（色块属图形语义元素）。
+ */
+describe('图表系列色守卫', () => {
+  const SERIES = [
+    '--data-series-1',
+    '--data-series-2',
+    '--data-series-3',
+    '--data-series-4',
+    '--data-series-5',
+    '--data-series-6',
+    '--data-series-other',
+  ]
+
+  function hexOf(themeBlock: string, token: string): string {
+    const from = STYLE_CSS.indexOf(themeBlock)
+    const body = STYLE_CSS.slice(from, STYLE_CSS.indexOf('}', from))
+    return body.match(new RegExp(String.raw`${token}\s*:\s*(#[0-9a-fA-F]{6})`))?.[1] ?? ''
+  }
+
+  function luminance(hex: string): number {
+    const channels = [1, 3, 5].map((i) => {
+      const c = parseInt(hex.slice(i, i + 2), 16) / 255
+      return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+    })
+    return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+  }
+
+  function contrast(a: string, b: string): number {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x)
+    return (hi + 0.05) / (lo + 0.05)
+  }
+
+  it('系列色在深浅两套主题下成对定义', () => {
+    const light = declarationsIn(':root {')
+    const dark = declarationsIn('[data-theme="dark"] {')
+    expect(SERIES.filter((t) => !light.includes(t))).toEqual([])
+    expect(SERIES.filter((t) => !dark.includes(t))).toEqual([])
+  })
+
+  it('每段色块对所在主题的背景至少 3:1', () => {
+    for (const theme of [':root {', '[data-theme="dark"] {']) {
+      const surface = hexOf(theme, '--surface')
+      expect(surface, `${theme} 缺少 --surface`).toBeTruthy()
+      for (const token of SERIES) {
+        const color = hexOf(theme, token)
+        expect(color, `${theme} ${token} 不是纯色值（对比度断言需要可解析的 hex）`).toBeTruthy()
+        const ratio = contrast(color, surface)
+        expect(ratio, `${theme} ${token} 对 --surface 只有 ${ratio.toFixed(2)}:1`).toBeGreaterThan(2.95)
+      }
+    }
+  })
+
+  it('圆环图不再自带一套调色板', () => {
+    const donut = allStyleSources().filter(({ file }) => /AiUsageDonut\.vue$/.test(file))
+    expect(donut).toHaveLength(1)
+    expect(donut[0].css.match(/#[0-9a-fA-F]{3,8}\b/g) ?? []).toEqual([])
+    const source = readFileSync(join(SRC, 'components', 'AiUsageDonut.vue'), 'utf8')
+    expect(source.match(/'#[0-9a-fA-F]{3,8}'/g) ?? []).toEqual([])
+  })
+})
+
+/**
+ * 次要文字守卫。
+ *
+ * 背景：菜单分组标题、模型名、会话时间这类「说明文字」此前都是继承 --text 后叠
+ * opacity 0.5~0.6，浅色下只有 3.1~3.5:1；父子容器连续叠还会继续掉。
+ * 规则：说明文字一律取 --text-muted，opacity 只留给禁用态与纯装饰。
+ */
+describe('次要文字守卫', () => {
+  const MUTED_RULES = [
+    { file: 'components/agent/agent-shared.css', selector: '.agent-ws-menu-title' },
+    { file: 'components/agent/agent-shared.css', selector: '.agent-ws-menu-group' },
+    { file: 'components/agent/agent-shared.css', selector: '.agent-ws-menu-sub' },
+    { file: 'components/agent/agent-shared.css', selector: '.agent-ws-menu-empty' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-bubble-model' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-hint' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-tool-tag' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-fold summary' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-tool-card details summary' },
+    { file: 'components/agent/AgentSessionSidebar.vue', selector: '.agent-ws-sidebar-title' },
+    { file: 'components/agent/AgentSessionSidebar.vue', selector: '.agent-ws-session-time' },
+    { file: 'components/agent/AgentSessionSidebar.vue', selector: '.agent-ws-session-empty' },
+    { file: 'components/agent/AgentSessionSidebar.vue', selector: '.agent-ws-session-item.draft .agent-ws-session-name' },
+    { file: 'components/agent/AgentRunBanner.vue', selector: '.agent-ws-banner-toggle' },
+    { file: 'components/agent/AgentRunBanner.vue', selector: '.agent-ws-history-meta' },
+    { file: 'components/agent/AgentRunBanner.vue', selector: '.agent-ws-history-empty' },
+  ]
+
+  const normalized = () =>
+    allStyleSources().map(({ file, css }) => ({ file: file.split('\\').join('/'), css }))
+
+  function ruleOf(file: string, selector: string): string {
+    const hit = normalized().find(({ file: f }) => f.endsWith(file))
+    expect(hit, `找不到样式源: ${file}`).toBeTruthy()
+    const css = hit?.css ?? ''
+    const start = css.indexOf(`${selector} {`)
+    expect(start, `${file} 缺少 ${selector}`).toBeGreaterThan(-1)
+    const open = css.indexOf('{', start)
+    return css.slice(open, css.indexOf('}', open))
+  }
+
+  it('说明文字取 --text-muted，不叠 opacity', () => {
+    const offenders = MUTED_RULES.filter(({ file, selector }) => {
+      const rule = ruleOf(file, selector)
+      return !rule.includes('color: var(--text-muted)') || rule.includes('opacity:')
+    }).map(({ file, selector }) => `${file}: ${selector}`)
+    expect(offenders).toEqual([])
+  })
+})
+
+/**
+ * 等宽字族守卫。
+ *
+ * 背景：--mono-font 已定义，但设置页两处写死 Consolas、Markdown 代码块重声明整套
+ * 字体族，导致日志、代码块、Agent 工具输出、设置文本框字形不一致。组件里只允许
+ * 引用 token 或继承。
+ */
+describe('等宽字族守卫', () => {
+  it('组件不再重声明字体族', () => {
+    const offenders = allStyleSources().flatMap(({ file, css }) => {
+      if (file.split('\\').join('/').endsWith('style.css')) return []
+      return [...css.matchAll(/font-family:\s*([^;{}\r\n]+)/g)]
+        .map((m) => m[1].trim())
+        .filter((value) => !value.includes('var(--') && value !== 'inherit')
+        .map((value) => `${file}: font-family: ${value}`)
+    })
+    expect(offenders).toEqual([])
+  })
+})
+
+/**
+ * 任务内容字号下限守卫。
+ *
+ * 背景：失败备注、工具输出、超时调节输入曾都用 --fs-caption（11px），配上
+ * 低透明度后长对话里基本看不清。规则：工具输出 / 错误 / 重试这类「任务相关」
+ * 内容至少 --fs-meta；--fs-caption 只留给纯次级信息（模型名、时间、图标徽标）。
+ */
+describe('任务内容字号下限守卫', () => {
+  const TASK_CONTENT_RULES = [
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-run-failed' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-fold-body' },
+    { file: 'components/agent/AgentMessageList.vue', selector: '.agent-ws-timeout-input' },
+  ]
+
+  function ruleOf(file: string, selector: string): string {
+    const hit = allStyleSources().find(({ file: f }) => f.split('\\').join('/').endsWith(file))
+    expect(hit, `找不到样式源: ${file}`).toBeTruthy()
+    const css = hit?.css ?? ''
+    const start = css.indexOf(`${selector} {`)
+    expect(start, `${file} 缺少 ${selector}`).toBeGreaterThan(-1)
+    const open = css.indexOf('{', start)
+    return css.slice(open, css.indexOf('}', open))
+  }
+
+  it('任务内容不小于 --fs-meta', () => {
+    for (const { file, selector } of TASK_CONTENT_RULES) {
+      expect(ruleOf(file, selector), `${file} ${selector} 字号过小`).toContain(
+        'font-size: var(--fs-meta)',
+      )
+    }
+  })
+})
+
+/**
+ * 低透明度守卫。
+ *
+ * 背景：Agent 面板曾用「小字号 + opacity 0.5~0.6」同时表达两层弱化，模型名、
+ * 时间、路径、空态说明只剩 3.1~3.5:1；分层改正后，< 0.7 的透明度应只出现在
+ * 纯装饰元素（状态小圆点）与动画帧上，一旦又套到文字上就会把对比度拉回去。
+ */
+describe('低透明度守卫', () => {
+  const DECORATIVE = [
+    'AgentRpcIndicator.vue: .agent-ws-rpc-dot::before',
+    'AgentRpcIndicator.vue: .agent-ws-rpc-status-dot',
+  ]
+
+  it('低透明度只留给装饰元素与动画帧', () => {
+    const block = /([^{}]+)\{([^{}]*)\}/g
+    const offenders = agentStyleSources().flatMap(({ file, css }) =>
+      [...css.matchAll(block)]
+        .filter((m) => /opacity:\s*0\.[0-6]/.test(m[2]))
+        .map((m) => `${file}: ${m[1].trim().replace(/\s+/g, ' ')}`)
+        .filter((key) => {
+          const selector = key.slice(key.indexOf(': ') + 2)
+          // 动画帧（50% { ... }）与已登记的装饰点放行
+          return !selector.includes('%') && !DECORATIVE.includes(key)
+        }),
+    )
+    expect(offenders).toEqual([])
   })
 })
