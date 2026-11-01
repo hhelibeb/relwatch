@@ -10,7 +10,8 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
 /// 返回 `Vec<u8>`，IPC 序列化为 number[]。
 ///
 /// SSRF 防护：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
-/// （防 DNS 重绑定）、禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
+/// （防 DNS 重绑定；TUN fake-ip 环境下解析结果不可用时不固定，交由 TUN/代理按域名解析）、
+/// 禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
 #[tauri::command]
 
 #[specta::specta]pub async fn fetch_url_bytes(

@@ -19,7 +19,8 @@
 //! ## 安全
 //!
 //! - 仅转发公网可访问的 http(s)（每跳 `resolve_public_host` 解析校验为公网 IP 并
-//!   固定给 client（防 DNS 重绑定），详见 `fetch_public_with_headers`）；
+//!   固定给 client（防 DNS 重绑定）；TUN fake-ip 环境下解析结果是虚拟地址，此时不固定、
+//!   交由 TUN/代理按域名解析），详见 `fetch_public_with_headers`；
 //! - 磁盘缓存 key 是 URL 的 SHA-256，不信任外部输入做文件名；
 //! - 单文件 25MB 上限（与 commands/download.rs 对齐），防异常响应撑爆内存/磁盘；
 //! - 非 http(s) 直接 400；请求失败 502；缓存/下载错误不暴露内部细节。

@@ -501,14 +501,7 @@ pub async fn paginated_fetch(
 /// - IPv6：`::`、`::1`、`fc00::/7`（ULA）、`fe80::/10`（链路本地）、`ff00::/8`（组播），
 ///   以及 IPv4-mapped（`::ffff:x.x.x.x`，还原为 IPv4 判定）
 pub fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
-    // IPv4-mapped IPv6 还原为 IPv4 判定，避免 `::ffff:192.168.1.1` 绕过
-    let ip = match ip {
-        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => std::net::IpAddr::V4(v4),
-            None => std::net::IpAddr::V6(v6),
-        },
-        v4 => v4,
-    };
+    let ip = normalize_ip(ip);
     match ip {
         std::net::IpAddr::V4(v4) => {
             let o = v4.octets();
@@ -535,6 +528,51 @@ pub fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
     }
 }
 
+/// IPv4-mapped IPv6 还原为 IPv4，避免 `::ffff:192.168.1.1` 绕过判定。
+fn normalize_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(v6),
+        },
+        v4 => v4,
+    }
+}
+
+/// TUN/代理客户端的 fake-ip 段（mihomo/clash、sing-box 默认 `198.18.0.0/15`）。
+///
+/// 开启 fake-ip 时本地 DNS 对**所有**域名都返回这一段内的虚拟地址，地址本身不携带
+/// 任何目标信息——真实目标解析发生在代理/TUN 侧。因此既不能用它判私网，也不该把它
+/// 固定给 reqwest（固定后连的是虚拟地址，只能靠 TUN 的反查映射还原目标）。
+fn is_fake_ip(ip: std::net::IpAddr) -> bool {
+    match normalize_ip(ip) {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 198 && (o[1] == 18 || o[1] == 19)
+        }
+        std::net::IpAddr::V6(_) => false,
+    }
+}
+
+/// 本地专用主机名：fake-ip 环境下 DNS 结果不可用时，主机名是最后一道线索。
+fn is_local_host_name(host: &str) -> bool {
+    let h = host.trim_end_matches('.').to_ascii_lowercase();
+    h == "localhost"
+        || [".localhost", ".local", ".internal", ".lan", ".home.arpa"]
+            .iter()
+            .any(|suffix| h.ends_with(suffix))
+}
+
+/// 已校验的目标：域名 + 应当固定给 client 的公网 IP。
+///
+/// `ips` 为空表示**不要固定**，让 reqwest 用自己的解析器连接——fake-ip 环境下本地
+/// 解析结果不可用，交由 TUN/代理按域名处理。
+#[derive(Debug)]
+pub struct PublicTarget {
+    pub host: String,
+    pub ips: Vec<std::net::IpAddr>,
+}
+
 /// 校验 URL 目标为公网地址，拒绝私网/回环/链路本地/保留地址（SSRF 防护）。
 ///
 /// 返回「目标域名 + 已通过公网校验的全部 IP」，供调用方把 IP 固定给 reqwest client
@@ -544,10 +582,11 @@ pub fn is_private_or_reserved(ip: std::net::IpAddr) -> bool {
 /// - host 为 IP 字面量：直接 `is_private_or_reserved` 判定，合法时返回该 IP；
 /// - host 为域名：DNS 解析**全部**地址，任一落在私网即拒绝（fail-closed）；
 /// - DNS 解析失败（故障/NXDOMAIN/无网络）：**拒绝**（fail-closed）——fail-open 会放行
-///   IPv6 zone-id 等无法解析的私网形式，且解析失败时请求本身也无法成功，放行没有收益。
+///   IPv6 zone-id 等无法解析的私网形式，且解析失败时请求本身也无法成功，放行没有收益；
+/// - 解析结果全在 fake-ip 段：返回空 `ips`（不固定），见 `collect_public_ips`。
 ///
 /// 错误统一为 `err.*` 格式（i18n 由调用方负责）。
-pub async fn resolve_public_host(url: &str) -> Result<(String, Vec<std::net::IpAddr>), String> {
+pub async fn resolve_public_host(url: &str) -> Result<PublicTarget, String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "err.invalid_url".to_string())?;
     // 仅允许 http/https
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -567,7 +606,7 @@ pub async fn resolve_public_host(url: &str) -> Result<(String, Vec<std::net::IpA
         return if is_private_or_reserved(ip) {
             Err("err.private_url_blocked".to_string())
         } else {
-            Ok((host, vec![ip]))
+            Ok(PublicTarget { host, ips: vec![ip] })
         };
     }
     // 域名：解析全部地址，任一私网即拒绝（fail-closed）。
@@ -578,18 +617,33 @@ pub async fn resolve_public_host(url: &str) -> Result<(String, Vec<std::net::IpA
         .await
         .map_err(|e| format!("err.dns_resolve_failed|{}", e))?;
     let verified = collect_public_ips(addrs.map(|a| a.ip()))?;
-    Ok((host, verified))
+    // fake-ip 下公网域名也解析成虚拟地址，无法再区分本地名与远端名：
+    // 主机名本身明显指向本机/内网时直接拒绝，避免借 fake-ip 绕回环/内网。
+    if verified.is_empty() && is_local_host_name(&host) {
+        return Err("err.private_url_blocked".to_string());
+    }
+    Ok(PublicTarget { host, ips: verified })
 }
 
-/// 把一组 DNS 解析结果收敛为「已通过公网校验的 IP 列表」（fail-closed）：
-/// - 任一地址落在私网/保留段 → 整批拒绝，不看其余地址；
-/// - 解析成功但一个地址都没返回 → 同样拒绝（否则会把空列表固定给 client，
-///   语义上等于"校验通过"，与 fail-closed 自述不符）。
+/// 把一组 DNS 解析结果收敛为「已通过公网校验的 IP 列表」：
+/// - fake-ip 段地址剔除（TUN/代理的虚拟地址不代表真实目标），不参与校验也不固定；
+/// - 其余地址任一落在私网/保留段 → 整批拒绝，不看其余地址；
+/// - 解析成功但一个地址都没返回 → 拒绝（否则会把空列表固定给 client，
+///   语义上等于"校验通过"，与 fail-closed 自述不符）；
+/// - 剔除后为空（全是 fake-ip）→ 返回空列表，表示「不固定，交给系统/TUN 解析」。
+///   该降级有界：内网域名在 fake-ip 配置里通常被排除（`fake-ip-filter`），解析出的仍是
+///   真实内网地址，照旧被拒；IP 字面量不经过 DNS，也照旧被拒。
 fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
     addrs: I,
 ) -> Result<Vec<std::net::IpAddr>, String> {
     let mut verified = Vec::new();
+    let mut total = 0usize;
     for ip in addrs {
+        total += 1;
+        if is_fake_ip(ip) {
+            continue;
+        }
+        let ip = normalize_ip(ip);
         if is_private_or_reserved(ip) {
             return Err("err.private_url_blocked".to_string());
         }
@@ -597,7 +651,7 @@ fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
             verified.push(ip);
         }
     }
-    if verified.is_empty() {
+    if total == 0 {
         return Err("err.dns_resolve_failed|no addresses".to_string());
     }
     Ok(verified)
@@ -641,6 +695,14 @@ pub async fn fetch_public_bytes(
 /// 在转发时把目标解析到内网。这意味着 DNS 重绑定防护仅在直连（`none`/`system`）下
 /// 完整成立；custom 代理下本函数仍做逐跳公网校验（fail-closed），但**无法约束代理内部
 /// 的二次解析**。该限制是代理架构固有（代理本身是可信出口），无法在本函数内消除。
+///
+/// # fake-ip 环境（TUN + `198.18.0.0/15`）
+///
+/// 本机 DNS 被代理客户端的 fake-ip 接管时，任何域名都解析成 `198.18.x.x` 虚拟地址，
+/// 地址与真实目标无关：既无法据此判私网（会把全部请求误杀为 `err.private_url_blocked`），
+/// 也不应由本函数固定（固定后请求直连虚拟地址，只能依赖 TUN 的反查映射）。
+/// 这两种地址被剔除，`ips` 为空时不固定，由 TUN/代理按域名解析——即把出口交给
+/// 已被用户显式信任的网络层。IP 字面量与本地主机名仍然直接拒绝。
 pub async fn fetch_public_with_headers(
     config: &HttpClientConfig<'_>,
     url: &str,
@@ -652,9 +714,14 @@ pub async fn fetch_public_with_headers(
     let mut current = url.to_string();
     for _ in 0..10 {
         // 解析 + 公网校验，拿到校验通过的 IP 列表（fail-closed）
-        let (host, ips) = resolve_public_host(&current).await?;
-        // 为本次请求构建带 DNS 固定的 client：reqwest 将直连校验过的 IP，不再二次解析。
-        // 注意域名请求的 Host/SNI 仍为原始域名，证书校验不受影响。
+        let target = resolve_public_host(&current).await?;
+        // 固定校验过的 IP 时 reqwest 不再二次解析；fake-ip 环境（ips 为空）则不固定，
+        // 让 TUN/代理按域名解析。两种情况下 Host/SNI 都是原始域名，证书校验不受影响。
+        let overrides: Vec<(&str, &[std::net::IpAddr])> = if target.ips.is_empty() {
+            Vec::new()
+        } else {
+            vec![(target.host.as_str(), target.ips.as_slice())]
+        };
         let client = build_http_client_with_dns(
             HttpClientConfig {
                 proxy_url: config.proxy_url,
@@ -666,7 +733,7 @@ pub async fn fetch_public_with_headers(
                 set_default_auth: false,
                 follow_redirects: false,
             },
-            &[(&host, &ips)],
+            &overrides,
         )?;
         let resp = client
             .get(&current)
@@ -1161,9 +1228,12 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_public_host_ip_literal_returns_pinned_ip() {
         // IP 字面量：直接放行，返回的固定 IP 就是该字面量（无需再解析）
-        let (host, ips) = resolve_public_host("https://8.8.8.8/x").await.unwrap();
-        assert_eq!(host, "8.8.8.8");
-        assert_eq!(ips, vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]);
+        let target = resolve_public_host("https://8.8.8.8/x").await.unwrap();
+        assert_eq!(target.host, "8.8.8.8");
+        assert_eq!(
+            target.ips,
+            vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]
+        );
     }
 
     #[tokio::test]
@@ -1192,9 +1262,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_public_host_dns_failure_fails_closed() {
-        // .invalid 保留域名解析必失败：fail-closed（不返回空 IP 列表）
-        let err = resolve_public_host("https://ssrf-test.invalid/x").await.unwrap_err();
-        assert!(err.contains("err.dns_resolve_failed"), "{}", err);
+        // .invalid 保留域名不得产出可固定的 IP。两种环境的失败形态不同：
+        // 真实 DNS 返回解析失败（fail-closed），TUN fake-ip 下则返回虚拟地址（ips 为空）。
+        match resolve_public_host("https://ssrf-test.invalid/x").await {
+            Err(e) => assert!(
+                e.contains("err.dns_resolve_failed") || e.contains("err.private_url_blocked"),
+                "{}",
+                e
+            ),
+            Ok(target) => assert!(
+                target.ips.is_empty(),
+                "不存在的域名不得得到可固定的 IP: {:?}",
+                target.ips
+            ),
+        }
     }
 
     #[tokio::test]
@@ -1211,9 +1292,12 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_public_host_ipv6_literal() {
         // IPv6 字面量同样返回去重后的固定 IP（公网）
-        let (host, ips) = resolve_public_host("https://[2606:4700::1111]/x").await.unwrap();
-        assert_eq!(host, "2606:4700::1111");
-        assert_eq!(ips, vec!["2606:4700::1111".parse::<std::net::IpAddr>().unwrap()]);
+        let target = resolve_public_host("https://[2606:4700::1111]/x").await.unwrap();
+        assert_eq!(target.host, "2606:4700::1111");
+        assert_eq!(
+            target.ips,
+            vec!["2606:4700::1111".parse::<std::net::IpAddr>().unwrap()]
+        );
     }
 
     #[tokio::test]
@@ -1240,6 +1324,65 @@ mod tests {
         ];
         let err = collect_public_ips(ips).unwrap_err();
         assert!(err.contains("err.private_url_blocked"), "{}", err);
+    }
+
+    #[test]
+    fn test_is_fake_ip_range() {
+        for ip in [
+            "198.18.0.1",
+            "198.18.0.213",
+            "198.19.255.255",
+            "::ffff:198.18.0.1",
+        ] {
+            assert!(is_fake_ip(ip.parse().unwrap()), "应判为 fake-ip: {}", ip);
+        }
+        for ip in ["198.17.255.255", "198.20.0.1", "8.8.8.8", "2606:4700::1111"] {
+            assert!(!is_fake_ip(ip.parse().unwrap()), "不应判为 fake-ip: {}", ip);
+        }
+    }
+
+    #[test]
+    fn test_collect_public_ips_drops_fake_ip_instead_of_rejecting() {
+        // TUN fake-ip 下所有域名都解析成 198.18.x：不能当私网拒绝（会掐断全部图片请求），
+        // 也不应固定虚拟地址 → 返回空列表，交由系统/TUN 解析
+        let ips: Vec<std::net::IpAddr> = vec!["198.18.0.213".parse().unwrap()];
+        assert!(collect_public_ips(ips).unwrap().is_empty());
+
+        // 混合（真实 IP + fake-ip）：只固定真实公网 IP，跳过虚拟地址
+        let ips: Vec<std::net::IpAddr> = vec![
+            "198.18.0.213".parse().unwrap(),
+            "93.184.216.34".parse().unwrap(),
+        ];
+        assert_eq!(
+            collect_public_ips(ips).unwrap(),
+            vec!["93.184.216.34".parse::<std::net::IpAddr>().unwrap()]
+        );
+
+        // fake-ip 与真实私网共存：真实私网仍整批拒绝，fake-ip 不是绕过通道
+        let ips: Vec<std::net::IpAddr> = vec![
+            "198.18.0.213".parse().unwrap(),
+            "192.168.1.1".parse().unwrap(),
+        ];
+        let err = collect_public_ips(ips).unwrap_err();
+        assert!(err.contains("err.private_url_blocked"), "{}", err);
+    }
+
+    #[test]
+    fn test_is_local_host_name() {
+        for host in [
+            "localhost",
+            "LOCALHOST.",
+            "foo.localhost",
+            "printer.local",
+            "api.internal",
+            "nas.lan",
+            "router.home.arpa",
+        ] {
+            assert!(is_local_host_name(host), "应判为本地名: {}", host);
+        }
+        for host in ["i.ytimg.com", "localhost.example.com", "notlocal.example"] {
+            assert!(!is_local_host_name(host), "不应判为本地名: {}", host);
+        }
     }
 
     #[tokio::test]
