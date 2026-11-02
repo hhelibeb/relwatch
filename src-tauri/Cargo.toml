@@ -6,20 +6,21 @@ authors = ["hhelibeb <hhelibeb@foxmail.com>"]
 license = ""
 repository = ""
 edition = "2021"
-rust-version = "1.77.2"
+rust-version = "1.90"
 
 [lib]
 name = "app_lib"
 crate-type = ["rlib"]
 
 [build-dependencies]
-tauri-build = { version = "~2.6.1", features = [] }
+# 版本须与 tauri 同步：tauri 2.12 要求 tauri-build ^2.7.4，只升 tauri 会解析失败
+tauri-build = { version = "~2.7.4", features = [] }
 
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
-tauri = { version = "~2.11.1", features = ["tray-icon", "image-png"] }
+tauri = { version = "~2.12.5", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-opener = "2"
@@ -46,6 +47,7 @@ tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 tauri-plugin-prevent-default = "5"
 # 应用内检查更新：静态 JSON（GitHub Releases latest.json）+ Ed25519 强制签名验证
+# 2.14.1 起依赖 zip ^9（4.x 的 4 条 RUSTSEC 公告因此消除）；2.14 要求 tauri ^2.12
 tauri-plugin-updater = "2"
 # relaunch() 重启用（仅 Linux/macOS 更新安装完成后调用；Windows 由 NSIS /R 接管）
 tauri-plugin-process = "2"
@@ -64,7 +66,7 @@ specta-typescript = "=0.0.12"
 [dev-dependencies]
 wiremock = "0.6"
 # tauri test mock（mock_builder/noop_assets）：命令层测试用，feature 为空不影响运行时构建
-tauri = { version = "~2.11.1", features = ["test"] }
+tauri = { version = "~2.12.5", features = ["test"] }
 
 [target.'cfg(windows)'.dependencies]
 # >= 0.7.3 起不再依赖 quick-xml（旧版 0.7.2 拉入的 0.37.5 受 RUSTSEC-2026-0194/0195 影响）
