@@ -1315,7 +1315,7 @@ async fn collect_pending_and_notify(
             Some(label) => format!("{} / {}", label, display_name),
             None => display_name,
         };
-        let notify_tag = if adapter.map_or(true, |a| a.notification_show_tag()) {
+        let notify_tag = if adapter.is_none_or(|a| a.notification_show_tag()) {
             release.tag_name.clone()
         } else {
             String::new()

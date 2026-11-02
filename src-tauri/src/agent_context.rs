@@ -119,7 +119,7 @@ pub fn context_tokens(content: &str) -> ContextTokens {
 
     match base {
         // usage 晚于最近一次压缩/上下文改写 → usage 仍然可信
-        Some(tokens) if last_invalidating.map_or(true, |i| base_index.unwrap_or(0) > i) => {
+        Some(tokens) if last_invalidating.is_none_or(|i| base_index.unwrap_or(0) > i) => {
             out.tokens = Some(tokens + trailing);
             out.estimated = false;
         }
