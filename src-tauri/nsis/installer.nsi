@@ -21,6 +21,9 @@ ManifestDPIAwareness PerMonitorV2
 !include "FileAssociation.nsh"
 !include "Win\COM.nsh"
 !include "Win\Propkey.nsh"
+; tauri-cli 2.12 起内置 utils.nsh 的 CheckIfAppIsRunning 改用 Restart Manager 宏，
+; 宏定义在 NSIS 3.13 的 Include/Win/RestartManager.nsh，模板必须自行 include
+!include "Win\RestartManager.nsh"
 !include "StrFunc.nsh"
 ${StrCase}
 ${StrLoc}
