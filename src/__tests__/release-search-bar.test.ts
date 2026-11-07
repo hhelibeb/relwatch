@@ -35,6 +35,8 @@ function createWrapper(props: Record<string, unknown> = {}, provideOverrides: Re
 }
 
 beforeEach(() => {
+  // ReleaseTab 会把视图模式/筛选写进 localStorage：隔离用例，防止上个用例的视图决定下个用例的初始视图
+  localStorage.clear()
   vi.clearAllMocks()
 })
 

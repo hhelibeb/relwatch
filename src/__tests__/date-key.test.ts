@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest'
-import { toDateKey, parseDateKey } from '../utils/dateKey'
+import { describe, it, expect, vi, afterEach } from 'vitest'
+import { toDateKey, parseDateKey, CALENDAR_MIN_YEAR, calendarMonthAhead, clampCalendarMonth } from '../utils/dateKey'
 
 // 日历分组键（src/utils/dateKey.ts）专项测试。
 // 日历视图（ReleaseCalendar.vue）以该键做按天分组，闰年/跨月/跨年边界
@@ -54,5 +54,47 @@ describe('parseDateKey', () => {
     const d = parseDateKey('2025-01-31')
     d.setDate(d.getDate() + 1)
     expect(toDateKey(d)).toBe('2025-02-01')
+  })
+})
+
+// 日历翻页/跳转的月份边界（ReleaseCalendar + ReleaseTab 共用同一套口径）
+describe('calendarMonthAhead / clampCalendarMonth', () => {
+  afterEach(() => vi.useRealTimers())
+
+  function freezeNow(y: number, m: number) {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(y, m - 1, 15, 12))
+  }
+
+  it('calendarMonthAhead：晚于当前月为 true，当月/更早为 false', () => {
+    freezeNow(2026, 3)
+    expect(calendarMonthAhead(2026, 4)).toBe(true)
+    expect(calendarMonthAhead(2027, 1)).toBe(true)
+    expect(calendarMonthAhead(2026, 3)).toBe(false)
+    expect(calendarMonthAhead(2026, 2)).toBe(false)
+    expect(calendarMonthAhead(2025, 12)).toBe(false)
+  })
+
+  it('clamp：跨年方向自动进退位（12 月 +1 → 次年 1 月，1 月 -1 → 上年 12 月）', () => {
+    freezeNow(2026, 3)
+    expect(clampCalendarMonth(2025, 13)).toEqual({ year: 2026, month: 1 })
+    expect(clampCalendarMonth(2026, 0)).toEqual({ year: 2025, month: 12 })
+  })
+
+  it('clamp：上限封顶到当前月', () => {
+    freezeNow(2026, 3)
+    expect(clampCalendarMonth(2026, 9)).toEqual({ year: 2026, month: 3 })
+    expect(clampCalendarMonth(2030, 1)).toEqual({ year: 2026, month: 3 })
+  })
+
+  it('clamp：下限不早于 CALENDAR_MIN_YEAR-01', () => {
+    freezeNow(2026, 3)
+    expect(clampCalendarMonth(CALENDAR_MIN_YEAR, 0)).toEqual({ year: CALENDAR_MIN_YEAR, month: 1 })
+    expect(clampCalendarMonth(1999, 7)).toEqual({ year: CALENDAR_MIN_YEAR, month: 1 })
+  })
+
+  it('clamp：合法值原样返回', () => {
+    freezeNow(2026, 3)
+    expect(clampCalendarMonth(2024, 11)).toEqual({ year: 2024, month: 11 })
   })
 })

@@ -4,6 +4,7 @@ import ReleaseCalendar from '../components/ReleaseCalendar.vue'
 import { toDateKey } from '../utils/dateKey'
 import { t, setLocale } from '../i18n'
 import { createRelease } from './helpers'
+import { track } from '../composables/useUsageTracking'
 import type { ReleaseInfo } from '../api/releases'
 
 // 月历网格（ReleaseCalendar.vue）专项测试（真实 i18n，语言切换走 setLocale）：
@@ -196,5 +197,175 @@ describe('ReleaseCalendar.vue — 计数与分组', () => {
   it('legend 显示真实 i18n 文案', () => {
     const wrapper = mountCalendar([], 2025, 6)
     expect(wrapper.find('.calendar-legend-label').text()).toContain(t('release.calendar_legend'))
+  })
+})
+
+describe('ReleaseCalendar.vue — 年/月快速跳转', () => {
+  // 冻结在 2026-03-15：上限即 2026-03
+  beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 2, 15, 12))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    document.body.click()
+  })
+
+  it('导航条顺序：上一年 / 上一月 / 月份标签 / 下一月 / 下一年 / 回今天', () => {
+    const wrapper = mountCalendar([], 2025, 6)
+    const buttons = wrapper.findAll('.calendar-nav button')
+
+    expect(buttons).toHaveLength(6)
+    expect(buttons[0].text()).toBe('«')
+    expect(buttons[1].find('svg').exists()).toBe(true)
+    expect(buttons[2].classes()).toContain('calendar-month-label')
+    expect(buttons[4].text()).toBe('»')
+    expect(buttons[5].text()).toContain(t('release.calendar_today'))
+  })
+
+  it('回今天：非当月可用，发出当前年月并上报', async () => {
+    const wrapper = mountCalendar([], 2025, 6)
+    const today = wrapper.findAll('.calendar-nav button')[5]
+
+    expect(today.attributes('disabled')).toBeUndefined()
+    await today.trigger('click')
+
+    expect(wrapper.emitted('jumpTo')).toEqual([[2026, 3]])
+    expect(track).toHaveBeenCalledWith('calendar.today')
+  })
+
+  it('已在当前月时「回今天」禁用', () => {
+    const wrapper = mountCalendar([], 2026, 3)
+
+    expect(wrapper.findAll('.calendar-nav button')[5].attributes('disabled')).toBeDefined()
+  })
+
+  it('上/下一年：跨年跳转，触及边界时禁用', async () => {
+    const wrapper = mountCalendar([], 2024, 6)
+    const [prevYear, , , , nextYear] = wrapper.findAll('.calendar-nav button')
+
+    await prevYear.trigger('click')
+    await nextYear.trigger('click')
+    expect(wrapper.emitted('jumpTo')).toEqual([[2023, 6], [2025, 6]])
+
+    const atMin = mountCalendar([], 2010, 1)
+    expect(atMin.findAll('.calendar-nav button')[0].attributes('disabled')).toBeDefined()
+
+    // 2026-06 已超过当前月（2026-03）：下一年不可用
+    const atMax = mountCalendar([], 2026, 1)
+    expect(atMax.findAll('.calendar-nav button')[4].attributes('disabled')).toBeDefined()
+  })
+
+  it('上一月/下一月按钮在边界处禁用（下限 2010-01，上限当前月）', () => {
+    const atMin = mountCalendar([], 2010, 1)
+    expect(atMin.findAll('.calendar-nav button')[1].attributes('disabled')).toBeDefined()
+
+    // 显示当前月时，下一页（2026-04）越界
+    const atMax = mountCalendar([], 2026, 3)
+    expect(atMax.findAll('.calendar-nav button')[3].attributes('disabled')).toBeDefined()
+
+    const mid = mountCalendar([], 2026, 2)
+    expect(mid.findAll('.calendar-nav button')[1].attributes('disabled')).toBeUndefined()
+    expect(mid.findAll('.calendar-nav button')[3].attributes('disabled')).toBeUndefined()
+
+    // 12 月翻页要进位到次年 1 月：次年 1 月未越界时仍可用
+    const dec = mountCalendar([], 2025, 12)
+    expect(dec.findAll('.calendar-nav button')[3].attributes('disabled')).toBeUndefined()
+  })
+
+  it('跨月后仍以实时月份为基准：「回今天」不会被挂载时的快照钉住', async () => {
+    const wrapper = mountCalendar([], 2026, 3)
+    // 时间推进到下个月，组件未重新挂载
+    vi.setSystemTime(new Date(2026, 3, 2, 12))
+    await wrapper.setProps({ year: 2026, month: 2 } as Parameters<typeof wrapper.setProps>[0])
+
+    const today = wrapper.findAll('.calendar-nav button')[5]
+    expect(today.attributes('disabled')).toBeUndefined()
+    await today.trigger('click')
+
+    expect(wrapper.emitted('jumpTo')).toEqual([[2026, 4]])
+  })
+
+  it('跨月后翻到新月：「回今天」随之禁用（与「下一月」的口径一致）', async () => {
+    const wrapper = mountCalendar([], 2026, 3)
+    vi.setSystemTime(new Date(2026, 3, 2, 12))
+    await wrapper.setProps({ year: 2026, month: 4 } as Parameters<typeof wrapper.setProps>[0])
+
+    const buttons = wrapper.findAll('.calendar-nav button')
+    expect(buttons[3].attributes('disabled')).toBeDefined()
+    expect(buttons[5].attributes('disabled')).toBeDefined()
+  })
+
+  it('点月份标签打开选择面板：12 个月 + 年份步进', async () => {
+    const wrapper = mountCalendar([], 2025, 6)
+
+    await wrapper.get('.calendar-month-label').trigger('click')
+
+    expect(wrapper.find('.calendar-picker').exists()).toBe(true)
+    expect(wrapper.get('.calendar-picker-year span').text()).toBe('2025')
+    expect(wrapper.findAll('.calendar-picker-months button')).toHaveLength(12)
+    expect(wrapper.findAll('.calendar-picker-months button.selected')).toHaveLength(1)
+  })
+
+  it('选择面板点月份：发出 jumpTo 并关闭面板', async () => {
+    const wrapper = mountCalendar([], 2025, 6)
+    await wrapper.get('.calendar-month-label').trigger('click')
+
+    await wrapper.findAll('.calendar-picker-months button')[10].trigger('click')
+
+    expect(wrapper.emitted('jumpTo')).toEqual([[2025, 11]])
+    expect(wrapper.find('.calendar-picker').exists()).toBe(false)
+    expect(track).toHaveBeenCalledWith('calendar.jump_month')
+  })
+
+  it('选择面板里晚于当前月的月份禁用', async () => {
+    const wrapper = mountCalendar([], 2026, 1)
+    await wrapper.get('.calendar-month-label').trigger('click')
+
+    const buttons = wrapper.findAll('.calendar-picker-months button')
+    expect(buttons.slice(0, 3).map(b => b.attributes('disabled'))).toEqual([undefined, undefined, undefined])
+    expect(buttons.slice(4).every(b => b.attributes('disabled') !== undefined)).toBe(true)
+  })
+
+  it('选择面板年份步进：可到当前年，不可越过下限', async () => {
+    const wrapper = mountCalendar([], 2025, 6)
+    await wrapper.get('.calendar-month-label').trigger('click')
+
+    const nextYearBtn = () => wrapper.findAll('.calendar-picker-year button')[1]
+    const prevYearBtn = () => wrapper.findAll('.calendar-picker-year button')[0]
+
+    await nextYearBtn().trigger('click')
+    expect(wrapper.get('.calendar-picker-year span').text()).toBe('2026')
+    expect(nextYearBtn().attributes('disabled')).toBeDefined()
+
+    await prevYearBtn().trigger('click')
+    await prevYearBtn().trigger('click')
+    expect(wrapper.get('.calendar-picker-year span').text()).toBe('2024')
+
+    const atMin = mountCalendar([], 2010, 6)
+    await atMin.get('.calendar-month-label').trigger('click')
+    expect(atMin.findAll('.calendar-picker-year button')[0].attributes('disabled')).toBeDefined()
+  })
+
+  it('点面板外关闭选择面板', async () => {
+    const wrapper = mountCalendar([], 2025, 6)
+    await wrapper.get('.calendar-month-label').trigger('click')
+    expect(wrapper.find('.calendar-picker').exists()).toBe(true)
+
+    document.body.click()
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.find('.calendar-picker').exists()).toBe(false)
+  })
+
+  it('标签键盘 Enter/Space 打开面板，Esc 关闭', async () => {
+    const wrapper = mountCalendar([], 2025, 6)
+    const label = wrapper.get('.calendar-month-label')
+
+    await label.trigger('keydown', { key: 'Enter' })
+    expect(wrapper.find('.calendar-picker').exists()).toBe(true)
+
+    await label.trigger('keydown', { key: 'Escape' })
+    expect(wrapper.find('.calendar-picker').exists()).toBe(false)
   })
 })

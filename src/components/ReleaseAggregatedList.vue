@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
 import type { RepoGroup } from './releaseTypes'
@@ -7,6 +7,7 @@ import { useContextMenu } from '../composables/useContextMenu'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
+import { loadExpandedRepos, saveExpandedRepos } from '../utils/releaseViewStorage'
 import { openReleaseUrl } from '../api/client'
 import { getSourceTypeDef, sourceRepoKey } from '../api/source-registry'
 import EmptyState from './common/EmptyState.vue'
@@ -53,7 +54,8 @@ function forwardOpenDetail(release: ReleaseInfo) {
   emit('open-detail', release, group ? group.releases : [release])
 }
 
-const expandedRepos = ref<Set<string>>(new Set())
+const expandedRepos = ref<Set<string>>(loadExpandedRepos())
+watch(expandedRepos, (keys) => saveExpandedRepos(keys))
 
 const repoGroups = computed(() => {
   const map = new Map<string, ReleaseInfo[]>()

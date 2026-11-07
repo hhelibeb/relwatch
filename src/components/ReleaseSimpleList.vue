@@ -67,6 +67,7 @@ onUnmounted(() => {
 function focusReleaseId(id: number): boolean {
   const index = sortedReleases.value.findIndex(r => r.id === id)
   if (index < 0) return false
+  selectedId.value = id
   // 先滚动到目标（虚拟列表会确保对应行渲染），滚动完成后再置高亮并等待元素挂载
   virtualList.value?.scrollToIndex(index)
   const clearTimer = () => {
@@ -82,7 +83,38 @@ function focusReleaseId(id: number): boolean {
   return true
 }
 
-defineExpose({ focusReleaseId })
+// ── j/k 键盘光标 ──────────────
+// 光标记 id 而非下标：轮询插入新版本或改筛选后，同一个下标会指向另一条记录。
+// 选中项被筛掉时下标算 -1，下一次移动按「首次」重新落位；筛回来则光标回到原条目。
+const selectedId = ref<number | null>(null)
+const selectedIndex = computed(() => sortedReleases.value.findIndex(r => r.id === selectedId.value))
+
+function moveSelection(delta: number) {
+  const n = sortedReleases.value.length
+  if (n === 0) {
+    selectedId.value = null
+    return
+  }
+  const current = selectedIndex.value
+  const next = current < 0 ? (delta > 0 ? 0 : n - 1) : Math.min(Math.max(current + delta, 0), n - 1)
+  selectedId.value = sortedReleases.value[next].id
+  virtualList.value?.scrollToIndex(next)
+}
+
+function selectFirst(): boolean {
+  if (sortedReleases.value.length === 0) return false
+  selectedId.value = sortedReleases.value[0].id
+  virtualList.value?.scrollToIndex(0)
+  return true
+}
+
+function openSelected() {
+  const release = sortedReleases.value[selectedIndex.value]
+  if (!release || !(release.body || release.body_translated)) return
+  emit('open-detail', release, sortedReleases.value)
+}
+
+defineExpose({ focusReleaseId, moveSelection, selectFirst, openSelected })
 </script>
 
 <template>
@@ -129,6 +161,7 @@ defineExpose({ focusReleaseId })
         <ReleaseItem
           :release="item"
           :highlighted="highlightId === item.id"
+          :selected="item.id === selectedId"
           @update="emit('update')"
           @open-detail="(release) => emit('open-detail', release, sortedReleases)"
         />

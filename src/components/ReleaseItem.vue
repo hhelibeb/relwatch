@@ -17,7 +17,7 @@ import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
-const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean }>()
+const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean; selected?: boolean }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
@@ -611,7 +611,7 @@ const youtubeViewTitle = computed(() =>
 
 <template>
   <div class="release-item"
-    :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted }, showImportance ? releaseImportanceClass(release) : '']"
+    :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted, 'release-selected': props.selected }, showImportance ? releaseImportanceClass(release) : '']"
     :draggable="agentEnabled && agentPanelOpen"
     @dragstart="handleDragStart">
     <div class="release-header">
@@ -775,6 +775,12 @@ const youtubeViewTitle = computed(() =>
   border-color: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
   animation: release-focus-pulse 1.2s ease-out 2;
+}
+
+/* j/k 键盘光标：与通知定位同一套强调边框，但常驻、无动画 */
+.release-item.release-selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
 }
 
 @keyframes release-focus-pulse {

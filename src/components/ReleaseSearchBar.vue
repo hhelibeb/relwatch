@@ -320,6 +320,15 @@ watch(() => props.modelValue, (v) => {
 
 onUnmounted(cancelSync)
 
+const searchInputEl = ref<HTMLInputElement | null>(null)
+
+function focusInput() {
+  searchInputEl.value?.focus()
+  searchInputEl.value?.select()
+}
+
+defineExpose({ focusInput })
+
 function selectStatusFilter(value: ReleaseStatusFilter) {
   emit('update:statusFilter', value)
   filterDropdown.close()
@@ -373,8 +382,10 @@ function clearAllFilters() {
     <div class="log-search-row">
       <div v-if="props.showSearch" class="input-clear-wrap">
         <input
+          ref="searchInputEl"
           :value="inputValue"
           :placeholder="t('release.search')"
+          :title="t('release.search') + ' (Ctrl+F)'"
           class="search-input"
           @input="onSearchInput"
           @keydown.enter.prevent="onSearchEnter"

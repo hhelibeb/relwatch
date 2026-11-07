@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import { getLocale, t } from '../i18n'
-import { toDateKey } from '../utils/dateKey'
+import { toDateKey, CALENDAR_MIN_YEAR, calendarMonthAhead } from '../utils/dateKey'
+import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 
 const props = defineProps<{
@@ -14,6 +15,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   prevMonth: []
   nextMonth: []
+  jumpTo: [year: number, month: number]
   selectDate: [date: string]
 }>()
 
@@ -151,17 +153,124 @@ function handleNextMonth() {
   track('calendar.next_month')
   emit('nextMonth')
 }
+
+// ── 年/月快速跳转 ──────────────
+// 当前年月必须现取：本组件常驻挂载（App 用 v-show 切 tab），挂载时求值会在跨月后
+// 与按需取时的 calendarMonthAhead 分叉（「下一月」可用、「回今天」却跳回上个月）。
+function todayMonth(): { year: number; month: number } {
+  const now = new Date()
+  return { year: now.getFullYear(), month: now.getMonth() + 1 }
+}
+const isCurrentMonth = computed(() => {
+  const today = todayMonth()
+  return props.year === today.year && props.month === today.month
+})
+const prevMonthDisabled = computed(() => props.year <= CALENDAR_MIN_YEAR && props.month === 1)
+// 禁用条件看的是「翻页目标月」而非当前显示月：显示到当前月时，下一月已越过上限
+const nextMonthDisabled = computed(() =>
+  props.month === 12 ? calendarMonthAhead(props.year + 1, 1) : calendarMonthAhead(props.year, props.month + 1),
+)
+const nextYearDisabled = computed(() => calendarMonthAhead(props.year + 1, props.month))
+
+function handlePrevYear() {
+  track('calendar.prev_year')
+  emit('jumpTo', props.year - 1, props.month)
+}
+
+function handleNextYear() {
+  track('calendar.next_year')
+  emit('jumpTo', props.year + 1, props.month)
+}
+
+function handleToday() {
+  track('calendar.today')
+  const today = todayMonth()
+  emit('jumpTo', today.year, today.month)
+}
+
+const pickerOpen = ref(false)
+const picker = useDropdown({ openState: pickerOpen, closedKey: false, hoverOpen: false })
+const pickerWrapEl = ref<HTMLElement | null>(null)
+const pickerYear = ref(props.year)
+const pickerYearPrevDisabled = computed(() => pickerYear.value <= CALENDAR_MIN_YEAR)
+const pickerYearNextDisabled = computed(() => pickerYear.value >= todayMonth().year)
+
+const pickerMonths = computed(() =>
+  Array.from({ length: 12 }, (_, i) => {
+    const m = i + 1
+    return {
+      month: m,
+      label: new Date(pickerYear.value, i, 1).toLocaleDateString(getLocale(), { month: 'short' }),
+      disabled: calendarMonthAhead(pickerYear.value, m),
+      selected: pickerYear.value === props.year && m === props.month,
+    }
+  }),
+)
+
+// 点击面板外关闭（useDropdown 不管 click-outside）；目标在面板内时不处理
+function onDocClick(e: MouseEvent) {
+  if (pickerWrapEl.value && !pickerWrapEl.value.contains(e.target as Node)) picker.close()
+}
+
+// 打开时把面板年份对齐到当前显示月，并挂上 click-outside 监听
+watch(pickerOpen, (open) => {
+  if (open) {
+    pickerYear.value = props.year
+    document.addEventListener('click', onDocClick)
+  } else {
+    document.removeEventListener('click', onDocClick)
+  }
+})
+onUnmounted(() => document.removeEventListener('click', onDocClick))
+
+function pickMonth(month: number) {
+  if (calendarMonthAhead(pickerYear.value, month)) return
+  track('calendar.jump_month')
+  emit('jumpTo', pickerYear.value, month)
+  picker.close()
+}
 </script>
 
 <template>
   <div class="calendar-nav">
-    <button @click="handlePrevMonth">
+    <button class="calendar-year-btn" :disabled="props.year <= CALENDAR_MIN_YEAR" :title="t('release.calendar_prev_year')" @click="handlePrevYear">«</button>
+    <button :disabled="prevMonthDisabled" :title="t('release.calendar_prev_month')" @click="handlePrevMonth">
       <svg><use href="/icons.svg#chevron-left-icon"/></svg>
     </button>
-    <span class="calendar-month-label">{{ monthLabel }}</span>
-    <button @click="handleNextMonth" :disabled="props.year >= new Date().getFullYear() && props.month >= new Date().getMonth() + 1">
+    <div ref="pickerWrapEl" class="calendar-picker-wrap">
+      <button
+        type="button"
+        class="calendar-month-label"
+        :aria-expanded="pickerOpen"
+        aria-haspopup="menu"
+        :title="t('release.calendar_pick_month')"
+        @click="picker.toggle($event, true)"
+        @keydown="picker.handleTriggerKeydown($event, true)"
+      >{{ monthLabel }}</button>
+      <div v-if="pickerOpen" class="dropdown-panel calendar-picker" role="menu" @keydown="picker.handleDropdownKeydown">
+        <div class="calendar-picker-year">
+          <button type="button" :disabled="pickerYearPrevDisabled" @click="pickerYear--">«</button>
+          <span>{{ pickerYear }}</span>
+          <button type="button" :disabled="pickerYearNextDisabled" @click="pickerYear++">»</button>
+        </div>
+        <div class="calendar-picker-months">
+          <button
+            v-for="m in pickerMonths"
+            :key="m.month"
+            type="button"
+            role="menuitem"
+            :disabled="m.disabled"
+            :class="{ selected: m.selected }"
+            @click="pickMonth(m.month)"
+          >{{ m.label }}</button>
+        </div>
+      </div>
+    </div>
+    <button :disabled="nextMonthDisabled" :title="t('release.calendar_next_month')" @click="handleNextMonth">
       <svg><use href="/icons.svg#chevron-right-icon"/></svg>
     </button>
+    <button class="calendar-year-btn" :disabled="nextYearDisabled" :title="t('release.calendar_next_year')" @click="handleNextYear">»</button>
+    <button type="button" class="calendar-today-btn" :disabled="isCurrentMonth" @click="handleToday">{{ t('release.calendar_today') }}</button>
   </div>
   <div class="calendar-grid">
     <div v-for="dow in weekDayHeaders" :key="dow" class="calendar-day-header">
@@ -248,6 +357,91 @@ function handleNextMonth() {
   font-weight: 600;
   min-width: 120px;
   text-align: center;
+}
+
+/* 月份标签是可点击的跳转入口，但视觉上保持纯文本标签 */
+.calendar-nav button.calendar-month-label {
+  width: auto;
+  height: auto;
+  padding: 2px 8px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.calendar-nav button.calendar-month-label:hover:not(:disabled) {
+  background: var(--hover-surface);
+}
+
+.calendar-nav .calendar-today-btn {
+  width: auto;
+  padding: 0 10px;
+  font-size: var(--fs-meta);
+}
+
+.calendar-picker-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.calendar-picker {
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 8px;
+  width: 220px;
+}
+
+.calendar-picker-year {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.calendar-picker-year button {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.calendar-picker-year button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.calendar-picker-months {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.calendar-picker-months button {
+  padding: 6px 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+}
+
+.calendar-picker-months button:hover:not(:disabled) {
+  background: var(--hover-surface);
+}
+
+.calendar-picker-months button.selected {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.calendar-picker-months button:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .calendar-grid {

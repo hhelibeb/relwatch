@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, mount, type VueWrapper } from '@vue/test-utils'
-import { defineComponent, nextTick, ref } from 'vue'
+import { defineComponent, nextTick, ref, type Ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import { ShowImportanceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
@@ -53,6 +53,7 @@ const SearchBarStub = defineComponent({
   name: 'ReleaseSearchBarStub',
   props: ['count', 'deepSearch', 'deepSearching', 'bodyTruncated', 'importanceFilter'],
   emits: ['update:modelValue', 'update:statusFilter', 'update:importanceFilter', 'update:viewMode', 'update:deepSearch', 'update:flagFilter', 'update:versionFilter', 'searchEnter'],
+  methods: { focusInput: vi.fn() },
   template: '<div class="toolbar-stub" />',
 })
 
@@ -60,6 +61,11 @@ const SimpleListStub = defineComponent({
   name: 'ReleaseSimpleListStub',
   props: ['releases', 'isFiltering', 'hasSearchQuery', 'deepSearch', 'loading'],
   emits: ['update', 'openDetail', 'enableDeep', 'clearSearch', 'clearFilters'],
+  methods: {
+    moveSelection: vi.fn(),
+    selectFirst: vi.fn(() => true),
+    openSelected: vi.fn(),
+  },
   template: '<div class="simple-stub" />',
 })
 
@@ -74,7 +80,7 @@ const AggregatedListStub = defineComponent({
 const CalendarStub = defineComponent({
   name: 'ReleaseCalendarStub',
   props: ['releases', 'year', 'month'],
-  emits: ['prevMonth', 'nextMonth', 'selectDate'],
+  emits: ['prevMonth', 'nextMonth', 'jumpTo', 'selectDate'],
   template: '<div class="cal-stub" />',
 })
 
@@ -156,6 +162,12 @@ function resetBackend() {
   backend.detailCalls.length = 0
   backend.pageSize = 2
 }
+
+// 视图模式/筛选/聚合展开态会写 localStorage：用例间必须隔离，
+// 否则上个用例切到的视图会决定下个用例的初始视图。
+beforeEach(() => {
+  localStorage.clear()
+})
 
 afterEach(() => {
   vi.useRealTimers()
@@ -961,15 +973,19 @@ describe('ReleaseTab 旗标与版本类型过滤', () => {
 // ── 显示重要度开关 ───────────────────────────────────────────────
 
 describe('ReleaseTab 显示重要度开关', () => {
-  it('关闭开关时清空已选的重要度筛选（watch 重置）', async () => {
-    const importanceVisible = ref(true)
-    const wrapper = mount(ReleaseTab, {
+  function mountWithImportance(visible: Ref<boolean>) {
+    return mount(ReleaseTab, {
       props: { releases },
       global: {
         stubs,
-        provide: { [ShowImportanceKey as symbol]: importanceVisible },
+        provide: { [ShowImportanceKey as symbol]: visible },
       },
     })
+  }
+
+  it('关闭开关只停用过滤，不清掉已选的重要度筛选（开关恢复后重新生效）', async () => {
+    const importanceVisible = ref(true)
+    const wrapper = mountWithImportance(importanceVisible)
     const bar = wrapper.findComponent({ name: 'ReleaseSearchBarStub' })
     await bar.vm.$emit('update:importanceFilter', '大')
     await nextTick()
@@ -978,9 +994,14 @@ describe('ReleaseTab 显示重要度开关', () => {
 
     importanceVisible.value = false
     await nextTick()
-    // 开关关闭触发 watch 重置：筛选值回写 all，激活态消失
-    expect(bar.props('importanceFilter')).toBe('all')
+    // 值保留（否则持久化后等于永久丢掉用户的选择），只是不再参与过滤
+    expect(bar.props('importanceFilter')).toBe('大')
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
+    expect(JSON.parse(localStorage.getItem('relwatch.release.view')!).importanceFilter).toBe('大')
+
+    importanceVisible.value = true
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(true)
   })
 })
 
@@ -1012,6 +1033,23 @@ describe('ReleaseTab 通知定位（focusTarget）', () => {
 
     expect(wrapper.emitted('focus-not-found')).toBeTruthy()
     expect(wrapper.emitted('focus-consumed')).toBeFalsy()
+  })
+
+  it('定位重置的筛选不写回存储（点通知不抹掉用户保存的视图偏好）', async () => {
+    const wrapper = mountTab({})
+    const bar = wrapper.findComponent({ name: 'ReleaseSearchBarStub' })
+    await bar.vm.$emit('update:flagFilter', 'flagged')
+    await bar.vm.$emit('update:viewMode', 'aggregated')
+    await nextTick()
+    expect(JSON.parse(localStorage.getItem('relwatch.release.view')!)).toMatchObject({ flagFilter: 'flagged', viewMode: 'aggregated' })
+
+    await wrapper.setProps({ focusTarget: 2, focusToken: 1 } as Parameters<typeof wrapper.setProps>[0])
+    await new Promise(r => setTimeout(r, 5))
+    await nextTick()
+
+    // 界面已按定位要求复位，但落盘的仍是用户原偏好
+    expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
+    expect(JSON.parse(localStorage.getItem('relwatch.release.view')!)).toMatchObject({ flagFilter: 'flagged', viewMode: 'aggregated' })
   })
 
   it('SimpleList 首次定位失败但重试成功时上报 focus-consumed', async () => {

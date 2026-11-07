@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, nextTick, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { computed, inject, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ReleaseInfo, ReleaseSearchBody } from '../api/releases'
 import { getReleaseDetail, getReleaseSearchBodies, getReleaseSearchBodiesByIds } from '../api/releases'
 import { isReadStatus, isUnreadStatus, filterReleaseIndices, mergeBodyIndex, type BodyIndex } from '../utils'
@@ -11,6 +11,8 @@ import ReleaseSearchBar from './ReleaseSearchBar.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
 import { releaseFlagged } from '../utils/releaseFlag'
+import { loadReleaseViewState, saveReleaseViewState } from '../utils/releaseViewStorage'
+import { clampCalendarMonth } from '../utils/dateKey'
 import { track } from '../composables/useUsageTracking'
 import { ShowImportanceKey } from '../injection-keys'
 import { t } from '../i18n'
@@ -24,6 +26,9 @@ import ErrorBlock from './common/ErrorBlock.vue'
 // - focus-not-found：目标在本列表（重置筛选后）找不到；由 App 判定后给出 Toast（见 App.vue）。
 type ReleaseSimpleListHandle = InstanceType<typeof ReleaseSimpleList> & {
   focusReleaseId: (id: number) => boolean
+  selectFirst: () => boolean
+  moveSelection: (delta: number) => void
+  openSelected: () => void
 }
 type AggregatedListInstance = InstanceType<typeof ReleaseAggregatedList> & {
   expandAll: () => void
@@ -41,6 +46,8 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   /** 目录加载失败信息：列表为空时用错误块代替空态，把「拉取失败」与「暂无版本」分开。 */
   loadError?: string
+  /** 当前 tab 是否可见（App 用 v-show 切 tab，组件常驻挂载；j/k 快捷键只在可见时响应）。 */
+  active?: boolean
 }>(), {
   search: '',
   statusFilter: 'all',
@@ -48,6 +55,7 @@ const props = withDefaults(defineProps<{
   focusToken: 0,
   loading: false,
   loadError: '',
+  active: false,
 })
 
 const emit = defineEmits<{
@@ -62,21 +70,21 @@ const emit = defineEmits<{
   reload: []
 }>()
 
-const viewMode = ref<ViewMode>('simple')
-// 「显示重要度」开关（App.vue provide）：关闭时不参与过滤，并清掉残留的重要度筛选
+const savedViewState = loadReleaseViewState()
+const viewMode = ref<ViewMode>(savedViewState.viewMode)
+// 「显示重要度」开关（App.vue provide）：关闭时重要度筛选不参与过滤，但**不清值**——
+// 持久化后清值等于永久丢掉用户的选择，开关重新打开即恢复（过滤处统一按 showImportance 短路）
 const showImportance = inject(ShowImportanceKey, ref(false))
-watch(showImportance, (visible) => {
-  if (!visible) importanceFilter.value = 'all'
-})
-const importanceFilter = ref<ReleaseImportanceFilter>('all')
-const sourceFilter = ref<ReleaseSourceFilter>('all')
-const flagFilter = ref<ReleaseFlagFilter>('all')
-const versionFilter = ref<ReleaseVersionFilter>('all')
+const importanceFilter = ref<ReleaseImportanceFilter>(savedViewState.importanceFilter)
+const sourceFilter = ref<ReleaseSourceFilter>(savedViewState.sourceFilter)
+const flagFilter = ref<ReleaseFlagFilter>(savedViewState.flagFilter)
+const versionFilter = ref<ReleaseVersionFilter>(savedViewState.versionFilter)
 const selectedDate = ref<string | null>(null)
 const calendarYear = ref(new Date().getFullYear())
 const calendarMonth = ref(new Date().getMonth() + 1)
 const simpleList = ref<ReleaseSimpleListHandle | null>(null)
 const aggregatedList = ref<AggregatedListInstance | null>(null)
+const searchBar = ref<InstanceType<typeof ReleaseSearchBar> | null>(null)
 
 // ── 通知定位消费 ──────────────
 // 只消费**最新一次**目标：lastConsumedToken 记录已成功处理的 token，重复触发不会重复滚动/高亮。
@@ -100,15 +108,22 @@ async function doFocusTarget(targetId: number) {
     return
   }
   // 重置全部筛选并切到简单视图：目标必须不被任何过滤隐藏，且视图支持按 id 滚动定位。
-  releaseSearch.value = ''
-  statusFilter.value = 'all'
-  importanceFilter.value = 'all'
-  sourceFilter.value = 'all'
-  flagFilter.value = 'all'
-  versionFilter.value = 'all'
-  viewMode.value = 'simple'
-  selectedDate.value = null
-  await waitForListReady()
+  // 这次重置是定位的手段而非用户偏好，期间禁止把状态写回存储，否则点一次通知
+  // 就会永久抹掉用户保存的视图/筛选。
+  suspendViewStatePersist = true
+  try {
+    releaseSearch.value = ''
+    statusFilter.value = 'all'
+    importanceFilter.value = 'all'
+    sourceFilter.value = 'all'
+    flagFilter.value = 'all'
+    versionFilter.value = 'all'
+    viewMode.value = 'simple'
+    selectedDate.value = null
+    await waitForListReady()
+  } finally {
+    suspendViewStatePersist = false
+  }
   if (props.focusTarget !== targetId || props.focusToken !== token) {
     // 期间 App 已清空或来了更新的目标：丢弃本次（避免旧目标覆盖新目标的高亮）
     return
@@ -149,6 +164,19 @@ const releaseSearch = computed({
 const statusFilter = computed({
   get: () => props.statusFilter,
   set: (value: ReleaseStatusFilter) => emit('update:statusFilter', value),
+})
+
+let suspendViewStatePersist = false
+watch([viewMode, statusFilter, importanceFilter, sourceFilter, flagFilter, versionFilter], () => {
+  if (suspendViewStatePersist) return
+  saveReleaseViewState({
+    viewMode: viewMode.value,
+    statusFilter: statusFilter.value,
+    importanceFilter: importanceFilter.value,
+    sourceFilter: sourceFilter.value,
+    flagFilter: flagFilter.value,
+    versionFilter: versionFilter.value,
+  })
 })
 
 const hasActiveFilter = computed(() => {
@@ -469,39 +497,46 @@ onUnmounted(() => {
 })
 
 async function handleSearchEnter() {
-  if (viewMode.value !== 'aggregated') return
-  // 搜索框 Enter 时已 flush，但新词要经宿主回传（props 更新）才可见：
-  // 等一帧再展开，否则 expandAll 展开的是输入前的全量分组。
-  await nextTick()
-  aggregatedList.value?.expandAll()
+  if (viewMode.value === 'aggregated') {
+    // 搜索框 Enter 时已 flush，但新词要经宿主回传（props 更新）才可见：
+    // 等一帧再展开，否则 expandAll 展开的是输入前的全量分组。
+    await nextTick()
+    aggregatedList.value?.expandAll()
+    return
+  }
+  if (viewMode.value === 'simple') {
+    await nextTick()
+    // 回车选中首条后把焦点移出搜索框，j/k/Enter 列表导航立即可用
+    if (simpleList.value?.selectFirst()) {
+      const active = document.activeElement
+      if (active instanceof HTMLInputElement) active.blur()
+    }
+  }
 }
 
 function backToCalendar() {
   selectedDate.value = null
 }
 
+function shiftMonth(delta: number) {
+  const next = clampCalendarMonth(calendarYear.value, calendarMonth.value + delta)
+  calendarYear.value = next.year
+  calendarMonth.value = next.month
+}
+
 function prevMonth() {
-  // 下限保护：不允许早于 2010-01，与 nextMonth 的上限保护对称，避免远古日期渲染异常
-  const MIN_YEAR = 2010
-  if (calendarYear.value <= MIN_YEAR && calendarMonth.value === 1) return
-  if (calendarMonth.value === 1) {
-    calendarMonth.value = 12
-    calendarYear.value--
-  } else {
-    calendarMonth.value--
-  }
+  shiftMonth(-1)
 }
 
 function nextMonth() {
-  const current = new Date()
-  const currentYear = current.getFullYear()
-  const currentMonth = current.getMonth() + 1
-  const nextYear = calendarMonth.value === 12 ? calendarYear.value + 1 : calendarYear.value
-  const nextMonthValue = calendarMonth.value === 12 ? 1 : calendarMonth.value + 1
-  if (nextYear > currentYear || (nextYear === currentYear && nextMonthValue > currentMonth)) return
+  shiftMonth(1)
+}
 
-  calendarYear.value = nextYear
-  calendarMonth.value = nextMonthValue
+function jumpCalendar(year: number, month: number) {
+  const next = clampCalendarMonth(year, month)
+  calendarYear.value = next.year
+  calendarMonth.value = next.month
+  selectedDate.value = null
 }
 
 watch(viewMode, () => {
@@ -573,11 +608,51 @@ function navigateReleaseDetail(delta: number) {
   if (nextId !== undefined) detailReleaseId.value = nextId
 }
 
+// 宿主（App 的 Ctrl+F）调用：弹出中的详情会盖住搜索栏，先关掉再聚焦才有可见反馈
+function focusSearch() {
+  closeReleaseDetail()
+  void nextTick(() => searchBar.value?.focusInput())
+}
+
+defineExpose({ focusSearch })
+
+// ── 简单视图键盘导航（j/k 移动、Enter 打开详情）──────────────
+// tab 用 v-show 常驻挂载，必须等 active 才响应；输入控件/可编辑区域内的按键不拦截。
+function isEditableTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  const ce = el.getAttribute('contenteditable')
+  return ce !== null && ce !== 'false'
+}
+
+function onListKeydown(e: KeyboardEvent) {
+  if (!props.active || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return
+  if (detailReleaseId.value !== null || viewMode.value !== 'simple') return
+  if (isEditableTarget(e.target)) return
+  if (e.key === 'j') {
+    e.preventDefault()
+    simpleList.value?.moveSelection(1)
+  } else if (e.key === 'k') {
+    e.preventDefault()
+    simpleList.value?.moveSelection(-1)
+  } else if (e.key === 'Enter') {
+    // 焦点在按钮/链接/菜单上时让原生点击生效，不抢
+    const target = e.target instanceof HTMLElement ? e.target : null
+    if (target?.closest('button, a, [role="menu"], [role="menuitem"]')) return
+    simpleList.value?.openSelected()
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', onListKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
+
 </script>
 
 <template>
   <section class="tab-content">
     <ReleaseSearchBar
+      ref="searchBar"
       v-model="releaseSearch"
       v-model:status-filter="statusFilter"
       v-model:importance-filter="importanceFilter"
@@ -645,6 +720,7 @@ function navigateReleaseDetail(delta: number) {
         :month="calendarMonth"
         @prev-month="prevMonth"
         @next-month="nextMonth"
+        @jump-to="jumpCalendar"
         @select-date="selectedDate = $event"
       />
     </template>

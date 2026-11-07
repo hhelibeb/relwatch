@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mount, flushPromises } from '@vue/test-utils'
+import { mount, flushPromises, enableAutoUnmount } from '@vue/test-utils'
 import { defineComponent } from 'vue'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -97,12 +97,15 @@ const SourceTabStub = defineComponent({
     </div>`,
 })
 
+const mockFocusSearch = vi.fn()
+
 const ReleaseTabStub = defineComponent({
   name: 'ReleaseTab',
-  props: ['search', 'statusFilter', 'focusTarget', 'focusToken'],
+  props: ['search', 'statusFilter', 'focusTarget', 'focusToken', 'active'],
   emits: ['update', 'focus-consumed', 'focus-not-found'],
+  methods: { focusSearch: mockFocusSearch },
   template:
-    '<div class="stub-releasetab"><span class="stub-search">{{ search }}</span><span class="stub-status">{{ statusFilter }}</span><span class="stub-focus-target">{{ focusTarget }}</span><span class="stub-focus-token">{{ focusToken }}</span></div>',
+    '<div class="stub-releasetab"><span class="stub-search">{{ search }}</span><span class="stub-status">{{ statusFilter }}</span><span class="stub-focus-target">{{ focusTarget }}</span><span class="stub-focus-token">{{ focusToken }}</span><span class="stub-active">{{ active }}</span></div>',
 })
 
 const LogTabStub = defineComponent({
@@ -166,6 +169,8 @@ async function mountRealApp() {
 }
 
 beforeEach(() => {
+  // App 启动时从 localStorage 读版本页状态筛选初值：隔离用例，防残留初值影响断言
+  localStorage.clear()
   vi.clearAllMocks()
   vi.mocked(listSources).mockResolvedValue([])
   vi.mocked(getReleaseCatalog).mockResolvedValue([])
@@ -197,6 +202,10 @@ afterEach(() => {
   document.documentElement.dataset.theme = ''
   setLocale('zh-CN')
 })
+
+// 多数用例不显式 unmount：window 上的快捷键/resize 监听会随挂载残留，
+// 后续用例的 window 事件会被前面那些 App 一起响应。
+enableAutoUnmount(afterEach)
 
 describe('App.vue — 挂载初始化', () => {
   it('onMounted 时同时加载 sources / releases / settings', async () => {
@@ -1708,6 +1717,124 @@ describe('App.vue — 全局错误兜底的 toast 出口（V2）', () => {
     expect(invoke).toHaveBeenCalledWith('report_frontend_error', expect.objectContaining({
       messageKey: 'ui.unhandled_rejection',
     }))
+    wrapper.unmount()
+  })
+})
+
+// ── 全局快捷键：Ctrl+F 聚焦搜索、Ctrl+1..4 切 tab、Ctrl+R 立即检查 ──
+describe('App.vue — 全局快捷键', () => {
+  function press(key: string, opts: { ctrl?: boolean; shift?: boolean } = {}) {
+    const event = new KeyboardEvent('keydown', {
+      key,
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: opts.ctrl ?? false,
+      shiftKey: opts.shift ?? false,
+    })
+    window.dispatchEvent(event)
+    return event
+  }
+
+  function tabClasses(wrapper: Awaited<ReturnType<typeof mountRealApp>>) {
+    return wrapper.findAll('nav.tabs button').map(b => b.classes().includes('active'))
+  }
+
+  it.each([
+    ['1', 0],
+    ['2', 1],
+    ['3', 2],
+    ['4', 3],
+  ])('Ctrl+%s 切到第 %i 个页签', async (digit, expectedIndex) => {
+    const wrapper = await mountRealApp()
+
+    expect(press(digit, { ctrl: true }).defaultPrevented).toBe(true)
+    await wrapper.vm.$nextTick()
+
+    expect(tabClasses(wrapper).indexOf(true)).toBe(expectedIndex)
+    wrapper.unmount()
+  })
+
+  it('Ctrl+F 切到版本页并聚焦搜索框，且吞掉 WebView2 的浏览器查找', async () => {
+    const wrapper = await mountRealApp()
+
+    expect(press('f', { ctrl: true }).defaultPrevented).toBe(true)
+    await flushPromises()
+    await wrapper.vm.$nextTick()
+
+    expect(tabClasses(wrapper).indexOf(true)).toBe(1)
+    expect(mockFocusSearch).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('Ctrl+R 触发一次立即检查', async () => {
+    vi.mocked(listSources).mockResolvedValue([{ id: 1, owner: 'a', repo: 'b', enabled: true } as never])
+    const wrapper = await mountRealApp()
+
+    expect(press('r', { ctrl: true }).defaultPrevented).toBe(true)
+    await flushPromises()
+
+    expect(triggerPoll).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('单源检查进行中时 Ctrl+R 不重复触发', async () => {
+    vi.mocked(listSources).mockResolvedValue([{ id: 1, owner: 'a', repo: 'b', enabled: true } as never])
+    const wrapper = await mountRealApp()
+
+    await wrapper.find('.stub-check-busy').trigger('click')
+    await flushPromises()
+    press('r', { ctrl: true })
+    await flushPromises()
+
+    expect(triggerPoll).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('Ctrl+Shift+R 不被接管（保留原生强制重载）', async () => {
+    vi.mocked(listSources).mockResolvedValue([{ id: 1, owner: 'a', repo: 'b', enabled: true } as never])
+    const wrapper = await mountRealApp()
+
+    expect(press('r', { ctrl: true, shift: true }).defaultPrevented).toBe(false)
+    expect(triggerPoll).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('输入法合成中的按键不被当作快捷键', async () => {
+    const wrapper = await mountRealApp()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', bubbles: true, cancelable: true, ctrlKey: true, isComposing: true }))
+    await wrapper.vm.$nextTick()
+
+    expect(tabClasses(wrapper).indexOf(true)).toBe(0)
+    wrapper.unmount()
+  })
+
+  it('tab 按钮与「立即检查」的 title 标注快捷键', async () => {
+    const wrapper = await mountRealApp()
+
+    const buttons = wrapper.findAll('nav.tabs button')
+    expect(buttons[0].attributes('title')).toContain('Ctrl+1')
+    expect(buttons[3].attributes('title')).toContain('Ctrl+4')
+    expect(wrapper.find('.btn-primary').attributes('title')).toContain('Ctrl+R')
+    wrapper.unmount()
+  })
+
+  it('启动时状态筛选取持久化值（与 ReleaseTab 同一份存储）', async () => {
+    localStorage.setItem('relwatch.release.view', JSON.stringify({ statusFilter: 'unread', viewMode: 'simple' }))
+
+    const wrapper = await mountRealApp()
+
+    expect(wrapper.findComponent(ReleaseTabStub).props('statusFilter')).toBe('unread')
+    wrapper.unmount()
+  })
+
+  it('版本页可见时向 ReleaseTab 下发 active，隐藏时为 false', async () => {
+    const wrapper = await mountRealApp()
+
+    expect(wrapper.findComponent(ReleaseTabStub).props('active')).toBe(false)
+    press('2', { ctrl: true })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findComponent(ReleaseTabStub).props('active')).toBe(true)
     wrapper.unmount()
   })
 })

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, type Component, type Ref } from 'vue'
+import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, nextTick, type Component, type Ref } from 'vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
@@ -18,6 +18,7 @@ import { applyTheme } from './composables/useTheme'
 import { applyFontScale } from './composables/useFontScale'
 import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
 import { isUnreadStatus, formatCountdown } from './utils'
+import { loadReleaseViewState } from './utils/releaseViewStorage'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
 import LogTab from './components/LogTab.vue'
@@ -293,7 +294,9 @@ async function loadAgentConfig() {
 
 const countdown = ref('')
 const releaseSearch = ref('')
-const releaseStatusFilter = ref<'all' | 'unread' | 'read'>('all')
+// 状态筛选的持久化由 ReleaseTab 统一写入，这里只在启动时读一次初值
+const releaseStatusFilter = ref<'all' | 'unread' | 'read'>(loadReleaseViewState().statusFilter)
+const releaseTab = ref<InstanceType<typeof ReleaseTab> | null>(null)
 // ── 通知定位（focus-release）下钻：App 只保存目标与递增 token，
 //    由 ReleaseTab 在每次“筛选/搜索/视图/数据就绪”后响应最新 token 执行定位。──
 const focusTarget = ref<number | null>(null)
@@ -358,14 +361,37 @@ async function toggleStatsDev() {
   showStatsDev.value = !showStatsDev.value
 }
 
+const TAB_KEYS: Record<string, 'sources' | 'releases' | 'logs' | 'settings'> = {
+  '1': 'sources',
+  '2': 'releases',
+  '3': 'logs',
+  '4': 'settings',
+}
+
 function onGlobalKeydown(e: KeyboardEvent) {
-  // 面板仅开发模式存在：非 DEV 直接返回，避免生产环境吞掉 Ctrl+Shift+U 却无动作
-  if (!import.meta.env.DEV) return
-  if (e.ctrlKey && e.shiftKey && (e.key === 'U' || e.key === 'u')) {
+  if (e.isComposing) return
+  // 面板仅开发模式存在：非 DEV 不吞 Ctrl+Shift+U
+  if (import.meta.env.DEV && e.ctrlKey && e.shiftKey && (e.key === 'U' || e.key === 'u')) {
     e.preventDefault()
     void toggleStatsDev()
+    return
+  }
+  if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey) return
+  const key = e.key.toLowerCase()
+  if (key === 'f') {
+    // WebView2 的 Ctrl+F 是浏览器查找栏，必须 preventDefault 才能接管
+    e.preventDefault()
+    activeTab.value = 'releases'
+    void nextTick(() => releaseTab.value?.focusSearch())
+  } else if (key === 'r') {
+    e.preventDefault()
+    void handlePoll()
+  } else if (TAB_KEYS[key]) {
+    e.preventDefault()
+    activeTab.value = TAB_KEYS[key]
   }
 }
+
 const inputMenuItems = computed<ContextMenuItem[]>(() => [
   { id: 'cut', label: t('context.cut') },
   { id: 'copy', label: t('context.copy') },
@@ -719,6 +745,10 @@ useTransientUiGuard({
 useExternalLinkGuard()
 
 onMounted(async () => {
+  // 快捷键监听在 await 之前注册：卸载可能发生在异步体完成前，注册晚于卸载就没人移除它
+  window.addEventListener('keydown', onGlobalKeydown)
+  unlisteners.push(() => window.removeEventListener('keydown', onGlobalKeydown))
+
   syncSourceCapabilities() // 源类型能力位以后端 list_source_types 为权威（不阻塞，失败静默降级）
   await loadAll()
   watchSystemTheme()
@@ -757,12 +787,6 @@ onMounted(async () => {
     unregisterCloser(closeAllMenus)
     document.removeEventListener('click', closeAllMenus)
   })
-
-  // 开发者统计面板快捷键仅 DEV 注册：生产包完全不包含面板逻辑入口
-  if (import.meta.env.DEV) {
-    window.addEventListener('keydown', onGlobalKeydown)
-    unlisteners.push(() => window.removeEventListener('keydown', onGlobalKeydown))
-  }
 
   const navigateUnlisten = await events.navigate.listen((event) => {
     if (event.payload === 'sources' || event.payload === 'releases' || event.payload === 'settings') {
@@ -869,17 +893,17 @@ onUnmounted(() => {
           </button>
           <!-- 分组分隔线：Agent 面板开关与「立即检查」主操作隔开，降低误触 -->
           <span v-if="agentConfig?.enabled" class="header-actions-divider"></span>
-          <button class="btn-primary" :disabled="polling || sourceChecking" @click="handlePoll">
+          <button class="btn-primary" :disabled="polling || sourceChecking" :title="t('app.check_now') + ' (Ctrl+R)'" @click="handlePoll">
             {{ polling || sourceChecking ? t('app.checking') : t('app.check_now') }}
           </button>
         </div>
       </div>
       <div class="header-bottom">
         <nav class="tabs">
-          <button :class="{ active: activeTab === 'sources' }" @click="activeTab = 'sources'"><svg class="tab-icon"><use href="/icons.svg#sources-icon"/></svg>{{ t('tab.sources') }}</button>
-          <button :class="{ active: activeTab === 'releases' }" @click="activeTab = 'releases'"><svg class="tab-icon"><use href="/icons.svg#release-icon"/></svg>{{ t('tab.releases') }}</button>
-          <button :class="{ active: activeTab === 'logs' }" @click="activeTab = 'logs'"><svg class="tab-icon"><use href="/icons.svg#log-icon"/></svg>{{ t('tab.logs') }}</button>
-          <button :class="{ active: activeTab === 'settings' }" @click="activeTab = 'settings'"><svg class="tab-icon"><use href="/icons.svg#settings-icon"/></svg>{{ t('tab.settings') }}</button>
+          <button :class="{ active: activeTab === 'sources' }" :title="t('tab.sources') + ' (Ctrl+1)'" @click="activeTab = 'sources'"><svg class="tab-icon"><use href="/icons.svg#sources-icon"/></svg>{{ t('tab.sources') }}</button>
+          <button :class="{ active: activeTab === 'releases' }" :title="t('tab.releases') + ' (Ctrl+2)'" @click="activeTab = 'releases'"><svg class="tab-icon"><use href="/icons.svg#release-icon"/></svg>{{ t('tab.releases') }}</button>
+          <button :class="{ active: activeTab === 'logs' }" :title="t('tab.logs') + ' (Ctrl+3)'" @click="activeTab = 'logs'"><svg class="tab-icon"><use href="/icons.svg#log-icon"/></svg>{{ t('tab.logs') }}</button>
+          <button :class="{ active: activeTab === 'settings' }" :title="t('tab.settings') + ' (Ctrl+4)'" @click="activeTab = 'settings'"><svg class="tab-icon"><use href="/icons.svg#settings-icon"/></svg>{{ t('tab.settings') }}</button>
         </nav>
         <span class="countdown-text" v-if="countdown">{{ t('app.next_check') }}{{ countdown }}</span>
       </div>
@@ -900,7 +924,7 @@ onUnmounted(() => {
           @open-unread-releases="openSourceUnreadReleases" />
       </div>
       <div v-show="activeTab === 'releases'">
-        <ReleaseTab v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :focus-target="focusTarget" :focus-token="focusReleaseToken" :loading="releasesLoading" :load-error="releasesError" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @reload="loadReleases" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
+        <ReleaseTab ref="releaseTab" v-model:search="releaseSearch" v-model:statusFilter="releaseStatusFilter" :releases="releases" :active="activeTab === 'releases'" :focus-target="focusTarget" :focus-token="focusReleaseToken" :loading="releasesLoading" :load-error="releasesError" @focus-consumed="handleFocusConsumed" @focus-not-found="handleFocusNotFound" @reload="loadReleases" @update="scheduleLoadReleases(); scheduleRefreshLogs()" />
       </div>
       <div v-show="activeTab === 'logs'">
         <LogTab :refresh-key="logRefreshKey" @update="refreshLogs()" />

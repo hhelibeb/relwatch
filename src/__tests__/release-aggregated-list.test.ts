@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount } from '@vue/test-utils'
-import { defineComponent } from 'vue'
+import { defineComponent, nextTick } from 'vue'
 import ReleaseAggregatedList from '../components/ReleaseAggregatedList.vue'
 import { t } from '../i18n'
 import { createRelease } from './helpers'
@@ -33,6 +33,8 @@ function mountList(releases: ReleaseInfo[], isFiltering = false) {
 }
 
 beforeEach(() => {
+  // 展开分组状态持久化到 localStorage：隔离用例，否则上个用例展开的分组会让「默认折叠」失败
+  localStorage.clear()
   vi.clearAllMocks()
 })
 
@@ -213,5 +215,48 @@ describe('ReleaseAggregatedList.vue — 分组显示名（注册表 displayName�
 
     expect(wrapper.find('.repo-name').attributes('title')).toBe('example-org/example-repo')
     expect(wrapper.find('.repo-latest-tag').attributes('title')).toBe('dsh-v0.1.7-rc.2')
+  })
+})
+
+describe('ReleaseAggregatedList.vue — 展开状态持久化', () => {
+  const KEY = 'relwatch.release.expandedRepos'
+
+  it('展开的分组写入 localStorage，重新挂载后恢复', async () => {
+    const releases = [
+      createRelease({ id: 1, owner: 'a', repo: 'r1', published_at: '2025-06-01T00:00:00Z' }),
+      createRelease({ id: 2, owner: 'b', repo: 'r2', published_at: '2025-06-02T00:00:00Z' }),
+    ]
+    const wrapper = mountList(releases)
+
+    // 组按最新版本降序：[0] = b/r2
+    await wrapper.findAll('.repo-group-toggle')[0].trigger('click')
+    expect(JSON.parse(localStorage.getItem(KEY)!)).toEqual(['github|b|r2'])
+
+    wrapper.unmount()
+    const restored = mountList(releases)
+    const bodies = restored.findAll('.repo-group-body')
+    expect(bodies).toHaveLength(1)
+    expect(bodies[0].text()).toContain('v2.0.0')
+  })
+
+  it('存储损坏时回退全部折叠', () => {
+    localStorage.setItem(KEY, 'not json')
+
+    const wrapper = mountList([createRelease({ id: 1, published_at: '2025-06-01T00:00:00Z' })])
+    expect(wrapper.find('.repo-group-body').exists()).toBe(false)
+  })
+
+  it('分组数超过上限时只保留最近 500 项', async () => {
+    const releases = Array.from({ length: 501 }, (_, i) =>
+      createRelease({ id: i + 1, owner: 'o', repo: `r${i}`, published_at: '2025-06-01T00:00:00Z' }),
+    )
+    const wrapper = mountList(releases)
+    ;(wrapper.vm as unknown as { expandAll: () => void }).expandAll()
+    await nextTick()
+
+    const stored: string[] = JSON.parse(localStorage.getItem(KEY)!)
+    expect(stored).toHaveLength(500)
+    expect(stored).not.toContain('github|o|r0')
+    expect(stored).toContain('github|o|r500')
   })
 })
