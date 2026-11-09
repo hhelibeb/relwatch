@@ -190,7 +190,7 @@ pub trait SourceAdapter: Send + Sync {
     /// 由实现内部从 `db` 取连接，吸收 github 同步 / HF 异步三阶段的差异。
     async fn save(
         &self,
-        db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        db: &r2d2::Pool<crate::db::SqliteConnectionManager>,
         source: &Source,
         data: &[serde_json::Value],
         max_count: usize,

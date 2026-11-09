@@ -206,7 +206,7 @@ fn ai_excluded_types() -> Vec<&'static str> {
 /// fail-closed：DB 错误或 spawn panic 返回 Err，由调用方跳过本轮 AI 生成并记日志，
 /// 绝不因过滤失败而把不参与 AI 的条目放行给 DeepSeek。
 async fn filter_ai_eligible(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     saved: &[(i64, Option<String>)],
 ) -> Result<Vec<(i64, Option<String>)>, String> {
     if saved.is_empty() {
@@ -288,7 +288,7 @@ impl Drop for BatchGuard {
 /// 不注册任何等待/续跑机制（理由见该静态的文档注释）——批在跑期间新到的
 /// release 最迟下一轮轮询被补上，不会漏翻。
 fn schedule_translations_background(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     emitter: &std::sync::Arc<dyn crate::types::Emitter>,
 ) {
@@ -325,7 +325,7 @@ fn schedule_translations_background(
 /// 单条小查询、调用方（do_poll_core / check_single_source 的收尾）本就在
 /// 后台上下文，直接同步查即可；无需 spawn_blocking/block_in_place 的额外开销。
 fn read_translation_pending(
-    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
 ) -> Vec<(i64, Option<String>)> {
     let excluded = ai_excluded_types();
     let conn = match pool.get() {
@@ -336,7 +336,7 @@ fn read_translation_pending(
 }
 
 /// 读一次 AI 开关（DeepSeek 已启用）。
-fn ai_enabled(pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>) -> bool {
+fn ai_enabled(pool: &r2d2::Pool<crate::db::SqliteConnectionManager>) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return false,
@@ -346,7 +346,7 @@ fn ai_enabled(pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>) -> bool {
 
 /// 读一次翻译开关（AI 启用且翻译开启）。
 fn translation_enabled(
-    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
 ) -> bool {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -367,7 +367,7 @@ fn translation_enabled(
 /// 只跑一轮：失败条目留给下一轮轮询 retry（DB 队列自带 retry<5 封顶），
 /// 避免批内对持续失败的条目死循环。
 async fn run_single_translation_batch(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     emitter: &std::sync::Arc<dyn crate::types::Emitter>,
 ) {
@@ -438,7 +438,7 @@ static SUMMARY_BATCH_RUNNING: AtomicBool = AtomicBool::new(false);
 /// 与新 release 的顺序：新 release 的摘要在 do_poll_core 内同步生成（通知带重要
 /// 度），此补全只处理**已入库的历史** release，不产生新通知，无顺序冲突。
 fn schedule_summaries_background(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     emitter: &std::sync::Arc<dyn crate::types::Emitter>,
 ) {
@@ -464,7 +464,7 @@ fn schedule_summaries_background(
 
 /// 读库中无 AI 摘要的 release（排除 ai_eligible=false 源）。
 fn read_summary_pending(
-    pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
 ) -> Vec<(i64, Option<String>)> {
     let excluded = ai_excluded_types();
     let conn = match pool.get() {
@@ -476,7 +476,7 @@ fn read_summary_pending(
 
 /// 单批摘要补全：读一次待办 → 摘要一轮。只跑一轮，失败留给下一轮轮询。
 async fn run_single_summary_batch(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     emitter: &std::sync::Arc<dyn crate::types::Emitter>,
 ) {
@@ -498,7 +498,7 @@ pub async fn trigger_poll(app: tauri::AppHandle) -> Result<PollResult, String> {
 /// 两个 do_*_poll_async 函数的公共核心：拉取所有源 → AI 摘要 → 通知 →
 /// 派发后台翻译/摘要补全批
 async fn do_poll_core(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     emitter: &std::sync::Arc<dyn crate::types::Emitter>,
     sources: &[db::sources::Source],
@@ -597,7 +597,7 @@ struct CheckOutcome {
 
 /// 单源检查上下文：依赖与配置的集合，两条调用路径（手动/定时）各自构造一次。
 struct CheckCtx<'a> {
-    db_pool: &'a r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &'a r2d2::Pool<crate::db::SqliteConnectionManager>,
     adapter: &'a dyn source::SourceAdapter,
     client: &'a reqwest::Client,
     token: Option<&'a str>,
@@ -737,7 +737,7 @@ async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::Source) -> R
 /// huggingface.rs 的同类说明一致）：这条路径虽罕见，但它跑在整轮并发检查的收尾处，
 /// 直接阻塞的正是 tokio worker。
 async fn record_task_panic(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     source_id: i64,
 ) {
     let pool = db_pool.clone();
@@ -762,7 +762,7 @@ async fn record_task_panic(
 ///
 /// `status=0` 表示无 HTTP 状态（超时/发送失败），与认证、限流、5xx 同样按临时性记 WARN。
 async fn record_check_failure(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     source_id: i64,
     owner: String,
     repo: String,
@@ -1071,7 +1071,7 @@ fn is_uncounted_failure(msg: &str) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 async fn poll_all_sources_async(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     sources: &[db::sources::Source],
     proxy_url: &str,
     proxy_mode: &str,
@@ -1223,7 +1223,7 @@ const MASS_FAILURE_MIN_SOURCES: usize = 2;
 /// 实现上「先累加、整轮汇总后回退」而非「检查时就决定不累加」：失败记录发生在单源
 /// 检查内部，早于整轮汇总，而每轮每源最多累加 1，回退 1 就等价于本轮不计入。
 async fn apply_mass_failure_guard(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     outcomes: &[TaskOutcome],
 ) {
     let attempted = outcomes.iter().filter(|o| o.checked).count();
@@ -1254,7 +1254,7 @@ async fn apply_mass_failure_guard(
 }
 
 async fn collect_pending_and_notify(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     emitter: &dyn crate::types::Emitter,
     new_ids: &[i64],
     is_manual: bool,
@@ -1841,7 +1841,7 @@ mod tests {
 
         async fn save(
             &self,
-            db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+            db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
             source: &db::sources::Source,
             data: &[serde_json::Value],
             max_count: usize,
@@ -2587,7 +2587,7 @@ mod tests {
     async fn test_filter_ai_eligible_db_error_fails_closed() {
         // 占住唯一连接使后续 get() 超时失败 → 必须返回 Err（fail-closed），
         // 绝不能降级为空集把 youtube 条目放行给 DeepSeek。
-        use r2d2_sqlite::SqliteConnectionManager;
+        use crate::db::SqliteConnectionManager;
         let manager = SqliteConnectionManager::memory();
         // connection_timeout 同时约束两处 get：①占连接的 get（若 refill 线程
         // 还没建好连接，需在窗口内等到）；②filter 内部那个**期望失败**的 get
@@ -2624,7 +2624,7 @@ mod tests {
     static TRANSLATION_GATE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// 构造已启用 AI+翻译的 memory pool，并插入一条有 body 的 release。
-    fn setup_translate_pool(base_url: &str) -> r2d2::Pool<r2d2_sqlite::SqliteConnectionManager> {
+    fn setup_translate_pool(base_url: &str) -> r2d2::Pool<crate::db::SqliteConnectionManager> {
         let pool = crate::db::init::init_memory_pool().unwrap();
         let conn = pool.get().unwrap();
         crate::crypto::set_test_master_key();
@@ -2654,7 +2654,7 @@ mod tests {
     }
 
     fn release_translated(
-        pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
         id: i64,
     ) -> bool {
         let conn = pool.get().unwrap();
@@ -2820,7 +2820,7 @@ mod tests {
     // （无新通知，仅落库）。
 
     /// 构造已启用 AI 的 memory pool，插入一条有 body 但无摘要的 release。
-    fn setup_summary_pool(base_url: &str) -> r2d2::Pool<r2d2_sqlite::SqliteConnectionManager> {
+    fn setup_summary_pool(base_url: &str) -> r2d2::Pool<crate::db::SqliteConnectionManager> {
         let pool = crate::db::init::init_memory_pool().unwrap();
         let conn = pool.get().unwrap();
         crate::crypto::set_test_master_key();

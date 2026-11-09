@@ -24,7 +24,7 @@ pub fn init_memory_db() -> Result<Connection> {
 /// 仅测试使用的内存连接池。
 #[cfg(test)]
 pub fn init_memory_pool(
-) -> Result<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, String> {
+) -> Result<r2d2::Pool<crate::db::SqliteConnectionManager>, String> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let name = format!(
@@ -35,7 +35,7 @@ pub fn init_memory_pool(
     // 若只对 pool.get() 返回的单条连接手动执行，r2d2 预建的其余 idle 连接
     // （默认 min_idle = max_size，build() 时已建齐）仍无 busy_timeout，
     // 多连接并发写时照旧立即 BUSY（防测试 flaky 的目的落空）。
-    let manager = r2d2_sqlite::SqliteConnectionManager::file(&name).with_init(|conn| {
+    let manager = crate::db::SqliteConnectionManager::file(&name).with_init(|conn| {
         conn.execute_batch(
             "PRAGMA foreign_keys=ON;
              PRAGMA busy_timeout=5000;",
@@ -54,14 +54,14 @@ pub fn init_memory_pool(
 }
 
 pub fn init_pool(
-) -> Result<r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, String> {
+) -> Result<r2d2::Pool<crate::db::SqliteConnectionManager>, String> {
     let dir = app_data_dir();
     std::fs::create_dir_all(&dir).expect("Failed to create app data dir");
 
     // WAL 只允许单写者：轮询的 spawn_blocking（≤10 源并发）× UI 写等会从不同连接
     // 并发写，写锁冲突默认（busy_timeout=0）立即返回 SQLITE_BUSY。统一设 5s 等待
     // 窗口：冲突时等待而非失败，避免偶发 "database is locked" 引发健康状态漏记/操作报错。
-    let manager = r2d2_sqlite::SqliteConnectionManager::file(db_path())
+    let manager = crate::db::SqliteConnectionManager::file(db_path())
         .with_init(|conn| {
             conn.execute_batch(
                 "PRAGMA journal_mode=WAL;

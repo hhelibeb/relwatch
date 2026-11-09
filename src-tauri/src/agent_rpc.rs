@@ -160,7 +160,7 @@ unsafe impl Sync for ProcessScope {}
 /// 并行 run 会互收对方的 delta / agent_end / agent_settled，把别人的结束当成自己的
 /// 结束（终态误判）。
 pub struct RpcManager {
-    db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: r2d2::Pool<crate::db::SqliteConnectionManager>,
     /// 进程池（常驻 + 临时）。所有「检查-创建-占用」都在同一把锁内完成。
     pool: Mutex<PoolState>,
     /// 最近一次 spawn 时读取的 scoped-models 模式快照（None = 尚未 spawn 过）。
@@ -200,7 +200,7 @@ impl PoolState {
 }
 
 impl RpcManager {
-    pub fn new(db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>) -> Self {
+    pub fn new(db_pool: r2d2::Pool<crate::db::SqliteConnectionManager>) -> Self {
         RpcManager {
             db_pool,
             pool: Mutex::new(PoolState::default()),

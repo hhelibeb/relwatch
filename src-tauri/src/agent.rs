@@ -607,7 +607,7 @@ pub fn kill_process_tree(pid: u32) {
 /// 调度依赖注入集合（测试可替换 executor / emitter）。
 #[derive(Clone)]
 pub struct AgentDispatchCtx {
-    pub db_pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    pub db_pool: r2d2::Pool<crate::db::SqliteConnectionManager>,
     /// 并发闸门：拿到执行位才把 run 标 running，否则停在 pending 排队。
     pub gate: Arc<ConcurrencyGate>,
     /// 测试用 executor 覆盖；None 时按全局配置 + agent_type 构造。
@@ -887,7 +887,7 @@ fn render_run_entities(conn: &rusqlite::Connection, run: &AgentRun) -> Vec<Strin
 
 /// 运行失败终态落库（调度器内辅助）。
 async fn mark_run_failed(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     run_id: i64,
     error: &str,
 ) {
@@ -898,7 +898,7 @@ async fn mark_run_failed(
 
 /// 用户取消终态落库（排队期间被取消，未 spawn 进程）。
 async fn mark_run_cancelled(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     run_id: i64,
 ) {
     if let Ok(conn) = db_pool.get() {
@@ -1139,7 +1139,7 @@ mod tests {
 
     /// 测试调度上下文（取消集合 / 进程注册表独立于用例）。
     fn dispatch_ctx_with(
-        pool: r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        pool: r2d2::Pool<crate::db::SqliteConnectionManager>,
         executor: Arc<dyn AgentExecutor>,
     ) -> AgentDispatchCtx {
         AgentDispatchCtx {

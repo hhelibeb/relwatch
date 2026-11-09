@@ -48,7 +48,7 @@ impl SourceAdapter for HuggingFaceAdapter {
 
     async fn save(
         &self,
-        db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        db: &r2d2::Pool<crate::db::SqliteConnectionManager>,
         source: &Source,
         data: &[serde_json::Value],
         max_count: usize,
@@ -149,7 +149,7 @@ fn build_page_url(org: &str, limit: usize) -> String {
 /// 同步 IO 会顶住同样数量的 tokio worker（github/youtube/bilibili 均以 spawn_blocking
 /// 转包，此处对齐）。
 async fn save_huggingface_models(
-    db: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     source: &db::sources::Source,
     data: &[serde_json::Value],
     max_count: usize,

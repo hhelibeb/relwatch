@@ -885,7 +885,7 @@ pub type DeltaSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
 ///   重复请求若返回空内容，会走 on_err 把本已成功的 retry 计数加 1。
 #[allow(clippy::too_many_arguments)]
 async fn run_ai_job<T, F, Fut>(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
     job: &'static str,
@@ -1077,7 +1077,7 @@ async fn run_ai_job<T, F, Fut>(
 }
 
 pub async fn generate_summaries_for_new(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
 ) {
@@ -1125,7 +1125,7 @@ pub async fn generate_summaries_for_new(
 /// 无流式出口：这里都是后台/无观察者的批，逐片发事件无人消费（需要流式分片的手动
 /// 单条翻译走 `translate_single_release`）。
 pub async fn generate_translations_for_new(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
     force: bool,
@@ -1139,7 +1139,7 @@ pub async fn generate_translations_for_new(
 /// 独立入口而非给 `generate_translations_for_new` 多加一个 bool/`Option`
 /// 参数：调用点写得出「这是手动单条 + 要流式」的意图，不用去猜裸参含义。
 pub async fn translate_single_release(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     release_id: i64,
     body: String,
@@ -1156,7 +1156,7 @@ pub async fn translate_single_release(
 }
 
 async fn run_translate_job(
-    db_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+    db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     deepseek_semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     saved: &[(i64, Option<String>)],
     force: bool,

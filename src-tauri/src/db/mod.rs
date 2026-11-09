@@ -1,4 +1,7 @@
 pub mod init;
+pub mod pool;
+
+pub use pool::SqliteConnectionManager;
 pub mod sources;
 pub mod settings;
 pub mod releases;
