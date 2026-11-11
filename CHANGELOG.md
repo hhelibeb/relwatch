@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-11-11
+
+### Added
+- 日历视图支持按年月跳转，另有「回今天」一键回到当前月。(`c550fab`)
+- 版本列表支持 j/k 键上下移动、Enter 打开当前条目。(`c550fab`)
+- 视图与筛选条件重启后保留上次的选择。(`c550fab`)
+- Tab 遍历页签、筛选、菜单项与日历翻页时都有可见焦点框。(`7781f74`)
+
+### Fixed
+- 修复深色主题下筛选计数、统计弹窗选中页签、日历今日标记看不清的问题。(`7781f74`)
+- 修复 AI 用量圆环图配色与界面割裂、深色下刺眼的问题。(`7781f74`)
+- 修复菜单分组标题、会话时间等文字对比度不足，Agent 工具输出与失败原因难以辨认的问题。(`26ee771`)
+- 修复监控源分组图标显示为空白的问题。(`26ee771`)
+- 修复日志、代码块、Agent 输出与设置页文本框字形不一致的问题。(`d19e3fc`)
+- 修复开启代理 TUN 模式后视频封面全部显示为空的问题。(`b5e6e13`)
+- 修复发送消息后输入区残留一条引用悬浮提示的问题。(`2ec073e`)
+
+### Security
+- 升级 `zip` 至 9.2.2，修 RUSTSEC-2026-0429（high：解压声明超额 symlink 尺寸的包会直接终止进程）。(`cef7087`)
+- 升级 `rusqlite` 至 0.41.1，修 RUSTSEC-2026-0459（medium：CVE-2026-119375）。(`1fe0ef8`)
+- 升级 `rustls-webpki` 至 0.103.16，修 RUSTSEC-2026-0382 / 0383。(`378a762`)
+
+### Changed
+- 依赖升级（`vite` 8.3.5、`marked` 18.1.2、`@tauri-apps/cli` 2.12.4 等 patch / minor 版本）。(`523f81e`, `c2d1598`)
+
 ## [1.20.0] - 2026-10-20
 
 ### Added
@@ -531,7 +556,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.20.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.21.0...HEAD
+[1.21.0]: https://github.com/hhelibeb/relwatch/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/hhelibeb/relwatch/compare/v1.19.1...v1.20.0
 [1.19.1]: https://github.com/hhelibeb/relwatch/compare/v1.19.0...v1.19.1
 [1.19.0]: https://github.com/hhelibeb/relwatch/compare/v1.18.0...v1.19.0
