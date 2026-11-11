@@ -3,7 +3,7 @@
 // 会话切换时的清空经编排层调 resetForSessionSwitch。
 // 跨域互斥（模型菜单 / rpc 菜单）不反向依赖：菜单显隐状态与选择动作暴露给编排层，
 // 由编排层的键盘导航分发与全局收起逻辑接线。
-import { computed, nextTick, onUnmounted, ref, type Ref } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch, type Ref } from 'vue'
 import { open } from '@tauri-apps/plugin-dialog'
 import type { Source } from '../../api/sources'
 import type { ReleaseInfo } from '../../api/releases'
@@ -167,6 +167,10 @@ export function useAgentComposer(deps: {
   function hideChipTooltip() {
     chipTooltip.value = null
   }
+
+  // chip 被移除（发送后清空、会话切换）时元素直接从 DOM 消失，mouseleave 不会触发，
+  // 提示会残留在界面上；引用集合一变化就视为提示失效。
+  watch(entities, hideChipTooltip, { deep: true })
 
   function handleInput() {
     const el = textareaRef.value

@@ -269,6 +269,20 @@ describe('useAgentComposer 引用与 flash 反馈', () => {
     expect(api.showSkillMenu.value).toBe(false)
     expect(api.showEntityMenu.value).toBe(false)
   })
+
+  it('引用集合变化时清掉 chip 悬浮提示（发送后 chip 消失，mouseleave 不会触发）', async () => {
+    const { api } = setup()
+    api.addEntity({ kind: 'release', id: 7 })
+    api.handleChipEnter(
+      { currentTarget: { scrollWidth: 200, clientWidth: 40 }, clientX: 100, clientY: 100 } as unknown as MouseEvent,
+      '版本 · 测试 · v1.0.0',
+    )
+    expect(api.chipTooltip.value?.text).toBe('版本 · 测试 · v1.0.0')
+
+    api.entities.value = []
+    await nextTick()
+    expect(api.chipTooltip.value).toBeNull()
+  })
 })
 
 describe('useAgentComposer 本地文件附件', () => {
