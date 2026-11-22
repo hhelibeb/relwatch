@@ -158,6 +158,9 @@
   --focus-ring: 0 0 0 3px rgba(62, 99, 221, 0.20);
   --accent-prerelease: #71717a;
   --accent-medium: #a16207;
+
+  /* 原生 select 触发器的下拉箭头：appearance:none 后自绘，颜色随主题取 muted 档 */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E");
 }
 
 [data-theme="dark"] {
@@ -246,6 +249,8 @@
   --focus-ring: 0 0 0 3px rgba(154, 174, 242, 0.28);
   --accent-prerelease: #9d9da6;
   --accent-medium: #e0b45c;
+
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%239d9da6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E");
 }
 
 /* ── 基础排版 ─────────────────────────────────── */
@@ -734,6 +739,70 @@ html {
 
 .btn-icon-link:hover {
   color: var(--primary);
+}
+
+/* ── 表单控件统一 ───────────────────────────────── */
+/* 勾选类控件统一品牌色与尺寸：此前设置页 checkbox 是 OS 默认蓝，
+   与源列表页（accent-color 已设）并排看是两套控件。 */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+input[type='checkbox']:disabled,
+input[type='radio']:disabled {
+  cursor: not-allowed;
+}
+
+/* 原生 select 触发器：appearance:none + 主题感知箭头，与输入框同一套
+   边框/圆角/焦点环。下拉弹层仍是原生的（保留键盘与无障碍行为）。 */
+.select-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg) var(--select-chevron) no-repeat right 9px center / 12px 12px;
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
+}
+
+.select-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.select-input:focus {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.select-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 搜索命中 ───────────────────────────────────── */
+/* CSS Custom Highlight API：不改动 DOM（摘要截断测量依赖单一文本节点）。
+   不支持的环境（旧 WebView / 测试）静默降级为无高亮，过滤行为不受影响。 */
+::highlight(search-hit) {
+  background-color: var(--primary-soft-border);
+  color: var(--text);
+}
+
+/* 正文命中片段是自有元素，直接渲染 <mark>，与 API 高亮同一套色 */
+mark.search-hit {
+  background: var(--primary-soft-border);
+  color: var(--text);
+  border-radius: var(--radius-xs);
+  padding: 0 1px;
 }
 
 /* ── 筛选下拉（ReleaseSearchBar / LogTab 共享） ────── */

@@ -227,6 +227,7 @@ export default {
   'release.deep_search_hint': '搜索 GitHub / HuggingFace 版本正文与译文全文',
   'release.deep_search_recent_only': '仅搜索近期正文',
   'release.deep_search_agent_hint': '更多内容可使用 Agent 工作区搜索',
+  'release.search_hit_body': '命中上下文',
   'release.empty': '暂无版本记录',
   'release.empty_desc': '添加监控源后点「立即检查」，这里会按发布时间列出新版本。',
   'release.no_match_desc': '换个关键词，或清空搜索与筛选看全部版本。',
@@ -347,6 +348,14 @@ export default {
   'context.open_cover_image': '打开封面图片',
   'context.translate': '翻译',
   'context.delete_release': '删除版本',
+  'context.copy_code': '复制代码',
+
+  'lightbox.title': '图片预览',
+  'lightbox.zoom_in': '放大',
+  'lightbox.zoom_out': '缩小',
+  'lightbox.zoom_reset': '适应窗口',
+  'lightbox.open_original': '打开原图',
+  'lightbox.load_failed': '图片加载失败',
 
   'source.added': '添加监控源: {source_type} {owner}/{repo}',
   'agent.config_saved': 'Agent 配置已保存: {enabled}',

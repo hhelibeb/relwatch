@@ -227,6 +227,7 @@ export default {
   'release.deep_search_hint': 'Search GitHub/HuggingFace release body and translation',
   'release.deep_search_recent_only': 'Searching recent content only',
   'release.deep_search_agent_hint': 'Search more content in the Agent workspace',
+  'release.search_hit_body': 'Match context',
   'release.empty': 'No releases yet',
   'release.empty_desc': 'Add a source and click "Check Now" — releases will be listed here by publish date.',
   'release.no_match_desc': 'Try another keyword, or clear the search and filters to see everything.',
@@ -347,6 +348,14 @@ export default {
   'context.open_cover_image': 'Open Cover Image',
   'context.translate': 'Translate',
   'context.delete_release': 'Delete Version',
+  'context.copy_code': 'Copy code',
+
+  'lightbox.title': 'Image preview',
+  'lightbox.zoom_in': 'Zoom in',
+  'lightbox.zoom_out': 'Zoom out',
+  'lightbox.zoom_reset': 'Fit to window',
+  'lightbox.open_original': 'Open original',
+  'lightbox.load_failed': 'Failed to load image',
 
   'source.added': 'Source added: {source_type} {owner}/{repo}',
   'agent.config_saved': 'Agent config saved: {enabled}',

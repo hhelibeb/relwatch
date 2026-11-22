@@ -1,12 +1,13 @@
 <script setup lang="ts">
-import { ref, computed, inject, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
-import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel } from '../utils'
+import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel, tokenizeQuery, type BodyIndex } from '../utils'
+import { collectQueryRanges, registerHighlightRanges, unregisterHighlightOwner, searchHighlightSupported, extractBodySnippet } from '../utils/searchHighlight'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease, releaseTitleRedundant } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
 import { mediaUrlOrEmpty } from '../utils/imageProxy'
@@ -17,7 +18,7 @@ import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
-const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean; selected?: boolean }>()
+const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean; selected?: boolean; searchQuery?: string; bodyIndex?: BodyIndex | null }>()
 const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
@@ -311,6 +312,7 @@ onMounted(() => {
 onUnmounted(() => {
   unregisterCloser(closeMenus)
   document.removeEventListener('click', closeMenus)
+  unregisterHighlightOwner(highlightOwner)
 })
 
 function releaseContextMenu(e: MouseEvent, url: string, onCover = false) {
@@ -607,10 +609,62 @@ const youtubeViewText = computed(() => {
 const youtubeViewTitle = computed(() =>
   youtubeViewCount.value != null ? String(youtubeViewCount.value) : ''
 )
+
+// ========== 搜索命中 ==========
+// 高亮走 CSS Custom Highlight API（零 DOM 改动）：摘要的行级截断测量依赖
+// 单一文本节点，插 <mark> 会让 useLineClamp 的 range 越界。
+const cardEl = ref<HTMLElement | null>(null)
+const highlightOwner = {}
+// 按钮/时间/状态等 chrome 文本不参与命中高亮；片段自带 <mark>、代码语言标签也排除
+const HIGHLIGHT_SKIP = 'button, time, .status-inline, .release-importance-chip, .release-flag-chip, .release-header-right, .release-hit-snippet, .md-code-lang'
+
+function applySearchHighlight() {
+  const tokens = tokenizeQuery(props.searchQuery ?? '')
+  if (tokens.length === 0 || !searchHighlightSupported()) {
+    unregisterHighlightOwner(highlightOwner)
+    return
+  }
+  // 等子组件（MarkdownContent 的代码块增强）落定后再收集文本区间
+  void nextTick(() => {
+    const el = cardEl.value
+    if (!el) return
+    registerHighlightRanges(highlightOwner, collectQueryRanges(el, tokens, HIGHLIGHT_SKIP))
+  })
+}
+
+watch(
+  [() => props.searchQuery, previewContent, summaryDisplay, cardTitle, youtubeChannelName,
+    () => props.release.tag_name, () => props.release.owner, () => props.release.repo],
+  applySearchHighlight,
+  { immediate: true },
+)
+
+// 卡片实际渲染出的预览文本：摘要超过两行时会被 summaryDisplay 截断，
+// 截断段的命中在卡片上完全看不到（DOM 里只有截断后的文本），必须算作「不可见」。
+// Markdown 正文预览是 CSS 高度裁切，渲染文本仍完整，这里按完整文本判断。
+const renderedPreview = computed(() => previewKind.value === 'summary'
+  ? (summaryDisplay.value ?? previewContent.value)
+  : previewContent.value)
+
+// 可见字段不含全部命中词时（深度搜索命中正文深处），给出命中上下文片段
+const bodyHitSnippet = computed(() => {
+  const q = props.searchQuery ?? ''
+  if (!q.trim()) return null
+  const visible = `${props.release.owner}/${props.release.repo} ${props.release.tag_name} ${cardTitle.value} ${youtubeChannelName.value} ${renderedPreview.value ?? ''}`
+  const indexed = props.bodyIndex?.get(props.release.id)
+  // 完整摘要兜底：命中只落在摘要折叠区时，正文候选里不一定有它
+  const fullSummary = previewKind.value === 'summary' ? previewContent.value : null
+  return extractBodySnippet(
+    visible,
+    [props.release.body_translated, props.release.body, indexed?.[1], indexed?.[0], fullSummary],
+    q,
+  )
+})
 </script>
 
 <template>
   <div class="release-item"
+    ref="cardEl"
     :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted, 'release-selected': props.selected }, showImportance ? releaseImportanceClass(release) : '']"
     :draggable="agentEnabled && agentPanelOpen"
     @dragstart="handleDragStart">
@@ -725,6 +779,20 @@ const youtubeViewTitle = computed(() =>
         </button>
       </div>
     </template>
+    <!-- 深度搜索命中正文深处：可见预览里没有命中词时，展示命中上下文 -->
+    <div
+      v-if="bodyHitSnippet && canOpenDetail"
+      class="release-hit-snippet"
+      :title="t('release.read_full')"
+      @click="openDetail"
+      @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
+    >
+      <svg class="release-hit-snippet-icon"><use href="/icons.svg#search-icon"/></svg>
+      <span class="release-hit-snippet-label">{{ t('release.search_hit_body') }}</span>
+      <span class="release-hit-snippet-text">
+        <template v-for="(seg, i) in bodyHitSnippet" :key="i"><mark v-if="seg.hit" class="search-hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
+      </span>
+    </div>
   </div>
 
   <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="releaseMenuItems" @action="handleReleaseMenuAction" @close="closeMenus" />
@@ -1237,6 +1305,44 @@ const youtubeViewTitle = computed(() =>
 
 .release-link-action:hover {
   background: var(--hover-surface-nested);
+}
+
+/* 正文命中片段：单行上下文，点击直达详情阅读全文 */
+.release-hit-snippet {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-out);
+}
+
+.release-hit-snippet:hover {
+  background: var(--hover-surface-nested);
+}
+
+.release-hit-snippet-icon {
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+}
+
+.release-hit-snippet-label {
+  flex-shrink: 0;
+  font-weight: 600;
+}
+
+.release-hit-snippet-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 </style>

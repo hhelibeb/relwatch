@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onUnmounted, ref } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
+import type { BodyIndex } from '../utils'
 import { t } from '../i18n'
 import EmptyState from './common/EmptyState.vue'
 import ReleaseItem from './ReleaseItem.vue'
@@ -14,6 +15,8 @@ const props = defineProps<{
   deepSearch: boolean
   /** 目录加载中：仅列表为空时渲染骨架，避免刷新已有列表时重放 */
   loading?: boolean
+  searchQuery?: string
+  bodyIndex?: BodyIndex | null
 }>()
 
 // open-detail 携带导航序列：简单视图使用全局时间倒序序列
@@ -162,6 +165,8 @@ defineExpose({ focusReleaseId, moveSelection, selectFirst, openSelected })
           :release="item"
           :highlighted="highlightId === item.id"
           :selected="item.id === selectedId"
+          :search-query="props.searchQuery"
+          :body-index="props.bodyIndex"
           @update="emit('update')"
           @open-detail="(release) => emit('open-detail', release, sortedReleases)"
         />

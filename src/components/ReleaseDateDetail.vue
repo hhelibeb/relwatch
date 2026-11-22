@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
+import type { BodyIndex } from '../utils'
 import { getLocale, t } from '../i18n'
 import { parseDateKey, toDateKey } from '../utils/dateKey'
 import { track } from '../composables/useUsageTracking'
@@ -10,6 +11,8 @@ import ReleaseItem from './ReleaseItem.vue'
 const props = defineProps<{
   selectedDate: string
   releases: ReleaseInfo[]
+  searchQuery?: string
+  bodyIndex?: BodyIndex | null
 }>()
 
 const emit = defineEmits<{
@@ -52,6 +55,8 @@ function handleBack() {
       v-for="release in dateDetailReleases"
       :key="release.id"
       :release="release"
+      :search-query="props.searchQuery"
+      :body-index="props.bodyIndex"
       @update="emit('update')"
       @open-detail="(release) => emit('open-detail', release, dateDetailReleases)"
     />

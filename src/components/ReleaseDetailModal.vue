@@ -2,6 +2,7 @@
 import { ref, computed, watch, inject, nextTick, onMounted, onUnmounted } from 'vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
+import ImageLightbox from './common/ImageLightbox.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey } from '../injection-keys'
 import { type ReleaseInfo, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
@@ -10,7 +11,8 @@ import { registerCloser, unregisterCloser, closeAllContextMenus, registerOverlay
 import { track } from '../composables/useUsageTracking'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { t } from '../i18n'
-import { formatDate, statusClass, statusLabel } from '../utils'
+import { formatDate, statusClass, statusLabel, tokenizeQuery } from '../utils'
+import { collectQueryRanges, registerHighlightRanges, unregisterHighlightOwner, searchHighlightSupported } from '../utils/searchHighlight'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX, FLAG_COLOR_LABEL_KEYS } from '../utils/releaseFlag'
 import { fromMediaUrl } from '../utils/imageProxy'
@@ -25,6 +27,7 @@ const props = defineProps<{
   total: number
   hasPrev: boolean
   hasNext: boolean
+  searchQuery?: string
 }>()
 
 const emit = defineEmits<{
@@ -324,6 +327,7 @@ onUnmounted(() => {
   unregisterCloser(closeBodyMenu)
   document.removeEventListener('click', closeBodyMenu)
   unregisterOverlay?.()
+  unregisterHighlightOwner(highlightOwner)
 })
 
 // HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）
@@ -362,6 +366,39 @@ async function applyFlag(flag: number) {
     showToast?.(t('release.flag_failed') + (e instanceof Error ? e.message : String(e)))
   }
 }
+
+// ========== 正文图片灯箱 ==========
+const lightbox = ref<{ src: string; originalUrl: string } | null>(null)
+
+function handleBodyClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  // 链接（含包裹图片的链接）交给外链守卫，不拦截
+  if (target.closest('a[href]')) return
+  const img = target.closest('img') as HTMLImageElement | null
+  if (!img || !bodyEl.value?.contains(img)) return
+  const src = img.getAttribute('src') ?? ''
+  if (!src) return
+  lightbox.value = { src, originalUrl: fromMediaUrl(src) }
+}
+
+// ========== 搜索命中高亮（与卡片同一套 CSS Highlight API）==========
+const highlightOwner = {}
+
+function applySearchHighlight() {
+  const tokens = tokenizeQuery(props.searchQuery ?? '')
+  if (tokens.length === 0 || !searchHighlightSupported()) {
+    unregisterHighlightOwner(highlightOwner)
+    return
+  }
+  void nextTick(() => {
+    const el = bodyEl.value
+    if (!el) return
+    // 按钮、代码块语言标签属于 chrome 文本，不参与命中高亮
+    registerHighlightRanges(highlightOwner, collectQueryRanges(el, tokens, 'button, .md-code-lang'))
+  })
+}
+
+watch([currentContent, () => props.searchQuery], applySearchHighlight, { immediate: true })
 </script>
 
 <template>
@@ -415,7 +452,7 @@ async function applyFlag(flag: number) {
             @click="switchMode(m.mode)"
           >{{ m.label }}</button>
         </div>
-        <div ref="bodyEl" class="release-detail-body" @contextmenu.prevent.stop="handleBodyContextMenu">
+        <div ref="bodyEl" class="release-detail-body" @click="handleBodyClick" @contextmenu.prevent.stop="handleBodyContextMenu">
           <!-- 译文 / 原文：完整 Markdown 渲染，无高度限制 -->
           <div v-if="currentContent" class="release-detail-markdown">
             <MarkdownContent :content="currentContent" :no-cache="streamingContent" />
@@ -464,6 +501,12 @@ async function applyFlag(flag: number) {
         :items="bodyMenuItems"
         @action="handleBodyMenuAction"
         @close="closeBodyMenu"
+      />
+      <ImageLightbox
+        v-if="lightbox"
+        :src="lightbox.src"
+        :original-url="lightbox.originalUrl"
+        @close="lightbox = null"
       />
     </div>
   </Teleport>
@@ -746,6 +789,10 @@ async function applyFlag(flag: number) {
   color: var(--text);
   font-size: var(--fs-body);
   line-height: 1.6;
+}
+
+.release-detail-markdown :deep(img) {
+  cursor: zoom-in;
 }
 
 .release-detail-translating {

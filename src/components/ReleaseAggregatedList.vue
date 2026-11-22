@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
+import type { BodyIndex } from '../utils'
 import type { RepoGroup } from './releaseTypes'
 import { useContextMenu } from '../composables/useContextMenu'
 import { track } from '../composables/useUsageTracking'
@@ -20,6 +21,8 @@ const props = defineProps<{
   hasSearchQuery?: boolean
   /** 目录加载中：仅列表为空时渲染骨架 */
   loading?: boolean
+  searchQuery?: string
+  bodyIndex?: BodyIndex | null
 }>()
 
 /** 分组显示名：按注册表 displayName（YouTube 频道名），其余 owner/repo。 */
@@ -174,6 +177,8 @@ function handleOpenUrl(url: string) {
         v-for="release in group.releases"
         :key="release.id"
         :release="release"
+        :search-query="props.searchQuery"
+        :body-index="props.bodyIndex"
         @update="emit('update')"
         @open-detail="forwardOpenDetail"
       />
