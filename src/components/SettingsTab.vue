@@ -569,7 +569,7 @@ async function handleImportBackup() {
           </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('proxy_mode') || null">{{ t('settings.proxy_mode') }}</span>
-            <select v-model="form.proxy_mode" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+            <select v-model="form.proxy_mode" class="select-input setting-select">
               <option value="none">{{ t('settings.proxy_none') }}</option>
               <option value="system">{{ t('settings.proxy_system') }}</option>
               <option value="custom">{{ t('settings.proxy_custom') }}</option>
@@ -735,7 +735,7 @@ async function handleImportBackup() {
           </label>
           <label class="setting-row">
             <span class="setting-label" :data-dirty="dirtyFields.has('deepseek_min_importance') || null">{{ t('settings.notify_threshold') }}</span>
-            <select v-model="form.deepseek_min_importance" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+            <select v-model="form.deepseek_min_importance" class="select-input setting-select">
               <option value="小">{{ t('settings.importance_any') }}</option>
               <option value="中">{{ t('settings.importance_medium_or_above') }}</option>
               <option value="大">{{ t('settings.importance_high_only') }}</option>
@@ -767,7 +767,7 @@ async function handleImportBackup() {
           <template v-if="agentEnabled">
           <label class="setting-row">
             <span class="setting-label">{{ t('agent.type') }}</span>
-            <select v-model="agentType" class="setting-input setting-input-narrow" style="width:calc(14ch * 1.25)">
+            <select v-model="agentType" class="select-input setting-select">
               <option value="pi">{{ t('agent.type_pi') }}</option>
             </select>
           </label>
@@ -1159,6 +1159,14 @@ async function handleImportBackup() {
   width: 14ch;
 }
 
+/* 下拉宽度按最长选项自适应：固定 ch 宽度留不住「使用系统代理」/「Use System Proxy」
+   这类文案的完整显示（右侧还要给自绘箭头留 28px）。 */
+.setting-select {
+  width: max-content;
+  min-width: calc(14ch * 1.25);
+  max-width: 100%;
+}
+
 .bili-cookie-row {
   display: flex;
   align-items: center;
@@ -1241,14 +1249,6 @@ async function handleImportBackup() {
 
 .setting-link:hover {
   text-decoration: underline;
-}
-
-select.setting-input {
-  appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%239ca3af' stroke-width='1.5' d='M3 5l3 3 3-3'/%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 10px center;
-  padding-right: 28px;
 }
 
 .setting-row-checkbox {

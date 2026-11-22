@@ -833,7 +833,7 @@ function hideHealthTooltip() {
               <label class="source-setting-row">
                 <span class="source-setting-label">{{ t('source.fetch_history') }}</span>
                 <select
-                  class="source-setting-input"
+                  class="select-input source-setting-input"
                   :value="sourceFlagValue(source, 'fetch_history')"
                   @click.stop
                   @change="handleSourceFlagChange(source, 'fetch_history', ($event.target as HTMLSelectElement).value)"
@@ -846,7 +846,7 @@ function hideHealthTooltip() {
               <label v-if="source.source_type === 'github'" class="source-setting-row">
                 <span class="source-setting-label">{{ t('source.check_prereleases') }}</span>
                 <select
-                  class="source-setting-input"
+                  class="select-input source-setting-input"
                   :value="sourceFlagValue(source, 'check_prereleases')"
                   @click.stop
                   @change="handleSourceFlagChange(source, 'check_prereleases', ($event.target as HTMLSelectElement).value)"
@@ -1590,16 +1590,15 @@ function hideHealthTooltip() {
   text-overflow: ellipsis;
 }
 
-.source-setting-input {
-  width: calc(13ch * 1.1);
+/* 宽度按最长选项自适应：固定 ch 宽度放不下「跟随全局设置」这类文案
+   （自绘箭头右侧还要留 20px），英文文案更长。菜单内用紧凑留白。 */
+.select-input.source-setting-input {
+  width: auto;
+  min-width: calc(13ch * 1.1);
+  padding: 3px 20px 3px 8px;
+  background-position: right 6px center;
   flex: none;
-  padding: 2px 4px;
   font-size: var(--fs-meta);
-  color: var(--text);
-  /* 原 --bg-input 从未定义，一直靠 fallback 落成 --bg-subtle；此处直接写下真实值 */
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
 }
 
 .source-checkbox {
