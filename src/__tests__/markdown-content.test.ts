@@ -1,6 +1,13 @@
 import { mount } from '@vue/test-utils'
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
+import { copyTextToClipboard } from '../api/client'
+
+vi.mock('../api/client', () => ({
+  copyTextToClipboard: vi.fn(),
+}))
+
+const copyTextMock = vi.mocked(copyTextToClipboard)
 
 describe('MarkdownContent', () => {
   it('null 内容渲染为空', () => {
@@ -77,9 +84,45 @@ describe('MarkdownContent', () => {
     const md = '```\nconst x = 1\n```'
     const wrapper = mount(MarkdownContent, { props: { content: md } })
     const html = wrapper.find('.markdown-body').element.innerHTML
-    expect(html).toContain('<pre>')
-    expect(html).toContain('<code>')
-    expect(html).toContain('const x = 1')
+    expect(html).toContain('<pre')
+    expect(html).toContain('<code')
+    expect(wrapper.find('pre').text()).toContain('const x = 1')
+  })
+
+  it('代码块自动语法高亮并带复制按钮与语言标签', () => {
+    const md = '```js\nconst x = 1\n```'
+    const wrapper = mount(MarkdownContent, { props: { content: md } })
+    const pre = wrapper.find('pre')
+    expect(pre.classes()).toContain('md-code-block')
+    expect(pre.find('code').classes()).toContain('hljs')
+    expect(pre.find('code').html()).toContain('hljs-keyword')
+    expect(wrapper.find('.md-code-wrap .md-code-lang').text()).toBe('js')
+    expect(wrapper.find('.md-code-wrap > .md-code-copy').exists()).toBe(true)
+    // 工具条在外层不滚动的容器上：pre 横向滚动时按钮/标签不跟着滚走
+    expect(pre.find('.md-code-copy').exists()).toBe(false)
+    expect(pre.find('.md-code-lang').exists()).toBe(false)
+  })
+
+  it('未注册的语言保持原样不高亮', () => {
+    const md = '```mermaid\ngraph TD; A-->B;\n```'
+    const wrapper = mount(MarkdownContent, { props: { content: md } })
+    const code = wrapper.find('pre code')
+    expect(code.classes()).not.toContain('hljs')
+    expect(code.text()).toBe('graph TD; A-->B;')
+    // 复制按钮不受高亮与否影响
+    expect(wrapper.find('.md-code-copy').exists()).toBe(true)
+    // 未注册的语言仍保留语言标签（方便用户判断代码类型）
+    expect(wrapper.find('.md-code-lang').text()).toBe('mermaid')
+  })
+
+  it('点击复制按钮把代码文本写入剪贴板并给出成功反馈', async () => {
+    copyTextMock.mockResolvedValue(undefined)
+    const md = '```json\n{"a": 1}\n```'
+    const wrapper = mount(MarkdownContent, { props: { content: md } })
+    const btn = wrapper.find('.md-code-copy')
+    await btn.trigger('click')
+    expect(copyTextMock).toHaveBeenCalledWith('{"a": 1}')
+    expect(btn.classes()).toContain('copied')
   })
 
   it('渲染引用块', () => {

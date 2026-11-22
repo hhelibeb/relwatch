@@ -65,18 +65,122 @@ function parseAndSanitize(content: string): string {
 </script>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, inject, watch, onMounted, onBeforeUnmount } from 'vue'
+import hljs from 'highlight.js/lib/common'
+import { copyTextToClipboard } from '../../api/client'
+import { ShowToastKey } from '../../injection-keys'
+import { t } from '../../i18n'
 
 const props = defineProps<{ content: string | null; noCache?: boolean }>()
+const showToast = inject(ShowToastKey, () => {})
 
 const html = computed(() => {
   if (!props.content) return ''
   return props.noCache ? renderMarkdownHtmlUncached(props.content) : renderMarkdownHtml(props.content)
 })
+
+// ── 代码块增强：语法高亮 + 语言标签 + 复制按钮 ──────────────
+// 在渲染后的 DOM 上做（而非 HTML 字符串层）：清洗缓存保持与内容一一对应，
+// 高亮/按钮是展示层增强，v-html 每次整体替换后重新施加。
+const rootEl = ref<HTMLElement | null>(null)
+const copyTimers = new Set<ReturnType<typeof setTimeout>>()
+// 超大代码块不做高亮（自动检测尤其贵），复制按钮不受影响
+const HIGHLIGHT_MAX_CHARS = 30000
+const AUTO_DETECT_MAX_CHARS = 5000
+
+const COPY_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg>'
+const CHECK_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-7"/></svg>'
+
+function highlightCode(code: HTMLElement): string | null {
+  const text = code.textContent ?? ''
+  if (!text || text.length > HIGHLIGHT_MAX_CHARS || code.dataset.highlighted) return null
+  const explicit = code.className.match(/language-([\w+-]+)/)?.[1]
+  try {
+    if (explicit) {
+      // 未注册的语言（mermaid 等）保持原样，不做无意义的自动猜测
+      if (!hljs.getLanguage(explicit)) return null
+      const result = hljs.highlight(text, { language: explicit, ignoreIllegals: true })
+      code.innerHTML = result.value
+      code.classList.add('hljs')
+      code.dataset.highlighted = 'yes'
+      return result.language ?? explicit
+    }
+    if (text.length > AUTO_DETECT_MAX_CHARS) return null
+    const result = hljs.highlightAuto(text)
+    if (!result.language) return null
+    code.innerHTML = result.value
+    code.classList.add('hljs')
+    code.dataset.highlighted = 'yes'
+    return result.language
+  } catch {
+    return null
+  }
+}
+
+async function handleCopyCode(code: HTMLElement, btn: HTMLButtonElement) {
+  try {
+    // marked 的围栏代码块 textContent 带尾随换行，复制时去掉（与 GitHub 复制行为一致）
+    await copyTextToClipboard((code.textContent ?? '').replace(/\n$/, ''))
+    btn.classList.add('copied')
+    btn.innerHTML = CHECK_ICON
+    btn.title = t('release.copied')
+    const timer = setTimeout(() => {
+      copyTimers.delete(timer)
+      if (!btn.isConnected) return
+      btn.classList.remove('copied')
+      btn.innerHTML = COPY_ICON
+      btn.title = t('context.copy_code')
+    }, 1600)
+    copyTimers.add(timer)
+  } catch (e: unknown) {
+    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+  }
+}
+
+function enhanceCodeBlocks() {
+  const root = rootEl.value
+  if (!root) return
+  for (const pre of root.querySelectorAll('pre')) {
+    if (pre.parentElement?.classList.contains('md-code-wrap')) continue
+    const code = pre.querySelector('code')
+    if (!code) continue
+
+    // pre 自身承担横向滚动：工具条若放在 pre 内会跟着代码一起滚走（长行右滚后
+    // 复制按钮不可见），故包一层不滚动的定位容器，工具条挂在容器上。
+    const wrap = document.createElement('div')
+    wrap.className = 'md-code-wrap'
+    pre.parentNode?.insertBefore(wrap, pre)
+    wrap.appendChild(pre)
+
+    const lang = highlightCode(code)
+    pre.classList.add('md-code-block')
+    const label = lang ?? code.className.match(/language-([\w+-]+)/)?.[1] ?? null
+    if (label) {
+      const langEl = document.createElement('span')
+      langEl.className = 'md-code-lang'
+      langEl.textContent = label
+      wrap.appendChild(langEl)
+    }
+    const btn = document.createElement('button')
+    btn.type = 'button'
+    btn.className = 'md-code-copy'
+    btn.title = t('context.copy_code')
+    btn.innerHTML = COPY_ICON
+    btn.addEventListener('click', () => { void handleCopyCode(code, btn) })
+    wrap.appendChild(btn)
+  }
+}
+
+watch(html, enhanceCodeBlocks, { flush: 'post' })
+onMounted(enhanceCodeBlocks)
+onBeforeUnmount(() => {
+  for (const timer of copyTimers) clearTimeout(timer)
+  copyTimers.clear()
+})
 </script>
 
 <template>
-  <div class="markdown-body" v-html="html"></div>
+  <div ref="rootEl" class="markdown-body" v-html="html"></div>
 </template>
 
 <style scoped>
@@ -144,8 +248,13 @@ const html = computed(() => {
   border-radius: var(--radius-xs);
 }
 
-.markdown-body :deep(pre) {
+.markdown-body :deep(.md-code-wrap) {
+  position: relative;
   margin: 8px 0;
+}
+
+.markdown-body :deep(pre) {
+  margin: 0;
   padding: 10px 12px;
   background: var(--bg-subtle);
   border-radius: var(--radius-sm);
@@ -193,5 +302,122 @@ const html = computed(() => {
   border: none;
   border-top: 1px solid var(--border);
   margin: 10px 0;
+}
+
+/* ── 代码块工具条：语言标签 + 复制按钮 ─────────────── */
+.markdown-body :deep(.md-code-lang) {
+  position: absolute;
+  top: 7px;
+  right: 36px;
+  font-family: var(--mono-font);
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+  user-select: none;
+  pointer-events: none;
+  transition: opacity var(--dur-hover) var(--ease-out);
+}
+
+.markdown-body :deep(.md-code-copy) {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: opacity var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
+}
+
+.markdown-body :deep(.md-code-copy svg) {
+  width: 13px;
+  height: 13px;
+}
+
+.markdown-body :deep(.md-code-copy:hover) {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.markdown-body :deep(.md-code-copy.copied) {
+  color: var(--success);
+  border-color: var(--success);
+}
+
+/* 有 hover 能力时工具条默认收起，悬停/键盘聚焦浮现；触摸设备常驻 */
+@media (hover: hover) {
+  .markdown-body :deep(.md-code-copy),
+  .markdown-body :deep(.md-code-lang) {
+    opacity: 0;
+  }
+
+  .markdown-body :deep(.md-code-wrap:hover .md-code-copy),
+  .markdown-body :deep(.md-code-wrap:hover .md-code-lang),
+  .markdown-body :deep(.md-code-wrap:focus-within .md-code-copy),
+  .markdown-body :deep(.md-code-wrap:focus-within .md-code-lang) {
+    opacity: 1;
+  }
+}
+
+/* ── 语法高亮：取图表系列色板，深浅主题各自有值 ─────── */
+.markdown-body :deep(.hljs-comment),
+.markdown-body :deep(.hljs-quote) {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.markdown-body :deep(.hljs-keyword),
+.markdown-body :deep(.hljs-selector-tag),
+.markdown-body :deep(.hljs-meta),
+.markdown-body :deep(.hljs-doctag) {
+  color: var(--data-series-4);
+}
+
+.markdown-body :deep(.hljs-string),
+.markdown-body :deep(.hljs-regexp),
+.markdown-body :deep(.hljs-addition) {
+  color: var(--data-series-5);
+}
+
+.markdown-body :deep(.hljs-number),
+.markdown-body :deep(.hljs-literal),
+.markdown-body :deep(.hljs-symbol),
+.markdown-body :deep(.hljs-bullet) {
+  color: var(--data-series-3);
+}
+
+.markdown-body :deep(.hljs-title),
+.markdown-body :deep(.hljs-section),
+.markdown-body :deep(.hljs-name),
+.markdown-body :deep(.hljs-selector-id),
+.markdown-body :deep(.hljs-selector-class) {
+  color: var(--data-series-2);
+}
+
+.markdown-body :deep(.hljs-attr),
+.markdown-body :deep(.hljs-attribute),
+.markdown-body :deep(.hljs-variable),
+.markdown-body :deep(.hljs-template-variable),
+.markdown-body :deep(.hljs-type),
+.markdown-body :deep(.hljs-built_in) {
+  color: var(--data-series-1);
+}
+
+.markdown-body :deep(.hljs-deletion) {
+  color: var(--danger);
+}
+
+.markdown-body :deep(.hljs-emphasis) {
+  font-style: italic;
+}
+
+.markdown-body :deep(.hljs-strong) {
+  font-weight: 600;
 }
 </style>
