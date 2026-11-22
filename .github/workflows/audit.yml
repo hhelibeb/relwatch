@@ -1,4 +1,7 @@
 name: Dependency Audit
+# push 上的失败不阻断（见各 audit step 的 continue-on-error）：advisory 是新披露的
+# 外部事件，与本次推送的代码无关，不该让一次前端改动变红；阻断留给每周定时与本仓 PR。
+# 依赖自己跟上由 Renovate 负责（renovate.json 的 lockFileMaintenance / osvVulnerabilityAlerts）。
 on:
   push:
     branches: [main]
@@ -24,6 +27,7 @@ jobs:
       # vulnerable 条目一律失败，warning（unmaintained/unsound/yanked）默认不阻塞
       - run: cargo audit
         working-directory: src-tauri
+        continue-on-error: ${{ github.event_name == 'push' }}
 
   node:
     runs-on: ubuntu-latest
@@ -40,3 +44,4 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # --prod：只审计运行时会实际加载的依赖，dev 依赖的漏洞不阻塞发布
       - run: pnpm audit --prod
+        continue-on-error: ${{ github.event_name == 'push' }}
