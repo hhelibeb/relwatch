@@ -19,6 +19,10 @@
  *    由窗口级守卫（useTransientUiGuard）在隐藏/失焦时调用 invalidateTransientUi()，
  *    在真实用户输入时调用 endTransientUiInvalidation()；hover/focus 驱动的提示
  *    必须自行检查 isTransientUiInvalidated() 并在失效期内保持静默。
+ *
+ * 4. 页内查找接管（registerFindHandler/dispatchFind）：
+ *    供 App.vue 的全局 Ctrl+F 按 LIFO 顺序询问最顶层可查找浮层（如 ReleaseDetailModal）
+ *    是否消费，避免跨层 ref 透传。
  */
 type Closer = () => void
 const closers: Closer[] = []
@@ -58,6 +62,26 @@ export function registerOverlayActive(isActive: OverlayActive): () => void {
 export function hasActiveOverlay(): boolean {
   // 拷贝一份再遍历，避免回调中注销自身导致跳项
   return [...overlayStates].some((isActive) => isActive())
+}
+
+type FindHandler = () => boolean
+const findHandlers: FindHandler[] = []
+
+/** 注册页内查找接管器（LIFO 优先级），返回注销函数。返回 true 表示已消费 Ctrl+F。 */
+export function registerFindHandler(handler: FindHandler): () => void {
+  findHandlers.push(handler)
+  return () => {
+    const idx = findHandlers.indexOf(handler)
+    if (idx !== -1) findHandlers.splice(idx, 1)
+  }
+}
+
+export function dispatchFind(): boolean {
+  const snapshot = [...findHandlers]
+  for (let i = snapshot.length - 1; i >= 0; i--) {
+    if (snapshot[i]()) return true
+  }
+  return false
 }
 
 // ── 瞬态层失效期 ─────────────────────────────────────────────────────────────

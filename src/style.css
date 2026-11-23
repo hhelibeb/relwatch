@@ -797,6 +797,11 @@ input[type='radio']:disabled {
   color: var(--text);
 }
 
+::highlight(search-hit-current) {
+  background-color: var(--primary);
+  color: var(--on-primary);
+}
+
 /* 正文命中片段是自有元素，直接渲染 <mark>，与 API 高亮同一套色 */
 mark.search-hit {
   background: var(--primary-soft-border);

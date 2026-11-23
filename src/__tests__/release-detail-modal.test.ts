@@ -9,6 +9,7 @@ import { translateRelease } from '../api/releases'
 import { events } from '../bindings'
 import type { ReleaseTranslateChunk } from '../bindings'
 import type { ReleaseInfo } from '../api/releases'
+import { dispatchFind } from '../composables/contextMenuBus'
 import { t } from '../i18n'
 
 vi.mock('../api/client', () => ({
@@ -111,6 +112,7 @@ describe('ReleaseDetailModal — 显示重要度开关', () => {
     const off = mountModalWithRelease(release, { [ShowImportanceKey as symbol]: ref(false) })
     await nextTick()
     expect(document.body.querySelector('.release-importance-chip')).toBeNull()
+    off.unmount()
   })
 })
 
@@ -469,5 +471,191 @@ describe('ReleaseDetailModal — 流式翻译', () => {
     expect(scrolled).toEqual([])
 
     wrapper.unmount()
+  })
+})
+
+describe('ReleaseDetailModal — 弹窗内查找', () => {
+  let activeWrapper: ReturnType<typeof mount> | null = null
+
+  afterEach(() => {
+    activeWrapper?.unmount()
+    activeWrapper = null
+  })
+
+  function mountFindable(body: string, extraProps: Record<string, unknown> = {}) {
+    activeWrapper = mount(ReleaseDetailModal, {
+      props: {
+        release: makeRelease(body),
+        position: 2,
+        total: 3,
+        hasPrev: true,
+        hasNext: true,
+        ...extraProps,
+      },
+    })
+    return activeWrapper
+  }
+
+  function findInput(): HTMLInputElement | null {
+    return document.body.querySelector('.release-detail-find-input')
+  }
+
+  function findCount(): string {
+    return document.body.querySelector('.release-detail-find-count')?.textContent?.trim() ?? ''
+  }
+
+  function findNavButtons(): HTMLButtonElement[] {
+    return Array.from(document.body.querySelectorAll<HTMLButtonElement>('.release-detail-find-btn'))
+  }
+
+  it('dispatchFind 打开查找栏，支持计数、Enter/Shift+Enter/F3 与按钮循环跳转', async () => {
+    const wrapper = mountFindable('Fix alpha bug. Another Alpha issue. Final ALPHA patch.')
+    await nextTick()
+
+    expect(findInput()).toBeNull()
+    expect(dispatchFind()).toBe(true)
+    await nextTick()
+
+    const input = findInput()!
+    expect(input).not.toBeNull()
+    input.value = 'alpha'
+    input.dispatchEvent(new Event('input'))
+    await nextTick()
+    await nextTick()
+
+    expect(findCount()).toBe('1 / 3')
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount()).toBe('2 / 3')
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount()).toBe('3 / 3')
+
+    // 末尾再 Enter 回到第一项
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount()).toBe('1 / 3')
+
+    // Shift+Enter 反向绕回到末尾
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', shiftKey: true, bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount()).toBe('3 / 3')
+
+    // F3 / Shift+F3 在非输入框焦点下也可跳转
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F3', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount()).toBe('1 / 3')
+
+    // 按钮导航（第 0 个上一个，第 1 个下一个）
+    const [prevBtn, nextBtn] = findNavButtons()
+    nextBtn.click()
+    await nextTick()
+    expect(findCount()).toBe('2 / 3')
+    prevBtn.click()
+    await nextTick()
+    expect(findCount()).toBe('1 / 3')
+
+    wrapper.unmount()
+  })
+
+  it('无匹配时显示 0 / 0 且上下导航按钮禁用', async () => {
+    const wrapper = mountFindable('only ordinary text')
+    dispatchFind()
+    await nextTick()
+
+    const input = findInput()!
+    input.value = 'nonexistent'
+    input.dispatchEvent(new Event('input'))
+    await nextTick()
+    await nextTick()
+
+    expect(findCount()).toBe('0 / 0')
+    expect(document.body.querySelector('.release-detail-find-count')?.classList.contains('no-match')).toBe(true)
+    const [prevBtn, nextBtn] = findNavButtons()
+    expect(prevBtn.disabled).toBe(true)
+    expect(nextBtn.disabled).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('查找框聚焦时按 ←/→ 不触发版本切换，失焦后恢复版本切换', async () => {
+    const wrapper = mountFindable('alpha beta')
+    dispatchFind()
+    await nextTick()
+
+    const input = findInput()!
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true, cancelable: true }))
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.emitted('navigate')).toBeUndefined()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.emitted('navigate')).toEqual([[1]])
+
+    wrapper.unmount()
+  })
+
+  it('Esc 先关闭查找栏不关弹窗，再次 Esc 才关闭弹窗；IME 组合期不触发', async () => {
+    const wrapper = mountFindable('alpha beta')
+    dispatchFind()
+    await nextTick()
+
+    const input = findInput()!
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findInput()).not.toBeNull()
+
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findInput()).toBeNull()
+    expect(wrapper.emitted('close')).toBeUndefined()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.emitted('close')).toHaveLength(1)
+
+    wrapper.unmount()
+  })
+
+  it('首次打开查找栏时预填列表 searchQuery', async () => {
+    const wrapper = mountFindable('memory leak fix and memory optimization', { searchQuery: 'memory' })
+    dispatchFind()
+    await nextTick()
+    await nextTick()
+
+    expect(findInput()?.value).toBe('memory')
+    expect(findCount()).toBe('1 / 2')
+
+    wrapper.unmount()
+  })
+
+  it('图片灯箱打开时 dispatchFind 仍消费事件但不打开查找栏，且灯箱 Esc 不误关弹窗', async () => {
+    const wrapper = mountFindable('![shot](https://img.example.com/p.png) alpha')
+    await nextTick()
+
+    const img = document.body.querySelector<HTMLImageElement>('.release-detail-body img')!
+    img.click()
+    await nextTick()
+    expect(document.body.querySelector('.lightbox-stage')).not.toBeNull()
+
+    expect(dispatchFind()).toBe(true)
+    await nextTick()
+    expect(findInput()).toBeNull()
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.emitted('close')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('弹窗卸载后注销查找处理器，dispatchFind 不再消费', () => {
+    const wrapper = mountFindable('alpha')
+    expect(dispatchFind()).toBe(true)
+    wrapper.unmount()
+    expect(dispatchFind()).toBe(false)
   })
 })

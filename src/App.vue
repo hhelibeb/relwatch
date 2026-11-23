@@ -10,7 +10,7 @@ import { copyTextToClipboard } from './api/client'
 import { setErrorToastSink } from './api/report-error'
 import { type AppSettings, getSettings, DEFAULT_SETTINGS } from './api/settings'
 import { t, setLocale } from './i18n'
-import { registerCloser, unregisterCloser, closeAllContextMenus } from './composables/contextMenuBus'
+import { registerCloser, unregisterCloser, closeAllContextMenus, dispatchFind } from './composables/contextMenuBus'
 import { useTransientUiGuard } from './composables/useTransientUiGuard'
 import { useEscapeToTray } from './composables/useEscapeToTray'
 import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
@@ -381,6 +381,7 @@ function onGlobalKeydown(e: KeyboardEvent) {
   if (key === 'f') {
     // WebView2 的 Ctrl+F 是浏览器查找栏，必须 preventDefault 才能接管
     e.preventDefault()
+    if (dispatchFind()) return
     activeTab.value = 'releases'
     void nextTick(() => releaseTab.value?.focusSearch())
   } else if (key === 'r') {

@@ -6,14 +6,138 @@ export interface HighlightSegment {
 }
 
 const HIGHLIGHT_NAME = 'search-hit'
+const HIGHLIGHT_ACTIVE_NAME = 'search-hit-current'
 const MAX_RANGES_PER_ROOT = 300
+const MAX_PHRASE_RANGES = 2000
 const MAX_TOTAL_RANGES = 2000
+
+const BLOCK_TAGS = new Set([
+  'ADDRESS', 'ARTICLE', 'ASIDE', 'BLOCKQUOTE', 'DD', 'DETAILS', 'DIALOG',
+  'DIV', 'DL', 'DT', 'FIELDSET', 'FIGCAPTION', 'FIGURE', 'FOOTER', 'FORM',
+  'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'HEADER', 'HR', 'LI', 'MAIN', 'NAV',
+  'OL', 'P', 'PRE', 'SECTION', 'SUMMARY', 'TABLE', 'TBODY', 'TD', 'TFOOT',
+  'TH', 'THEAD', 'TR', 'UL',
+])
 
 const owners = new Map<object, Range[]>()
 let rebuildScheduled = false
+let activeOwner: object | null = null
 
 export function searchHighlightSupported(): boolean {
   return typeof CSS !== 'undefined' && 'highlights' in CSS && typeof Highlight !== 'undefined'
+}
+
+function closestBlock(node: Node, root: HTMLElement): Node {
+  let cur = node.parentElement
+  while (cur && cur !== root) {
+    if (BLOCK_TAGS.has(cur.tagName)) return cur
+    cur = cur.parentElement
+  }
+  return root
+}
+
+interface TextSegment {
+  node: Text
+  start: number
+  end: number
+}
+
+function collectMatchesInChunk(segments: TextSegment[], text: string, needle: string, out: Range[], limit: number) {
+  if (segments.length === 0 || text.length < needle.length) return
+  const lower = text.toLowerCase()
+  let idx = lower.indexOf(needle)
+  let segIdx = 0
+  while (idx !== -1 && out.length < limit) {
+    const matchEnd = idx + needle.length
+    while (segIdx < segments.length && segments[segIdx].end <= idx) segIdx++
+    if (segIdx >= segments.length) break
+    const startSeg = segments[segIdx]
+    let endSegIdx = segIdx
+    while (endSegIdx < segments.length && segments[endSegIdx].end < matchEnd) endSegIdx++
+    if (endSegIdx >= segments.length) break
+    const endSeg = segments[endSegIdx]
+
+    const startOffset = Math.min(idx - startSeg.start, startSeg.node.data.length)
+    const endOffset = Math.min(matchEnd - endSeg.start, endSeg.node.data.length)
+    const range = document.createRange()
+    range.setStart(startSeg.node, startOffset)
+    range.setEnd(endSeg.node, endOffset)
+    out.push(range)
+
+    idx = lower.indexOf(needle, matchEnd)
+  }
+}
+
+/** 按文档顺序收集 root 内完整短语的命中区间；同一块级元素内支持跨内联标签匹配，跨块或 <br> 断开。 */
+export function collectPhraseRanges(
+  root: HTMLElement,
+  query: string,
+  skipSelector?: string,
+  maxRanges = MAX_PHRASE_RANGES,
+): Range[] {
+  const ranges: Range[] = []
+  const needle = query.toLowerCase()
+  if (!needle.trim()) return ranges
+
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT)
+  let segments: TextSegment[] = []
+  let parts: string[] = []
+  let offset = 0
+  let currentBlock: Node | null = null
+
+  const flush = () => {
+    if (segments.length === 0) return
+    collectMatchesInChunk(segments, parts.join(''), needle, ranges, maxRanges)
+    segments = []
+    parts = []
+    offset = 0
+    currentBlock = null
+  }
+
+  let node = walker.nextNode()
+  while (node && ranges.length < maxRanges) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const el = node as Element
+      if (el.tagName === 'BR' || (skipSelector && el.matches(skipSelector))) flush()
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      const textNode = node as Text
+      if (skipSelector && textNode.parentElement?.closest(skipSelector)) {
+        flush()
+      } else if (textNode.data.length > 0) {
+        const block = closestBlock(textNode, root)
+        if (currentBlock !== null && block !== currentBlock) flush()
+        currentBlock = block
+        const start = offset
+        const end = start + textNode.data.length
+        segments.push({ node: textNode, start, end })
+        parts.push(textNode.data)
+        offset = end
+      }
+    }
+    node = walker.nextNode()
+  }
+  flush()
+  return ranges
+}
+
+/** 全局仅保留一个当前命中项（与 owners 多宿主合并不同）；按 owner 校验防旧宿主卸载时误清新宿主。 */
+export function setActiveHighlightRange(owner: object, range: Range | null): void {
+  if (!range) {
+    clearActiveHighlight(owner)
+    return
+  }
+  activeOwner = owner
+  if (!searchHighlightSupported()) return
+  const highlight = new Highlight(range)
+  // 高于 search-hit 默认优先级 0，确保 rAF 重建 search-hit 后不会盖住当前命中项
+  highlight.priority = 1
+  CSS.highlights.set(HIGHLIGHT_ACTIVE_NAME, highlight)
+}
+
+export function clearActiveHighlight(owner: object): void {
+  if (activeOwner !== owner) return
+  activeOwner = null
+  if (searchHighlightSupported()) CSS.highlights.delete(HIGHLIGHT_ACTIVE_NAME)
 }
 
 /** 收集 root 内所有命中 token 的文本区间。skipSelector 内的文本（按钮/时间/状态等）不参与。 */

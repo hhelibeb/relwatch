@@ -10,9 +10,9 @@ import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus, registerOverlayActive } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
+import { useElementFind } from '../composables/useElementFind'
 import { t } from '../i18n'
-import { formatDate, statusClass, statusLabel, tokenizeQuery } from '../utils'
-import { collectQueryRanges, registerHighlightRanges, unregisterHighlightOwner, searchHighlightSupported } from '../utils/searchHighlight'
+import { formatDate, statusClass, statusLabel } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX, FLAG_COLOR_LABEL_KEYS } from '../utils/releaseFlag'
 import { fromMediaUrl } from '../utils/imageProxy'
@@ -256,7 +256,9 @@ function switchMode(mode: ViewMode) {
 watch(() => props.release.id, () => {
   viewMode.value = resolveMode(viewMode.value)
   translating.value = false
-  nextTick(() => bodyEl.value?.scrollTo({ top: 0 }))
+  nextTick(() => {
+    if (!findOpen.value || findMatchCount.value === 0) bodyEl.value?.scrollTo({ top: 0 })
+  })
 })
 
 // ========== 操作 ==========
@@ -296,21 +298,41 @@ function handleOpenLink() {
   openReleaseUrl(props.release.html_url)
 }
 
-// ========== 键盘交互：Esc 关闭，←/→ 在版本间导航 ==========
+function isEditableTarget(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  const tag = el.tagName
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
+  const ce = el.getAttribute('contenteditable')
+  return ce !== null && ce !== 'false'
+}
+
+// ========== 键盘交互：Esc 逐层关闭，F3 查找跳转，←/→ 在版本间导航 ==========
 function handleKeydown(e: KeyboardEvent) {
   // ContextMenu 的键盘导航/Esc 已 preventDefault，不重复处理（避免 Esc 连弹窗一起关）
-  if (e.defaultPrevented) return
+  if (e.defaultPrevented || e.isComposing) return
   if (e.key === 'Escape') {
     if (bodyMenu.value) {
       closeBodyMenu()
       return
     }
+    if (flagPopoverOpen.value) {
+      flagPopoverOpen.value = false
+      return
+    }
+    if (findOpen.value) {
+      closeFind()
+      return
+    }
     handleClose()
+  } else if (e.key === 'F3' && findOpen.value) {
+    e.preventDefault()
+    if (e.shiftKey) prevFindMatch()
+    else nextFindMatch()
   } else if (e.key === 'ArrowLeft' && props.hasPrev) {
-    if (bodyMenu.value) return
+    if (bodyMenu.value || isEditableTarget(e.target)) return
     emit('navigate', -1)
   } else if (e.key === 'ArrowRight' && props.hasNext) {
-    if (bodyMenu.value) return
+    if (bodyMenu.value || isEditableTarget(e.target)) return
     emit('navigate', 1)
   }
 }
@@ -327,7 +349,6 @@ onUnmounted(() => {
   unregisterCloser(closeBodyMenu)
   document.removeEventListener('click', closeBodyMenu)
   unregisterOverlay?.()
-  unregisterHighlightOwner(highlightOwner)
 })
 
 // HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）
@@ -381,24 +402,35 @@ function handleBodyClick(e: MouseEvent) {
   lightbox.value = { src, originalUrl: fromMediaUrl(src) }
 }
 
-// ========== 搜索命中高亮（与卡片同一套 CSS Highlight API）==========
-const highlightOwner = {}
+const {
+  open: findOpen,
+  query: findQuery,
+  inputEl: findInputEl,
+  matchCount: findMatchCount,
+  currentIndex: findCurrentIndex,
+  openFind,
+  closeFind,
+  next: nextFindMatch,
+  prev: prevFindMatch,
+  handleInputKeydown: handleFindInputKeydown,
+} = useElementFind({
+  container: bodyEl,
+  skipSelector: 'button, .md-code-lang',
+  fallbackQuery: () => props.searchQuery ?? '',
+  contentSource: () => currentContent.value,
+  isStreaming: () => streamingContent.value,
+  isBlocked: () => lightbox.value !== null,
+})
 
-function applySearchHighlight() {
-  const tokens = tokenizeQuery(props.searchQuery ?? '')
-  if (tokens.length === 0 || !searchHighlightSupported()) {
-    unregisterHighlightOwner(highlightOwner)
-    return
-  }
-  void nextTick(() => {
-    const el = bodyEl.value
-    if (!el) return
-    // 按钮、代码块语言标签属于 chrome 文本，不参与命中高亮
-    registerHighlightRanges(highlightOwner, collectQueryRanges(el, tokens, 'button, .md-code-lang'))
-  })
+const findCountText = computed(() => {
+  if (!findQuery.value.trim()) return ''
+  return `${findCurrentIndex.value >= 0 ? findCurrentIndex.value + 1 : 0} / ${findMatchCount.value}`
+})
+
+function toggleFind() {
+  if (findOpen.value) closeFind()
+  else openFind()
 }
-
-watch([currentContent, () => props.searchQuery], applySearchHighlight, { immediate: true })
 </script>
 
 <template>
@@ -413,6 +445,15 @@ watch([currentContent, () => props.searchQuery], applySearchHighlight, { immedia
             <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
             <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
           </div>
+          <button
+            class="release-detail-close release-detail-find-toggle"
+            :class="{ active: findOpen }"
+            :title="`${t('release.find_in_content')} (Ctrl+F)`"
+            @pointerdown.stop
+            @click.stop="toggleFind"
+          >
+            <svg viewBox="0 0 16 16"><use href="/icons.svg#search-icon"/></svg>
+          </button>
           <div class="release-detail-flag-wrap">
             <button class="release-detail-close release-detail-flag-btn" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :title="flagTitle" @pointerdown.stop @click.stop="flagPopoverOpen = !flagPopoverOpen">
               <svg viewBox="0 0 16 16"><use href="/icons.svg#flag-tag-icon"/></svg>
@@ -451,6 +492,47 @@ watch([currentContent, () => props.searchQuery], applySearchHighlight, { immedia
             :class="{ active: viewMode === m.mode }"
             @click="switchMode(m.mode)"
           >{{ m.label }}</button>
+        </div>
+        <div v-if="findOpen" class="release-detail-find">
+          <input
+            ref="findInputEl"
+            v-model="findQuery"
+            type="text"
+            class="release-detail-find-input"
+            :placeholder="t('release.find_in_content')"
+            @keydown="handleFindInputKeydown"
+          />
+          <span
+            v-if="findCountText"
+            class="release-detail-find-count"
+            :class="{ 'no-match': findMatchCount === 0 }"
+          >{{ findCountText }}</span>
+          <button
+            type="button"
+            class="release-detail-find-btn"
+            :disabled="findMatchCount === 0"
+            :title="`${t('release.find_prev')} (Shift+Enter)`"
+            @click="prevFindMatch"
+          >
+            <svg viewBox="0 0 16 16"><polyline points="4 10 8 6 12 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button
+            type="button"
+            class="release-detail-find-btn"
+            :disabled="findMatchCount === 0"
+            :title="`${t('release.find_next')} (Enter)`"
+            @click="nextFindMatch"
+          >
+            <svg viewBox="0 0 16 16"><polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button
+            type="button"
+            class="release-detail-find-btn"
+            :title="`${t('release.find_close')} (Esc)`"
+            @click="closeFind"
+          >
+            <svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+          </button>
         </div>
         <div ref="bodyEl" class="release-detail-body" @click="handleBodyClick" @contextmenu.prevent.stop="handleBodyContextMenu">
           <!-- 译文 / 原文：完整 Markdown 渲染，无高度限制 -->
@@ -776,6 +858,87 @@ watch([currentContent, () => props.searchQuery], applySearchHighlight, { immedia
 
 .release-detail-tabs {
   margin: 8px 16px 0;
+}
+
+.release-detail-find-toggle.active {
+  color: var(--primary);
+  background: var(--primary-soft-bg);
+}
+
+.release-detail-find {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 8px 16px 0;
+  padding: 4px 6px 4px 10px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
+}
+
+.release-detail-find:focus-within {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+  background: var(--input-bg);
+}
+
+.release-detail-find-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+}
+
+.release-detail-find-input::placeholder {
+  color: var(--text-muted);
+}
+
+.release-detail-find-count {
+  padding: 0 6px;
+  font-family: var(--mono-font);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.release-detail-find-count.no-match {
+  color: var(--danger);
+}
+
+.release-detail-find-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
+}
+
+.release-detail-find-btn:hover:not(:disabled) {
+  background: var(--hover-surface);
+  color: var(--text);
+}
+
+.release-detail-find-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.release-detail-find-btn svg {
+  width: 14px;
+  height: 14px;
 }
 
 .release-detail-body {

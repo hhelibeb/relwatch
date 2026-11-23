@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest'
-import { splitByTokens, extractBodySnippet, collectQueryRanges } from '../utils/searchHighlight'
+import { describe, it, expect, afterEach } from 'vitest'
+import {
+  splitByTokens,
+  extractBodySnippet,
+  collectQueryRanges,
+  collectPhraseRanges,
+  setActiveHighlightRange,
+  clearActiveHighlight,
+} from '../utils/searchHighlight'
 
 describe('splitByTokens', () => {
   it('无 token 或无命中时整段返回', () => {
@@ -101,5 +108,82 @@ describe('collectQueryRanges', () => {
     el.innerHTML = '<pre><code>kernel()</code><span class="md-code-lang">kernel</span></pre>'
     const ranges = collectQueryRanges(el, ['kernel'], 'button, .md-code-lang')
     expect(ranges.map(r => r.toString())).toEqual(['kernel'])
+  })
+})
+
+describe('collectPhraseRanges', () => {
+  it('按文档顺序匹配完整短语且大小写不敏感', () => {
+    const el = document.createElement('div')
+    el.innerHTML = '<p>Alpha Beta and alpha beta</p><p>ALPHA beta</p>'
+    const ranges = collectPhraseRanges(el, 'alpha beta')
+    expect(ranges.map(r => r.toString())).toEqual(['Alpha Beta', 'alpha beta', 'ALPHA beta'])
+  })
+
+  it('同一块内支持跨内联标签匹配', () => {
+    const el = document.createElement('div')
+    el.innerHTML = '<p>fix <code>foo</code> <strong>bar</strong> bug</p>'
+    const ranges = collectPhraseRanges(el, 'fix foo bar')
+    expect(ranges).toHaveLength(1)
+    expect(ranges[0].toString()).toBe('fix foo bar')
+  })
+
+  it('跨块级元素与 <br> 不误连匹配', () => {
+    const el = document.createElement('div')
+    el.innerHTML = '<p>hello</p><p>world</p><p>foo<br>bar</p>'
+    expect(collectPhraseRanges(el, 'helloworld')).toHaveLength(0)
+    expect(collectPhraseRanges(el, 'foobar')).toHaveLength(0)
+  })
+
+  it('尊重 skipSelector 并忽略纯空白查询', () => {
+    const el = document.createElement('div')
+    el.innerHTML = '<pre><code>match</code><span class="md-code-lang">match</span><button>match</button></pre>'
+    expect(collectPhraseRanges(el, 'match', 'button, .md-code-lang')).toHaveLength(1)
+    expect(collectPhraseRanges(el, '   ')).toHaveLength(0)
+  })
+
+  it('skipSelector 夹在文本中间时会断开拼接，不跨跳过元素误匹配', () => {
+    const el = document.createElement('div')
+    el.innerHTML = '<p>foo<button>X</button>bar</p><p>baz<button></button>qux</p>'
+    expect(collectPhraseRanges(el, 'foobar', 'button')).toHaveLength(0)
+    expect(collectPhraseRanges(el, 'bazqux', 'button')).toHaveLength(0)
+    expect(collectPhraseRanges(el, 'foo', 'button').map(r => r.toString())).toEqual(['foo'])
+    expect(collectPhraseRanges(el, 'bar', 'button').map(r => r.toString())).toEqual(['bar'])
+  })
+})
+
+describe('setActiveHighlightRange / clearActiveHighlight', () => {
+  const originalCSS = globalThis.CSS
+  const originalHighlight = globalThis.Highlight
+
+  afterEach(() => {
+    Object.defineProperty(globalThis, 'CSS', { value: originalCSS, configurable: true, writable: true })
+    Object.defineProperty(globalThis, 'Highlight', { value: originalHighlight, configurable: true, writable: true })
+  })
+
+  it('登记当前命中项并设置高优先级，只有对应 owner 能清除', () => {
+    const map = new Map<string, { priority?: number; ranges: Range[] }>()
+    class FakeHighlight {
+      priority = 0
+      ranges: Range[]
+      constructor(...ranges: Range[]) {
+        this.ranges = ranges
+      }
+    }
+    Object.defineProperty(globalThis, 'CSS', { value: { highlights: map }, configurable: true, writable: true })
+    Object.defineProperty(globalThis, 'Highlight', { value: FakeHighlight, configurable: true, writable: true })
+
+    const ownerA = {}
+    const ownerB = {}
+    const r = document.createRange()
+
+    setActiveHighlightRange(ownerA, r)
+    expect(map.get('search-hit-current')?.priority).toBe(1)
+    expect(map.get('search-hit-current')?.ranges).toEqual([r])
+
+    clearActiveHighlight(ownerB)
+    expect(map.has('search-hit-current')).toBe(true)
+
+    clearActiveHighlight(ownerA)
+    expect(map.has('search-hit-current')).toBe(false)
   })
 })

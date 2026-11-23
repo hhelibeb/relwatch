@@ -1766,6 +1766,26 @@ describe('App.vue — 全局快捷键', () => {
     wrapper.unmount()
   })
 
+  it('存在活跃页内查找接管器时，Ctrl+F 优先交给接管器而非切到版本页搜索', async () => {
+    const { registerFindHandler } = await import('../composables/contextMenuBus')
+    const handled = vi.fn(() => true)
+    const unregister = registerFindHandler(handled)
+    const wrapper = await mountRealApp()
+
+    try {
+      expect(press('f', { ctrl: true }).defaultPrevented).toBe(true)
+      await flushPromises()
+      await wrapper.vm.$nextTick()
+
+      expect(handled).toHaveBeenCalledTimes(1)
+      expect(tabClasses(wrapper).indexOf(true)).toBe(0)
+      expect(mockFocusSearch).not.toHaveBeenCalled()
+    } finally {
+      unregister()
+      wrapper.unmount()
+    }
+  })
+
   it('Ctrl+R 触发一次立即检查', async () => {
     vi.mocked(listSources).mockResolvedValue([{ id: 1, owner: 'a', repo: 'b', enabled: true } as never])
     const wrapper = await mountRealApp()
