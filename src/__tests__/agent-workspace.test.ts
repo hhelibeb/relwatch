@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises, DOMWrapper } from '@vue/test-utils'
-import { nextTick } from 'vue'
+import { nextTick, ref } from 'vue'
 import { t, setLocale } from '../i18n'
 import type { AgentChatMessage, AgentRunSummary } from '../api/agent'
 
@@ -90,8 +90,9 @@ import { listSources } from '../api/sources'
 import { getReleaseCatalog } from '../api/releases'
 import type { ReleaseInfo } from '../api/releases'
 import type { AgentEntityRefSeed } from '../injection-keys'
-import { ShowToastKey } from '../injection-keys'
+import { ShowToastKey, ActiveTabKey } from '../injection-keys'
 import { InvokeI18nError } from '../api/client'
+import { dispatchFind, registerFindHandler, hasActiveOverlay } from '../composables/contextMenuBus'
 
 /** 等待流式合帧窗口（组件内 50ms）刷完：RPC 事件入队后须等真实 timer
  *  触发 flush，flushPromises 只清微任务等不到 50ms 定时器。 */
@@ -1854,5 +1855,381 @@ describe('AgentWorkspace P2 打磨', () => {
     expect(text).toContain('状态未知')
     expect(text).not.toContain('未完成的提交已取消')
     wrapper.unmount()
+  })
+})
+
+describe('AgentWorkspace 页内查找（Ctrl+F 边界）', () => {
+  /** 构造含可搜索词的消息：用户一处 alpha、助手一处 alpha（大小写一致，计数确定）。 */
+  function alphaMessages(): AgentChatMessage[] {
+    return [
+      {
+        role: 'user',
+        timestamp: '2025-01-01T00:00:00.000Z',
+        model: null,
+        blocks: [{ kind: 'text', text: '定位 alpha 泄漏' }],
+      },
+      {
+        role: 'assistant',
+        timestamp: '2025-01-01T00:00:01.000Z',
+        model: 'claude-test',
+        blocks: [{ kind: 'text', text: '另一处 alpha 在这里' }],
+      },
+    ]
+  }
+
+  const activeTab = ref('releases')
+
+  /** attachTo：归属判定靠 document 捕获期监听，挂载在文档树上才能收到面板内事件。 */
+  function mountWs(attached = true) {
+    return mount(AgentWorkspace, {
+      ...(attached ? { attachTo: document.body } : {}),
+      global: { provide: { [ShowToastKey]: vi.fn(), [ActiveTabKey]: activeTab } },
+    })
+  }
+
+  function pointerDownOn(target: EventTarget) {
+    target.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+  }
+
+  function findCount(wrapper: ReturnType<typeof mountWs>): string {
+    return wrapper.find('.agent-ws-find-count').text().trim()
+  }
+
+  async function openFindWith(wrapper: ReturnType<typeof mountWs>, q: string) {
+    expect(dispatchFind()).toBe(true)
+    await nextTick()
+    const input = wrapper.find('.agent-ws-find-input')
+    await input.setValue(q)
+    await nextTick()
+    await nextTick()
+    return input
+  }
+
+  beforeEach(() => {
+    activeTab.value = 'releases'
+  })
+
+  it('面板内交互后 dispatchFind 打开查找栏，只搜聊天消息，支持计数/Enter/Esc', async () => {
+    vi.mocked(listAgentMessages).mockResolvedValue(alphaMessages())
+    const wrapper = mountWs()
+    await flushPromises()
+
+    expect(wrapper.find('.agent-ws-find').exists()).toBe(false)
+    const input = await openFindWith(wrapper, 'alpha')
+    expect(findCount(wrapper)).toBe('1 / 2')
+
+    input.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount(wrapper)).toBe('2 / 2')
+
+    input.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.find('.agent-ws-find').exists()).toBe(false)
+    expect(wrapper.emitted('close')).toBeUndefined()
+
+    wrapper.unmount()
+  })
+
+  it('面板打开自动聚焦输入区即接管（真实挂载路径）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+
+    // 无任何点击/滚轮：挂载里的 focusComposer() 已把焦点交给输入区，本就算「在用面板」
+    expect(dispatchFind()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('未收到任何面板内信号时不接管（保守缺省）；交互在主界面时让路', async () => {
+    // 不挂到文档树上 = 挂载后的自动聚焦无法冒泡到 document，只剩「尚无信号」的初始态
+    const wrapper = mountWs(false)
+    await flushPromises()
+    expect(dispatchFind()).toBe(false)
+
+    pointerDownOn(document.body)
+    expect(dispatchFind()).toBe(false)
+    await nextTick()
+    expect(wrapper.find('.agent-ws-find').exists()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('点回面板内后重新接管 Ctrl+F（边界随最后一次交互移动）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+
+    pointerDownOn(document.body)
+    expect(dispatchFind()).toBe(false)
+
+    pointerDownOn(wrapper.find('.agent-ws-textarea').element)
+    expect(dispatchFind()).toBe(true)
+    await nextTick()
+    expect(wrapper.find('.agent-ws-find').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('在面板里滚动消息也算在用面板（滚轮不产生 pointerdown）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+
+    pointerDownOn(document.body)
+    expect(dispatchFind()).toBe(false)
+
+    wrapper.find('.agent-ws-messages').element.dispatchEvent(new Event('wheel', { bubbles: true }))
+    expect(dispatchFind()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('拖入实体经过面板即接管（拖拽既无 pointerdown 也无 focusin）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+
+    pointerDownOn(document.body)
+    expect(dispatchFind()).toBe(false)
+
+    await wrapper.find('.agent-ws-main').trigger('dragover', {
+      dataTransfer: dragDataTransfer({ kind: 'source', id: 3 }),
+    })
+    expect(dispatchFind()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('拖拽面板宽度分隔条视为面板侧（分隔条是面板的兄弟节点）', async () => {
+    const divider = document.createElement('div')
+    divider.className = 'agent-divider'
+    document.body.appendChild(divider)
+    const wrapper = mountWs()
+    try {
+      await flushPromises()
+      pointerDownOn(document.body)
+      expect(dispatchFind()).toBe(false)
+
+      pointerDownOn(divider)
+      expect(dispatchFind()).toBe(true)
+    } finally {
+      wrapper.unmount()
+      divider.remove()
+    }
+  })
+
+  it('Teleport 到 body 的面板菜单视为面板侧', async () => {
+    const menu = document.createElement('div')
+    menu.className = 'agent-ws-menu agent-ws-menu-rpc'
+    menu.innerHTML = '<button class="agent-ws-menu-item">重启</button>'
+    document.body.appendChild(menu)
+    const wrapper = mountWs()
+    try {
+      await flushPromises()
+      pointerDownOn(document.body)
+      expect(dispatchFind()).toBe(false)
+
+      pointerDownOn(menu.querySelector('button')!)
+      expect(dispatchFind()).toBe(true)
+    } finally {
+      wrapper.unmount()
+      menu.remove()
+    }
+  })
+
+  it('键盘切页签（无鼠标事件）也把 Ctrl+F 交还主界面', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+    pointerDownOn(wrapper.find('.agent-ws-textarea').element)
+
+    // 不先开查找栏：打开会顺带把焦点交给查找框（focusin），会掩盖归属变化本身
+    activeTab.value = 'logs'
+    await nextTick()
+    expect(dispatchFind()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('头部按钮直接打开查找栏（显式入口不依赖 Ctrl+F 归属）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+
+    pointerDownOn(document.body)
+    await wrapper.find('.agent-ws-find-toggle').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.agent-ws-find').exists()).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('命中落在闭合折叠块里：先展开再定位，不让计数空转', async () => {
+    vi.mocked(listAgentMessages).mockResolvedValue([
+      {
+        role: 'toolResult',
+        timestamp: '2025-01-01T00:00:00.000Z',
+        model: null,
+        blocks: [{ kind: 'toolResult', id: 'c1', tool_name: 'bash', text: 'zebra 输出', is_error: false }],
+      },
+    ])
+    const wrapper = mountWs()
+    await flushPromises()
+
+    const details = () => wrapper.find('.agent-ws-tool-card details')
+    expect(details().element.hasAttribute('open')).toBe(false)
+
+    await openFindWith(wrapper, 'zebra')
+    expect(findCount(wrapper)).toBe('1 / 1')
+    expect(details().element.hasAttribute('open')).toBe(true)
+
+    wrapper.unmount()
+  })
+
+  it('输入区草稿文本不参与命中（查找范围只是聊天消息）', async () => {
+    vi.mocked(listAgentMessages).mockResolvedValue(alphaMessages())
+    const wrapper = mountWs()
+    await flushPromises()
+    await wrapper.find('.agent-ws-textarea').setValue('draftword 还没发出去')
+
+    await openFindWith(wrapper, 'draftword')
+    expect(findCount(wrapper)).toBe('0 / 0')
+
+    wrapper.unmount()
+  })
+
+  it('会话切换后重算命中（等长内容替换也不留过期计数）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([
+        { key: 's1', title: 'A', updatedAt: Date.now() },
+        { key: 's2', title: 'B', updatedAt: Date.now() - 1000 },
+      ]),
+    )
+    // 两条文本等长（11 字符），只有内容不同：仅比较长度的签名会漏掉这次替换
+    vi.mocked(listAgentMessages).mockImplementation(async (key: string) =>
+      key === 's2'
+        ? [{
+            role: 'assistant',
+            timestamp: '2025-01-01T00:00:00.000Z',
+            model: 'claude-test',
+            blocks: [{ kind: 'text', text: 'alpha! beta' }],
+          } as AgentChatMessage]
+        : [{
+            role: 'assistant',
+            timestamp: '2025-01-01T00:00:00.000Z',
+            model: 'claude-test',
+            blocks: [{ kind: 'text', text: 'alpha alpha' }],
+          } as AgentChatMessage],
+    )
+    const wrapper = mountWs()
+    await flushPromises()
+
+    await openFindWith(wrapper, 'alpha')
+    expect(findCount(wrapper)).toBe('1 / 2')
+
+    await wrapper.findAll('.agent-ws-session-item')[1].trigger('click')
+    await flushPromises()
+    await nextTick()
+    expect(findCount(wrapper)).toBe('1 / 1')
+
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('面板打开时，先注册的接管器（如版本详情弹窗）仍能拿到 Ctrl+F', async () => {
+    const earlier = vi.fn(() => true)
+    const unregister = registerFindHandler(earlier)
+    const wrapper = mountWs()
+    try {
+      await flushPromises()
+
+      pointerDownOn(document.body)
+      expect(dispatchFind()).toBe(true)
+      expect(earlier).toHaveBeenCalledTimes(1)
+      await nextTick()
+      expect(wrapper.find('.agent-ws-find').exists()).toBe(false)
+    } finally {
+      unregister()
+      wrapper.unmount()
+    }
+  })
+
+  it('查找栏打开期间是覆盖层：Esc 关闭查找栏（焦点不在输入框时也不会掉到托盘）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+    await openFindWith(wrapper, 'alpha')
+
+    // useEscapeToTray 靠这个注册表判断「有覆盖层，别最小化到托盘」
+    expect(hasActiveOverlay()).toBe(true)
+
+    // 焦点移出输入框（点到消息文本 → activeElement 变 body）后按 Esc
+    pointerDownOn(document.body)
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.find('.agent-ws-find').exists()).toBe(false)
+    expect(hasActiveOverlay()).toBe(false)
+
+    wrapper.unmount()
+  })
+
+  it('F3 / Shift+F3 在焦点不在查找框时也能跳转', async () => {
+    vi.mocked(listAgentMessages).mockResolvedValue(alphaMessages())
+    const wrapper = mountWs()
+    await flushPromises()
+    await openFindWith(wrapper, 'alpha')
+    expect(findCount(wrapper)).toBe('1 / 2')
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'F3', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount(wrapper)).toBe('2 / 2')
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'F3', shiftKey: true, bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(findCount(wrapper)).toBe('1 / 2')
+
+    wrapper.unmount()
+  })
+
+  it('流式合帧期间不重置当前命中（不把进度拽回第 1 条）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
+    )
+    const wrapper = mountWs()
+    await flushPromises()
+    const emitRpc = (event: string) => {
+      const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
+      handler?.({ payload: { session_key: 'test-session', run_id: 1, event } })
+    }
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'alpha one, ' } }))
+    await flushRpcFrame()
+
+    await openFindWith(wrapper, 'alpha')
+    expect(findCount(wrapper)).toBe('1 / 1')
+
+    // 流式仍在持续：进度保持在第 1 条（只有 1 条命中，关键是别把索引重置）
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'alpha two, ' } }))
+    await flushRpcFrame()
+    expect(findCount(wrapper)).toBe('1 / 2')
+
+    wrapper.find('.agent-ws-find-input').element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }),
+    )
+    await nextTick()
+    expect(findCount(wrapper)).toBe('2 / 2')
+
+    // 再一帧流式内容：命中数不变，但索引必须留在第 2 条而不是被重置
+    emitRpc(JSON.stringify({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'tail ' } }))
+    await flushRpcFrame()
+    expect(findCount(wrapper)).toBe('2 / 2')
+
+    wrapper.unmount()
+    localStorage.removeItem('relwatch.agent.sessions.v1')
+  })
+
+  it('卸载后注销接管器，dispatchFind 不再消费（交回版本页搜索）', async () => {
+    const wrapper = mountWs()
+    await flushPromises()
+    pointerDownOn(wrapper.find('.agent-ws-textarea').element)
+    expect(dispatchFind()).toBe(true)
+
+    wrapper.unmount()
+    expect(dispatchFind()).toBe(false)
   })
 })

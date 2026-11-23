@@ -22,7 +22,8 @@
  *
  * 4. 页内查找接管（registerFindHandler/dispatchFind）：
  *    供 App.vue 的全局 Ctrl+F 按 LIFO 顺序询问最顶层可查找浮层（如 ReleaseDetailModal）
- *    是否消费，避免跨层 ref 透传。
+ *    是否消费，避免跨层 ref 透传。接管器可返回 false 主动让路——常驻挂载但当前
+ *    并非焦点的面板（如 Agent 工作区侧栏）必须这样做，否则会挤掉版本页搜索。
  */
 type Closer = () => void
 const closers: Closer[] = []
@@ -67,7 +68,8 @@ export function hasActiveOverlay(): boolean {
 type FindHandler = () => boolean
 const findHandlers: FindHandler[] = []
 
-/** 注册页内查找接管器（LIFO 优先级），返回注销函数。返回 true 表示已消费 Ctrl+F。 */
+/** 注册页内查找接管器（LIFO 优先级），返回注销函数。返回 true 表示已消费 Ctrl+F，
+ *  返回 false 表示不归自己管，询问继续往下走。 */
 export function registerFindHandler(handler: FindHandler): () => void {
   findHandlers.push(handler)
   return () => {

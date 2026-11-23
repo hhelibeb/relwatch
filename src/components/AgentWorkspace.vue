@@ -2,7 +2,7 @@
 import { ref, reactive, computed, inject, onMounted, onUnmounted, nextTick, watch, type ComponentPublicInstance } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { events } from '../bindings'
-import { ShowToastKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
+import { ShowToastKey, ActiveTabKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
 import {
   getAgentConfig,
   getAgentAvailableModels,
@@ -11,6 +11,7 @@ import {
   saveAgentConfig,
   type AgentQueueItem,
   type AgentRunSummary,
+  type AgentChatMessage,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
 import { getReleaseCatalog, type ReleaseInfo } from '../api/releases'
@@ -23,6 +24,8 @@ import { useAgentComposer } from './agent/useAgentComposer'
 import { useAgentSessions } from './agent/useAgentSessions'
 import { useAgentChat } from './agent/useAgentChat'
 import { isEntityDrag, parseEntityDrag } from './agent/agentChatUtils'
+import { useElementFind } from '../composables/useElementFind'
+import { registerOverlayActive } from '../composables/contextMenuBus'
 import AgentRpcIndicator from './agent/AgentRpcIndicator.vue'
 import AgentSessionSidebar from './agent/AgentSessionSidebar.vue'
 import AgentRunBanner from './agent/AgentRunBanner.vue'
@@ -296,6 +299,159 @@ function startNewSession() {
   nextTick(() => focusComposer())
 }
 
+
+// ── 页内查找（Ctrl+F）：只搜聊天消息，不与版本页搜索抢触发时机 ──
+// 面板与版本页同屏共存，若无条件注册接管器就会吞掉全局 Ctrl+F、把版本页搜索挤没。
+// 因此以「最后一次交互落在哪一侧」划界：收到面板内信号（含挂载后自动聚焦输入区的
+// focusin）即接管，交互落回主界面则交还。初值 false 只是「尚无信号」时的保守缺省。
+const rootEl = ref<HTMLElement | null>(null)
+const findScopeInside = ref(false)
+// 查找栏是否打开。useElementFind 的 immediate watcher 在 setup 期就会读一次
+// contentSource，那时 destructure 出的 findOpen 还在 TDZ 里，故这里用本地 ref 同步。
+const findActive = ref(false)
+let unregisterFindOverlay: (() => void) | null = null
+
+// 面板自身的浮层：Teleport 到 body 的菜单（rpc 状态 / 会话 ⋯），以及 App.vue 里
+// 属于面板的宽度分隔条（兄弟节点）——DOM 上都已脱离面板子树，语义上仍是面板侧
+const PANEL_OWNED_SELECTOR = '.agent-ws-menu, .agent-divider'
+
+function trackFindScope(e: Event) {
+  const root = rootEl.value
+  const target = e.target as Node | null
+  if (!root || !target) {
+    findScopeInside.value = false
+    return
+  }
+  findScopeInside.value =
+    root.contains(target)
+    || (target instanceof Element && target.closest(PANEL_OWNED_SELECTOR) !== null)
+}
+
+const injectedActiveTab = inject(ActiveTabKey, null)
+if (injectedActiveTab) {
+  // 切页签 = 注意力回到主界面。键盘 Ctrl+1..4 不产生 pointerdown，靠这里补一次
+  watch(injectedActiveTab, () => {
+    findScopeInside.value = false
+  })
+}
+
+/**
+ * 内容指纹：流式合帧会原地改最后一条消息、会话切换会整体换内容，
+ * 只比长度会让等长替换漏重算（命中停在过期文本上）。
+ */
+function blocksFingerprint(blocks: AgentChatMessage['blocks']): string {
+  let out = ''
+  for (const b of blocks) {
+    switch (b.kind) {
+      case 'text':
+      case 'thinking':
+      case 'toolResult':
+        out += `${b.kind}:${b.text.length}:${b.text.slice(0, 12)}:${b.text.slice(-12)};`
+        break
+      case 'toolCall':
+        out += `toolCall:${b.name}:${b.args.length}:${b.args.slice(0, 12)};`
+        break
+      case 'bash':
+        out += `bash:${b.command.length}:${b.command.slice(0, 12)}:${b.output.length}:${b.output.slice(-12)};`
+        break
+      default: {
+        // 新增 block kind 却没纳入指纹时在此处编译期报错（否则会静默漏掉整类内容）
+        const unhandled: never = b
+        out += `${String(unhandled)};`
+      }
+    }
+  }
+  return out
+}
+
+/**
+ * user 气泡上的装饰（引用实体 chip、失败备注、首轮模板折叠）是异步补全的：
+ * 它们进入 DOM 后同样是可查找文本，必须参与指纹，否则命中停在补全前的内容上。
+ */
+function decorationsFingerprint(): string {
+  let out = ''
+  for (const d of messageDecorations.value) {
+    if (!d) {
+      out += '-;'
+      continue
+    }
+    out += `${d.main.length}:${d.folded?.length ?? 0}:${d.entities.map((e) => `${e.kind}${e.id}`).join('.')}:${d.run?.status ?? ''}:${d.run?.error ?? ''};`
+  }
+  // 实体 chip 的可读名来自目录（打开面板时异步加载），目录到位后才会显示成 names
+  out += `${sources.value.length}/${releases.value.length}`
+  return out
+}
+
+const findContentSource = computed(() => {
+  // 查找栏关着时不必每帧拼指纹（流式合帧 50ms 一批，长会话上纯属空转）
+  if (!findActive.value) return ''
+  return `${activeKey.value}|`
+    + displayedMessages.value
+      .map((m) => `${m.role}@${m.timestamp}#${blocksFingerprint(m.blocks)}`)
+      .join('|')
+    + `|${decorationsFingerprint()}`
+})
+
+const {
+  open: findOpen,
+  query: findQuery,
+  inputEl: findInputEl,
+  matchCount: findMatchCount,
+  currentIndex: findCurrentIndex,
+  openFind,
+  closeFind,
+  next: nextFindMatch,
+  prev: prevFindMatch,
+  handleInputKeydown: handleFindInputKeydown,
+} = useElementFind({
+  container: scrollRef,
+  skipSelector: 'button, .md-code-lang',
+  contentSource: () => findContentSource.value,
+  // 流式 = 有实时消息在增长。submitting 只覆盖 runAgentJob 这次 IPC（finally 里
+  // 就置回 false），delta 合帧期间它为 false，用它判流式会每 50ms 把进度重置回第 1 条
+  isStreaming: () => liveMessages.value.length > 0 || submitting.value,
+  shouldHandle: () => findScopeInside.value,
+})
+
+const findCountText = computed(() => {
+  if (!findQuery.value.trim()) return ''
+  return `${findCurrentIndex.value >= 0 ? findCurrentIndex.value + 1 : 0} / ${findMatchCount.value}`
+})
+
+function toggleFind() {
+  if (findOpen.value) closeFind()
+  else openFind()
+}
+
+/** 查找栏打开期间的全局按键：Esc 关闭（焦点已移出输入框时也生效）、F3 跳转。 */
+function handleFindKeydown(e: KeyboardEvent) {
+  if (!findOpen.value || e.isComposing) return
+  // 自行处理 Esc 的控件（如会话重命名框）优先，别抢它的取消语义
+  if ((e.target as HTMLElement | null)?.hasAttribute?.('data-esc-local')) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    closeFind()
+  } else if (e.key === 'F3') {
+    e.preventDefault()
+    if (e.shiftKey) prevFindMatch()
+    else nextFindMatch()
+  }
+}
+
+// 查找栏是覆盖层：打开期间注册活跃回调，Esc 才不会被 useEscapeToTray 当成
+// 「没有覆盖层」而 blur 输入框甚至最小化到托盘
+watch(findOpen, (open) => {
+  findActive.value = open
+  if (open) {
+    unregisterFindOverlay = registerOverlayActive(() => findOpen.value)
+    document.addEventListener('keydown', handleFindKeydown, true)
+  } else {
+    unregisterFindOverlay?.()
+    unregisterFindOverlay = null
+    document.removeEventListener('keydown', handleFindKeydown, true)
+  }
+})
 
 // ── 运行历史面板（耗时 / 模型 / 状态 / 引用实体）──
 const historyOpen = ref(false)
@@ -714,6 +870,7 @@ function onDragOver(e: DragEvent) {
   if (!isEntityDrag(e)) return // 放行：输入框原生粘贴/拖放照常
   e.preventDefault()
   dragOver.value = true
+  findScopeInside.value = true // 拖拽不产生 pointerdown/focusin，Ctrl+F 归属也要跟着落到面板
 }
 
 function onDragLeave() {
@@ -738,6 +895,7 @@ function onHeaderDragOver(e: DragEvent) {
   if (!isEntityDrag(e)) return // 同上：非实体拖拽不拦截
   e.preventDefault()
   headerDropOver.value = true
+  findScopeInside.value = true // 同上：拖拽没有 pointerdown，归属靠这里补
 }
 
 function onHeaderDragLeave(e: DragEvent) {
@@ -763,6 +921,12 @@ function handleDropNewSession(e: DragEvent) {
 }
 
 onMounted(async () => {
+  // 捕获期记录 Ctrl+F 的归属侧：点、滚、焦点转移都算一次归属变化。
+  // 必须在首次 focusComposer() 之前挂上——挂载时的自动聚焦正是「我在面板里」的第一个信号。
+  document.addEventListener('pointerdown', trackFindScope, true)
+  document.addEventListener('focusin', trackFindScope, true)
+  document.addEventListener('wheel', trackFindScope, { capture: true, passive: true })
+
   applySeed()
   await Promise.all([loadCatalog(), loadChat(), loadRpcStatus()])
   // 磁盘发现放在首次加载之后：会话文件是索引的兜底来源，索引缺失时补入，
@@ -802,12 +966,18 @@ onUnmounted(() => {
     catalogRefreshTimer = null
   }
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  document.removeEventListener('pointerdown', trackFindScope, true)
+  document.removeEventListener('focusin', trackFindScope, true)
+  document.removeEventListener('wheel', trackFindScope, { capture: true })
+  document.removeEventListener('keydown', handleFindKeydown, true)
+  unregisterFindOverlay?.()
+  unregisterFindOverlay = null
 })
 
 </script>
 
 <template>
-  <div class="agent-ws" :style="{ flexBasis: panelWidth + 'px' }">
+  <div ref="rootEl" class="agent-ws" :style="{ flexBasis: panelWidth + 'px' }">
     <!-- 头部标题栏：拖入 = 新建会话并放入引用。
          注意 @dragover / @drop **不加 .prevent 修饰符**——是否拦截由处理器内部
          按拖拽类型决定（非实体拖拽放行给原生，见 onHeaderDragOver / handleDropNewSession）。 -->
@@ -839,6 +1009,15 @@ onUnmounted(() => {
           <svg class="agent-ws-btn-icon"><use href="/icons.svg#plus-icon" /></svg>
           <span class="agent-ws-btn-label">{{ t('agent.session_new') }}</span>
         </button>
+        <button
+          class="btn-sm agent-ws-find-toggle"
+          :class="{ active: findOpen }"
+          :title="`${t('agent.find_in_chat')} (Ctrl+F)`"
+          :aria-label="t('agent.find_in_chat')"
+          @click="toggleFind"
+        >
+          <svg class="agent-ws-btn-icon"><use href="/icons.svg#search-icon" /></svg>
+        </button>
         <button class="btn-sm agent-ws-sessions-btn" :class="{ active: sidebarOpen }" :title="t('agent.session_list')" @click="toggleSidebar">
           <svg class="agent-ws-btn-icon"><use href="/icons.svg#list-icon" /></svg>
           <span class="agent-ws-btn-label">{{ t('agent.session_list') }}</span>
@@ -865,6 +1044,52 @@ onUnmounted(() => {
       <div v-if="dragOver" class="agent-ws-drop-hint agent-ws-drop-hint-main">{{ t('agent.drop_current_session') }}</div>
       <!-- 左侧：聊天区（会话侧栏折叠时占满全宽） -->
       <section class="agent-ws-chat">
+        <!-- 查找栏：只搜聊天消息（会话列表有自己的过滤框，输入区不是可查找文本） -->
+        <div v-if="findOpen" class="agent-ws-find">
+          <input
+            ref="findInputEl"
+            v-model="findQuery"
+            type="text"
+            class="agent-ws-find-input"
+            :placeholder="t('agent.find_in_chat')"
+            :aria-label="t('agent.find_in_chat')"
+            @keydown="handleFindInputKeydown"
+          />
+          <span
+            v-if="findCountText"
+            class="agent-ws-find-count"
+            :class="{ 'no-match': findMatchCount === 0 }"
+          >{{ findCountText }}</span>
+          <button
+            type="button"
+            class="agent-ws-find-btn"
+            :disabled="findMatchCount === 0"
+            :title="`${t('agent.find_prev')} (Shift+Enter)`"
+            :aria-label="t('agent.find_prev')"
+            @click="prevFindMatch"
+          >
+            <svg viewBox="0 0 16 16"><polyline points="4 10 8 6 12 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button
+            type="button"
+            class="agent-ws-find-btn"
+            :disabled="findMatchCount === 0"
+            :title="`${t('agent.find_next')} (Enter)`"
+            :aria-label="t('agent.find_next')"
+            @click="nextFindMatch"
+          >
+            <svg viewBox="0 0 16 16"><polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button
+            type="button"
+            class="agent-ws-find-btn"
+            :title="`${t('agent.find_close')} (Esc)`"
+            :aria-label="t('agent.find_close')"
+            @click="closeFind"
+          >
+            <svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
+          </button>
+        </div>
         <!-- 最近 run 状态横幅 + 配置推迟生效提示 + 运行历史面板：
              状态来自 useAgentChat / useAgentRpc，展示在 AgentRunBanner -->
         <AgentRunBanner
@@ -1031,6 +1256,82 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   display: flex;
+}
+
+/* 查找栏：贴在消息区上方（不随消息滚动）；面板窄，只用图标按钮 */
+.agent-ws-find {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 8px 10px 0;
+  padding: 3px 4px 3px 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
+}
+.agent-ws-find:focus-within {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+  background: var(--input-bg);
+}
+.agent-ws-find-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+}
+.agent-ws-find-input::placeholder {
+  color: var(--text-muted);
+}
+.agent-ws-find-count {
+  padding: 0 4px;
+  font-family: var(--mono-font);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.agent-ws-find-count.no-match {
+  color: var(--danger);
+}
+.agent-ws-find-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
+}
+.agent-ws-find-btn:hover:not(:disabled) {
+  /* 嵌套层用 nested 悬停色：本栏底色就是 --bg-subtle，与 --hover-surface 在浅色下同为
+   * #f4f4f5，直接用外层悬停色等于没有反馈 */
+  background: var(--hover-surface-nested);
+  color: var(--text);
+}
+.agent-ws-find-btn:disabled {
+  /* 禁用态用色阶压低而非透明度：Agent 面板的低透明度守卫只放行装饰点 */
+  color: var(--border-strong);
+  cursor: default;
+}
+.agent-ws-find-btn svg {
+  width: 13px;
+  height: 13px;
+}
+.agent-ws-find-toggle.active {
+  color: var(--primary);
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
 }
 
 /* 聊天区（position: relative 供运行历史浮层 .agent-ws-history 定位） */

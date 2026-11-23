@@ -24,6 +24,10 @@ export const AgentPanelOpenKey: InjectionKey<Ref<boolean>> = Symbol('agentPanelO
 /** 切换 Agent 工作区面板开合：已打开则收回，未打开则展开（全局标题栏按钮用）。 */
 export const AgentToggleKey: InjectionKey<() => void> = Symbol('agentToggle')
 
+/** 主界面当前页签（sources / releases / logs / settings）。供需要区分「注意力在主界面还是
+ *  在其它面板」的组件使用：切换页签即视为用户回到主界面（键盘切换不产生鼠标事件）。 */
+export const ActiveTabKey: InjectionKey<Ref<string>> = Symbol('activeTab')
+
 /** 工作区唤起时的预置内容：可直接插入输入框的实体引用（按钮入口携带当前上下文）。 */
 export interface AgentWorkspaceSeed {
   entities?: AgentEntityRefSeed[]

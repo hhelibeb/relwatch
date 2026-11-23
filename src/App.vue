@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, nextTick, type Component, type Ref } from 'vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, type AgentWorkspaceSeed } from './injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, ActiveTabKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events, commands } from './bindings'
@@ -510,6 +510,7 @@ provide(AgentEnabledKey, computed(() => agentConfig.value?.enabled ?? false))
 provide(AgentWorkspaceKey, openAgentWorkspace)
 provide(AgentPanelOpenKey, agentPanelOpen)
 provide(AgentToggleKey, toggleAgentWorkspace)
+provide(ActiveTabKey, activeTab)
 // 诊断统计开关：跟随设置项启停（关闭时 track() no-op + 丢弃未上报计数）
 watch(() => settings.value.enable_usage_stats, v => setUsageTrackingEnabled(v), { immediate: true })
 
