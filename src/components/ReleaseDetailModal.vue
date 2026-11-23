@@ -449,6 +449,7 @@ function toggleFind() {
             class="release-detail-close release-detail-find-toggle"
             :class="{ active: findOpen }"
             :title="`${t('release.find_in_content')} (Ctrl+F)`"
+            :aria-label="t('release.find_in_content')"
             @pointerdown.stop
             @click.stop="toggleFind"
           >
@@ -500,6 +501,7 @@ function toggleFind() {
             type="text"
             class="release-detail-find-input"
             :placeholder="t('release.find_in_content')"
+            :aria-label="t('release.find_in_content')"
             @keydown="handleFindInputKeydown"
           />
           <span
@@ -512,6 +514,7 @@ function toggleFind() {
             class="release-detail-find-btn"
             :disabled="findMatchCount === 0"
             :title="`${t('release.find_prev')} (Shift+Enter)`"
+            :aria-label="t('release.find_prev')"
             @click="prevFindMatch"
           >
             <svg viewBox="0 0 16 16"><polyline points="4 10 8 6 12 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -521,6 +524,7 @@ function toggleFind() {
             class="release-detail-find-btn"
             :disabled="findMatchCount === 0"
             :title="`${t('release.find_next')} (Enter)`"
+            :aria-label="t('release.find_next')"
             @click="nextFindMatch"
           >
             <svg viewBox="0 0 16 16"><polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -529,6 +533,7 @@ function toggleFind() {
             type="button"
             class="release-detail-find-btn"
             :title="`${t('release.find_close')} (Esc)`"
+            :aria-label="t('release.find_close')"
             @click="closeFind"
           >
             <svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
