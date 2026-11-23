@@ -10,6 +10,8 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     globals: true,
+    // Node ≥25 默认在 globalThis 上预占 localStorage 访问器，vitest 会因此不再注入 jsdom 的实现；worker 也不继承主进程 execArgv，只能在这里传
+    execArgv: 'localStorage' in globalThis ? ['--no-experimental-webstorage'] : [],
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov', 'html'],
