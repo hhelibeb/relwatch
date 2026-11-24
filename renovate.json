@@ -22,13 +22,75 @@
   // 仓库没有 branch protection，平台级 automerge 会在 CI 跑完前就合入；
   // 改由 Renovate 自己等 checks 全绿再合。
   "platformAutomerge": false,
-  "prConcurrentLimit": 3,
+  "prConcurrentLimit": 5,
+
+  // 安全补丁随时立即开 PR，不受常规更新的定时/审批限制。
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "dependencyDashboardApproval": false,
+    "automerge": false
+  },
 
   "packageRules": [
-    { "matchUpdateTypes": ["patch", "pin", "digest"], "automerge": true },
     // Cargo.toml 里的版本区间只在 semver 不兼容时才动，其余只推 Cargo.lock，
     // 与手改时的 cargo update -p 一致，review 面更小。
     { "matchManagers": ["cargo"], "rangeStrategy": "update-lockfile" },
-    { "matchManagers": ["cargo"], "matchUpdateTypes": ["minor"], "automerge": false }
+
+    // 大版本与 Cargo 0.x 破坏性 minor 留在 Dependency Dashboard，按需手动勾选。
+    {
+      "matchUpdateTypes": ["major"],
+      "dependencyDashboardApproval": true
+    },
+    {
+      "matchManagers": ["cargo"],
+      "matchCurrentVersion": "/^0\\./",
+      "matchUpdateTypes": ["minor"],
+      "dependencyDashboardApproval": true
+    },
+    // specta 三件套精确 pin 了 rc 版本，统一留看板手动升级以防漂移。
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["tauri-specta", "specta", "specta-typescript"],
+      "groupName": "specta",
+      "dependencyDashboardApproval": true
+    },
+
+    // 非安全类常规更新按生态与变更级别每周一凌晨分组，避免零散 PR 刷屏挤占名额。
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "groupName": "npm patch dependencies",
+      "schedule": ["* 0-6 * * 1"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["npm"],
+      "matchUpdateTypes": ["minor"],
+      "groupName": "npm minor dependencies",
+      "schedule": ["* 0-6 * * 1"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["cargo"],
+      "matchUpdateTypes": ["patch", "pin", "digest"],
+      "groupName": "cargo patch dependencies",
+      "schedule": ["* 0-6 * * 1"],
+      "automerge": true
+    },
+    {
+      "matchManagers": ["cargo"],
+      "matchCurrentVersion": "!/^0\\./",
+      "matchUpdateTypes": ["minor"],
+      "groupName": "cargo minor dependencies",
+      "schedule": ["* 0-6 * * 1"],
+      "automerge": false
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "pin", "digest"],
+      "groupName": "github-actions",
+      "schedule": ["* 0-6 * * 1"],
+      "automerge": true
+    }
   ]
 }
