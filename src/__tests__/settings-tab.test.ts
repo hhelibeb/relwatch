@@ -59,6 +59,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     show_source_type_icons: true,
     show_importance: false,
     enable_usage_stats: true,
+    auto_read_detail: 'open',
     github_token_set: false,
     youtube_api_key_set: false,
     bilibili_cookie_set: false,
@@ -143,6 +144,23 @@ describe('SettingsTab — 表单保护性行为', () => {
       theme: 'light',
     }))
     expect(wrapper.emitted('update')?.[0]).toEqual([true])
+  })
+
+  it('常规分组：打开详情自动已读档位可切换，并随保存写入 payload', async () => {
+    const wrapper = mountSettings()
+    const autoReadSelect = wrapper.findAll('select')
+      .find(s => s.findAll('option').some(o => (o.element as HTMLOptionElement).value === 'navigate'))
+
+    expect(autoReadSelect).toBeTruthy()
+    expect((autoReadSelect!.element as HTMLSelectElement).value).toBe('open')
+
+    await autoReadSelect!.setValue('navigate')
+    expect(wrapper.find('.settings-banner').exists()).toBe(true)
+
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(updateSettingsMock).toHaveBeenCalledWith(expect.objectContaining({ auto_read_detail: 'navigate' }))
   })
 
   it('语言预览后离开恢复为当前表单语言', async () => {

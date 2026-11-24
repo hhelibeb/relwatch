@@ -14,6 +14,7 @@ use crate::db::settings::{
     KEY_AUTO_START,
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_FONT_SCALE, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_SHOW_IMPORTANCE, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT, KEY_ENABLE_USAGE_STATS,
+    KEY_AUTO_READ_DETAIL, DEFAULT_AUTO_READ_DETAIL, normalize_auto_read_detail,
     DEFAULT_PROXY_URL,
     DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
@@ -60,6 +61,7 @@ use serde_json::json;
         show_source_type_icons: get_setting_bool(&conn, KEY_SHOW_SOURCE_TYPE_ICONS, true)?,
         show_importance: get_setting_bool(&conn, KEY_SHOW_IMPORTANCE, false)?,
         enable_usage_stats: get_setting_bool(&conn, KEY_ENABLE_USAGE_STATS, true)?,
+        auto_read_detail: normalize_auto_read_detail(&get_setting_str(&conn, KEY_AUTO_READ_DETAIL, DEFAULT_AUTO_READ_DETAIL)?),
         github_token_set: get_setting_str(&conn, KEY_GITHUB_TOKEN, "")?
             .chars()
             .next()
@@ -75,16 +77,12 @@ use serde_json::json;
     })
 }
 
-/// 设置读写共用 `AppSettings`（types.rs）：无需维护第二份与 AppSettings
-/// 逐字段重复的 payload 结构，新增设置项少一处同步点。
-#[tauri::command]
-
-#[specta::specta]pub async fn update_settings(
-    app: tauri::AppHandle,
-    payload: AppSettings,
-) -> Result<(), String> {
-    // 写入前统一处理：边界 clamp + prompt 后缀剥离
-    let payload = AppSettings {
+/// 设置写入前的统一归一化：边界 clamp + prompt 后缀剥离 + 枚举值回落。
+/// 读、写两侧走同一套归一（`get_settings` 读取时也归一），避免非法值先入库、
+/// 下次启动才被回落。提取成纯函数是因为 `update_settings` 本体需要 AppHandle，
+/// 无法直接单测。
+fn sanitize_settings(payload: AppSettings) -> AppSettings {
+    AppSettings {
         poll_interval_minutes: payload.poll_interval_minutes.clamp(
             crate::poll::MIN_POLL_INTERVAL_MINUTES,
             crate::poll::MAX_POLL_INTERVAL_MINUTES,
@@ -93,8 +91,21 @@ use serde_json::json;
         fetch_history_count: payload.fetch_history_count.max(0),
         font_scale: payload.font_scale.clamp(FONT_SCALE_MIN, FONT_SCALE_MAX),
         deepseek_prompt: strip_prompt_suffix(&payload.deepseek_prompt),
+        auto_read_detail: normalize_auto_read_detail(&payload.auto_read_detail),
         ..payload
-    };
+    }
+}
+
+/// 设置读写共用 `AppSettings`（types.rs）：无需维护第二份与 AppSettings
+/// 逐字段重复的 payload 结构，新增设置项少一处同步点。
+#[tauri::command]
+
+#[specta::specta]pub async fn update_settings(
+    app: tauri::AppHandle,
+    payload: AppSettings,
+) -> Result<(), String> {
+    // 写入前统一处理：边界 clamp + prompt 后缀剥离 + 枚举值回落
+    let payload = sanitize_settings(payload);
 
     // 拿到 pool 与 next_poll_at 的克隆，避免跨 await 持有 tauri::State 借用。
     // 同步 SQLite I/O（读旧值 + 写设置项 + 写日志）与系统注册表写入（自启动）
@@ -549,6 +560,7 @@ mod tests {
             (KEY_SHOW_SOURCE_TYPE_ICONS, "true"),
             (KEY_SHOW_IMPORTANCE, "false"),
             (KEY_ENABLE_USAGE_STATS, "true"),
+            (KEY_AUTO_READ_DETAIL, "off"),
         ];
         for &(key, val) in &old_values {
             settings::set_setting(&conn, key, val).unwrap();
@@ -578,6 +590,7 @@ mod tests {
             (KEY_SHOW_SOURCE_TYPE_ICONS, "false"),
             (KEY_SHOW_IMPORTANCE, "true"),
             (KEY_ENABLE_USAGE_STATS, "false"),
+            (KEY_AUTO_READ_DETAIL, "navigate"),
         ];
 
         let items: Vec<(&str, &str, &str, &str)> = old_values.iter()
@@ -588,7 +601,7 @@ mod tests {
         let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
-        assert_eq!(items.len(), 22,
+        assert_eq!(items.len(), 23,
             "设置项数量变化！新增/删除配置项时，必须同步更新 update_settings 中的 apply_settings 列表和 AppSettings 结构体。"
         );
 
@@ -603,7 +616,7 @@ mod tests {
     #[test]
     fn test_payload_field_count() {
         // 如果新增了配置项，请同步增加期望值并更新 AppSettings 结构体
-        const EXPECTED_SETTING_FIELDS: usize = 21;
+        const EXPECTED_SETTING_FIELDS: usize = 22;
         let json = serde_json::json!({
             "poll_interval_minutes": 30,
             "proxy_mode": "none",
@@ -629,6 +642,7 @@ mod tests {
             "show_source_type_icons": true,
             "show_importance": false,
             "enable_usage_stats": true,
+            "auto_read_detail": "navigate",
             "github_token_set": false,
             "youtube_api_key_set": false,
             "bilibili_cookie_set": false,
@@ -657,6 +671,7 @@ mod tests {
         assert!(payload.show_source_type_icons);
         assert!(!payload.show_importance);
         assert!(payload.enable_usage_stats);
+        assert_eq!(payload.auto_read_detail, "navigate");
 
         // 常量标记，修改配置项时需同步改这里
         let _guard = EXPECTED_SETTING_FIELDS;
@@ -726,6 +741,7 @@ mod tests {
             "show_source_type_icons": true,
             "show_importance": false,
             "enable_usage_stats": true,
+            "auto_read_detail": "navigate",
             "github_token_set": false,
             "youtube_api_key_set": false,
             "bilibili_cookie_set": false,
@@ -742,10 +758,10 @@ mod tests {
                 spec.key
             );
         }
-        // 数量守卫：注册表必须覆盖全部可更新项（当前 22 项）
+        // 数量守卫：注册表必须覆盖全部可更新项（当前 23 项）
         assert_eq!(
             SETTING_SPECS.len(),
-            22,
+            23,
             "可更新设置项数量变化！新增/删除配置项时需同步 AppSettings 与 SETTING_SPECS。"
         );
     }
@@ -762,6 +778,55 @@ mod tests {
         // 非常规类型（null/数组）不产生写入值
         assert_eq!(json_setting_value(&serde_json::json!(null)), "");
         assert_eq!(json_setting_value(&serde_json::json!([1])), "");
+    }
+
+    /// 写入侧归一化（`update_settings` → `sanitize_settings`）：非法枚举值不得落库，
+    /// 边界 clamp 与读取侧对齐，避免「先存非法值、下次启动才回落」。
+    #[test]
+    fn test_sanitize_settings_normalizes_on_write() {
+        // 与前端 payload 逐字段对齐；新增设置项时此处漏改会直接反序列化失败
+        let mut json = serde_json::json!({
+            "poll_interval_minutes": 30,
+            "proxy_mode": "none",
+            "proxy_url": "",
+            "auto_start": false,
+            "minimize_to_tray": true,
+            "log_retention_days": 0,
+            "deepseek_enabled": false,
+            "deepseek_model": "m",
+            "deepseek_base_url": "u",
+            "deepseek_api_key_set": false,
+            "deepseek_proxy_bypass": false,
+            "deepseek_prompt": "请用中文总结",
+            "deepseek_min_importance": "小",
+            "deepseek_translate_release": false,
+            "check_prereleases": false,
+            "fetch_history": false,
+            "fetch_history_count": 1,
+            "language": "zh-CN",
+            "theme": "system",
+            "font_scale": 100,
+            "show_source_type_icons": true,
+            "show_importance": false,
+            "enable_usage_stats": true,
+            "auto_read_detail": "always",
+            "github_token_set": false,
+            "youtube_api_key_set": false,
+            "bilibili_cookie_set": false,
+        });
+        json["font_scale"] = serde_json::json!(9999);
+        json["log_retention_days"] = serde_json::json!(-5);
+        json["fetch_history_count"] = serde_json::json!(-1);
+
+        let payload: AppSettings = serde_json::from_value(json).unwrap();
+        let sanitized = sanitize_settings(payload);
+
+        assert_eq!(sanitized.auto_read_detail, "off", "未知档位必须回落为默认 off");
+        assert_eq!(sanitized.font_scale, FONT_SCALE_MAX);
+        assert_eq!(sanitized.log_retention_days, 0);
+        assert_eq!(sanitized.fetch_history_count, 0);
+        // 合法值不被改写
+        assert_eq!(sanitized.deepseek_prompt, "请用中文总结");
     }
 
     /// set_credential：未知 kind 拒绝，空值清除，非空加密存储。

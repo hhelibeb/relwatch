@@ -237,6 +237,19 @@ export function isReadStatus(status: string): boolean {
   return status === 'clicked' || status === 'ignored'
 }
 
+/** 「稍后提醒」时长：卡片与详情弹窗共用，免两处各写一份 24 * 60。 */
+export const SNOOZE_MINUTES = 24 * 60
+
+/** 打开版本详情时自动标为已读的模式（设置页「常规」）：
+ *  off = 不自动标记；open = 仅从列表点击打开时；navigate = 打开与 ←/→ 翻页都标记。 */
+export type AutoReadDetailMode = 'off' | 'open' | 'navigate'
+
+/** 归一化存储值/设置值：未知值（旧版、手改 DB）一律按 off 处理，避免静默改状态。
+ *  默认档（open）只用于「从未设置过」，不能拿来兜底脏值——那等于替用户消未读。 */
+export function normalizeAutoReadDetail(value: string | null | undefined): AutoReadDetailMode {
+  return value === 'open' || value === 'navigate' ? value : 'off'
+}
+
 /** skill 路径短名：去掉尾部分隔符，取最后一段；
  * 路径指向文件（如 …/commit/SKILL.md）时取所属目录名（skill 名），展示用。 */
 export function skillShortName(path: string): string {

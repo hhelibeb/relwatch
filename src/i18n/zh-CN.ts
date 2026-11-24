@@ -158,6 +158,11 @@ export default {
   'settings.fetch_history_count_hint': '设为 0 时拉取全部版本',
   'settings.enable_usage_stats': '记录功能使用统计（诊断）',
   'settings.enable_usage_stats_hint': '本地记录各功能按钮点击次数，用于功能优化诊断。数据仅存于本机、不展示在应用界面，关闭后不再记录。',
+  'settings.auto_read_detail': '打开版本详情时自动标为已读',
+  'settings.auto_read_detail_off': '关闭',
+  'settings.auto_read_detail_open': '仅打开弹窗时',
+  'settings.auto_read_detail_navigate': '打开弹窗与翻页时',
+  'settings.auto_read_detail_hint': '打开版本详情的那一刻就消未读（不必读到底或关窗）。翻页档位下用 ←/→ 或底栏的上一/下一版本连续浏览也会同步标记。已忽略、已读以及还在稍后提醒中的版本不会被改写。',
   'settings.enable_ai': '启用 AI 摘要与翻译',
   'settings.api_key': 'API Key',
   'settings.api_key_set': '已设置（留空不修改）',
@@ -302,6 +307,8 @@ export default {
   'release.releases_on': '{0} 的版本',
   'release.no_releases_this_month': '本月无版本',
   'release.ignore': '忽略',
+  'release.mark_read': '标记已读',
+  'release.marked_read': '已标记为已读',
   'release.snooze': '稍后提醒',
   'release.snooze_until': '提醒时间: {0}',
   'release.snooze_scheduled': '已计划1天后通知',
@@ -427,6 +434,7 @@ export default {
   'setting.show_source_type_icons': '显示源类型图标',
   'setting.show_importance': '显示重要度',
   'setting.enable_usage_stats': '记录使用统计',
+  'setting.auto_read_detail': '详情自动已读',
 
   'log.cleared': '已清空所有操作日志',
 

@@ -14,6 +14,7 @@ import {
   statusClass,
   isUnreadStatus,
   isReadStatus,
+  normalizeAutoReadDetail,
   skillShortName,
 } from '../utils'
 import { sourceTypeDefs } from '../api/source-registry'
@@ -355,6 +356,22 @@ describe('isReadStatus', () => {
   it('pending → false', () => { expect(isReadStatus('pending')).toBe(false) })
   it('snoozed → false', () => { expect(isReadStatus('snoozed')).toBe(false) })
   it('unknown → false', () => { expect(isReadStatus('unknown')).toBe(false) })
+})
+
+// ── normalizeAutoReadDetail ───────────────────────────────────────
+
+describe('normalizeAutoReadDetail', () => {
+  it('识别的档位原样返回', () => {
+    expect(normalizeAutoReadDetail('open')).toBe('open')
+    expect(normalizeAutoReadDetail('navigate')).toBe('navigate')
+    expect(normalizeAutoReadDetail('off')).toBe('off')
+  })
+  it('未知值/空值回落到 off', () => {
+    expect(normalizeAutoReadDetail('')).toBe('off')
+    expect(normalizeAutoReadDetail(null)).toBe('off')
+    expect(normalizeAutoReadDetail(undefined)).toBe('off')
+    expect(normalizeAutoReadDetail('always')).toBe('off')
+  })
 })
 
 // ── statusLabel ───────────────────────────────────────────────────

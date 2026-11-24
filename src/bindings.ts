@@ -696,6 +696,13 @@ export type AppSettings = {
 	 */
 	show_importance: boolean,
 	enable_usage_stats: boolean,
+	/**
+	 *  自动标为已读的档位：`open`（默认：从列表打开详情弹窗时）/ `navigate`（打开与 ←/→ 翻页
+	 *  都标记）/ `off`（不自动标记，打开发布页也不标）。未知值按 `off` 处理
+	 *  （见 `db::settings::normalize_auto_read_detail`）。仅改写未读条目，已读/已忽略/
+	 *  未到期的稍后提醒不动。
+	 */
+	auto_read_detail: string,
 	github_token_set: boolean,
 	youtube_api_key_set: boolean,
 	bilibili_cookie_set: boolean,

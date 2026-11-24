@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, onMounted, onUnmounted, provide, watch, shallowRef, nextTick, type Component, type Ref } from 'vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, ActiveTabKey, type AgentWorkspaceSeed } from './injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AgentPanelOpenKey, AgentToggleKey, ActiveTabKey, AutoReadDetailKey, type AgentWorkspaceSeed } from './injection-keys'
 import ContextMenu, { type ContextMenuItem } from './components/common/ContextMenu.vue'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { events, commands } from './bindings'
@@ -17,7 +17,7 @@ import { useExternalLinkGuard } from './composables/useExternalLinkGuard'
 import { applyTheme } from './composables/useTheme'
 import { applyFontScale } from './composables/useFontScale'
 import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
-import { isUnreadStatus, formatCountdown } from './utils'
+import { isUnreadStatus, formatCountdown, normalizeAutoReadDetail } from './utils'
 import { loadReleaseViewState } from './utils/releaseViewStorage'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
@@ -505,6 +505,8 @@ setErrorToastSink(showToast)
 provide(AiEnabledKey, computed(() => settings.value.deepseek_enabled && settings.value.deepseek_api_key_set))
 // 「显示重要度」开关：仅控制版本卡片/详情/筛选的 UI 展示（设置页 AI 分组）
 provide(ShowImportanceKey, computed(() => settings.value.show_importance))
+// 「打开详情时自动标为已读」档位：版本列表打开/翻页时按它标记（常规设置）
+provide(AutoReadDetailKey, computed(() => normalizeAutoReadDetail(settings.value.auto_read_detail)))
 // Agent 总开关：独立于 DeepSeek（本地 pi CLI 与在线 API 互不依赖）
 provide(AgentEnabledKey, computed(() => agentConfig.value?.enabled ?? false))
 provide(AgentWorkspaceKey, openAgentWorkspace)

@@ -28,6 +28,8 @@ pub const KEY_SHOW_IMPORTANCE: &str = "show_importance";
 /// 诊断统计开关：是否记录功能按钮点击次数（默认开启）。
 /// 关闭后前端 track() 直接 no-op，后端 record_usage 也丢弃写入（双保险）。
 pub const KEY_ENABLE_USAGE_STATS: &str = "enable_usage_stats";
+/// 打开版本详情时自动标为已读的模式：off / open / navigate（见 `normalize_auto_read_detail`）。
+pub const KEY_AUTO_READ_DETAIL: &str = "auto_read_detail";
 pub const KEY_AUTO_START: &str = "auto_start";
 pub const KEY_GITHUB_TOKEN: &str = "github_token";
 pub const KEY_YOUTUBE_API_KEY: &str = "youtube_api_key";
@@ -132,10 +134,23 @@ pub const DEFAULT_FONT_SCALE: &str = "100";
 pub const DEFAULT_SHOW_SOURCE_TYPE_ICONS: &str = "true";
 pub const DEFAULT_SHOW_IMPORTANCE: &str = "false";
 pub const DEFAULT_ENABLE_USAGE_STATS: &str = "true";
+pub const DEFAULT_AUTO_READ_DETAIL: &str = "open";
 
 /// 界面缩放百分比边界（get/update 两侧共用同一 clamp，防止越界值入库/应用）。
 pub const FONT_SCALE_MIN: i64 = 80;
 pub const FONT_SCALE_MAX: i64 = 150;
+
+// ── 自动标为已读模式 ───────────────────────────────
+
+/// 归一化 `auto_read_detail`：只认 `open` / `navigate`，其余（含空值、手改 DB）一律回落到 off。
+/// 回落值刻意不是默认档：默认档（open）用于「从未设置过」，而无法识别的脏值
+/// 不应改动通知状态——宁可少标一次，也不要默默把未读消掉。
+pub fn normalize_auto_read_detail(value: &str) -> String {
+    match value {
+        "open" | "navigate" => value.to_string(),
+        _ => "off".to_string(),
+    }
+}
 
 // ── 语言检测 ────────────────────────────────────────
 
@@ -224,6 +239,7 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
     SettingSpec { key: KEY_SHOW_SOURCE_TYPE_ICONS, default: DEFAULT_SHOW_SOURCE_TYPE_ICONS, label: "setting.show_source_type_icons" },
     SettingSpec { key: KEY_SHOW_IMPORTANCE, default: DEFAULT_SHOW_IMPORTANCE, label: "setting.show_importance" },
     SettingSpec { key: KEY_ENABLE_USAGE_STATS, default: DEFAULT_ENABLE_USAGE_STATS, label: "setting.enable_usage_stats" },
+    SettingSpec { key: KEY_AUTO_READ_DETAIL, default: DEFAULT_AUTO_READ_DETAIL, label: "setting.auto_read_detail" },
 ];
 
 // ── 批量应用（仅写入变化的项）───────────────────────
@@ -415,6 +431,26 @@ mod tests {
         // 写回 false
         set_setting(&conn, KEY_DEEPSEEK_PROXY_BYPASS, "false").unwrap();
         assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
+    }
+
+    #[test]
+    fn test_normalize_auto_read_detail() {
+        assert_eq!(normalize_auto_read_detail("open"), "open");
+        assert_eq!(normalize_auto_read_detail("navigate"), "navigate");
+        assert_eq!(normalize_auto_read_detail("off"), "off");
+        // 未知值（旧版/手改 DB）回落到 off，不让弹窗拿到无法识别的档位，
+        // 也不因「默认开启」而替用户消未读
+        assert_eq!(normalize_auto_read_detail(""), "off");
+        assert_eq!(normalize_auto_read_detail("always"), "off");
+    }
+
+    /// 默认档：从未设置过时按「打开弹窗即消未读」生效（正常值不被归一化改掉）。
+    #[test]
+    fn test_auto_read_detail_defaults_to_open() {
+        assert_eq!(DEFAULT_AUTO_READ_DETAIL, "open");
+        let conn = init_memory_db().unwrap();
+        let stored = get_setting_str(&conn, KEY_AUTO_READ_DETAIL, DEFAULT_AUTO_READ_DETAIL).unwrap();
+        assert_eq!(normalize_auto_read_detail(&stored), "open");
     }
 
     #[test]

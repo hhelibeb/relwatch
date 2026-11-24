@@ -2,11 +2,11 @@
 import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
-import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel, tokenizeQuery, type BodyIndex } from '../utils'
+import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel, tokenizeQuery, SNOOZE_MINUTES, type BodyIndex, type AutoReadDetailMode } from '../utils'
 import { collectQueryRanges, registerHighlightRanges, unregisterHighlightOwner, searchHighlightSupported, extractBodySnippet } from '../utils/searchHighlight'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease, releaseTitleRedundant } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
@@ -27,11 +27,12 @@ const agentEnabledRef = inject(AgentEnabledKey, ref(false))
 const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
 // 工作区打开状态：拖拽落点存在时才启用卡片拖拽，否则恢复文本选择（拖动选字不被拖拽劫持）
 const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
+// 自动标为已读档位：跳发布页也读同一档位，关掉后不能再有旁路默默消未读
+const autoReadDetail = inject(AutoReadDetailKey, ref<AutoReadDetailMode>('off'))
 
 const aiEnabled = computed(() => aiEnabledRef.value)
 const agentEnabled = computed(() => agentEnabledRef.value)
 
-const snoozeMinutes = 24 * 60
 const isUpdating = ref(false)
 
 // ========== 卡片内容预览：摘要 > 译文 > 原文 ==========
@@ -447,7 +448,7 @@ async function updateReleaseStatus(release: ReleaseInfo, status: NotificationSta
 
 async function handleGoRelease(release: ReleaseInfo) {
   track('release.open')
-  if (isReadStatus(release.notification_status)) {
+  if (isReadStatus(release.notification_status) || autoReadDetail.value === 'off') {
     openReleaseUrl(release.html_url)
     return
   }
@@ -685,7 +686,7 @@ const bodyHitSnippet = computed(() => {
       </div>
       <div class="release-header-right">
         <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-        <button class="btn-sm release-snooze-btn" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', snoozeMinutes)">{{ t('release.snooze') }}</button>
+        <button class="btn-sm release-snooze-btn" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', SNOOZE_MINUTES)">{{ t('release.snooze') }}</button>
         <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
         <button ref="flagButtonRef" class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" aria-haspopup="menu" :aria-expanded="flagMenu !== null" @click="toggleFlag" @contextmenu.prevent.stop="openFlagMenu" @keydown="handleFlagTriggerKeydown">
           <svg><use href="/icons.svg#flag-tag-icon"/></svg>

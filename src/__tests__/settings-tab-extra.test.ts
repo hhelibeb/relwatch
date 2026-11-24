@@ -65,6 +65,7 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
     show_source_type_icons: true,
     show_importance: false,
     enable_usage_stats: true,
+    auto_read_detail: 'off',
     github_token_set: false,
     youtube_api_key_set: false,
     bilibili_cookie_set: false,

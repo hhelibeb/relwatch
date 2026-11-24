@@ -190,6 +190,11 @@ pub struct AppSettings {
     /// 不影响 ai_importance 的生成与「按重要度通知」阈值逻辑。
     pub show_importance: bool,
     pub enable_usage_stats: bool,
+    /// 自动标为已读的档位：`open`（默认：从列表打开详情弹窗时）/ `navigate`（打开与 ←/→ 翻页
+    /// 都标记）/ `off`（不自动标记，打开发布页也不标）。未知值按 `off` 处理
+    /// （见 `db::settings::normalize_auto_read_detail`）。仅改写未读条目，已读/已忽略/
+    /// 未到期的稍后提醒不动。
+    pub auto_read_detail: String,
     pub github_token_set: bool,
     pub youtube_api_key_set: bool,
     pub bilibili_cookie_set: bool,
@@ -225,6 +230,7 @@ mod tests {
             show_source_type_icons: true,
             show_importance: false,
             enable_usage_stats: true,
+            auto_read_detail: "open".into(),
             github_token_set: true,
             youtube_api_key_set: true,
             bilibili_cookie_set: true,

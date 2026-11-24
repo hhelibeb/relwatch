@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, nextTick, ref, type Ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
-import { ShowImportanceKey } from '../injection-keys'
+import { ShowImportanceKey, AutoReadDetailKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
+import { setNotificationState } from '../api/releases'
+import type { AutoReadDetailMode } from '../utils'
 
 // ── 后端 mock：目录只带正文预览，全文由分块接口按需取 ─────────────
 // 用一个内存"后端"模拟按 id 游标分块（get_release_search_bodies，**从新到旧**）与按
@@ -42,6 +44,7 @@ vi.mock('../api/releases', async (importOriginal) => {
       backend.detailCalls.push(id)
       return { id, body: `FULL:${id}`, body_translated: null } as never
     }),
+    setNotificationState: vi.fn(async () => {}),
   }
 })
 
@@ -1156,5 +1159,136 @@ describe('ReleaseTab.vue — 加载与失败态', () => {
 
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('loading')).toBe(true)
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('hasSearchQuery')).toBe(false)
+  })
+})
+
+
+// ── 打开详情自动标为已读（设置页「常规」）────────────────────────
+
+describe('ReleaseTab 打开详情自动标为已读', () => {
+  const setNotificationStateMock = vi.mocked(setNotificationState)
+
+  function mountWithAutoRead(mode: AutoReadDetailMode) {
+    return mount(ReleaseTab, {
+      props: { releases },
+      global: { stubs, provide: { [AutoReadDetailKey as symbol]: ref(mode) } },
+    })
+  }
+
+  /** 让 setNotificationState 的 Promise 链结算（含标记成功后的 emit('update')） */
+  function flushAsync() {
+    return new Promise<void>(resolve => setTimeout(resolve, 0))
+  }
+
+  async function openAt(wrapper: ReturnType<typeof mountTab>, index = 0) {
+    await wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).vm.$emit('openDetail', releases[index], releases)
+    await flushAsync()
+    await nextTick()
+  }
+
+  it('mode=off：打开与翻页都不改动通知状态', async () => {
+    const wrapper = mountWithAutoRead('off')
+    await openAt(wrapper, 0)
+    await wrapper.findComponent({ name: 'ReleaseDetailModalStub' }).vm.$emit('navigate', 1)
+    await flushAsync()
+
+    expect(setNotificationStateMock).not.toHaveBeenCalled()
+  })
+
+  it('mode=open：打开未读条目即标记已读（clicked），并向宿主请求刷新', async () => {
+    const wrapper = mountWithAutoRead('open')
+    await openAt(wrapper, 0)
+
+    expect(setNotificationStateMock).toHaveBeenCalledWith(1, 'clicked')
+    expect(wrapper.emitted('update')).toBeTruthy()
+  })
+
+  it('mode=open：翻页不触发标记（仅点击打开）', async () => {
+    const wrapper = mountWithAutoRead('open')
+    await openAt(wrapper, 0)
+    setNotificationStateMock.mockClear()
+
+    await wrapper.findComponent({ name: 'ReleaseDetailModalStub' }).vm.$emit('navigate', 2)
+    await flushAsync()
+
+    expect(setNotificationStateMock).not.toHaveBeenCalled()
+  })
+
+  it('mode=navigate：翻页到未读条目同样标记（已读条目跳过）', async () => {
+    const wrapper = mountWithAutoRead('navigate')
+    await openAt(wrapper, 0)
+    expect(setNotificationStateMock).toHaveBeenCalledTimes(1)
+    setNotificationStateMock.mockClear()
+
+    // 1 → 2（clicked，已读，不改写）
+    await wrapper.findComponent({ name: 'ReleaseDetailModalStub' }).vm.$emit('navigate', 1)
+    await flushAsync()
+    expect(setNotificationStateMock).not.toHaveBeenCalled()
+
+    // 2 → 3（pending，未读，标记）
+    await wrapper.findComponent({ name: 'ReleaseDetailModalStub' }).vm.$emit('navigate', 1)
+    await flushAsync()
+    expect(setNotificationStateMock).toHaveBeenCalledWith(3, 'clicked')
+  })
+
+  it('已忽略的条目打开时不被改写成已读', async () => {
+    const ignored = [{ ...releases[0], notification_status: 'ignored' as const }]
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: ignored },
+      global: { stubs, provide: { [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('open') } },
+    })
+    await wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).vm.$emit('openDetail', ignored[0], ignored)
+    await flushAsync()
+
+    expect(setNotificationStateMock).not.toHaveBeenCalled()
+  })
+
+  async function openSingle(release: ReleaseInfo, mode: AutoReadDetailMode) {
+    const wrapper = mount(ReleaseTab, {
+      props: { releases: [release] },
+      global: { stubs, provide: { [AutoReadDetailKey as symbol]: ref(mode) } },
+    })
+    await wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).vm.$emit('openDetail', release, [release])
+    await flushAsync()
+    return wrapper
+  }
+
+  it('snoozed 未到期：尊重用户的推迟，不自动标记', async () => {
+    const snoozed = {
+      ...releases[0],
+      notification_status: 'snoozed' as const,
+      snooze_until: new Date(Date.now() + 6 * 3600_000).toISOString(),
+    }
+    await openSingle(snoozed, 'open')
+
+    expect(setNotificationStateMock).not.toHaveBeenCalled()
+  })
+
+  it('snoozed 已到期：提醒重新变为未读，打开时自动标记', async () => {
+    const expired = {
+      ...releases[0],
+      notification_status: 'snoozed' as const,
+      snooze_until: new Date(Date.now() - 3600_000).toISOString(),
+    }
+    await openSingle(expired, 'open')
+
+    expect(setNotificationStateMock.mock.calls[0].slice(0, 2)).toEqual([1, 'clicked'])
+  })
+
+  it('同一版本在途未落库时重复触发不重复发请求（快速翻页回归）', async () => {
+    // 首个请求始终不结：模拟「列表还没刷新，条目仍显示 pending」
+    setNotificationStateMock.mockImplementation(() => new Promise<void>(() => {}))
+    const wrapper = mountWithAutoRead('navigate')
+
+    await openAt(wrapper, 0)
+    expect(setNotificationStateMock).toHaveBeenCalledTimes(1)
+
+    const modal = wrapper.findComponent({ name: 'ReleaseDetailModalStub' })
+    await modal.vm.$emit('navigate', 1)  // → 已读条目，不改写
+    await flushAsync()
+    await modal.vm.$emit('navigate', -1) // ← 回到仍在途的未读条目
+    await flushAsync()
+
+    expect(setNotificationStateMock).toHaveBeenCalledTimes(1)
   })
 })

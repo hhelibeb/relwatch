@@ -3,9 +3,9 @@ import { shallowMount, mount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
 import { t, setLocale } from '../i18n'
-import { formatDate, formatDateNoSeconds, formatDateShort } from '../utils'
+import { formatDate, formatDateNoSeconds, formatDateShort, type AutoReadDetailMode } from '../utils'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
 
@@ -60,6 +60,8 @@ function mountRelease(release: ReleaseInfo, provideOverrides: Record<symbol, unk
     global: {
       provide: {
         [ShowToastKey as symbol]: vi.fn(),
+        // 生产默认档位（open）：未显式提供时组件按 off 处理，点链接会绕过标记
+        [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('open'),
         ...provideOverrides,
       },
     },
@@ -444,7 +446,12 @@ describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
 
     const wrapper = shallowMount(ReleaseItem, {
       props: { release: createRelease({ id: 5, notification_status: 'pending' }) },
-      global: { provide: { [ShowToastKey as symbol]: toast } },
+      global: {
+        provide: {
+          [ShowToastKey as symbol]: toast,
+          [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('open'),
+        },
+      },
     })
 
     await wrapper.find('.release-link-action').trigger('click')
@@ -471,6 +478,21 @@ describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
     const stateOrder = vi.mocked(setNotificationState).mock.invocationCallOrder[0]
     const openOrder = vi.mocked(openReleaseUrl).mock.invocationCallOrder[0]
     expect(stateOrder).toBeLessThan(openOrder)
+  })
+
+  it('关闭自动已读档位（off）：打开链接但不改写通知状态', async () => {
+    vi.mocked(openReleaseUrl).mockResolvedValue(undefined)
+
+    const wrapper = mountRelease(createRelease({ id: 9, notification_status: 'pending' }), {
+      [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('off'),
+    })
+
+    await wrapper.find('.release-link-action').trigger('click')
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(setNotificationState).not.toHaveBeenCalled()
+    expect(wrapper.emitted('update')).toBeFalsy()
+    expect(openReleaseUrl).toHaveBeenCalled()
   })
 })
 

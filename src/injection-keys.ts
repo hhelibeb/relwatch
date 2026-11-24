@@ -1,5 +1,6 @@
 import type { InjectionKey } from 'vue'
 import type { Ref } from 'vue'
+import type { AutoReadDetailMode } from './utils'
 
 export const ShowToastKey: InjectionKey<(msg: string) => void> = Symbol('showToast')
 
@@ -10,6 +11,11 @@ export const AiEnabledKey: InjectionKey<Ref<boolean>> = Symbol('aiEnabled')
  *  仅控制 UI 展示，不影响 ai_importance 生成与「按重要度通知」阈值。
  *  缺省（未 provide，如单组件挂载/测试）取 false，与设置项持久化默认一致。 */
 export const ShowImportanceKey: InjectionKey<Ref<boolean>> = Symbol('showImportance')
+
+/** 打开版本详情弹窗时自动标为已读的模式（设置页「常规」），由 App.vue provide。
+ *  设置项默认档为 open（仅打开弹窗时）；inject 缺省仍取 off——未接线（单组件挂载/测试）
+ *  时不应产生「替用户消未读」的副作用，生产路径始终由 App.vue provide 真实值。 */
+export const AutoReadDetailKey: InjectionKey<Ref<AutoReadDetailMode>> = Symbol('autoReadDetail')
 
 /** Agent 总开关（设置页「AI → Agent」独立于 DeepSeek），由 App.vue provide。 */
 export const AgentEnabledKey: InjectionKey<Ref<boolean>> = Symbol('agentEnabled')

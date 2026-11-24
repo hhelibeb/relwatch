@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import type { ReleaseInfo, ReleaseSearchBody } from '../api/releases'
-import { getReleaseDetail, getReleaseSearchBodies, getReleaseSearchBodiesByIds } from '../api/releases'
-import { isReadStatus, isUnreadStatus, filterReleaseIndices, mergeBodyIndex, type BodyIndex } from '../utils'
+import { getReleaseDetail, getReleaseSearchBodies, getReleaseSearchBodiesByIds, setNotificationState } from '../api/releases'
+import { isReadStatus, isUnreadStatus, filterReleaseIndices, mergeBodyIndex, type BodyIndex, type AutoReadDetailMode } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
 import ReleaseCalendar from './ReleaseCalendar.vue'
 import ReleaseDateDetail from './ReleaseDateDetail.vue'
@@ -14,7 +14,7 @@ import { releaseFlagged } from '../utils/releaseFlag'
 import { loadReleaseViewState, saveReleaseViewState } from '../utils/releaseViewStorage'
 import { clampCalendarMonth } from '../utils/dateKey'
 import { track } from '../composables/useUsageTracking'
-import { ShowImportanceKey } from '../injection-keys'
+import { ShowImportanceKey, AutoReadDetailKey } from '../injection-keys'
 import { t } from '../i18n'
 import ErrorBlock from './common/ErrorBlock.vue'
 
@@ -75,6 +75,8 @@ const viewMode = ref<ViewMode>(savedViewState.viewMode)
 // 「显示重要度」开关（App.vue provide）：关闭时重要度筛选不参与过滤，但**不清值**——
 // 持久化后清值等于永久丢掉用户的选择，开关重新打开即恢复（过滤处统一按 showImportance 短路）
 const showImportance = inject(ShowImportanceKey, ref(false))
+// 「打开详情自动标为已读」档位（设置页常规，App provide）：off / open / navigate
+const autoReadDetail = inject(AutoReadDetailKey, ref<AutoReadDetailMode>('off'))
 const importanceFilter = ref<ReleaseImportanceFilter>(savedViewState.importanceFilter)
 const sourceFilter = ref<ReleaseSourceFilter>(savedViewState.sourceFilter)
 const flagFilter = ref<ReleaseFlagFilter>(savedViewState.flagFilter)
@@ -584,6 +586,7 @@ async function loadReleaseDetail(id: number) {
 function openReleaseDetail(release: ReleaseInfo, sequence: ReleaseInfo[]) {
   detailSequenceIds.value = sequence.map(r => r.id)
   detailReleaseId.value = release.id
+  if (autoReadDetail.value !== 'off') autoMarkRead(release)
 }
 
 function closeReleaseDetail() {
@@ -605,7 +608,28 @@ watch(() => props.releases, () => {
 function navigateReleaseDetail(delta: number) {
   track(delta < 0 ? 'release.detail_prev' : 'release.detail_next')
   const nextId = detailSequenceIds.value[detailIndex.value + delta]
-  if (nextId !== undefined) detailReleaseId.value = nextId
+  if (nextId === undefined) return
+  detailReleaseId.value = nextId
+  if (autoReadDetail.value === 'navigate') {
+    const next = props.releases.find(r => r.id === nextId)
+    if (next) autoMarkRead(next)
+  }
+}
+
+/** 打开详情自动标记已读：只对未读条目生效（已忽略/已读的不改写状态），
+ *  失败静默——自动行为不该打断阅读，取消未读留待用户手动处理。
+ *  在途去重：快速来回翻页时列表尚未刷新（条目仍显示 pending），
+ *  不去重会对同一条重复发 IPC、重复写操作日志。 */
+const autoMarkingIds = new Set<number>()
+
+function autoMarkRead(release: ReleaseInfo) {
+  if (!isUnreadStatus(release.notification_status, release.snooze_until)) return
+  if (autoMarkingIds.has(release.id)) return
+  autoMarkingIds.add(release.id)
+  setNotificationState(release.id, 'clicked')
+    .then(() => emit('update'))
+    .catch(() => {})
+    .finally(() => autoMarkingIds.delete(release.id))
 }
 
 // 宿主（App 的 Ctrl+F）调用：弹出中的详情会盖住搜索栏，先关掉再聚焦才有可见反馈

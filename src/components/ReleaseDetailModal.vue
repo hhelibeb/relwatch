@@ -3,8 +3,8 @@ import { ref, computed, watch, inject, nextTick, onMounted, onUnmounted } from '
 import MarkdownContent from './common/MarkdownContent.vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import ImageLightbox from './common/ImageLightbox.vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey } from '../injection-keys'
-import { type ReleaseInfo, setReleaseFlag } from '../api/releases'
+import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { type NotificationStatus, type ReleaseInfo, setReleaseFlag, setNotificationState } from '../api/releases'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus, registerOverlayActive } from '../composables/contextMenuBus'
@@ -12,7 +12,7 @@ import { track } from '../composables/useUsageTracking'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { useElementFind } from '../composables/useElementFind'
 import { t } from '../i18n'
-import { formatDate, statusClass, statusLabel } from '../utils'
+import { formatDate, statusClass, statusLabel, isUnreadStatus, isReadStatus, SNOOZE_MINUTES } from '../utils'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
 import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX, FLAG_COLOR_LABEL_KEYS } from '../utils/releaseFlag'
 import { fromMediaUrl } from '../utils/imageProxy'
@@ -40,6 +40,9 @@ const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
 const showImportance = inject(ShowImportanceKey, ref(false))
 const aiEnabled = computed(() => aiEnabledRef.value)
+const agentEnabledRef = inject(AgentEnabledKey, ref(false))
+const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
+const agentEnabled = computed(() => agentEnabledRef.value)
 
 // ========== 拖动 / 调整大小 ==========
 // 拖动标题栏移动弹窗，八向手柄调整大小；位置与显式尺寸持久化，下次打开保持
@@ -296,6 +299,46 @@ async function handleCopyContent() {
 function handleOpenLink() {
   track('release.open')
   openReleaseUrl(props.release.html_url)
+}
+
+// ========== 状态操作（与列表卡片同一套语义与文案） ==========
+// 弹窗是阅读闭环的终点：读完就地消未读/忽略/推迟/删除/发送给 Agent，
+// 不必关窗回列表再点一次。旗标色板在顶栏（见 header）。
+const statusUpdating = ref(false)
+// 未知历史状态（既非未读也非已读）不展示状态组，分隔线一并隐藏，避免行首孤立竖线。
+// 判据与卡片一致，刻意不传 snooze_until：未到期的 snoozed 两个谓词都为假，
+// 少了这个隐式让步就只剩「稍后提醒」（点下去只是重置提醒，取消不了）。
+type StatusGroup = 'unread' | 'read' | null
+const statusGroup = computed<StatusGroup>(() => {
+  const status = props.release.notification_status
+  if (isUnreadStatus(status)) return 'unread'
+  if (isReadStatus(status)) return 'read'
+  return null
+})
+
+async function updateStatus(status: NotificationStatus, minutes?: number) {
+  if (statusUpdating.value) return
+  statusUpdating.value = true
+  track(status === 'snoozed' ? 'release.snooze' : status === 'ignored' ? 'release.ignore' : 'release.mark_read')
+  try {
+    await setNotificationState(props.release.id, status, minutes)
+    if (status === 'snoozed') showToast?.(t('release.snooze_scheduled'))
+    else if (status === 'ignored') showToast?.(t('release.notification_cancelled'))
+    else showToast?.(t('release.marked_read'))
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    statusUpdating.value = false
+  }
+}
+
+/** 发送到 Agent：工作区在主窗口右侧的常规文档流里，遮罩盖着它是无法操作的，
+ *  因此先关弹窗（与卡片的右键菜单入口语义一致：发出即转移阵地）。 */
+function handleSendToAgent() {
+  track('release.send_agent')
+  openAgentWorkspace({ entities: [{ kind: 'release', id: props.release.id }] })
+  emit('close')
 }
 
 function isEditableTarget(el: EventTarget | null): boolean {
@@ -555,20 +598,47 @@ function toggleFind() {
         </div>
         <div class="release-detail-footer">
           <div class="release-detail-nav">
-            <button class="btn-sm" :disabled="!hasPrev" :title="t('release.prev_release')" @click="emit('navigate', -1)">
-              <svg class="nav-icon"><use href="/icons.svg#chevron-left-icon"/></svg>
-              {{ t('release.prev_release') }}
+            <button
+              class="release-detail-icon-btn"
+              :disabled="!hasPrev"
+              :title="t('release.prev_release')"
+              :aria-label="t('release.prev_release')"
+              @click="emit('navigate', -1)"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="/icons.svg#chevron-left-icon"/></svg>
             </button>
             <span class="release-detail-position">{{ position }} / {{ total }}</span>
-            <button class="btn-sm" :disabled="!hasNext" :title="t('release.next_release')" @click="emit('navigate', 1)">
-              {{ t('release.next_release') }}
-              <svg class="nav-icon"><use href="/icons.svg#chevron-right-icon"/></svg>
+            <button
+              class="release-detail-icon-btn"
+              :disabled="!hasNext"
+              :title="t('release.next_release')"
+              :aria-label="t('release.next_release')"
+              @click="emit('navigate', 1)"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="/icons.svg#chevron-right-icon"/></svg>
             </button>
           </div>
           <div class="release-detail-actions">
+            <!-- 状态组：与卡片同一判据——「已读/忽略」给未消未读的条目（含 snoozed，
+                 用于取消提醒），「稍后提醒」只给已读条目（isReadStatus）；
+                 snoozed 未到期两个谓词都为假，旧版二分会使它只剩「稍后提醒」（重置提醒）。 -->
+            <template v-if="statusGroup">
+              <template v-if="statusGroup === 'unread'">
+                <button class="btn-sm" :disabled="statusUpdating" @click="updateStatus('clicked')">{{ t('release.mark_read') }}</button>
+                <button class="btn-sm btn-danger-soft" :disabled="statusUpdating" @click="updateStatus('ignored')">{{ t('release.ignore') }}</button>
+              </template>
+              <button
+                v-else
+                class="btn-sm"
+                :disabled="statusUpdating"
+                @click="updateStatus('snoozed', SNOOZE_MINUTES)"
+              >{{ t('release.snooze') }}</button>
+              <span class="release-detail-actions-divider"></span>
+            </template>
             <button v-if="canTranslate" class="btn-sm" :disabled="translating" @click="handleTranslateRelease">{{ t('context.translate') }}</button>
             <button class="btn-sm" :disabled="!currentContent" @click="handleCopyContent">{{ t('context.copy_content') }}</button>
             <button class="btn-sm" @click="handleOpenLink">{{ t('release.open_link') }}</button>
+            <button v-if="agentEnabled" class="btn-sm" @click="handleSendToAgent">{{ t('agent.send_to') }}</button>
           </div>
         </div>
         <div
@@ -915,7 +985,8 @@ function toggleFind() {
   color: var(--danger);
 }
 
-.release-detail-find-btn {
+.release-detail-find-btn,
+.release-detail-icon-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -931,17 +1002,20 @@ function toggleFind() {
   transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
 }
 
-.release-detail-find-btn:hover:not(:disabled) {
+.release-detail-find-btn:hover:not(:disabled),
+.release-detail-icon-btn:hover:not(:disabled) {
   background: var(--hover-surface);
   color: var(--text);
 }
 
-.release-detail-find-btn:disabled {
+.release-detail-find-btn:disabled,
+.release-detail-icon-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }
 
-.release-detail-find-btn svg {
+.release-detail-find-btn svg,
+.release-detail-icon-btn svg {
   width: 14px;
   height: 14px;
 }
@@ -996,30 +1070,29 @@ function toggleFind() {
 .release-detail-nav {
   display: flex;
   align-items: center;
-  gap: 8px;
-}
-
-.release-detail-nav .btn-sm {
-  display: inline-flex;
-  align-items: center;
   gap: 4px;
-}
-
-.nav-icon {
-  width: 12px;
-  height: 12px;
 }
 
 .release-detail-position {
   font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
+  padding: 0 4px;
 }
 
 .release-detail-actions {
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* 状态操作与阅读操作之间的细分割：两类动作语义不同，靠间距区分不够明确 */
+.release-detail-actions-divider {
+  width: 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--border);
 }
 
 .release-view-tabs {

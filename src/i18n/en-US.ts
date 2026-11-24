@@ -158,6 +158,11 @@ export default {
   'settings.fetch_history_count_hint': 'Set to 0 to fetch all versions',
   'settings.enable_usage_stats': 'Record feature usage stats (diagnostics)',
   'settings.enable_usage_stats_hint': 'Records clicks of feature buttons locally for usage diagnostics. Data stays on this device, is not shown in the UI, and stops being recorded when disabled.',
+  'settings.auto_read_detail': 'Mark as read when opening release details',
+  'settings.auto_read_detail_off': 'Off',
+  'settings.auto_read_detail_open': 'Only when the detail is opened',
+  'settings.auto_read_detail_navigate': 'When opening and paging',
+  'settings.auto_read_detail_hint': 'The unread state is cleared the moment the detail opens (no need to scroll to the end or close it). With paging enabled, browsing with ←/→ or the footer prev/next buttons marks those releases too. Ignored, already read, and still-snoozed releases are left untouched.',
   'settings.enable_ai': 'Enable AI summaries & translation',
   'settings.api_key': 'API Key',
   'settings.api_key_set': 'Already set (leave empty to keep)',
@@ -302,6 +307,8 @@ export default {
   'release.releases_on': 'Releases on {0}',
   'release.no_releases_this_month': 'No releases this month',
   'release.ignore': 'Ignore',
+  'release.mark_read': 'Mark as read',
+  'release.marked_read': 'Marked as read',
   'release.snooze': 'Remind Later',
   'release.snooze_until': 'Reminder: {0}',
   'release.snooze_scheduled': 'Notification planned for 1 day later',
@@ -427,6 +434,7 @@ export default {
   'setting.show_source_type_icons': 'Show Source Type Icons',
   'setting.show_importance': 'Show Importance',
   'setting.enable_usage_stats': 'Usage Stats',
+  'setting.auto_read_detail': 'Auto Read on Detail',
 
   'log.cleared': 'All operation logs cleared',
 

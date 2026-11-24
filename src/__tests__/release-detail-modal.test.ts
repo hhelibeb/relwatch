@@ -3,9 +3,9 @@ import { nextTick, reactive, ref } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
 import ReleaseDetailModal from '../components/ReleaseDetailModal.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
-import { ShowImportanceKey, AiEnabledKey } from '../injection-keys'
+import { ShowImportanceKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
-import { translateRelease } from '../api/releases'
+import { translateRelease, setNotificationState } from '../api/releases'
 import { events } from '../bindings'
 import type { ReleaseTranslateChunk } from '../bindings'
 import type { ReleaseInfo } from '../api/releases'
@@ -21,6 +21,7 @@ vi.mock('../api/client', () => ({
 vi.mock('../api/releases', () => ({
   translateRelease: vi.fn(),
   setReleaseFlag: vi.fn(),
+  setNotificationState: vi.fn(),
 }))
 
 // 分片由后端经事件推进：测试持住监听回调自行投递（真 Tauri 环境外无处可发）
@@ -657,5 +658,191 @@ describe('ReleaseDetailModal — 弹窗内查找', () => {
     expect(dispatchFind()).toBe(true)
     wrapper.unmount()
     expect(dispatchFind()).toBe(false)
+  })
+})
+
+// ── 状态操作组：弹窗内闭环 ──────────────────────────────
+
+describe('ReleaseDetailModal — 状态操作组', () => {
+  const setNotificationStateMock = vi.mocked(setNotificationState)
+
+  beforeEach(() => {
+    setNotificationStateMock.mockReset().mockResolvedValue(undefined)
+  })
+
+  function actionButton(label: string): HTMLButtonElement | undefined {
+    return Array.from(document.body.querySelectorAll<HTMLButtonElement>('.release-detail-actions .btn-sm'))
+      .find(b => b.textContent?.trim() === label)
+  }
+
+  function actionLabels(): string[] {
+    return Array.from(document.body.querySelectorAll<HTMLButtonElement>('.release-detail-actions .btn-sm'))
+      .map(b => b.textContent?.trim() ?? '')
+  }
+
+  function unreadRelease(): ReleaseInfo {
+    return { ...makeRelease('## 正文'), notification_status: 'pending' }
+  }
+
+  it('未读条目：提供「标记已读」与「忽略」，不显示「稍后提醒」', () => {
+    const wrapper = mountModalWithRelease(unreadRelease())
+
+    expect(actionLabels()).toContain(t('release.mark_read'))
+    expect(actionLabels()).toContain(t('release.ignore'))
+    expect(actionLabels()).not.toContain(t('release.snooze'))
+    wrapper.unmount()
+  })
+
+  it('已读条目：提供「稍后提醒」，不再显示「标记已读」/「忽略」', () => {
+    const wrapper = mountModalWithRelease({ ...makeRelease('## 正文'), notification_status: 'clicked' })
+
+    expect(actionLabels()).toContain(t('release.snooze'))
+    expect(actionLabels()).not.toContain(t('release.mark_read'))
+    expect(actionLabels()).not.toContain(t('release.ignore'))
+    wrapper.unmount()
+  })
+
+  // snoozed 未到期时 isUnreadStatus(..., snooze_until) 与 isReadStatus 同时为假，
+  // 只靠一个谓词二分会让它只剩「稍后提醒」（点下去只是重置提醒），
+  // 与卡片的判据（无需 snooze_until 的 isUnreadStatus + isReadStatus）对齐后才能取消提醒。
+  it('snoozed（未到期）：提供「标记已读」与「忽略」用于取消提醒，不显示「稍后提醒」', () => {
+    const future = new Date(Date.now() + 6 * 3600_000).toISOString()
+    const wrapper = mountModalWithRelease({
+      ...makeRelease('## 正文'),
+      notification_status: 'snoozed',
+      snooze_until: future,
+    })
+
+    expect(actionLabels()).toContain(t('release.mark_read'))
+    expect(actionLabels()).toContain(t('release.ignore'))
+    expect(actionLabels()).not.toContain(t('release.snooze'))
+    wrapper.unmount()
+  })
+
+  it('snoozed（已到期）：同样可标记已读/忽略', () => {
+    const past = new Date(Date.now() - 3600_000).toISOString()
+    const wrapper = mountModalWithRelease({
+      ...makeRelease('## 正文'),
+      notification_status: 'snoozed',
+      snooze_until: past,
+    })
+
+    expect(actionLabels()).toContain(t('release.mark_read'))
+    expect(actionLabels()).toContain(t('release.ignore'))
+    wrapper.unmount()
+  })
+
+  it('已忽略条目：可继续「稍后提醒」，不出现「标记已读」', () => {
+    const wrapper = mountModalWithRelease({ ...makeRelease('## 正文'), notification_status: 'ignored' })
+
+    expect(actionLabels()).toContain(t('release.snooze'))
+    expect(actionLabels()).not.toContain(t('release.mark_read'))
+    wrapper.unmount()
+  })
+
+  it('未知历史状态：不渲染状态组，分隔线也不留孤竖线', () => {
+    const wrapper = mountModalWithRelease({ ...makeRelease('## 正文'), notification_status: 'unread' as never })
+
+    expect(actionLabels()).not.toContain(t('release.mark_read'))
+    expect(actionLabels()).not.toContain(t('release.snooze'))
+    expect(document.body.querySelector('.release-detail-actions-divider')).toBeNull()
+    wrapper.unmount()
+  })
+
+  it('点击「标记已读」→ setNotificationState(id, clicked) 并请求刷新', async () => {
+    const wrapper = mountModalWithRelease(unreadRelease())
+
+    actionButton(t('release.mark_read'))!.click()
+    await flushPromises()
+
+    expect(setNotificationStateMock.mock.calls[0].slice(0, 2)).toEqual([1, 'clicked'])
+    expect(wrapper.emitted('update')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('点击「忽略」→ setNotificationState(id, ignored)', async () => {
+    const wrapper = mountModalWithRelease(unreadRelease())
+
+    actionButton(t('release.ignore'))!.click()
+    await flushPromises()
+
+    expect(setNotificationStateMock.mock.calls[0].slice(0, 2)).toEqual([1, 'ignored'])
+    wrapper.unmount()
+  })
+
+  it('点击「稍后提醒」→ setNotificationState(id, snoozed, 24 小时)', async () => {
+    const wrapper = mountModalWithRelease({ ...makeRelease('## 正文'), notification_status: 'clicked' })
+
+    actionButton(t('release.snooze'))!.click()
+    await flushPromises()
+
+    expect(setNotificationStateMock).toHaveBeenCalledWith(1, 'snoozed', 24 * 60)
+    wrapper.unmount()
+  })
+
+  it('状态更新失败：给出提示且不刷新列表', async () => {
+    setNotificationStateMock.mockRejectedValueOnce(new Error('boom'))
+    const wrapper = mountModalWithRelease(unreadRelease())
+
+    actionButton(t('release.mark_read'))!.click()
+    await flushPromises()
+
+    expect(wrapper.emitted('update')).toBeFalsy()
+    wrapper.unmount()
+  })
+
+  // 删除已从底栏移除（低频破坏性操作留在卡片右键菜单），底栏不得再出现它
+  it('底栏不再提供「删除」（留给卡片右键菜单）', () => {
+    const wrapper = mountModalWithRelease(unreadRelease())
+
+    expect(actionLabels()).not.toContain(t('context.delete_release'))
+    wrapper.unmount()
+  })
+
+  it('翻页按钮图标化：无可视文字，靠 title/aria-label 表达语义', async () => {
+    const wrapper = mount(ReleaseDetailModal, {
+      props: { release: unreadRelease(), position: 2, total: 5, hasPrev: true, hasNext: true },
+    })
+    await nextTick()
+
+    const navButtons = Array.from(document.body.querySelectorAll<HTMLButtonElement>('.release-detail-nav .release-detail-icon-btn'))
+    expect(navButtons).toHaveLength(2)
+    for (const btn of navButtons) {
+      expect(btn.textContent?.trim()).toBe('')
+      expect(btn.querySelector('svg')).not.toBeNull()
+    }
+    expect(navButtons[0].getAttribute('title')).toBe(t('release.prev_release'))
+    expect(navButtons[0].getAttribute('aria-label')).toBe(t('release.prev_release'))
+    expect(navButtons[1].getAttribute('aria-label')).toBe(t('release.next_release'))
+    // 位置指示保留文字（图标化只作用于翻页动作）
+    expect(document.body.querySelector('.release-detail-position')?.textContent?.trim()).toBe('2 / 5')
+
+    navButtons[0].click()
+    navButtons[1].click()
+    await nextTick()
+    expect(wrapper.emitted('navigate')).toEqual([[-1], [1]])
+    wrapper.unmount()
+  })
+
+  it('Agent 未启用时无「发送到 Agent」入口', () => {
+    const wrapper = mountModalWithRelease(unreadRelease())
+    expect(actionLabels()).not.toContain(t('agent.send_to'))
+    wrapper.unmount()
+  })
+
+  it('Agent 启用时点击「发送到 Agent」唤起工作区、预置当前版本引用并关窗', async () => {
+    const openAgentWorkspace = vi.fn()
+    const wrapper = mountModalWithRelease(unreadRelease(), {
+      [AgentEnabledKey as symbol]: ref(true),
+      [AgentWorkspaceKey as symbol]: openAgentWorkspace,
+    })
+
+    actionButton(t('agent.send_to'))!.click()
+    await flushPromises()
+
+    expect(openAgentWorkspace).toHaveBeenCalledWith({ entities: [{ kind: 'release', id: 1 }] })
+    // 工作区在主窗口右侧常规文档流里，全屏遮罩不撤就点不到它
+    expect(wrapper.emitted('close')).toHaveLength(1)
+    wrapper.unmount()
   })
 })

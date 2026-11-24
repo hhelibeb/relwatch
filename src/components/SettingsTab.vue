@@ -322,6 +322,7 @@ async function handleSave() {
       show_source_type_icons: s.show_source_type_icons,
       show_importance: s.show_importance,
       enable_usage_stats: s.enable_usage_stats,
+      auto_read_detail: s.auto_read_detail,
       github_token_set: s.github_token_set,
       youtube_api_key_set: s.youtube_api_key_set,
       bilibili_cookie_set: s.bilibili_cookie_set,
@@ -388,7 +389,7 @@ async function handleSave() {
 // tab → 设置字段清单（dirty 徽标按 tab 聚合；accounts 为凭据输入键）：
 // 新增设置项若属已有 tab，需在此登记；属新 tab 时新增一行。
 const TAB_SETTING_KEYS: Record<'general' | 'accounts' | 'appearance' | 'ai', readonly string[]> = {
-  general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats'],
+  general: ['auto_start', 'poll_interval_minutes', 'proxy_mode', 'proxy_url', 'log_retention_days', 'check_prereleases', 'fetch_history', 'fetch_history_count', 'enable_usage_stats', 'auto_read_detail'],
   accounts: ['github_token', 'youtube_api_key', 'bilibili_cookie'],
   appearance: ['language', 'theme', 'font_scale', 'minimize_to_tray', 'show_source_type_icons'],
   ai: ['deepseek_enabled', 'deepseek_api_key', 'deepseek_model', 'deepseek_base_url', 'deepseek_proxy_bypass', 'deepseek_prompt', 'deepseek_min_importance', 'show_importance', 'deepseek_translate_release'],
@@ -617,6 +618,15 @@ async function handleImportBackup() {
             <input type="checkbox" v-model="form.enable_usage_stats" />
             <span class="setting-label" :data-dirty="dirtyFields.has('enable_usage_stats') || null">{{ t('settings.enable_usage_stats') }}</span>
             <span class="setting-hint">{{ t('settings.enable_usage_stats_hint') }}</span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label" :data-dirty="dirtyFields.has('auto_read_detail') || null">{{ t('settings.auto_read_detail') }}</span>
+            <select v-model="form.auto_read_detail" class="select-input setting-select">
+              <option value="off">{{ t('settings.auto_read_detail_off') }}</option>
+              <option value="open">{{ t('settings.auto_read_detail_open') }}</option>
+              <option value="navigate">{{ t('settings.auto_read_detail_navigate') }}</option>
+            </select>
+            <span class="setting-hint">{{ t('settings.auto_read_detail_hint') }}</span>
           </label>
         </div>
         <div v-if="settingsTab === 'accounts'" class="settings-form">
