@@ -47,13 +47,6 @@
       "matchUpdateTypes": ["minor"],
       "dependencyDashboardApproval": true
     },
-    // specta 三件套精确 pin 了 rc 版本，统一留看板手动升级以防漂移。
-    {
-      "matchManagers": ["cargo"],
-      "matchPackageNames": ["tauri-specta", "specta", "specta-typescript"],
-      "groupName": "specta",
-      "dependencyDashboardApproval": true
-    },
 
     // 非安全类常规更新按生态与变更级别每周一凌晨分组，避免零散 PR 刷屏挤占名额。
     {
@@ -91,6 +84,15 @@
       "groupName": "github-actions",
       "schedule": ["* 0-6 * * 1"],
       "automerge": true
+    },
+    // specta 三件套精确 pin 了 rc 版本，放在最后覆盖 cargo patch/minor 分组，
+    // 独立留在看板手动升级，避免把整个 cargo patch 组拖进 Pending Approval。
+    {
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["tauri-specta", "specta", "specta-typescript"],
+      "groupName": "specta",
+      "dependencyDashboardApproval": true,
+      "automerge": false
     }
   ]
 }
