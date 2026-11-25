@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-11-26
+
+### Added
+- 版本说明里的代码块支持语法高亮、语言标签与一键复制。(`a484fe9`)
+- 详情正文的图片可就地放大查看，支持滚轮缩放、拖动与打开原图。(`0ea8c44`)
+- 列表搜索命中在条目上高亮，可见字段未出现关键词时额外给出正文命中上下文。(`0ea8c44`)
+- 详情弹窗支持 Ctrl+F 页内查找、命中跳转与高亮。(`7b9a5ed`, `47266f9`)
+- Agent 工作区聊天支持 Ctrl+F 页内查找。(`69b60b8`)
+- 详情弹窗底栏可直接标记已读、忽略、稍后提醒，或把版本发送到 Agent。(`429bc64`)
+- 新增设置项「打开详情自动已读」，可选择关闭、打开时标记、翻页时也标记。(`429bc64`)
+
+### Security
+- 升级 `cookie` 至 0.18.3，修 RUSTSEC-2026-0594。(`c768631`)
+- 升级 `tokio` 至 1.53.3，修 RUSTSEC-2026-0386。(`c768631`)
+- 升级 `url` 至 2.5.9，修 RUSTSEC-2026-0592（嵌套 `blob:` URL 取 origin 时栈溢出）。(`3ed2824`)
+
+### Changed
+- 统一设置页与源菜单的表单控件外观：勾选类统一品牌色，下拉框改自绘箭头、宽度按最长选项自适应。(`5de4e1b`)
+
 ## [1.21.0] - 2026-11-11
 
 ### Added
@@ -556,7 +575,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.21.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.22.0...HEAD
+[1.22.0]: https://github.com/hhelibeb/relwatch/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/hhelibeb/relwatch/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/hhelibeb/relwatch/compare/v1.19.1...v1.20.0
 [1.19.1]: https://github.com/hhelibeb/relwatch/compare/v1.19.0...v1.19.1
