@@ -243,12 +243,6 @@ export const commands = {
 	 *  消息的 run 跳过（排队取消的 run 无 started_at，天然被跳过）。
 	 */
 	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage_Serialize[]>("list_agent_messages", { sessionKey }),
-	/**
-	 *  扫描会话目录，列出磁盘上全部工作区会话（按最后活跃时间倒序）。
-	 * 
-	 *  前端用它与 localStorage 索引合并：索引里有的保持原样（用户改过的标题/模型优先），
-	 *  索引里没有的自动补入并标记为「恢复的会话」。会话目录不存在（从未提交过）→ 空列表。
-	 */
 	listAgentSessions: () => __TAURI_INVOKE<AgentSessionInfo[]>("list_agent_sessions"),
 	/**
 	 *  取消一次正在运行（或排队中）的 Agent 提交。
@@ -267,9 +261,7 @@ export const commands = {
 	 */
 	deleteAgentSession: (sessionKey: string) => __TAURI_INVOKE<null>("delete_agent_session", { sessionKey }),
 	pruneAgentSessions: (sessionKeys: string[]) => __TAURI_INVOKE<PruneAgentSessionsResult>("prune_agent_sessions", { sessionKeys }),
-	/**  返回在终端恢复该次会话的命令字符串（供复制）。 */
 	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),
-	/**  在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。 */
 	openAgentSession: (runId: number) => __TAURI_INVOKE<null>("open_agent_session", { runId }),
 	/**
 	 *  查询 pi RPC 进程池状态（健康指示 + 配置推迟提示）。
@@ -538,26 +530,12 @@ export type AgentRunSummary = {
 	files: string | null,
 };
 
-/**
- *  磁盘发现的一个工作区会话（会话索引丢失后的恢复数据源）。
- * 
- *  会话**文件**在 Roaming 数据目录（`agent-sessions/ws-<key>.jsonl`，与 database.db 同级），
- *  会话**索引**却在 WebView2 缓存目录树（localStorage）——任何磁盘清理工具扫到
- *  `EBWebView` 就一锅端，文件毫发无损但 UI 里再也看不到它们。GUI 无 CLI 那样的
- *  `ls | grep` 自救手段，故必须由后端提供发现能力：**文件即索引**。
- */
 export type AgentSessionInfo = {
-	/**  会话 key（与前端 session_key 同源，UUID）。 */
 	session_key: string,
-	/**  从会话文件首条 user 消息重建的标题（无 user 消息时为空串，前端用占位标题兜底）。 */
 	title: string,
-	/**  会话文件绝对路径。 */
 	session_path: string,
-	/**  最后活跃时间（RFC3339 UTC；文件 mtime 与最近一次提交时间的较晚者）。 */
 	updated_at: string,
-	/**  最近一次提交的状态（无 run 记录时为空串）。 */
 	last_status: string,
-	/**  该会话的累计提交次数。 */
 	run_count: number,
 };
 

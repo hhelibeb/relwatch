@@ -730,6 +730,192 @@ fn accumulate_text(value: &serde_json::Value, count: &mut i64) {
     }
 }
 
+pub fn agent_sessions_dir() -> std::path::PathBuf {
+    crate::db::init::app_data_dir().join("agent-sessions")
+}
+
+pub fn session_path_for_key(session_key: &str) -> std::path::PathBuf {
+    agent_sessions_dir().join(format!("ws-{}.jsonl", session_key))
+}
+
+pub fn is_valid_session_key(key: &str) -> bool {
+    let k = key.trim();
+    !k.is_empty()
+        && k.chars().count() <= 128
+        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+pub fn is_safe_session_path(path: &str) -> bool {
+    let dir = agent_sessions_dir();
+    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+    let p = norm(Path::new(path));
+    let d = norm(&dir);
+    p.strip_prefix(&d)
+        .map(|rest| rest.is_empty() || rest.starts_with('/'))
+        .unwrap_or(false)
+}
+
+pub fn session_key_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy().to_string();
+    let stem = name.strip_suffix(".jsonl")?;
+    let key = stem.strip_prefix("ws-")?;
+    if key.is_empty() {
+        None
+    } else {
+        Some(key.to_string())
+    }
+}
+
+pub fn millis_to_rfc3339(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.to_rfc3339())
+        .unwrap_or_default()
+}
+
+pub fn rfc3339_to_millis(s: &str) -> Option<i64> {
+    chrono::DateTime::parse_from_rfc3339(s)
+        .ok()
+        .map(|d| d.timestamp_millis())
+}
+
+pub fn align_run_ids(
+    messages: &mut [AgentChatMessage],
+    runs: &[crate::db::agent::AgentRunSummary],
+) {
+    let mut run_idx = 0usize;
+    for m in messages.iter_mut() {
+        if m.role != "user" {
+            continue;
+        }
+        let msg_ms = rfc3339_to_millis(&m.timestamp).unwrap_or(0);
+        while run_idx < runs.len() {
+            let r = &runs[run_idx];
+            let start_ms = r.started_at.as_deref().and_then(rfc3339_to_millis);
+            let adjacent = start_ms.is_some_and(|s| (msg_ms - s).unsigned_abs() < 60_000);
+            run_idx += 1;
+            if adjacent {
+                m.run_id = Some(r.id);
+                break;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type)]
+pub struct AgentSessionInfo {
+    pub session_key: String,
+    pub title: String,
+    pub session_path: String,
+    pub updated_at: String,
+    pub last_status: String,
+    pub run_count: i64,
+}
+
+pub fn discover_disk_sessions(
+    dir: &Path,
+    digests: &std::collections::HashMap<String, crate::db::agent::SessionRunDigest>,
+) -> Vec<AgentSessionInfo> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(session_key) = session_key_from_path(&path) else {
+            continue;
+        };
+        if !is_valid_session_key(&session_key) {
+            continue;
+        }
+        let file_ms = entry
+            .metadata()
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0);
+        let digest = digests.get(&session_key);
+        let run_ms = digest
+            .and_then(|d| d.last_created_at.as_deref())
+            .and_then(rfc3339_to_millis)
+            .unwrap_or(0);
+        out.push(AgentSessionInfo {
+            title: session_title_from_file(&path).unwrap_or_default(),
+            session_key,
+            session_path: path.to_string_lossy().to_string(),
+            updated_at: millis_to_rfc3339(file_ms.max(run_ms)),
+            last_status: digest
+                .and_then(|d| d.last_status.clone())
+                .unwrap_or_default(),
+            run_count: digest.map(|d| d.run_count).unwrap_or(0),
+        });
+    }
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    out
+}
+
+pub fn remove_session_file_in(dir: &Path, session_key: &str) -> Result<(), std::io::Error> {
+    let path = dir.join(format!("ws-{}.jsonl", session_key));
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+pub struct PruneAgentSessionsResult {
+    pub deleted: u32,
+    pub failed: u32,
+    pub failed_keys: Vec<String>,
+}
+
+pub fn partition_session_keys(session_keys: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut seen = std::collections::HashSet::with_capacity(session_keys.len());
+    let mut valid_keys = Vec::with_capacity(session_keys.len());
+    let mut invalid_keys = Vec::new();
+    for key in session_keys {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if is_valid_session_key(&key) {
+            valid_keys.push(key);
+        } else {
+            invalid_keys.push(key);
+        }
+    }
+    (valid_keys, invalid_keys)
+}
+
+pub fn prune_session_files_and_db(
+    conn: &mut rusqlite::Connection,
+    sessions_dir: &Path,
+    valid_keys: Vec<String>,
+    mut failed_keys: Vec<String>,
+) -> Result<PruneAgentSessionsResult, String> {
+    let mut succeeded_keys = Vec::with_capacity(valid_keys.len());
+    for key in valid_keys {
+        if let Err(e) = remove_session_file_in(sessions_dir, &key) {
+            log::warn!("failed to remove agent session file for {}: {}", key, e);
+            failed_keys.push(key);
+            continue;
+        }
+        succeeded_keys.push(key);
+    }
+
+    if !succeeded_keys.is_empty() {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        crate::db::agent::batch_delete_runs_for_sessions(&tx, &succeeded_keys)?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    Ok(PruneAgentSessionsResult {
+        deleted: succeeded_keys.len() as u32,
+        failed: failed_keys.len() as u32,
+        failed_keys,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

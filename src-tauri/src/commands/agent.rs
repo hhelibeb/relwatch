@@ -5,49 +5,21 @@
 //! 同一会话（session_key）的后续提交复用 pi 会话文件实现多轮继续。
 //! 结束状态经 `AgentRunFinished` 事件推送前端刷新。
 
-use crate::agent as agent_runner;
-use crate::agent_session::{self, AgentChatMessage};
+use crate::agent::{
+    self as agent_runner, agent_process_level_changed, format_session_command,
+    resolve_session_binary, spawn_terminal, validate_attached_files,
+};
+use crate::agent_session::{
+    self, agent_sessions_dir, align_run_ids, discover_disk_sessions, is_safe_session_path,
+    is_valid_session_key, partition_session_keys, prune_session_files_and_db,
+    remove_session_file_in, session_path_for_key, AgentChatMessage,
+};
+pub use crate::agent_session::{AgentSessionInfo, PruneAgentSessionsResult};
 use crate::db::agent::{self, AgentConfig, AgentEntityRef, AgentModelRef, NewRun};
 use crate::db::logs;
 use crate::types::AppState;
 use serde::{Deserialize, Serialize};
 use specta::Type;
-
-/// 工作区会话文件目录（RelWatch 数据目录下）。
-fn agent_sessions_dir() -> std::path::PathBuf {
-    crate::db::init::app_data_dir().join("agent-sessions")
-}
-
-/// 工作区会话文件路径：`agent-sessions/ws-<session_key>.jsonl`。
-/// 同一会话的多次提交共享该文件，pi `--session <path>` 存在即继续。
-fn session_path_for_key(session_key: &str) -> std::path::PathBuf {
-    agent_sessions_dir().join(format!("ws-{}.jsonl", session_key))
-}
-
-/// 校验工作区会话 key：仅允许 ASCII 字母数字 / 短横线 / 下划线，长度 1..=128。
-///
-/// 会话 key 会被直接拼入会话文件路径（`agent-sessions/ws-<key>.jsonl`），
-/// 若不限制字符集，`..` / 路径分隔符等可造成路径穿越（任意 .jsonl 文件
-/// 删除 / 读取）。前端用 `crypto.randomUUID()`（UUID v4）天然满足白名单。
-fn is_valid_session_key(key: &str) -> bool {
-    let k = key.trim();
-    !k.is_empty()
-        && k.chars().count() <= 128
-        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
-
-/// 校验 DB 中固化的会话文件路径仍位于 agent-sessions 目录内
-/// （防御历史脏数据 / DB 被篡改导致的路径穿越）。
-/// 用 strip_prefix + 分隔符边界校验，避免 `agent-sessions2/evil` 这类前缀穿透。
-fn is_safe_session_path(path: &str) -> bool {
-    let dir = agent_sessions_dir();
-    let norm = |p: &std::path::Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
-    let p = norm(std::path::Path::new(path));
-    let d = norm(&dir);
-    p.strip_prefix(&d)
-        .map(|rest| rest.is_empty() || rest.starts_with('/'))
-        .unwrap_or(false)
-}
 
 /// 读取全局 Agent 配置。
 #[tauri::command]
@@ -104,15 +76,6 @@ pub async fn save_agent_config(
     Ok(())
 }
 
-/// 进程级配置字段是否变化（变化需重启常驻进程生效）。
-fn agent_process_level_changed(a: &AgentConfig, b: &AgentConfig) -> bool {
-    a.agent_type != b.agent_type
-        || a.binary != b.binary
-        || a.model != b.model
-        || a.working_dir != b.working_dir
-        || a.skills != b.skills
-}
-
 /// 读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。
 #[tauri::command]
 #[specta::specta]
@@ -152,51 +115,6 @@ pub struct AgentJobInput {
     /// 本次提交附带的本地文件绝对路径（文件对话框自选；空/None = 无附件）。
     #[serde(default)]
     pub files: Option<Vec<String>>,
-}
-
-// ---- 本地文件附件校验 ----
-
-/// 单次提交最多附加的本地文件数。
-/// 每个文件都要进 prompt、并可能被 pi 逐个读取，放开数量会撑爆上下文；
-/// 10 个足以覆盖「几个日志 + 几张截图」的真实场景。
-const MAX_ATTACHED_FILES: usize = 10;
-/// 单文件上限（字节，20 MB）。
-/// 只传路径不读内容，故这个上限不是内存约束，而是**意图校验**：
-/// 超大文件（视频 / 磁盘镜像）几乎不可能是「让 Agent 看一眼」的目标，
-/// 多半是误选——提前挡下比让 pi 读一半再失败更省事。
-const MAX_ATTACHED_FILE_BYTES: u64 = 20 * 1024 * 1024;
-
-/// 校验并归一化本地文件附件：去空、去重、校验存在性与大小、限制数量。
-///
-/// 与实体引用（`entities`）的区别：实体是应用内数据（source/release，按 id 查库），
-/// 文件是用户本地磁盘路径。**只校验路径本身**，不读取内容——内容由 pi 自己的工具
-/// 按需读取（见 `agent::append_local_files` 的 prompt 说明）。
-fn validate_attached_files(files: Option<&Vec<String>>) -> Result<Vec<String>, String> {
-    let Some(list) = files else {
-        return Ok(Vec::new());
-    };
-    let mut out: Vec<String> = Vec::new();
-    for raw in list {
-        let p = raw.trim();
-        if p.is_empty() {
-            continue;
-        }
-        if out.iter().any(|x| x == p) {
-            continue;
-        }
-        let meta = std::fs::metadata(p).map_err(|_| "err.agent.file_missing".to_string())?;
-        if !meta.is_file() {
-            return Err("err.agent.file_not_file".to_string());
-        }
-        if meta.len() > MAX_ATTACHED_FILE_BYTES {
-            return Err("err.agent.file_too_large".to_string());
-        }
-        out.push(p.to_string());
-        if out.len() > MAX_ATTACHED_FILES {
-            return Err(format!("err.agent.file_too_many|{}", MAX_ATTACHED_FILES));
-        }
-    }
-    Ok(out)
 }
 
 /// 工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
@@ -497,60 +415,6 @@ pub fn list_agent_messages(
     Ok(messages)
 }
 
-/// user 消息 ↔ run 的对位（started_at 邻近校验，60 秒窗）。
-///
-/// 逐条 user 消息按创建顺序找匹配 run：run 无 `started_at`（排队中被取消，未真正
-/// 执行）或 `started_at` 与消息时间相差 >60s（派发前失败 / prompt 失败等未落盘
-/// 消息的路径）→ 视为「该 run 未产生这条消息」，跳过；匹配到的写入 `msg.run_id`。
-/// 无唯一标识可做绝对直连，此校验是启发式上限——不匹配置 None 落回前端
-/// 时间窗兜底（前端 runForMessage 同带 60s 校验，双层拒绝错挂）。
-fn align_run_ids(messages: &mut [AgentChatMessage], runs: &[agent::AgentRunSummary]) {
-    let mut run_idx = 0usize;
-    for m in messages.iter_mut() {
-        if m.role != "user" {
-            continue;
-        }
-        let msg_ms = rfc3339_to_millis(&m.timestamp).unwrap_or(0);
-        while run_idx < runs.len() {
-            let r = &runs[run_idx];
-            let start_ms = r.started_at.as_deref().and_then(rfc3339_to_millis);
-            let adjacent = start_ms.is_some_and(|s| (msg_ms - s).unsigned_abs() < 60_000);
-            run_idx += 1;
-            if adjacent {
-                m.run_id = Some(r.id);
-                break;
-            }
-            // 不邻近：该 run 未产生这条消息（继续找下一条 run）
-        }
-    }
-}
-
-/// 磁盘发现的一个工作区会话（会话索引丢失后的恢复数据源）。
-///
-/// 会话**文件**在 Roaming 数据目录（`agent-sessions/ws-<key>.jsonl`，与 database.db 同级），
-/// 会话**索引**却在 WebView2 缓存目录树（localStorage）——任何磁盘清理工具扫到
-/// `EBWebView` 就一锅端，文件毫发无损但 UI 里再也看不到它们。GUI 无 CLI 那样的
-/// `ls | grep` 自救手段，故必须由后端提供发现能力：**文件即索引**。
-#[derive(Debug, Serialize, Deserialize, Clone, Type)]
-pub struct AgentSessionInfo {
-    /// 会话 key（与前端 session_key 同源，UUID）。
-    pub session_key: String,
-    /// 从会话文件首条 user 消息重建的标题（无 user 消息时为空串，前端用占位标题兜底）。
-    pub title: String,
-    /// 会话文件绝对路径。
-    pub session_path: String,
-    /// 最后活跃时间（RFC3339 UTC；文件 mtime 与最近一次提交时间的较晚者）。
-    pub updated_at: String,
-    /// 最近一次提交的状态（无 run 记录时为空串）。
-    pub last_status: String,
-    /// 该会话的累计提交次数。
-    pub run_count: i64,
-}
-
-/// 扫描会话目录，列出磁盘上全部工作区会话（按最后活跃时间倒序）。
-///
-/// 前端用它与 localStorage 索引合并：索引里有的保持原样（用户改过的标题/模型优先），
-/// 索引里没有的自动补入并标记为「恢复的会话」。会话目录不存在（从未提交过）→ 空列表。
 #[tauri::command]
 #[specta::specta]
 pub fn list_agent_sessions(
@@ -558,72 +422,7 @@ pub fn list_agent_sessions(
 ) -> Result<Vec<AgentSessionInfo>, String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let digests = agent::latest_run_digests(&conn)?;
-    let dir = agent_sessions_dir();
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(e) => e,
-        // 目录不存在 = 从未提交过，非错误（与 list_agent_messages 的空数组语义一致）
-        Err(_) => return Ok(Vec::new()),
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(session_key) = session_key_from_path(&path) else {
-            continue;
-        };
-        if !is_valid_session_key(&session_key) {
-            continue;
-        }
-        let file_ms = entry
-            .metadata()
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as i64)
-            .unwrap_or(0);
-        let digest = digests.get(&session_key);
-        let run_ms = digest
-            .and_then(|d| d.last_created_at.as_deref())
-            .and_then(rfc3339_to_millis)
-            .unwrap_or(0);
-        out.push(AgentSessionInfo {
-            title: crate::agent_session::session_title_from_file(&path).unwrap_or_default(),
-            session_key,
-            session_path: path.to_string_lossy().to_string(),
-            // 文件 mtime 与最近提交时间取较晚者：pi 落盘时机与 run 创建不完全同步，
-            // 两者都可能更晚（提交后仍在流式写文件 / 记录补写）
-            updated_at: millis_to_rfc3339(file_ms.max(run_ms)),
-            last_status: digest
-                .and_then(|d| d.last_status.clone())
-                .unwrap_or_default(),
-            run_count: digest.map(|d| d.run_count).unwrap_or(0),
-        });
-    }
-    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(out)
-}
-
-/// 从会话文件名反解 session_key（`ws-<key>.jsonl` → `<key>`）；非会话文件返回 None。
-fn session_key_from_path(path: &std::path::Path) -> Option<String> {
-    let name = path.file_name()?.to_string_lossy().to_string();
-    let stem = name.strip_suffix(".jsonl")?;
-    let key = stem.strip_prefix("ws-")?;
-    if key.is_empty() {
-        None
-    } else {
-        Some(key.to_string())
-    }
-}
-
-fn millis_to_rfc3339(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .map(|d| d.to_rfc3339())
-        .unwrap_or_default()
-}
-
-fn rfc3339_to_millis(s: &str) -> Option<i64> {
-    chrono::DateTime::parse_from_rfc3339(s)
-        .ok()
-        .map(|d| d.timestamp_millis())
+    Ok(discover_disk_sessions(&agent_sessions_dir(), &digests))
 }
 
 /// 取消一次正在运行（或排队中）的 Agent 提交。
@@ -681,14 +480,6 @@ async fn cancel_run_inner(state: &AppState, run_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_session_file_in(dir: &std::path::Path, session_key: &str) -> Result<(), std::io::Error> {
-    let path = dir.join(format!("ws-{}.jsonl", session_key));
-    if path.exists() {
-        std::fs::remove_file(&path)?;
-    }
-    Ok(())
-}
-
 async fn cancel_runs_best_effort(state: &AppState, run_ids: Vec<i64>) -> Result<(), String> {
     for run_id in run_ids {
         if let Err(e) = cancel_run_inner(state, run_id).await {
@@ -724,59 +515,6 @@ pub async fn delete_agent_session(
         .map_err(|e| format!("err.agent.delete_session|{}", e))?;
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     agent::delete_runs_for_session(&conn, &session_key).map_err(|e| e.to_string())
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
-pub struct PruneAgentSessionsResult {
-    pub deleted: u32,
-    pub failed: u32,
-    pub failed_keys: Vec<String>,
-}
-
-fn partition_session_keys(session_keys: Vec<String>) -> (Vec<String>, Vec<String>) {
-    let mut seen = std::collections::HashSet::with_capacity(session_keys.len());
-    let mut valid_keys = Vec::with_capacity(session_keys.len());
-    let mut invalid_keys = Vec::new();
-    for key in session_keys {
-        if !seen.insert(key.clone()) {
-            continue;
-        }
-        if is_valid_session_key(&key) {
-            valid_keys.push(key);
-        } else {
-            invalid_keys.push(key);
-        }
-    }
-    (valid_keys, invalid_keys)
-}
-
-fn prune_session_files_and_db(
-    conn: &mut rusqlite::Connection,
-    sessions_dir: &std::path::Path,
-    valid_keys: Vec<String>,
-    mut failed_keys: Vec<String>,
-) -> Result<PruneAgentSessionsResult, String> {
-    let mut succeeded_keys = Vec::with_capacity(valid_keys.len());
-    for key in valid_keys {
-        if let Err(e) = remove_session_file_in(sessions_dir, &key) {
-            log::warn!("failed to remove agent session file for {}: {}", key, e);
-            failed_keys.push(key);
-            continue;
-        }
-        succeeded_keys.push(key);
-    }
-
-    if !succeeded_keys.is_empty() {
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
-        agent::batch_delete_runs_for_sessions(&tx, &succeeded_keys)?;
-        tx.commit().map_err(|e| e.to_string())?;
-    }
-
-    Ok(PruneAgentSessionsResult {
-        deleted: succeeded_keys.len() as u32,
-        failed: failed_keys.len() as u32,
-        failed_keys,
-    })
 }
 
 #[tauri::command]
@@ -899,7 +637,6 @@ pub async fn export_agent_session(
     Ok(target)
 }
 
-/// 返回在终端恢复该次会话的命令字符串（供复制）。
 #[tauri::command]
 #[specta::specta]
 pub fn get_agent_session_command(
@@ -909,23 +646,11 @@ pub fn get_agent_session_command(
     let path = resolve_session_path(&state, run_id)?;
     let (binary, working_dir) = {
         let conn = state.db.get().map_err(|e| e.to_string())?;
-        let config = agent::load_agent_config(&conn)?;
-        crate::agent_rpc::ensure_supported_type(&config)?;
-        let binary = crate::agent_rpc::resolve_agent_binary(&config)?;
-        (binary, config.working_dir)
+        resolve_session_binary(&conn)?
     };
-    // 带工作目录前缀：恢复的会话 cwd 与工作区内一致（pi 会话 cwd 固化在 JSONL 里，
-    // 终端启动时先 cd 过去，后续 bash 工具行为才一致）。
-    let wd = working_dir.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let base = format!("\"{}\" --session \"{}\"", binary, path);
-    Ok(match wd {
-        Some(w) if cfg!(windows) => format!("cd /d \"{}\" && {}", w, base),
-        Some(w) => format!("cd \"{}\" && {}", w, base),
-        None => base,
-    })
+    Ok(format_session_command(&binary, &path, working_dir.as_deref()))
 }
 
-/// 在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。
 #[tauri::command]
 #[specta::specta]
 pub fn open_agent_session(
@@ -938,63 +663,17 @@ pub fn open_agent_session(
     }
     let (binary, working_dir) = {
         let conn = state.db.get().map_err(|e| e.to_string())?;
-        let config = agent::load_agent_config(&conn)?;
-        crate::agent_rpc::ensure_supported_type(&config)?;
-        let binary = crate::agent_rpc::resolve_agent_binary(&config)?;
-        (binary, config.working_dir)
+        resolve_session_binary(&conn)?
     };
     spawn_terminal(&binary, &path, working_dir.as_deref())
 }
 
-/// 校验 run 存在且已落会话，返回会话文件路径。
 fn resolve_session_path(state: &tauri::State<'_, AppState>, run_id: i64) -> Result<String, String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let run = agent::get_run(&conn, run_id)?.ok_or_else(|| "err.agent.run_not_found".to_string())?;
     run.session_path
         .filter(|p| !p.is_empty())
         .ok_or_else(|| "err.agent.no_session".to_string())
-}
-
-/// 在新终端窗口中启动 `pi --session <path>`。
-/// Windows 用 cmd start 开新控制台窗口（/D 指定起始目录）；Unix 探测常见终端模拟器。
-/// working_dir：工作区配置的工作目录（None = 不指定，终端用默认 cwd）。
-fn spawn_terminal(binary: &str, session_path: &str, working_dir: Option<&str>) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.arg("/C").arg("start").arg("");
-        // start 语法：START ["title"] [/D path] ...  —— /D 指定新窗口起始目录
-        if let Some(wd) = working_dir {
-            cmd.arg("/D").arg(wd);
-        }
-        cmd.arg(binary).arg("--session").arg(session_path);
-        cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    {
-        // 探测常见终端模拟器（按优先级）；仅调用 Command 标准方法，无需 std CommandExt trait
-        let terminals = [
-            ("x-terminal-emulator", vec!["-e"]),
-            ("gnome-terminal", vec!["--"]),
-            ("konsole", vec!["-e"]),
-            ("xfce4-terminal", vec!["-e"]),
-        ];
-        for (name, args) in terminals {
-            if std::process::Command::new("which").arg(name).output().map(|o| o.status.success()).unwrap_or(false) {
-                let mut cmd = std::process::Command::new(name);
-                cmd.args(&args);
-                cmd.arg(binary).arg("--session").arg(session_path);
-                // 终端模拟器继承本进程 cwd，其启动的 pi/bash 子进程随之继承
-                if let Some(wd) = working_dir {
-                    cmd.current_dir(wd);
-                }
-                cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
-                return Ok(());
-            }
-        }
-        return Err("err.agent.no_terminal".to_string());
-    }
 }
 
 /// 应用内更新安装前调用：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理其子进程）。
@@ -1011,6 +690,8 @@ pub async fn agent_shutdown_for_update(state: tauri::State<'_, AppState>) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::MAX_ATTACHED_FILES;
+    use crate::agent_session::session_key_from_path;
 
     /// 构造一条 run 摘要（测试对位用；started_at None = 排队取消/未启动）。
     fn run_summary(id: i64, started_at: Option<&str>) -> agent::AgentRunSummary {
