@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, inject, watch, computed } from 'vue'
-import { ShowToastKey } from '../injection-keys'
+import { AppCatalogKey, ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { version } from '../../package.json'
 import {
@@ -13,7 +13,7 @@ import {
 } from '../api/settings'
 import { openReleaseUrl } from '../api/client'
 import { useAppUpdate } from '../api/update'
-import { getAgentConfig, saveAgentConfig } from '../api/agent'
+import { getAgentConfig, saveAgentConfig, type AgentConfig } from '../api/agent'
 import { t, tm, setLocale, languages } from '../i18n'
 import { skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
@@ -32,6 +32,7 @@ const emit = defineEmits<{
   updateLogWritten: []
 }>()
 const showToast = inject(ShowToastKey)!
+const sharedCatalog = inject(AppCatalogKey, null)
 
 const settingsTab = ref<'general' | 'accounts' | 'data' | 'appearance' | 'ai' | 'agent' | 'about'>('general')
 const savingSettings = ref(false)
@@ -57,20 +58,26 @@ const agentMaxConcurrency = ref(3)
 const agentSkills = ref<string[]>([])
 const newAgentSkill = ref('')
 
+function applyAgentConfig(cfg: AgentConfig) {
+  agentEnabled.value = cfg.enabled
+  agentType.value = cfg.agent_type
+  agentBinary.value = cfg.binary ?? ''
+  agentModel.value = cfg.model ?? ''
+  agentWorkingDir.value = cfg.working_dir ?? ''
+  agentPromptSuffix.value = cfg.prompt_suffix ?? ''
+  agentTimeout.value = cfg.timeout_seconds
+  agentMaxConcurrency.value = cfg.max_concurrency
+  agentSkills.value = [...cfg.skills]
+  agentSavedSnapshot.value = agentSnapshot()
+}
+
 async function loadAgentConfig() {
+  if (sharedCatalog?.agentConfig.value) {
+    applyAgentConfig(sharedCatalog.agentConfig.value)
+    return
+  }
   try {
-    const cfg = await getAgentConfig()
-    agentEnabled.value = cfg.enabled
-    agentType.value = cfg.agent_type
-    agentBinary.value = cfg.binary ?? ''
-    agentModel.value = cfg.model ?? ''
-    agentWorkingDir.value = cfg.working_dir ?? ''
-    agentPromptSuffix.value = cfg.prompt_suffix ?? ''
-    agentTimeout.value = cfg.timeout_seconds
-    agentMaxConcurrency.value = cfg.max_concurrency
-    agentSkills.value = [...cfg.skills]
-    // 刷新已保存基线（脏点判定基准）
-    agentSavedSnapshot.value = agentSnapshot()
+    applyAgentConfig(await getAgentConfig())
   } catch {
     // 加载失败保持默认空表单
   }

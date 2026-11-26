@@ -1,6 +1,9 @@
 import type { InjectionKey } from 'vue'
 import type { Ref } from 'vue'
 import type { AutoReadDetailMode } from './utils'
+import type { AppCatalogStore } from './composables/useAppCatalog'
+
+export const AppCatalogKey: InjectionKey<AppCatalogStore> = Symbol('appCatalog')
 
 export const ShowToastKey: InjectionKey<(msg: string) => void> = Symbol('showToast')
 
