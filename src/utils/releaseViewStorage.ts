@@ -5,8 +5,8 @@ import type {
   ReleaseSourceFilter,
   ReleaseFlagFilter,
   ReleaseVersionFilter,
-  SourceType,
 } from '../components/releaseTypes'
+import { sourceTypeDefs } from '../api/source-registry'
 
 export interface ReleaseViewState {
   viewMode: ViewMode
@@ -20,14 +20,7 @@ export interface ReleaseViewState {
 const VIEW_KEY = 'relwatch.release.view'
 const EXPANDED_KEY = 'relwatch.release.expandedRepos'
 
-// 穷尽映射：新增 SourceType 时 TS 要求补齐，避免白名单漏项把用户的来源筛选静默降级
-const SOURCE_TYPE_KEYS: Record<SourceType, true> = {
-  github: true,
-  huggingface: true,
-  youtube: true,
-  bilibili: true,
-}
-const SOURCE_FILTERS: readonly ReleaseSourceFilter[] = ['all', ...(Object.keys(SOURCE_TYPE_KEYS) as SourceType[])]
+const SOURCE_FILTERS: readonly ReleaseSourceFilter[] = ['all', ...sourceTypeDefs.map(d => d.type)]
 
 export const defaultReleaseViewState: ReleaseViewState = {
   viewMode: 'simple',

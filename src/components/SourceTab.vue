@@ -857,7 +857,7 @@ function hideHealthTooltip() {
                   <option value="off">{{ t('source.switch_off') }}</option>
                 </select>
               </label>
-              <label v-if="source.source_type === 'github'" class="source-setting-row">
+              <label v-if="getSourceTypeDef(source.source_type)?.supportsPrerelease" class="source-setting-row">
                 <span class="source-setting-label">{{ t('source.check_prereleases') }}</span>
                 <select
                   class="select-input source-setting-input"

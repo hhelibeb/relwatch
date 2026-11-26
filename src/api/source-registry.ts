@@ -133,6 +133,8 @@ export interface SourceTypeDef {
   searchQuery?: (owner: string, repo: string, description: string | null) => string
   /** 添加源时是否展示专属配置 UI（如 YouTube 订阅复选框）。 */
   hasConfigInput?: boolean
+  /** 源设置中是否支持「检查预发布」源级覆盖。 */
+  supportsPrerelease?: boolean
   /** 是否参与 AI 摘要/翻译（false 则隐藏翻译入口；与后端 ai_eligible 对应）。 */
   aiSummary?: boolean
   /** 列表卡片是否显示 owner/repo 前缀行（HF tag 已含组织名、YT 显示频道名）。 */
@@ -159,6 +161,7 @@ export const sourceTypeDefs: SourceTypeDef[] = [
     fallback: true,
     // GitHub 仓库名/组织名是标准形态，列表卡片显示 owner/repo 前缀
     showRepoPrefix: true,
+    supportsPrerelease: true,
   },
   {
     type: 'huggingface',
