@@ -1,4 +1,4 @@
-use crate::db::settings::{get_setting, KEY_PROXY_MODE, KEY_PROXY_URL};
+use crate::db::settings::load_proxy_config;
 use crate::http;
 use crate::types::AppState;
 
@@ -18,19 +18,15 @@ const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
     state: tauri::State<'_, AppState>,
     url: String,
 ) -> Result<Vec<u8>, String> {
-    let (proxy_url, proxy_mode);
-    {
+    let proxy = {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
-        proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
-            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-        });
+        load_proxy_config(&conn)?
         // conn 随作用域结束归还连接池，网络请求期间不占用
-    }
+    };
     http::fetch_public_bytes(
         &http::HttpClientConfig {
-            proxy_url: &proxy_url,
-            proxy_mode: &proxy_mode,
+            proxy_url: &proxy.url,
+            proxy_mode: &proxy.mode,
             ..Default::default()
         },
         &url,

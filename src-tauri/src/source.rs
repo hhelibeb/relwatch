@@ -44,22 +44,56 @@ impl AuthKind {
             AuthKind::BilibiliCookie => "bilibili_cookie",
         }
     }
+
+    pub fn setting_key(self) -> Option<&'static str> {
+        match self {
+            AuthKind::None => None,
+            AuthKind::GitHubToken => Some(crate::db::settings::KEY_GITHUB_TOKEN),
+            AuthKind::YouTubeApiKey => Some(crate::db::settings::KEY_YOUTUBE_API_KEY),
+            AuthKind::BilibiliCookie => Some(crate::db::settings::KEY_BILIBILI_COOKIE),
+        }
+    }
 }
 
-/// 根据适配器声明的鉴权方式，从 settings 中选出对应 token。
-/// 无鉴权源返回 None（适配器实现忽略 token 即可）。
-#[allow(clippy::too_many_arguments)]
-pub fn token_for<'a>(
-    adapter: &dyn SourceAdapter,
-    github_token: Option<&'a str>,
-    youtube_api_key: Option<&'a str>,
-    bilibili_cookie: Option<&'a str>,
-) -> Option<&'a str> {
-    match adapter.auth_kind() {
-        AuthKind::None => None,
-        AuthKind::GitHubToken => github_token,
-        AuthKind::YouTubeApiKey => youtube_api_key,
-        AuthKind::BilibiliCookie => bilibili_cookie,
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SourceCredentials {
+    pub github_token: Option<String>,
+    pub youtube_api_key: Option<String>,
+    pub bilibili_cookie: Option<String>,
+}
+
+impl SourceCredentials {
+    pub fn load(conn: &rusqlite::Connection) -> Self {
+        Self {
+            github_token: crate::credential::read_credential(
+                conn,
+                crate::db::settings::KEY_GITHUB_TOKEN,
+            ),
+            youtube_api_key: crate::credential::read_credential(
+                conn,
+                crate::db::settings::KEY_YOUTUBE_API_KEY,
+            ),
+            bilibili_cookie: crate::credential::read_credential(
+                conn,
+                crate::db::settings::KEY_BILIBILI_COOKIE,
+            ),
+        }
+    }
+
+    pub fn load_for(conn: &rusqlite::Connection, adapter: &dyn SourceAdapter) -> Option<String> {
+        adapter
+            .auth_kind()
+            .setting_key()
+            .and_then(|key| crate::credential::read_credential(conn, key))
+    }
+
+    pub fn token_for(&self, adapter: &dyn SourceAdapter) -> Option<&str> {
+        match adapter.auth_kind() {
+            AuthKind::None => None,
+            AuthKind::GitHubToken => self.github_token.as_deref(),
+            AuthKind::YouTubeApiKey => self.youtube_api_key.as_deref(),
+            AuthKind::BilibiliCookie => self.bilibili_cookie.as_deref(),
+        }
     }
 }
 
@@ -261,29 +295,25 @@ mod tests {
         let yt = get_adapter("youtube").unwrap();
         let bili = get_adapter("bilibili").unwrap();
 
-        // GitHub：取 github token
-        assert_eq!(
-            token_for(github.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
-            Some("ghp")
-        );
-        // HuggingFace：无鉴权 → None（即使配置了 token 也不传）
-        assert_eq!(
-            token_for(hf.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
-            None
-        );
-        // YouTube：取 Data API Key
-        assert_eq!(
-            token_for(yt.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
-            Some("yt-key")
-        );
-        // Bilibili：取 SESSDATA cookie
-        assert_eq!(
-            token_for(bili.as_ref(), Some("ghp"), Some("yt-key"), Some("sess")),
-            Some("sess")
-        );
-        // 未配置对应 token → None
-        assert_eq!(token_for(yt.as_ref(), None, None, None), None);
-        assert_eq!(token_for(bili.as_ref(), None, None, None), None);
+        let creds = SourceCredentials {
+            github_token: Some("ghp".to_string()),
+            youtube_api_key: Some("yt-key".to_string()),
+            bilibili_cookie: Some("sess".to_string()),
+        };
+
+        assert_eq!(creds.token_for(github.as_ref()), Some("ghp"));
+        assert_eq!(creds.token_for(hf.as_ref()), None);
+        assert_eq!(creds.token_for(yt.as_ref()), Some("yt-key"));
+        assert_eq!(creds.token_for(bili.as_ref()), Some("sess"));
+
+        let empty = SourceCredentials::default();
+        assert_eq!(empty.token_for(yt.as_ref()), None);
+        assert_eq!(empty.token_for(bili.as_ref()), None);
+
+        assert_eq!(AuthKind::None.setting_key(), None);
+        assert_eq!(AuthKind::GitHubToken.setting_key(), Some(crate::db::settings::KEY_GITHUB_TOKEN));
+        assert_eq!(AuthKind::YouTubeApiKey.setting_key(), Some(crate::db::settings::KEY_YOUTUBE_API_KEY));
+        assert_eq!(AuthKind::BilibiliCookie.setting_key(), Some(crate::db::settings::KEY_BILIBILI_COOKIE));
     }
 
     #[test]

@@ -33,7 +33,7 @@ use tauri::http::{Response, StatusCode};
 use tauri::{AppHandle, Manager};
 
 use crate::db::init::app_data_dir;
-use crate::db::settings::{get_setting, KEY_PROXY_MODE, KEY_PROXY_URL};
+use crate::db::settings::load_proxy_config;
 use crate::http;
 use crate::types::AppState;
 
@@ -274,26 +274,14 @@ fn sanitize_content_type(ct: &str) -> String {
     }
 }
 
-/// 读取代理设置（mode 为空时按 url 推断 custom/none，与其它入口一致）。
 fn read_proxy_settings(app: &AppHandle) -> Result<(String, String), String> {
     let conn = app
         .state::<AppState>()
         .db
         .get()
         .map_err(|e| format!("err.db_connect|{}", e))?;
-    let pu = get_setting(&conn, KEY_PROXY_URL)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_default();
-    let pm = get_setting(&conn, KEY_PROXY_MODE)
-        .map_err(|e| e.to_string())?
-        .unwrap_or_else(|| {
-            if pu.is_empty() {
-                "none".to_string()
-            } else {
-                "custom".to_string()
-            }
-        });
-    Ok((pu, pm))
+    let proxy = load_proxy_config(&conn)?;
+    Ok((proxy.url, proxy.mode))
 }
 
 /// 处理一次 media 请求：组装 http 响应（成功 200 / 参数错 400 / 下载失败 502）。

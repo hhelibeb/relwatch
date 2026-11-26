@@ -6,7 +6,7 @@ use crate::db;
 use crate::db::ai_usage::{CallUsage, RawUsage};
 use crate::db::settings::{
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY,
-    KEY_DEEPSEEK_PROXY_BYPASS, KEY_DEEPSEEK_PROMPT, KEY_DEEPSEEK_TRANSLATE_RELEASE, KEY_PROXY_URL,
+    KEY_DEEPSEEK_PROXY_BYPASS, KEY_DEEPSEEK_PROMPT, KEY_DEEPSEEK_TRANSLATE_RELEASE,
     KEY_LANGUAGE,
     DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_PROMPT_EDITABLE,
     DEFAULT_DEEPSEEK_TRANSLATE_PROMPT, DEFAULT_DEEPSEEK_TRANSLATE_RELEASE,
@@ -81,17 +81,8 @@ pub fn load_ai_network_config(conn: &Connection) -> (String, String) {
     if bypass {
         return (String::new(), "none".to_string());
     }
-    let proxy_url = db::settings::get_setting(conn, KEY_PROXY_URL)
-        .ok()
-        .flatten()
-        .unwrap_or_default();
-    let proxy_mode = db::settings::get_setting(conn, db::settings::KEY_PROXY_MODE)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| {
-            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-        });
-    (proxy_url, proxy_mode)
+    let proxy = db::settings::load_proxy_config(conn).unwrap_or_default();
+    (proxy.url, proxy.mode)
 }
 
 /// 把用户填写的 base_url 归一到 chat/completions 的完整 POST 端点。

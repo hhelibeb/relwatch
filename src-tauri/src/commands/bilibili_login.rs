@@ -19,7 +19,7 @@ use tauri::Manager;
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 use crate::crypto;
-use crate::db::settings::{self, KEY_BILIBILI_COOKIE, KEY_PROXY_URL, KEY_PROXY_MODE};
+use crate::db::settings::{self, KEY_BILIBILI_COOKIE};
 use crate::net::ProxyPolicy;
 use crate::types::AppState;
 
@@ -99,30 +99,16 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
 
     // 验证登录态（nav isLogin），避免无效/过期 cookie 入库；
     // 先从 settings 取代理配置构建 client（与轮询链路一致）
-    let (proxy_url, proxy_mode) = {
+    let proxy = {
         let conn = state
             .db
             .get()
-            .map_err(|e| format!("err.db_lock|{}", e))?;
-        let pu = settings::get_setting(&conn, KEY_PROXY_URL)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let pm = settings::get_setting(&conn, KEY_PROXY_MODE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                if pu.is_empty() {
-                    "none".to_string()
-                } else {
-                    "custom".to_string()
-                }
-            });
-        (pu, pm)
+            .map_err(|e| format!("err.db_connect|{}", e))?;
+        settings::load_proxy_config(&conn).unwrap_or_default()
     };
     let client = crate::http::build_http_client(crate::http::HttpClientConfig {
-        proxy_url: &proxy_url,
-        proxy_mode: &proxy_mode,
+        proxy_url: &proxy.url,
+        proxy_mode: &proxy.mode,
         bearer_token: None,
         ..Default::default()
     })?;
@@ -143,7 +129,7 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
     let conn = state
         .db
         .get()
-        .map_err(|e| format!("err.db_lock|{}", e))?;
+        .map_err(|e| format!("err.db_connect|{}", e))?;
     settings::set_setting(&conn, KEY_BILIBILI_COOKIE, &crypto::encrypt(&sessdata))?;
     crate::db::logs::write_log_key(
         &conn,
@@ -193,22 +179,9 @@ fn require_login_window_label(window_label: &str) -> Result<(), String> {
     // 在这里（async 上下文、建窗线程之前）读 DB 并释放连接，避免把非 Send 的
     // 连接/锁跨线程带入下面的 spawn_blocking。
     let proxy = {
-        let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
-        let proxy_url = settings::get_setting(&conn, KEY_PROXY_URL)
-            .ok()
-            .flatten()
-            .unwrap_or_default();
-        let proxy_mode = settings::get_setting(&conn, KEY_PROXY_MODE)
-            .ok()
-            .flatten()
-            .unwrap_or_else(|| {
-                if proxy_url.is_empty() {
-                    "none".to_string()
-                } else {
-                    "custom".to_string()
-                }
-            });
-        match ProxyPolicy::resolve(&proxy_mode, &proxy_url) {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        let cfg = settings::load_proxy_config(&conn).unwrap_or_default();
+        match ProxyPolicy::resolve(&cfg.mode, &cfg.url) {
             Ok(crate::net::ProxyDecision::Proxy(url)) => Some(url),
             _ => None,
         }

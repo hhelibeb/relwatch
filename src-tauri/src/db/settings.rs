@@ -202,6 +202,28 @@ pub fn get_setting_i64(conn: &Connection, key: &str, default: i64) -> Result<i64
         .unwrap_or(default))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProxyConfig {
+    pub url: String,
+    pub mode: String,
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            url: String::new(),
+            mode: "none".to_string(),
+        }
+    }
+}
+
+pub fn load_proxy_config(conn: &Connection) -> Result<ProxyConfig, String> {
+    let url = get_setting_str(conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
+    let default_mode = if url.is_empty() { "none" } else { "custom" };
+    let mode = get_setting_str(conn, KEY_PROXY_MODE, default_mode)?;
+    Ok(ProxyConfig { url, mode })
+}
+
 // ── 可更新设置项注册表 ─────────────────────────────
 
 /// 单个设置项元数据：DB key、默认值、变更日志 label。
@@ -488,5 +510,29 @@ mod tests {
         let result = strip_prompt_suffix("你是一个助手。  \n请严格按以下 JSON 格式返回\n{\"summary\": ...}");
         // trim_end() 会去掉 boundary 之前的空格
         assert_eq!(result, "你是一个助手。");
+    }
+
+    #[test]
+    fn test_load_proxy_config_fallback_and_explicit() {
+        let conn = init_memory_db().unwrap();
+        assert_eq!(load_proxy_config(&conn).unwrap(), ProxyConfig::default());
+
+        set_setting(&conn, KEY_PROXY_URL, "http://127.0.0.1:7890").unwrap();
+        assert_eq!(
+            load_proxy_config(&conn).unwrap(),
+            ProxyConfig {
+                url: "http://127.0.0.1:7890".to_string(),
+                mode: "custom".to_string(),
+            }
+        );
+
+        set_setting(&conn, KEY_PROXY_MODE, "system").unwrap();
+        assert_eq!(
+            load_proxy_config(&conn).unwrap(),
+            ProxyConfig {
+                url: "http://127.0.0.1:7890".to_string(),
+                mode: "system".to_string(),
+            }
+        );
     }
 }

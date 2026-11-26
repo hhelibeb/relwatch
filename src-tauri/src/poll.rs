@@ -8,10 +8,9 @@ const MAX_CONSECUTIVE_FAILURES: i64 = 3;
 
 use crate::db;
 use crate::db::settings::{
-    KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_LOG_RETENTION, KEY_NEXT_POLL_AT,
+    KEY_POLL_INTERVAL, KEY_LOG_RETENTION, KEY_NEXT_POLL_AT,
     KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
 };
-use crate::credential;
 use crate::http;
 use crate::deepseek;
 use crate::source;
@@ -90,13 +89,9 @@ fn compute_fetch_plan(
 
 // ---- 轮询设置 ----------------
 
-/// 轮询操作所需的所有设置项，一次性从 DB 读取。
 struct PollSettings {
-    proxy_url: String,
-    proxy_mode: String,
-    github_token: Option<String>,
-    youtube_api_key: Option<String>,
-    bilibili_cookie: Option<String>,
+    proxy: db::settings::ProxyConfig,
+    credentials: source::SourceCredentials,
     fetch_history: bool,
     fetch_history_count: usize,
 }
@@ -104,30 +99,17 @@ struct PollSettings {
 impl Default for PollSettings {
     fn default() -> Self {
         Self {
-            proxy_url: String::new(),
-            proxy_mode: "none".to_string(),
-            github_token: None,
-            youtube_api_key: None,
-            bilibili_cookie: None,
+            proxy: db::settings::ProxyConfig::default(),
+            credentials: source::SourceCredentials::default(),
             fetch_history: false,
             fetch_history_count: 1,
         }
     }
 }
 
-/// 从 DB 加载轮询设置，返回 Result（在 ? 可用的上下文中使用）。
 fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, String> {
-    let proxy_url = db::settings::get_setting(conn, KEY_PROXY_URL)?.unwrap_or_default();
-    let proxy_mode = db::settings::get_setting(conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
-        if proxy_url.is_empty() {
-            "none".to_string()
-        } else {
-            "custom".to_string()
-        }
-    });
-    let github_token = credential::read_credential(conn, crate::db::settings::KEY_GITHUB_TOKEN);
-    let youtube_api_key = credential::read_credential(conn, crate::db::settings::KEY_YOUTUBE_API_KEY);
-    let bilibili_cookie = credential::read_credential(conn, crate::db::settings::KEY_BILIBILI_COOKIE);
+    let proxy = db::settings::load_proxy_config(conn)?;
+    let credentials = source::SourceCredentials::load(conn);
     let fetch_history =
         db::settings::get_setting_bool(conn, KEY_FETCH_HISTORY, false).unwrap_or(false);
     let fetch_history_count =
@@ -135,11 +117,8 @@ fn load_poll_settings(conn: &rusqlite::Connection) -> Result<PollSettings, Strin
             .unwrap_or(1)
             .max(0) as usize;
     Ok(PollSettings {
-        proxy_url,
-        proxy_mode,
-        github_token,
-        youtube_api_key,
-        bilibili_cookie,
+        proxy,
+        credentials,
         fetch_history,
         fetch_history_count,
     })
@@ -505,13 +484,7 @@ async fn do_poll_core(
     settings: &PollSettings,
     is_manual: bool,
 ) -> (Vec<i64>, Vec<db::releases::ReleaseInfo>) {
-    let (all_new_ids, all_saved) = poll_all_sources_async(
-        db_pool, sources, &settings.proxy_url, &settings.proxy_mode,
-        settings.github_token.as_deref(), settings.youtube_api_key.as_deref(),
-        settings.bilibili_cookie.as_deref(),
-        settings.fetch_history, settings.fetch_history_count,
-    )
-    .await;
+    let (all_new_ids, all_saved) = poll_all_sources_async(db_pool, sources, settings).await;
 
     // 跳过 ai_eligible=false 的源（youtube/bilibili）后生成摘要与译文。
     // fail-closed：过滤失败（DB 错误/panic）时跳过本轮 AI 并记日志，
@@ -798,7 +771,7 @@ async fn record_check_failure(
 pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
     let _guard = acquire_lock()?;
 
-    let (source_obj, proxy_url, proxy_mode, github_token, youtube_api_key, bilibili_cookie, fetch_history, fetch_history_count);
+    let (source_obj, settings);
     {
         let state = app.state::<AppState>();
         let conn = state.db.get().map_err(|e| format!("err.db_lock|{}", e))?;
@@ -807,14 +780,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
             .into_iter()
             .find(|s| s.id == id)
             .ok_or("err.source_not_found")?;
-        let settings = load_poll_settings(&conn)?;
-        proxy_url = settings.proxy_url;
-        proxy_mode = settings.proxy_mode;
-        github_token = settings.github_token;
-        youtube_api_key = settings.youtube_api_key;
-        bilibili_cookie = settings.bilibili_cookie;
-        fetch_history = settings.fetch_history;
-        fetch_history_count = settings.fetch_history_count;
+        settings = load_poll_settings(&conn)?;
         source_obj = source;
     }
 
@@ -831,12 +797,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         Ok(a) => a,
         Err((_, msg)) => return Err(msg),
     };
-    let token = source::token_for(
-        adapter.as_ref(),
-        github_token.as_deref(),
-        youtube_api_key.as_deref(),
-        bilibili_cookie.as_deref(),
-    );
+    let token = settings.credentials.token_for(adapter.as_ref());
 
     // 从 AppHandle 提取依赖，注入提纯后的核心函数
     let (db_pool, deepseek_semaphore) = {
@@ -849,8 +810,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     // client 不携带 default Authorization——github token 由 adapter 按请求设置，
     // 避免 HF 请求泄露 GitHub Token（见 http::HttpClientConfig::set_default_auth）
     let client = match http::build_http_client(http::HttpClientConfig {
-        proxy_url: &proxy_url,
-        proxy_mode: &proxy_mode,
+        proxy_url: &settings.proxy.url,
+        proxy_mode: &settings.proxy.mode,
         bearer_token: None,
         ..Default::default()
     }) {
@@ -876,8 +837,8 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
         adapter: adapter.as_ref(),
         client: &client,
         token,
-        fetch_history,
-        fetch_history_count,
+        fetch_history: settings.fetch_history,
+        fetch_history_count: settings.fetch_history_count,
         log_key: "check.manual",
     };
     let (new_ids, saved) = match check_one_source(&ctx, &source_obj).await {
@@ -1069,23 +1030,16 @@ fn is_uncounted_failure(msg: &str) -> bool {
     UNCOUNTED_FAILURE_PREFIXES.iter().any(|p| msg.starts_with(p))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn poll_all_sources_async(
     db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     sources: &[db::sources::Source],
-    proxy_url: &str,
-    proxy_mode: &str,
-    github_token: Option<&str>,
-    youtube_api_key: Option<&str>,
-    bilibili_cookie: Option<&str>,
-    fetch_history: bool,
-    fetch_history_count: usize,
+    settings: &PollSettings,
 ) -> (Vec<i64>, Vec<(i64, Option<String>)>) {
     // client 不携带 default Authorization——github token 由 adapter 按请求设置，
     // 避免 HF 请求泄露 GitHub Token（见 http::HttpClientConfig::set_default_auth）
     let client = match http::build_http_client(http::HttpClientConfig {
-        proxy_url,
-        proxy_mode,
+        proxy_url: &settings.proxy.url,
+        proxy_mode: &settings.proxy.mode,
         bearer_token: None,
         ..Default::default()
     }) {
@@ -1106,6 +1060,8 @@ async fn poll_all_sources_async(
     // 带上 source_id：task panic 时 JoinError 里没有源信息，而每个源都必须有人认领。
     let mut handles: Vec<(i64, tokio::task::JoinHandle<TaskOutcome>)> = Vec::new();
     let pool = db_pool.clone();
+    let fetch_history = settings.fetch_history;
+    let fetch_history_count = settings.fetch_history_count;
 
     for source in sources {
         let sem = semaphore.clone();
@@ -1122,8 +1078,7 @@ async fn poll_all_sources_async(
                 continue;
             }
         };
-        let token = source::token_for(adapter.as_ref(), github_token, youtube_api_key, bilibili_cookie)
-            .map(|s| s.to_string());
+        let token = settings.credentials.token_for(adapter.as_ref()).map(str::to_string);
 
         handles.push((source_id, tokio::spawn(async move {
             // 背压信号量用 graceful 等待获取：失败若直接 panic，会被 handle.await 静默吞掉
@@ -1989,9 +1944,9 @@ mod tests {
     fn test_load_poll_settings_defaults() {
         let conn = init_memory_db().unwrap();
         let settings = load_poll_settings(&conn).unwrap();
-        assert_eq!(settings.proxy_url, "");
-        assert_eq!(settings.proxy_mode, "none");
-        assert!(settings.github_token.is_none());
+        assert_eq!(settings.proxy.url, "");
+        assert_eq!(settings.proxy.mode, "none");
+        assert!(settings.credentials.github_token.is_none());
         assert!(!settings.fetch_history);
         assert_eq!(settings.fetch_history_count, 1);
     }
@@ -2001,17 +1956,17 @@ mod tests {
         let conn = init_memory_db().unwrap();
         crate::crypto::set_test_master_key();
 
-        db::settings::set_setting(&conn, KEY_PROXY_URL, "http://127.0.0.1:1080").unwrap();
-        db::settings::set_setting(&conn, KEY_PROXY_MODE, "custom").unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_PROXY_URL, "http://127.0.0.1:1080").unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_PROXY_MODE, "custom").unwrap();
         let encrypted = crate::crypto::encrypt("ghp_configured");
         db::settings::set_setting(&conn, crate::db::settings::KEY_GITHUB_TOKEN, &encrypted).unwrap();
         db::settings::set_setting(&conn, KEY_FETCH_HISTORY, "true").unwrap();
         db::settings::set_setting(&conn, KEY_FETCH_HISTORY_COUNT, "5").unwrap();
 
         let settings = load_poll_settings(&conn).unwrap();
-        assert_eq!(settings.proxy_url, "http://127.0.0.1:1080");
-        assert_eq!(settings.proxy_mode, "custom");
-        assert_eq!(settings.github_token.as_deref(), Some("ghp_configured"));
+        assert_eq!(settings.proxy.url, "http://127.0.0.1:1080");
+        assert_eq!(settings.proxy.mode, "custom");
+        assert_eq!(settings.credentials.github_token.as_deref(), Some("ghp_configured"));
         assert!(settings.fetch_history);
         assert_eq!(settings.fetch_history_count, 5);
     }
@@ -2020,9 +1975,9 @@ mod tests {
     fn test_load_poll_settings_proxy_mode_fallback() {
         // proxy_url=非空但 proxy_mode 未设置 → fallback 为 "custom"
         let conn = init_memory_db().unwrap();
-        db::settings::set_setting(&conn, KEY_PROXY_URL, "http://proxy:8080").unwrap();
+        db::settings::set_setting(&conn, db::settings::KEY_PROXY_URL, "http://proxy:8080").unwrap();
         let settings = load_poll_settings(&conn).unwrap();
-        assert_eq!(settings.proxy_mode, "custom");
+        assert_eq!(settings.proxy.mode, "custom");
     }
 
     // --- mark_older_as_read tests ---

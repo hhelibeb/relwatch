@@ -1,7 +1,6 @@
 use crate::db;
 use crate::types::AppState;
-use crate::{credential, http, source};
-use db::settings::{get_setting, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE};
+use crate::{http, source};
 use serde_json::json;
 use tauri_specta::Event;
 
@@ -49,20 +48,12 @@ pub struct SourceTypeInfo {
     let resolved_owner: String;
     {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        let proxy_url = get_setting(&conn, KEY_PROXY_URL)?.unwrap_or_default();
-        let proxy_mode = get_setting(&conn, KEY_PROXY_MODE)?.unwrap_or_else(|| {
-            if proxy_url.is_empty() { "none".to_string() } else { "custom".to_string() }
-        });
-        let github_token = credential::read_credential(&conn, KEY_GITHUB_TOKEN);
-        // YouTube Data API Key（加密存储，解密后传给 youtube adapter 走 API 模式）
-        let youtube_api_key = credential::read_credential(&conn, KEY_YOUTUBE_API_KEY);
-        // B 站登录 Cookie（SESSDATA，加密存储，可选；降低风控概率）
-        let bilibili_cookie = credential::read_credential(&conn, KEY_BILIBILI_COOKIE);
+        let proxy = db::settings::load_proxy_config(&conn)?;
         // client 不携带 default Authorization——github token 由 adapter 按请求设置，
         // 避免 HF 请求泄露 GitHub Token
         let client = match http::build_http_client(http::HttpClientConfig {
-            proxy_url: &proxy_url,
-            proxy_mode: &proxy_mode,
+            proxy_url: &proxy.url,
+            proxy_mode: &proxy.mode,
             bearer_token: None,
             ..Default::default()
         }) {
@@ -86,11 +77,11 @@ pub struct SourceTypeInfo {
                 return Err(msg);
             }
         };
+        let token = source::SourceCredentials::load_for(&conn, adapter.as_ref());
         // 先把用户输入归一化为标准 owner（YouTube：@handle/链接 → channel_id），
         // 再查重与验证，保证去重与 RSS 拉取都基于统一的 channel_id。
-        // token 按适配器声明的 auth_kind 选取（YouTube → Data API Key，GitHub → PAT）。
         resolved_owner = match adapter
-            .resolve_owner(&client, &owner, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref()))
+            .resolve_owner(&client, &owner, token.as_deref())
             .await
         {
             Ok(o) => o,
@@ -107,7 +98,7 @@ pub struct SourceTypeInfo {
             return Ok(0);
         }
         description = match adapter
-            .verify_and_describe(&client, &resolved_owner, &repo, source::token_for(adapter.as_ref(), github_token.as_deref(), youtube_api_key.as_deref(), bilibili_cookie.as_deref()))
+            .verify_and_describe(&client, &resolved_owner, &repo, token.as_deref())
             .await
         {
             Ok(d) => d,

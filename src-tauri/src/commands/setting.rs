@@ -7,7 +7,7 @@ use crate::db;
 use crate::deepseek;
 use crate::types::{AppSettings, AppState};
 use crate::db::settings::{
-    self, KEY_POLL_INTERVAL, KEY_PROXY_URL, KEY_PROXY_MODE, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
+    self, KEY_POLL_INTERVAL, KEY_MINIMIZE_TO_TRAY, KEY_LOG_RETENTION,
     KEY_DEEPSEEK_ENABLED, KEY_DEEPSEEK_MODEL, KEY_DEEPSEEK_BASE_URL, KEY_DEEPSEEK_API_KEY, KEY_DEEPSEEK_PROXY_BYPASS,
     KEY_DEEPSEEK_PROMPT, KEY_DEEPSEEK_MIN_IMPORTANCE,
     KEY_DEEPSEEK_TRANSLATE_RELEASE,
@@ -15,7 +15,6 @@ use crate::db::settings::{
     KEY_CHECK_PRERELEASES, KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT,
     KEY_LANGUAGE, KEY_THEME, KEY_FONT_SCALE, KEY_SHOW_SOURCE_TYPE_ICONS, KEY_SHOW_IMPORTANCE, KEY_GITHUB_TOKEN, KEY_YOUTUBE_API_KEY, KEY_BILIBILI_COOKIE, KEY_NEXT_POLL_AT, KEY_ENABLE_USAGE_STATS,
     KEY_AUTO_READ_DETAIL, DEFAULT_AUTO_READ_DETAIL, normalize_auto_read_detail,
-    DEFAULT_PROXY_URL,
     DEFAULT_DEEPSEEK_MODEL, DEFAULT_DEEPSEEK_BASE_URL,
     DEFAULT_DEEPSEEK_PROMPT_EDITABLE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE,
     DEFAULT_THEME,
@@ -30,12 +29,11 @@ use serde_json::json;
 
 #[specta::specta]pub fn get_settings(state: tauri::State<AppState>) -> Result<AppSettings, String> {
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    let proxy_url = get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
-    let proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, if proxy_url.is_empty() { "none" } else { "custom" })?;
+    let proxy = settings::load_proxy_config(&conn)?;
     Ok(AppSettings {
         poll_interval_minutes: get_setting_i64(&conn, KEY_POLL_INTERVAL, 30)?,
-        proxy_url,
-        proxy_mode,
+        proxy_url: proxy.url,
+        proxy_mode: proxy.mode,
         auto_start: get_setting_bool(&conn, KEY_AUTO_START, false)?,
         minimize_to_tray: get_setting_bool(&conn, KEY_MINIMIZE_TO_TRAY, true)?,
         log_retention_days: get_setting_i64(&conn, KEY_LOG_RETENTION, 0)?,
@@ -279,14 +277,9 @@ pub struct TestDeepseekPayload {
             proxy_url = String::new();
             proxy_mode = "none".to_string();
         } else {
-            proxy_url = match p.and_then(|p| non_empty(&p.proxy_url)) {
-                Some(u) => u,
-                None => get_setting_str(&conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?,
-            };
-            proxy_mode = match p.and_then(|p| non_empty(&p.proxy_mode)) {
-                Some(m) => m,
-                None => get_setting_str(&conn, KEY_PROXY_MODE, "none")?,
-            };
+            let saved = settings::load_proxy_config(&conn)?;
+            proxy_url = p.and_then(|p| non_empty(&p.proxy_url)).unwrap_or(saved.url);
+            proxy_mode = p.and_then(|p| non_empty(&p.proxy_mode)).unwrap_or(saved.mode);
         }
     }
     let api_key = api_key.ok_or("err.deepseek_api_key_missing")?;
@@ -336,6 +329,7 @@ pub struct TestDeepseekPayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::db::settings::{KEY_PROXY_MODE, KEY_PROXY_URL};
     use crate::db;
     use crate::db::settings::{
         DEFAULT_AUTO_START, DEFAULT_DEEPSEEK_PROXY_BYPASS, DEFAULT_FETCH_HISTORY_COUNT,
