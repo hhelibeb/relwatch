@@ -6,8 +6,10 @@ import { useAgentSessions, type SessionMeta } from '../components/agent/useAgent
 import {
   deleteAgentSession,
   exportAgentSession,
+  getAgentQueue,
   listAgentRuns,
   listAgentSessions,
+  pruneAgentSessions,
   type AgentQueueItem,
 } from '../api/agent'
 import { confirm } from '@tauri-apps/plugin-dialog'
@@ -16,9 +18,11 @@ vi.mock('../api/agent', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/agent')>()
   return {
     ...actual,
+    getAgentQueue: vi.fn().mockResolvedValue([]),
     listAgentRuns: vi.fn().mockResolvedValue([]),
     listAgentSessions: vi.fn().mockResolvedValue([]),
     deleteAgentSession: vi.fn().mockResolvedValue(undefined),
+    pruneAgentSessions: vi.fn().mockResolvedValue({ deleted: 0, failed: 0, failed_keys: [] }),
     exportAgentSession: vi.fn().mockResolvedValue('C:/tmp/export.md'),
   }
 })
@@ -302,17 +306,41 @@ describe('useAgentSessions 删除 / 清理 / 磁盘发现', () => {
     expect(confirm).toHaveBeenCalledWith(t('agent.delete_session_running_confirm'), expect.anything())
   })
 
-  it('handleClearSessions：保留当前会话，删除其余并汇总 toast', async () => {
+  it('handleClearSessions：单次批量查询与 pruneAgentSessions，保留当前会话并汇总 toast', async () => {
     seedStorage([
       { key: 's1', title: 'a', updatedAt: 200 },
       { key: 's2', title: 'b', updatedAt: 100 },
       { key: 's3', title: 'c', updatedAt: 50 },
     ])
+    vi.mocked(getAgentQueue).mockResolvedValueOnce([
+      { run_id: 1, session_key: 's2', status: 'running', position: 1 },
+    ])
+    vi.mocked(pruneAgentSessions).mockResolvedValueOnce({ deleted: 2, failed: 0, failed_keys: [] })
     const { api, showToast } = setup()
     vi.mocked(confirm).mockResolvedValue(true)
     await api.handleClearSessions()
+    expect(getAgentQueue).toHaveBeenCalledTimes(1)
+    expect(listAgentRuns).not.toHaveBeenCalled()
+    expect(confirm).toHaveBeenCalledWith(t('agent.clear_sessions_running_confirm', '1'), expect.anything())
+    expect(pruneAgentSessions).toHaveBeenCalledTimes(1)
+    expect(pruneAgentSessions).toHaveBeenCalledWith(['s2', 's3'])
     expect(readStorage().map((s) => s.key)).toEqual(['s1'])
     expect(showToast).toHaveBeenCalledWith(t('agent.sessions_cleared', '2'))
+  })
+
+  it('handleClearSessions：部分文件删除失败时保留失败项在索引中', async () => {
+    seedStorage([
+      { key: 's1', title: 'a', updatedAt: 200 },
+      { key: 's2', title: 'b', updatedAt: 100 },
+      { key: 's3', title: 'c', updatedAt: 50 },
+    ])
+    vi.mocked(getAgentQueue).mockResolvedValueOnce([])
+    vi.mocked(pruneAgentSessions).mockResolvedValueOnce({ deleted: 1, failed: 1, failed_keys: ['s3'] })
+    const { api, showToast } = setup()
+    vi.mocked(confirm).mockResolvedValue(true)
+    await api.handleClearSessions()
+    expect(readStorage().map((s) => s.key)).toEqual(['s1', 's3'])
+    expect(showToast).toHaveBeenCalledWith(t('agent.clear_sessions_partial', '1'))
   })
 
   it('discoverSessions：索引缺失的磁盘会话补入并标记「已恢复」、按 updatedAt 倒序', async () => {

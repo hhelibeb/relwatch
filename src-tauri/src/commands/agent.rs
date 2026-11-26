@@ -681,6 +681,25 @@ async fn cancel_run_inner(state: &AppState, run_id: i64) -> Result<(), String> {
     Ok(())
 }
 
+fn remove_session_file_in(dir: &std::path::Path, session_key: &str) -> Result<(), std::io::Error> {
+    let path = dir.join(format!("ws-{}.jsonl", session_key));
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+async fn cancel_runs_best_effort(state: &AppState, run_ids: Vec<i64>) -> Result<(), String> {
+    for run_id in run_ids {
+        if let Err(e) = cancel_run_inner(state, run_id).await {
+            if e != "err.agent.run_not_found" {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 删除一个工作区会话：移除会话文件与全部运行记录。
 ///
 /// 若该会话存在活跃 run（pending / running），先取消（停止）再删除：
@@ -696,22 +715,93 @@ pub async fn delete_agent_session(
     if !is_valid_session_key(&session_key) {
         return Err("err.agent.invalid_session".to_string());
     }
+    let active_ids = {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        agent::active_runs_for_session(&conn, &session_key)?
+    };
+    cancel_runs_best_effort(&state, active_ids).await?;
+    remove_session_file_in(&agent_sessions_dir(), &session_key)
+        .map_err(|e| format!("err.agent.delete_session|{}", e))?;
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    // 先取消该会话的全部活跃 run（若有）：删除 = 停止，防止 pi 继续烧 token
-    // 产出写入已删除记录后静默丢弃。同一会话可排队多个 run（运行中仍可提交），
-    // 仅取第一条会遗留 pending run：调度执行时重建已删的会话文件、向已删记录
-    // 写终态（静默 no-op）、发事件——「删除=停止」承诺被打破，会话“复活”。
-    //
-    // 按状态无 LIMIT 查询：摘要查询的 LIMIT 会漏掉更早的活跃 run，而删除会话这类
-    // 「漏一个就破坏承诺」的操作不该依赖概率。
-    for run_id in agent::active_runs_for_session(&conn, &session_key)? {
-        cancel_run_inner(&state, run_id).await?;
-    }
-    let path = session_path_for_key(&session_key);
-    if path.exists() {
-        std::fs::remove_file(&path).map_err(|e| format!("err.agent.delete_session|{}", e))?;
-    }
     agent::delete_runs_for_session(&conn, &session_key).map_err(|e| e.to_string())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq, Eq)]
+pub struct PruneAgentSessionsResult {
+    pub deleted: u32,
+    pub failed: u32,
+    pub failed_keys: Vec<String>,
+}
+
+fn partition_session_keys(session_keys: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let mut seen = std::collections::HashSet::with_capacity(session_keys.len());
+    let mut valid_keys = Vec::with_capacity(session_keys.len());
+    let mut invalid_keys = Vec::new();
+    for key in session_keys {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        if is_valid_session_key(&key) {
+            valid_keys.push(key);
+        } else {
+            invalid_keys.push(key);
+        }
+    }
+    (valid_keys, invalid_keys)
+}
+
+fn prune_session_files_and_db(
+    conn: &mut rusqlite::Connection,
+    sessions_dir: &std::path::Path,
+    valid_keys: Vec<String>,
+    mut failed_keys: Vec<String>,
+) -> Result<PruneAgentSessionsResult, String> {
+    let mut succeeded_keys = Vec::with_capacity(valid_keys.len());
+    for key in valid_keys {
+        if let Err(e) = remove_session_file_in(sessions_dir, &key) {
+            log::warn!("failed to remove agent session file for {}: {}", key, e);
+            failed_keys.push(key);
+            continue;
+        }
+        succeeded_keys.push(key);
+    }
+
+    if !succeeded_keys.is_empty() {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        agent::batch_delete_runs_for_sessions(&tx, &succeeded_keys)?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+
+    Ok(PruneAgentSessionsResult {
+        deleted: succeeded_keys.len() as u32,
+        failed: failed_keys.len() as u32,
+        failed_keys,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn prune_agent_sessions(
+    state: tauri::State<'_, AppState>,
+    session_keys: Vec<String>,
+) -> Result<PruneAgentSessionsResult, String> {
+    let (valid_keys, invalid_keys) = partition_session_keys(session_keys);
+    if valid_keys.is_empty() {
+        return Ok(PruneAgentSessionsResult {
+            deleted: 0,
+            failed: invalid_keys.len() as u32,
+            failed_keys: invalid_keys,
+        });
+    }
+
+    let active_run_ids = {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        agent::batch_active_runs_for_sessions(&conn, &valid_keys)?
+    };
+    cancel_runs_best_effort(&state, active_run_ids).await?;
+
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    prune_session_files_and_db(&mut conn, &agent_sessions_dir(), valid_keys, invalid_keys)
 }
 
 /// pi RPC 进程池的健康状态（工作区头部指示灯数据源）。
@@ -1134,5 +1224,55 @@ mod tests {
         // 穿越出目录拒绝
         assert!(!is_safe_session_path("C:/Windows/evil.jsonl"));
         assert!(!is_safe_session_path("../evil.jsonl"));
+    }
+
+    #[test]
+    fn prune_session_files_and_db_skips_invalid_keys_and_deletes_valid() {
+        let mut conn = crate::db::init::init_memory_db().unwrap();
+        let tmp_dir = std::env::temp_dir().join(format!("relwatch-prune-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        let f1 = tmp_dir.join("ws-s1.jsonl");
+        let f2 = tmp_dir.join("ws-s2.jsonl");
+        let keep = tmp_dir.join("ws-keep.jsonl");
+        std::fs::write(&f1, "{}\n").unwrap();
+        std::fs::write(&f2, "{}\n").unwrap();
+        std::fs::write(&keep, "{}\n").unwrap();
+
+        for key in ["s1", "s2", "keep"] {
+            agent::create_run(&conn, &NewRun {
+                session_key: key,
+                skill_path: None,
+                entities: &[],
+                instruction: "hi",
+                model: None,
+                session_path: None,
+                files: None,
+            })
+            .unwrap();
+        }
+
+        let (valid, invalid) = partition_session_keys(vec![
+            "s1".into(),
+            "s1".into(),
+            "../evil".into(),
+            "s2".into(),
+        ]);
+        assert_eq!(valid, vec!["s1", "s2"]);
+        assert_eq!(invalid, vec!["../evil"]);
+
+        let res = prune_session_files_and_db(&mut conn, &tmp_dir, valid, invalid).unwrap();
+        assert_eq!(res.deleted, 2);
+        assert_eq!(res.failed, 1);
+        assert_eq!(res.failed_keys, vec!["../evil"]);
+        assert!(!f1.exists());
+        assert!(!f2.exists());
+        assert!(keep.exists());
+        assert!(agent::list_runs(&conn, "s1", 10).unwrap().is_empty());
+        assert!(agent::list_runs(&conn, "s2", 10).unwrap().is_empty());
+        assert_eq!(agent::list_runs(&conn, "keep", 10).unwrap().len(), 1);
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

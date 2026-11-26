@@ -9,8 +9,10 @@ import { confirm } from '@tauri-apps/plugin-dialog'
 import {
   deleteAgentSession,
   exportAgentSession,
+  getAgentQueue,
   listAgentRuns,
   listAgentSessions,
+  pruneAgentSessions,
   type AgentModelRef,
   type AgentQueueItem,
   type AgentRunSummary,
@@ -322,21 +324,19 @@ export function useAgentSessions(deps: {
     }
   }
 
-  // 一键清理：删除除当前会话外的全部历史会话（文件 + DB 记录），带确认
   async function handleClearSessions() {
     const targets = sessions.value.filter((s) => s.key !== activeKey.value)
     if (targets.length === 0) return
-    // 检查目标会话中是否有活跃 run：清理同样会删除运行记录，正在跑的 run 会继续烧 token
-    // 直到自然结束或超时，产出写入已删除记录后静默丢弃——先提示并同时停止。
+    const targetKeys = new Set(targets.map((s) => s.key))
     let runningCount = 0
     try {
-      for (const s of targets) {
-        const sessionRuns = await listAgentRuns(s.key, 50)
-        const active = sessionRuns.find((r) => r.status === 'pending' || r.status === 'running')
-        if (active) {
-          runningCount++
-        }
-      }
+      const queue = await getAgentQueue()
+      const runningSessions = new Set(
+        queue
+          .filter((item) => targetKeys.has(item.session_key) && (item.status === 'pending' || item.status === 'running'))
+          .map((item) => item.session_key),
+      )
+      runningCount = runningSessions.size
     } catch {
       // 查询失败不阻塞清理（按无活跃 run 处理）
     }
@@ -348,19 +348,16 @@ export function useAgentSessions(deps: {
       },
     )
     if (!confirmed) return
-    let failed = 0
-    // 后端 delete_agent_session 统一处理：先取消活跃 run（若有），再删除会话记录
-    for (const s of targets) {
-      try {
-        await deleteAgentSession(s.key)
-      } catch {
-        failed++
-      }
+    try {
+      const result = await pruneAgentSessions([...targetKeys])
+      const failedSet = new Set(result.failed_keys)
+      sessions.value = sessions.value.filter((s) => s.key === activeKey.value || failedSet.has(s.key))
+      persistSessions()
+      if (result.failed > 0) showToast(t('agent.clear_sessions_partial', String(result.failed)))
+      else showToast(t('agent.sessions_cleared', String(result.deleted)))
+    } catch (e) {
+      showToast(String(e))
     }
-    sessions.value = sessions.value.filter((s) => s.key === activeKey.value)
-    persistSessions()
-    if (failed > 0) showToast(t('agent.clear_sessions_partial', String(failed)))
-    else showToast(t('agent.sessions_cleared', String(targets.length - failed)))
   }
 
   // ── 侧栏渲染 ──

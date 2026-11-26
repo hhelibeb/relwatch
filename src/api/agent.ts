@@ -12,6 +12,7 @@ import type {
   AgentRunSummary,
   AgentSessionInfo,
   AgentSessionUsage,
+  PruneAgentSessionsResult,
 } from '../bindings'
 
 export type {
@@ -26,6 +27,7 @@ export type {
   AgentRunSummary,
   AgentSessionInfo,
   AgentSessionUsage,
+  PruneAgentSessionsResult,
   RpcAvailableModel,
 } from '../bindings'
 
@@ -113,6 +115,11 @@ export async function cancelAgentRun(runId: number): Promise<void> {
 /** 删除一个工作区会话（会话文件 + 全部运行记录）。 */
 export async function deleteAgentSession(sessionKey: string): Promise<void> {
   await invokeI18nFn(() => commands.deleteAgentSession(sessionKey))
+}
+
+export async function pruneAgentSessions(sessionKeys: string[]): Promise<PruneAgentSessionsResult> {
+  if (sessionKeys.length === 0) return { deleted: 0, failed: 0, failed_keys: [] }
+  return invokeI18nFn(() => commands.pruneAgentSessions(sessionKeys))
 }
 
 /** 在终端恢复该次会话的命令字符串（供复制）。 */

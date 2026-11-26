@@ -572,6 +572,47 @@ pub fn delete_runs_for_session(conn: &Connection, session_key: &str) -> Result<(
     Ok(())
 }
 
+pub fn batch_active_runs_for_sessions(conn: &Connection, session_keys: &[String]) -> Result<Vec<i64>, String> {
+    if session_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut ids = Vec::new();
+    for chunk in session_keys.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 1);
+        let sql = format!(
+            "SELECT id FROM agent_runs
+             WHERE status IN ('pending','running') AND session_key IN ({placeholders})
+             ORDER BY id ASC"
+        );
+        let params_ref: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params_ref.as_slice(), |row| row.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            ids.push(row.map_err(|e| e.to_string())?);
+        }
+    }
+    ids.sort_unstable();
+    Ok(ids)
+}
+
+pub fn batch_delete_runs_for_sessions(conn: &Connection, session_keys: &[String]) -> Result<u32, String> {
+    if session_keys.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0usize;
+    for chunk in session_keys.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 1);
+        let sql = format!("DELETE FROM agent_runs WHERE session_key IN ({placeholders})");
+        let params_ref: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
 /// 工作区会话的最近一次会话文件路径（多轮继续：None = 新会话）。
 pub fn get_session_path(conn: &Connection, session_key: &str) -> Result<Option<String>, String> {
     let mut stmt = conn
@@ -923,5 +964,24 @@ mod tests {
         assert_eq!(v["status"], "pending");
         assert_eq!(v["session_key"], "ws-x");
         assert_eq!(v["instruction"], "指令");
+    }
+
+    #[test]
+    fn batch_active_and_delete_runs_for_sessions() {
+        let conn = init_memory_db().unwrap();
+        let r1 = create_run(&conn, &NewRun { session_key: "s1", skill_path: None, entities: &[], instruction: "a", model: None, session_path: None, files: None }).unwrap();
+        let r2 = create_run(&conn, &NewRun { session_key: "s2", skill_path: None, entities: &[], instruction: "b", model: None, session_path: None, files: None }).unwrap();
+        let r3 = create_run(&conn, &NewRun { session_key: "s3", skill_path: None, entities: &[], instruction: "c", model: None, session_path: None, files: None }).unwrap();
+        mark_run_started(&conn, r2).unwrap();
+        finish_run(&conn, r3, "success", Some(0), None, None, None).unwrap();
+
+        let keys = vec!["s1".to_string(), "s2".to_string()];
+        assert_eq!(batch_active_runs_for_sessions(&conn, &keys).unwrap(), vec![r1, r2]);
+
+        let deleted = batch_delete_runs_for_sessions(&conn, &keys).unwrap();
+        assert_eq!(deleted, 2);
+        assert!(list_runs(&conn, "s1", 10).unwrap().is_empty());
+        assert!(list_runs(&conn, "s2", 10).unwrap().is_empty());
+        assert_eq!(list_runs(&conn, "s3", 10).unwrap().len(), 1);
     }
 }

@@ -266,6 +266,7 @@ export const commands = {
 	 *  前端在确认对话框中提示「正在运行，删除将同时停止」。
 	 */
 	deleteAgentSession: (sessionKey: string) => __TAURI_INVOKE<null>("delete_agent_session", { sessionKey }),
+	pruneAgentSessions: (sessionKeys: string[]) => __TAURI_INVOKE<PruneAgentSessionsResult>("prune_agent_sessions", { sessionKeys }),
 	/**  返回在终端恢复该次会话的命令字符串（供复制）。 */
 	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),
 	/**  在独立终端窗口中打开该次运行的 pi 会话（`pi --session <path>`），恢复完整执行过程。 */
@@ -755,6 +756,12 @@ export type PollCompleted = null;
 
 export type PollResult = {
 	new_releases: ReleaseInfo[],
+};
+
+export type PruneAgentSessionsResult = {
+	deleted: number,
+	failed: number,
+	failed_keys: string[],
 };
 
 export type ReleaseInfo = {
