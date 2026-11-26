@@ -749,6 +749,23 @@ async fn api_get_playlist_items_page(
     Ok((items, next))
 }
 
+/// 从 `snippet.thumbnails` 里挑最高清的封面：maxres > standard > high > medium > default。
+///
+/// playlistItems 通常只给 default/medium/high，videos.list 还会带 maxres/standard。
+/// 旧实现固定取 medium（320×180），列表卡片 200px 宽也糊得看不清视频内容。
+/// 各档位不一定都存在（老视频/低画质没有 maxres），所以逐档往下退。
+fn best_thumbnail(thumbnails: &serde_json::Value) -> Option<String> {
+    const KEYS: [&str; 5] = ["maxres", "standard", "high", "medium", "default"];
+    KEYS.iter().find_map(|key| {
+        thumbnails
+            .get(*key)
+            .and_then(|t| t.get("url"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+    })
+}
+
 /// 把 playlistItems 条目转为 FeedEntry（kind 由调用方决定）。
 fn entry_from_api_item(item: &serde_json::Value, kind: FeedKind) -> Option<FeedEntry> {
     let snippet = item.get("snippet")?;
@@ -775,17 +792,7 @@ fn entry_from_api_item(item: &serde_json::Value, kind: FeedKind) -> Option<FeedE
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string());
-    let thumbnail = snippet
-        .get("thumbnails")
-        .and_then(|t| {
-            t.get("medium")
-                .or_else(|| t.get("high"))
-                .or_else(|| t.get("default"))
-        })
-        .and_then(|t| t.get("url"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string());
+    let thumbnail = snippet.get("thumbnails").and_then(best_thumbnail);
     Some(FeedEntry {
         video_id,
         title,
@@ -807,6 +814,8 @@ struct VideoDetail {
     duration: Option<String>,
     /// `statistics.viewCount`（API 返回字符串，如 "123456"）
     view_count: Option<i64>,
+    /// `snippet.thumbnails` 里的最高清封面（playlistItems 拿不到 maxres，这里能）
+    thumbnail: Option<String>,
 }
 
 /// 批量查询视频详情（videos.list `part=snippet,contentDetails,statistics`，每请求最多 50 个 id）。
@@ -837,6 +846,7 @@ async fn api_get_videos_details(
                         .get("liveBroadcastContent")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    detail.thumbnail = s.get("thumbnails").and_then(best_thumbnail);
                 }
                 if let Some(cd) = it.get("contentDetails") {
                     detail.duration = cd
@@ -873,6 +883,9 @@ fn apply_video_details(
             }
             if let Some(vc) = d.view_count {
                 e.view_count = Some(vc);
+            }
+            if let Some(thumb) = &d.thumbnail {
+                e.thumbnail = Some(thumb.clone());
             }
             if d.live.as_deref().map(|s| s != "none").unwrap_or(false) {
                 e.kind = FeedKind::Live;
@@ -1224,6 +1237,89 @@ mod tests {
     }
 
     #[test]
+    fn test_best_thumbnail_prefers_highest_available() {
+        // 五个档位齐全 → maxres
+        let full = serde_json::json!({
+            "default": {"url": "d.jpg"},
+            "medium": {"url": "m.jpg"},
+            "high": {"url": "h.jpg"},
+            "standard": {"url": "s.jpg"},
+            "maxres": {"url": "maxres.jpg"},
+        });
+        assert_eq!(best_thumbnail(&full).as_deref(), Some("maxres.jpg"));
+        // playlistItems 通常只有 default/medium/high
+        let partial = serde_json::json!({
+            "default": {"url": "d.jpg"},
+            "medium": {"url": "m.jpg"},
+            "high": {"url": "h.jpg"},
+        });
+        assert_eq!(best_thumbnail(&partial).as_deref(), Some("h.jpg"));
+        // 空 url 档位跳过，不返回空串
+        let blank = serde_json::json!({"maxres": {"url": ""}, "high": {"url": "h.jpg"}});
+        assert_eq!(best_thumbnail(&blank).as_deref(), Some("h.jpg"));
+        assert_eq!(best_thumbnail(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn test_entry_from_api_item_picks_highest_thumbnail() {
+        let item = serde_json::json!({
+            "snippet": {
+                "publishedAt": "2024-01-01T00:00:00Z",
+                "title": "T",
+                "description": "",
+                "thumbnails": {
+                    "medium": {"url": "https://i.ytimg.com/vi/v1/mqdefault.jpg"},
+                    "maxres": {"url": "https://i.ytimg.com/vi/v1/maxresdefault.jpg"},
+                },
+                "resourceId": {"videoId": "v1"}
+            }
+        });
+        let e = entry_from_api_item(&item, FeedKind::Video).unwrap();
+        assert_eq!(
+            e.thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/v1/maxresdefault.jpg")
+        );
+    }
+
+    #[test]
+    fn test_apply_video_details_upgrades_thumbnail() {
+        // videos.list 的 snippet.thumbnails 比 playlistItems 多 maxres/standard，
+        // 用详情覆盖列表阶段拿到的低清地址。
+        let mut entries = vec![FeedEntry {
+            video_id: "v1".into(),
+            title: "T".into(),
+            published: "2024-01-01T00:00:00+00:00".into(),
+            description: None,
+            thumbnail: Some("https://i.ytimg.com/vi/v1/hqdefault.jpg".into()),
+            kind: FeedKind::Video,
+            duration: None,
+            view_count: None,
+        }];
+        let mut details = std::collections::HashMap::new();
+        details.insert(
+            "v1".to_string(),
+            VideoDetail {
+                thumbnail: Some("https://i.ytimg.com/vi/v1/maxresdefault.jpg".into()),
+                ..Default::default()
+            },
+        );
+        apply_video_details(&mut entries, &details);
+        assert_eq!(
+            entries[0].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/v1/maxresdefault.jpg")
+        );
+        // 详情无缩略图（老视频无 maxres 等）时保留列表阶段的值
+        let mut entries2 = entries.clone();
+        let mut details2 = std::collections::HashMap::new();
+        details2.insert("v1".to_string(), VideoDetail::default());
+        apply_video_details(&mut entries2, &details2);
+        assert_eq!(
+            entries2[0].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/v1/maxresdefault.jpg")
+        );
+    }
+
+    #[test]
     fn test_map_api_error_key_invalid() {
         let body = r#"{"error":{"code":403,"message":"denied","errors":[{"reason":"ipRefererBlocked"}]}}"#;
         let (status, msg) = map_api_error(403, body);
@@ -1422,11 +1518,12 @@ mod tests {
             .mount(&mock)
             .await;
         // 默认 config（videos+live 都勾）：仍调 videos.list 补全时长
+        // v3 带 maxres（playlistItems 拿不到该档），v2 无 thumbnails（保持列表阶段的值）
         Mock::given(method("GET"))
             .and(path("/videos"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": [
-                    {"id": "v3", "snippet": {"liveBroadcastContent": "none"}, "contentDetails": {"duration": "PT3M21S"}, "statistics": {"viewCount": "123456"}},
+                    {"id": "v3", "snippet": {"liveBroadcastContent": "none", "thumbnails": {"maxres": {"url": "https://i.ytimg.com/vi/v3/maxresdefault.jpg"}}}, "contentDetails": {"duration": "PT3M21S"}, "statistics": {"viewCount": "123456"}},
                     {"id": "v2", "snippet": {"liveBroadcastContent": "none"}, "contentDetails": {"duration": "PT1H2M3S"}, "statistics": {"viewCount": "987654"}},
                 ]
             })))
@@ -1448,6 +1545,12 @@ mod tests {
         assert_eq!(
             entries[1].thumbnail.as_deref(),
             Some("https://i.ytimg.com/vi/v2/mqdefault.jpg")
+        );
+        // videos.list 的 snippet.thumbnails 比 playlistItems 多 maxres/standard，
+        // 详情阶段拿到的最高档要盖掉列表阶段的中档图
+        assert_eq!(
+            entries[0].thumbnail.as_deref(),
+            Some("https://i.ytimg.com/vi/v3/maxresdefault.jpg")
         );
         let meta = serde_json::from_str::<serde_json::Value>(&entries[0].metadata_json()).unwrap();
         assert_eq!(meta["duration"], "PT3M21S");

@@ -249,7 +249,24 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
         ..Default::default()
     };
     let (bytes, content_type) =
-        http::fetch_public_with_headers(&config, &url, MAX_MEDIA_BYTES).await?;
+        match http::fetch_public_with_headers(&config, &url, MAX_MEDIA_BYTES).await {
+            Ok(v) => v,
+            // 高清封面缺失（maxresdefault 并非每个视频都生成）时逐级降档，
+            // 避免列表封面直接破图。缓存仍按原 URL 记，语义是“该视频的封面”。
+            Err(e) if e.contains("HTTP 404") => {
+                let mut fallback = None;
+                for alt in yt_thumbnail_fallbacks(&url) {
+                    if let Ok(v) =
+                        http::fetch_public_with_headers(&config, &alt, MAX_MEDIA_BYTES).await
+                    {
+                        fallback = Some(v);
+                        break;
+                    }
+                }
+                fallback.ok_or(e)?
+            }
+            Err(e) => return Err(e),
+        };
     // Content-Type 白名单：media 是被 Tauri 判定为本地源的自定义协议，
     // 透传远端 Content-Type 意味着 text/html 可成为可导航文档；只放行真正的
     // 媒体类型，其余一律 octet-stream（nosniff 下不会被执行/渲染为 HTML）。
@@ -258,6 +275,33 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
     write_cache(&url, &bytes, &content_type);
     evict_if_needed();
     Ok((bytes, content_type))
+}
+
+/// YouTube 高清封面降级链：`maxresdefault.jpg`（1280×720）并非每个视频都生成（老视频、
+/// 部分直播），`sddefault.jpg`（640×480）也不保证存在，最后只能退到 `hqdefault.jpg`
+/// （任何视频都有，只是 4:3 带黑边）。
+///
+/// 域名用 `host_str` 精确比对：子串匹配会放行 `evil.example/i.ytimg.com/...` 这类地址，
+/// 让一个无关 URL 在 404 时触发非预期的二次回源。
+fn yt_thumbnail_fallbacks(url: &str) -> Vec<String> {
+    const HOSTS: [&str; 2] = ["i.ytimg.com", "img.youtube.com"];
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return Vec::new();
+    };
+    if !parsed.host_str().is_some_and(|h| HOSTS.contains(&h)) {
+        return Vec::new();
+    }
+    let Some(dir) = parsed.path().strip_suffix("/maxresdefault.jpg").map(str::to_string) else {
+        return Vec::new();
+    };
+    ["sddefault", "hqdefault"]
+        .iter()
+        .map(|name| {
+            // set_path 只改路径，query 原样保留
+            parsed.set_path(&format!("{}/{}.jpg", dir, name));
+            parsed.as_str().to_string()
+        })
+        .collect()
 }
 
 /// 媒体响应 Content-Type 白名单：取 base 类型（忽略参数）并小写比较；
@@ -328,6 +372,38 @@ mod tests {
     fn decode_plain_https_url() {
         let u = decode_media_path("https%3A%2F%2Fi.ytimg.com%2Fvi%2Fx%2Fmqdefault.jpg").unwrap();
         assert_eq!(u, "https://i.ytimg.com/vi/x/mqdefault.jpg");
+    }
+
+    #[test]
+    fn yt_maxres_thumbnail_falls_back_stepwise() {
+        // maxresdefault 并非每个视频都生成：先退 sddefault（640×480），再退 hqdefault
+        assert_eq!(
+            yt_thumbnail_fallbacks("https://i.ytimg.com/vi/x/maxresdefault.jpg"),
+            vec![
+                "https://i.ytimg.com/vi/x/sddefault.jpg".to_string(),
+                "https://i.ytimg.com/vi/x/hqdefault.jpg".to_string(),
+            ]
+        );
+        // query 保留
+        assert_eq!(
+            yt_thumbnail_fallbacks("https://img.youtube.com/vi/x/maxresdefault.jpg?sqp=1"),
+            vec![
+                "https://img.youtube.com/vi/x/sddefault.jpg?sqp=1".to_string(),
+                "https://img.youtube.com/vi/x/hqdefault.jpg?sqp=1".to_string(),
+            ]
+        );
+        // 已是非高清地址 / 非 YouTube 域名不参与降级
+        assert!(yt_thumbnail_fallbacks("https://i.ytimg.com/vi/x/hqdefault.jpg").is_empty());
+        assert!(yt_thumbnail_fallbacks("https://example.com/vi/x/maxresdefault.jpg").is_empty());
+        // 子串冒充 YouTube 域名的地址不放行
+        assert!(
+            yt_thumbnail_fallbacks("https://evil.example/i.ytimg.com/vi/x/maxresdefault.jpg")
+                .is_empty()
+        );
+        assert!(
+            yt_thumbnail_fallbacks("https://i.ytimg.com.evil.example/vi/x/maxresdefault.jpg")
+                .is_empty()
+        );
     }
 
     #[test]
