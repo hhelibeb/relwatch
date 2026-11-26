@@ -1,6 +1,7 @@
 import { onMounted, onUnmounted, type Ref } from 'vue'
 import { commands } from '../bindings'
 import { hasActiveOverlay } from './contextMenuBus'
+import { isTextField } from '../utils/dom'
 
 /**
  * Escape 逐层退出——最外层最小化到托盘
@@ -19,37 +20,6 @@ import { hasActiveOverlay } from './contextMenuBus'
  * 所有覆盖层（右键菜单/下拉/弹窗/面板）打开期间自行注册活跃回调，
  * 新增覆盖层时无需再改本文件——漏注册才会导致 Esc 误触最小化到托盘。
  */
-
-/** 会因 Esc 而失焦、且"退出输入框"语义成立的输入元素类型 */
-const TEXT_INPUT_TYPES = new Set([
-  'text',
-  'search',
-  'number',
-  'password',
-  'url',
-  'email',
-  'tel',
-  '', // 未显式声明 type 的 <input> 默认即为 text
-])
-
-/**
- * 该元素是否属于「Esc 应先让它失焦」的输入元素。
- * 排除 checkbox/radio/button 等——勾选框不承载"正在输入"语义，
- * 对它按 Esc 应当是直接退出应用，而不是给一个几乎无感的失焦。
- */
-function isTextField(el: Element | null): el is HTMLElement {
-  if (!el) return false
-  const tag = el.tagName
-  if (tag === 'TEXTAREA' || tag === 'SELECT') return true
-  if (tag === 'INPUT') {
-    return TEXT_INPUT_TYPES.has((el as HTMLInputElement).type.toLowerCase())
-  }
-  const html = el as HTMLElement
-  // 不用 isContentEditable：jsdom 未实现（恒为 undefined）会让该分支在测试中失效。
-  // contentEditable 属性与 contenteditable 特性在浏览器中均可靠。
-  const attr = html.getAttribute('contenteditable')
-  return attr === '' || attr === 'true' || attr === 'plaintext-only' || html.contentEditable === 'true'
-}
 
 export function useEscapeToTray(minimizeToTray: Ref<boolean>) {
   function handleKeydown(e: KeyboardEvent) {

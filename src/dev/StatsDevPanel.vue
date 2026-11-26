@@ -2,11 +2,11 @@
 // ── 开发者统计面板（诊断用）────────────────────────────
 // 仅开发模式（import.meta.env.DEV）下通过 Ctrl+Shift+U 呼出，生产构建永不加载。
 // 不进入任何用户 UI；事件名映射内置在此组件，不占用产品 i18n。
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import { getUsageStats, clearUsageStats, type UsageStatRow } from '../api/usage'
 import { flushUsageTrackingNow } from '../composables/useUsageTracking'
-import { registerOverlayActive } from '../composables/contextMenuBus'
+import { useOverlayEscape } from '../composables/useOverlayEscape'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -14,7 +14,6 @@ const rows = ref<UsageStatRow[]>([])
 const loading = ref(false)
 const error = ref('')
 
-let unregisterOverlay: (() => void) | null = null
 const TREND_DAYS = 7
 
 const totalClicks = computed(() => rows.value.reduce((sum, r) => sum + r.total_count, 0))
@@ -131,21 +130,11 @@ async function handleClear() {
   await load()
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', handleKeydown)
-  void load()
-  // 面板挂载即视为覆盖层打开：面板内 Esc 不应最小化到托盘（供 useEscapeToTray 判定）
-  unregisterOverlay = registerOverlayActive(() => true)
-})
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
-  unregisterOverlay?.()
-})
+useOverlayEscape({ onEscape: () => emit('close') })
 
-function handleKeydown(e: KeyboardEvent) {
-  if (e.defaultPrevented) return
-  if (e.key === 'Escape') emit('close')
-}
+onMounted(() => {
+  void load()
+})
 </script>
 
 <template>

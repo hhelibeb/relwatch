@@ -5,11 +5,11 @@
 // 上下版导航、通知状态徽标、拖拽 resize 持久化、右键菜单等业务，而更新检查拿到的
 // 只是 {version, date, body} 三元组。这里只复用 MarkdownContent（marked + DOMPurify
 // 清洗，无业务耦合），其余自绘约 100 行。
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, computed } from 'vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import EmptyState from './common/EmptyState.vue'
 import { openReleaseUrl } from '../api/client'
-import { registerOverlayActive } from '../composables/contextMenuBus'
+import { useOverlayEscape } from '../composables/useOverlayEscape'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
@@ -25,7 +25,6 @@ const props = defineProps<{
 const emit = defineEmits<{ close: [] }>()
 
 const modalEl = ref<HTMLElement | null>(null)
-let unregisterOverlay: (() => void) | null = null
 
 /** latest.json 的 pub_date 时刻尚未发布（CI 生成产物时写入），
  *  与 GitHub Release 的发布时间不是一回事，因此措辞用「构建」而非「发布」。 */
@@ -44,20 +43,7 @@ function handleOpenInBrowser(): void {
   void openReleaseUrl(releaseUrl.value)
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if (e.defaultPrevented) return
-  if (e.key === 'Escape') handleClose()
-}
-
-onMounted(() => {
-  window.addEventListener('keydown', handleKeydown)
-  // 弹窗挂载即视为覆盖层打开：弹窗内 Esc 不应最小化到托盘（供 useEscapeToTray 判定）
-  unregisterOverlay = registerOverlayActive(() => true)
-})
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
-  unregisterOverlay?.()
-})
+useOverlayEscape({ onEscape: handleClose })
 </script>
 
 <template>

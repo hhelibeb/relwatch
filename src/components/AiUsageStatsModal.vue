@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, onUnmounted, ref } from 'vue'
+import { computed, inject, onMounted, ref } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import AiUsageHeatmap from './AiUsageHeatmap.vue'
 import AiUsageDonut from './AiUsageDonut.vue'
@@ -18,7 +18,7 @@ import type { AiUsageSourceRow } from '../api/aiUsage'
 import { copyTextToClipboard } from '../api/client'
 import { useDragResize } from '../composables/useDragResize'
 import { sourceDisplayName } from '../api/sources'
-import { registerOverlayActive } from '../composables/contextMenuBus'
+import { useOverlayEscape } from '../composables/useOverlayEscape'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 
@@ -131,25 +131,13 @@ function handleClose() {
   emit('close')
 }
 
-function handleKeydown(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    e.stopPropagation()
-    handleClose()
-  }
-}
-
-let unregisterOverlay: (() => void) | null = null
+useOverlayEscape({
+  onEscape: handleClose,
+  stopPropagation: true,
+})
 
 onMounted(() => {
   track('settings.ai_usage_open')
-  window.addEventListener('keydown', handleKeydown)
-  // 弹窗挂载即视为覆盖层打开：Esc 不应最小化到托盘（供 useEscapeToTray 判定）
-  unregisterOverlay = registerOverlayActive(() => true)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleKeydown)
-  unregisterOverlay?.()
 })
 </script>
 

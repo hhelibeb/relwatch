@@ -31,6 +31,7 @@ import AgentSessionSidebar from './agent/AgentSessionSidebar.vue'
 import AgentRunBanner from './agent/AgentRunBanner.vue'
 import AgentMessageList from './agent/AgentMessageList.vue'
 import AgentComposer from './agent/AgentComposer.vue'
+import FindBar from './common/FindBar.vue'
 
 const props = defineProps<{ seed?: AgentWorkspaceSeed | null; width?: number }>()
 const emit = defineEmits<{ close: [] }>()
@@ -413,10 +414,9 @@ const {
   shouldHandle: () => findScopeInside.value,
 })
 
-const findCountText = computed(() => {
-  if (!findQuery.value.trim()) return ''
-  return `${findCurrentIndex.value >= 0 ? findCurrentIndex.value + 1 : 0} / ${findMatchCount.value}`
-})
+function setFindInputEl(el: HTMLInputElement | null) {
+  findInputEl.value = el
+}
 
 function toggleFind() {
   if (findOpen.value) closeFind()
@@ -1045,51 +1045,23 @@ onUnmounted(() => {
       <!-- 左侧：聊天区（会话侧栏折叠时占满全宽） -->
       <section class="agent-ws-chat">
         <!-- 查找栏：只搜聊天消息（会话列表有自己的过滤框，输入区不是可查找文本） -->
-        <div v-if="findOpen" class="agent-ws-find">
-          <input
-            ref="findInputEl"
-            v-model="findQuery"
-            type="text"
-            class="agent-ws-find-input"
-            :placeholder="t('agent.find_in_chat')"
-            :aria-label="t('agent.find_in_chat')"
-            @keydown="handleFindInputKeydown"
-          />
-          <span
-            v-if="findCountText"
-            class="agent-ws-find-count"
-            :class="{ 'no-match': findMatchCount === 0 }"
-          >{{ findCountText }}</span>
-          <button
-            type="button"
-            class="agent-ws-find-btn"
-            :disabled="findMatchCount === 0"
-            :title="`${t('agent.find_prev')} (Shift+Enter)`"
-            :aria-label="t('agent.find_prev')"
-            @click="prevFindMatch"
-          >
-            <svg viewBox="0 0 16 16"><polyline points="4 10 8 6 12 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-          <button
-            type="button"
-            class="agent-ws-find-btn"
-            :disabled="findMatchCount === 0"
-            :title="`${t('agent.find_next')} (Enter)`"
-            :aria-label="t('agent.find_next')"
-            @click="nextFindMatch"
-          >
-            <svg viewBox="0 0 16 16"><polyline points="4 6 8 10 12 6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-          <button
-            type="button"
-            class="agent-ws-find-btn"
-            :title="`${t('agent.find_close')} (Esc)`"
-            :aria-label="t('agent.find_close')"
-            @click="closeFind"
-          >
-            <svg viewBox="0 0 16 16"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"/></svg>
-          </button>
-        </div>
+        <FindBar
+          v-if="findOpen"
+          v-model="findQuery"
+          class-prefix="agent-ws-find"
+          compact
+          :match-count="findMatchCount"
+          :current-index="findCurrentIndex"
+          :placeholder="t('agent.find_in_chat')"
+          :prev-label="t('agent.find_prev')"
+          :next-label="t('agent.find_next')"
+          :close-label="t('agent.find_close')"
+          :set-input-el="setFindInputEl"
+          @prev="prevFindMatch"
+          @next="nextFindMatch"
+          @close="closeFind"
+          @input-keydown="handleFindInputKeydown"
+        />
         <!-- 最近 run 状态横幅 + 配置推迟生效提示 + 运行历史面板：
              状态来自 useAgentChat / useAgentRpc，展示在 AgentRunBanner -->
         <AgentRunBanner
@@ -1258,76 +1230,6 @@ onUnmounted(() => {
   display: flex;
 }
 
-/* 查找栏：贴在消息区上方（不随消息滚动）；面板窄，只用图标按钮 */
-.agent-ws-find {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin: 8px 10px 0;
-  padding: 3px 4px 3px 8px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  transition: border-color var(--dur-state) var(--ease-out), background var(--dur-state) var(--ease-out);
-}
-.agent-ws-find:focus-within {
-  border-color: var(--primary);
-  box-shadow: var(--focus-ring);
-  background: var(--input-bg);
-}
-.agent-ws-find-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  outline: none;
-  background: transparent;
-  color: var(--text);
-  font-size: var(--fs-body);
-  line-height: 1.4;
-}
-.agent-ws-find-input::placeholder {
-  color: var(--text-muted);
-}
-.agent-ws-find-count {
-  padding: 0 4px;
-  font-family: var(--mono-font);
-  font-size: var(--fs-meta);
-  color: var(--text-muted);
-  white-space: nowrap;
-}
-.agent-ws-find-count.no-match {
-  color: var(--danger);
-}
-.agent-ws-find-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
-}
-.agent-ws-find-btn:hover:not(:disabled) {
-  /* 嵌套层用 nested 悬停色：本栏底色就是 --bg-subtle，与 --hover-surface 在浅色下同为
-   * #f4f4f5，直接用外层悬停色等于没有反馈 */
-  background: var(--hover-surface-nested);
-  color: var(--text);
-}
-.agent-ws-find-btn:disabled {
-  /* 禁用态用色阶压低而非透明度：Agent 面板的低透明度守卫只放行装饰点 */
-  color: var(--border-strong);
-  cursor: default;
-}
-.agent-ws-find-btn svg {
-  width: 13px;
-  height: 13px;
-}
 .agent-ws-find-toggle.active {
   color: var(--primary);
   background: var(--primary-soft-bg);

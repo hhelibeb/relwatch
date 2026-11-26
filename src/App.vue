@@ -18,6 +18,7 @@ import { applyTheme } from './composables/useTheme'
 import { applyFontScale } from './composables/useFontScale'
 import { setUsageTrackingEnabled, flushUsageTrackingNow, track } from './composables/useUsageTracking'
 import { isUnreadStatus, formatCountdown, normalizeAutoReadDetail } from './utils'
+import { isEditableTarget } from './utils/dom'
 import { loadReleaseViewState } from './utils/releaseViewStorage'
 import SourceTab from './components/SourceTab.vue'
 import ReleaseTab from './components/ReleaseTab.vue'
@@ -764,9 +765,8 @@ onMounted(async () => {
 
   const handleContextMenu = (e: MouseEvent) => {
     const target = e.target as HTMLElement
-    const tag = target.tagName
     // 输入元素：显示自定义剪切/复制/粘贴/全选菜单
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable) {
+    if (isEditableTarget(target)) {
       e.preventDefault()
       closeAllContextMenus()
       inputContextMenu.value = { x: e.clientX, y: e.clientY, target }

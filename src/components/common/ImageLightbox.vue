@@ -2,7 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { t } from '../../i18n'
 import { openReleaseUrl } from '../../api/client'
-import { registerOverlayActive } from '../../composables/contextMenuBus'
+import { useOverlayEscape } from '../../composables/useOverlayEscape'
 
 const props = defineProps<{ src: string; originalUrl: string }>()
 const emit = defineEmits<{ close: [] }>()
@@ -113,27 +113,27 @@ function onDblClick(e: MouseEvent) {
 }
 
 // 捕获期拦截：Esc 先关灯箱，方向键不穿透到详情弹窗的版本导航
-function onKeydown(e: KeyboardEvent) {
-  if (e.key !== 'Escape' && !e.key.startsWith('Arrow')) return
-  e.preventDefault()
-  e.stopPropagation()
-  if (e.key === 'Escape') requestClose()
-}
+useOverlayEscape({
+  onEscape: requestClose,
+  capture: true,
+  preventDefault: true,
+  stopPropagation: true,
+  onKeydown: (e) => {
+    if (!e.key.startsWith('Arrow')) return
+    e.preventDefault()
+    e.stopPropagation()
+  },
+})
 
 function handleOpenOriginal() {
   void openReleaseUrl(props.originalUrl)
 }
 
-let unregisterOverlay: (() => void) | null = null
 onMounted(() => {
   visible.value = true
-  window.addEventListener('keydown', onKeydown, true)
-  unregisterOverlay = registerOverlayActive(() => true)
 })
 onUnmounted(() => {
   if (closeTimer) clearTimeout(closeTimer)
-  window.removeEventListener('keydown', onKeydown, true)
-  unregisterOverlay?.()
 })
 </script>
 
