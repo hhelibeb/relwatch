@@ -390,6 +390,7 @@ export default {
   'lightbox.zoom_in': '放大',
   'lightbox.zoom_out': '缩小',
   'lightbox.zoom_reset': '适应窗口',
+  'lightbox.rotate': '旋转 90° (R)',
   'lightbox.open_original': '打开原图',
   'lightbox.load_failed': '图片加载失败',
 

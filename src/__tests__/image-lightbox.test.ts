@@ -59,6 +59,92 @@ describe('ImageLightbox', () => {
     wrapper.unmount()
   })
 
+  it('旋转按钮每次顺时针 90°，适应窗口一并归零', async () => {
+    const wrapper = await mountLightbox()
+    const rotateBtn = wrapper.find(`button[title="${t('lightbox.rotate')}"]`)
+    const styleOf = () => wrapper.find('.lightbox-img').attributes('style') ?? ''
+    expect(styleOf()).toContain('rotate(0deg)')
+    await rotateBtn.trigger('click')
+    expect(styleOf()).toContain('rotate(90deg)')
+    expect(wrapper.find('.lightbox-img').classes()).toContain('rotated')
+    await rotateBtn.trigger('click')
+    await rotateBtn.trigger('click')
+    await rotateBtn.trigger('click')
+    expect(styleOf()).toContain('rotate(0deg)')
+    expect(wrapper.find('.lightbox-img').classes()).not.toContain('rotated')
+    await rotateBtn.trigger('click')
+    await wrapper.find(`button[title="${t('lightbox.zoom_reset')}"]`).trigger('click')
+    expect(styleOf()).toContain('rotate(0deg)')
+    wrapper.unmount()
+  })
+
+  it('R 键顺时针旋转并吞掉事件，Ctrl+R 不接管', async () => {
+    const wrapper = await mountLightbox()
+    const styleOf = () => wrapper.find('.lightbox-img').attributes('style') ?? ''
+    const plain = new KeyboardEvent('keydown', { key: 'r', cancelable: true })
+    window.dispatchEvent(plain)
+    expect(plain.defaultPrevented).toBe(true)
+    await nextTick()
+    expect(styleOf()).toContain('rotate(90deg)')
+    const withCtrl = new KeyboardEvent('keydown', { key: 'r', ctrlKey: true, cancelable: true })
+    window.dispatchEvent(withCtrl)
+    await nextTick()
+    expect(withCtrl.defaultPrevented).toBe(false)
+    expect(styleOf()).toContain('rotate(90deg)')
+    wrapper.unmount()
+  })
+
+  it('Alt+R / Meta+R 同样不接管', async () => {
+    const wrapper = await mountLightbox()
+    const styleOf = () => wrapper.find('.lightbox-img').attributes('style') ?? ''
+    for (const mods of [{ altKey: true }, { metaKey: true }]) {
+      const e = new KeyboardEvent('keydown', { key: 'r', cancelable: true, ...mods })
+      window.dispatchEvent(e)
+      expect(e.defaultPrevented).toBe(false)
+    }
+    await nextTick()
+    expect(styleOf()).toContain('rotate(0deg)')
+    wrapper.unmount()
+  })
+
+  it('180° 不加 rotated 类，270° 加', async () => {
+    const wrapper = await mountLightbox()
+    const rotateBtn = wrapper.find(`button[title="${t('lightbox.rotate')}"]`)
+    const img = () => wrapper.find('.lightbox-img')
+    await rotateBtn.trigger('click')
+    expect(img().classes()).toContain('rotated')
+    await rotateBtn.trigger('click')
+    expect(img().classes()).not.toContain('rotated')
+    expect(img().attributes('style')).toContain('rotate(180deg)')
+    await rotateBtn.trigger('click')
+    expect(img().classes()).toContain('rotated')
+    expect(img().attributes('style')).toContain('rotate(270deg)')
+    wrapper.unmount()
+  })
+
+  it('旋转后双击缩回 100% 不清零角度', async () => {
+    const wrapper = await mountLightbox()
+    const stage = wrapper.find('.lightbox-stage')
+    await wrapper.find(`button[title="${t('lightbox.rotate')}"]`).trigger('click')
+    await stage.trigger('dblclick', { clientX: 100, clientY: 100 })
+    expect(wrapper.find('.lightbox-percent').text()).toBe('250%')
+    await stage.trigger('dblclick', { clientX: 100, clientY: 100 })
+    expect(wrapper.find('.lightbox-percent').text()).toBe('100%')
+    expect(wrapper.find('.lightbox-img').attributes('style')).toContain('rotate(90deg)')
+    wrapper.unmount()
+  })
+
+  it('图片加载失败时缩放与旋转按钮禁用', async () => {
+    const wrapper = await mountLightbox()
+    await wrapper.find('.lightbox-img').trigger('error')
+    await nextTick()
+    expect(wrapper.find('.lightbox-error').exists()).toBe(true)
+    for (const key of ['lightbox.zoom_in', 'lightbox.zoom_out', 'lightbox.zoom_reset', 'lightbox.rotate']) {
+      expect(wrapper.find(`button[title="${t(key)}"]`).attributes('disabled')).toBeDefined()
+    }
+    wrapper.unmount()
+  })
+
   it('Esc 关闭且不穿透（defaultPrevented）', async () => {
     const wrapper = await mountLightbox()
     const e = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })

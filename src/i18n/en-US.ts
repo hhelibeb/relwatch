@@ -390,6 +390,7 @@ export default {
   'lightbox.zoom_in': 'Zoom in',
   'lightbox.zoom_out': 'Zoom out',
   'lightbox.zoom_reset': 'Fit to window',
+  'lightbox.rotate': 'Rotate 90° (R)',
   'lightbox.open_original': 'Open original',
   'lightbox.load_failed': 'Failed to load image',
 

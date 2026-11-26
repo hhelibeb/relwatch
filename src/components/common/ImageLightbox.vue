@@ -9,6 +9,7 @@ const emit = defineEmits<{ close: [] }>()
 
 const stageEl = ref<HTMLElement | null>(null)
 const scale = ref(1)
+const rotation = ref(0)
 const offset = ref({ x: 0, y: 0 })
 const loaded = ref(false)
 const failed = ref(false)
@@ -31,7 +32,7 @@ const MAX_SCALE = 8
 
 const percentLabel = computed(() => `${Math.round(scale.value * 100)}%`)
 const imgStyle = computed(() => ({
-  transform: `translate(${offset.value.x}px, ${offset.value.y}px) scale(${scale.value})`,
+  transform: `translate(${offset.value.x}px, ${offset.value.y}px) rotate(${rotation.value}deg) scale(${scale.value})`,
 }))
 
 function clampScale(v: number): number {
@@ -57,8 +58,13 @@ function zoomStep(factor: number) {
   zoomAt(scale.value * factor)
 }
 
+function rotateStep() {
+  rotation.value = (rotation.value + 90) % 360
+}
+
 function resetView() {
   scale.value = 1
+  rotation.value = 0
   offset.value = { x: 0, y: 0 }
 }
 
@@ -109,19 +115,31 @@ function onPointerUp() {
 function onDblClick(e: MouseEvent) {
   if ((e.target as HTMLElement).closest('.lightbox-toolbar')) return
   if (scale.value === 1) zoomAt(2.5, e.clientX, e.clientY)
-  else resetView()
+  // 缩回只复位缩放：双击是“在缩放之间切换”，顺带把角度归零会让旋转过的图片突然弹回
+  else zoomAt(1)
 }
 
-// 捕获期拦截：Esc 先关灯箱，方向键不穿透到详情弹窗的版本导航
+// 捕获期拦截：Esc 先关灯箱，方向键不穿透到详情弹窗的版本导航。
+// active 跟随 visible：离场动画（240ms）期间已不是可见浮层，不该再吃按键、
+// 也不该让 hasActiveOverlay() 继续为真（那会屏蔽背后的列表快捷键）
 useOverlayEscape({
   onEscape: requestClose,
+  active: () => visible.value,
   capture: true,
   preventDefault: true,
   stopPropagation: true,
   onKeydown: (e) => {
-    if (!e.key.startsWith('Arrow')) return
+    if (e.key.startsWith('Arrow')) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
+    // 带修饰键的组合（如 App 全局 Ctrl+R 刷新轮询）不接管
+    if (e.ctrlKey || e.metaKey || e.altKey) return
+    if (e.key.toLowerCase() !== 'r') return
     e.preventDefault()
     e.stopPropagation()
+    rotateStep()
   },
 })
 
@@ -158,7 +176,7 @@ onUnmounted(() => {
         <img
           v-if="!failed"
           class="lightbox-img"
-          :class="{ loaded }"
+          :class="{ loaded, rotated: rotation % 180 !== 0 }"
           :src="props.src"
           :style="imgStyle"
           alt=""
@@ -168,15 +186,18 @@ onUnmounted(() => {
         />
         <div v-else class="lightbox-error">{{ t('lightbox.load_failed') }}</div>
         <div class="lightbox-toolbar" @pointerdown.stop>
-          <button type="button" class="lightbox-btn" :title="t('lightbox.zoom_out')" :disabled="scale <= MIN_SCALE" @click="zoomStep(1 / 1.25)">
+          <button type="button" class="lightbox-btn" :title="t('lightbox.zoom_out')" :disabled="failed || scale <= MIN_SCALE" @click="zoomStep(1 / 1.25)">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.5 8h9"/></svg>
           </button>
           <span class="lightbox-percent">{{ percentLabel }}</span>
-          <button type="button" class="lightbox-btn" :title="t('lightbox.zoom_in')" :disabled="scale >= MAX_SCALE" @click="zoomStep(1.25)">
+          <button type="button" class="lightbox-btn" :title="t('lightbox.zoom_in')" :disabled="failed || scale >= MAX_SCALE" @click="zoomStep(1.25)">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg>
           </button>
-          <button type="button" class="lightbox-btn" :title="t('lightbox.zoom_reset')" @click="resetView">
+          <button type="button" class="lightbox-btn" :title="t('lightbox.zoom_reset')" :disabled="failed" @click="resetView">
             <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2.5H2.5V6M10 2.5h3.5V6M6 13.5H2.5V10M10 13.5h3.5V10"/></svg>
+          </button>
+          <button type="button" class="lightbox-btn" :title="t('lightbox.rotate')" :disabled="failed" @click="rotateStep">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-2.2-4.4"/><path d="M13.5 2v4h-4"/></svg>
           </button>
           <span class="lightbox-divider"></span>
           <button type="button" class="lightbox-btn" :title="t('lightbox.open_original')" @click="handleOpenOriginal">
@@ -223,6 +244,13 @@ onUnmounted(() => {
 
 .lightbox-img.loaded {
   opacity: 1;
+}
+
+/* 旋转 90°/270° 后布局盒长宽互换（rotate 不改布局尺寸），
+   适配上限必须对调，否则横向长截图转完会溢出视口被裁 */
+.lightbox-img.rotated {
+  max-width: 88vh;
+  max-height: 92vw;
 }
 
 .lightbox-error {
