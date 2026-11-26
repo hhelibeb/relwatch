@@ -30,8 +30,24 @@ const FLAG_COLOR_VARS: Record<number, string> = {
   6: 'var(--flag-6)',
 }
 
+export interface FlagItem {
+  value: number
+  labelKey: string
+  color: string
+}
+
+export const FLAG_ITEMS: readonly FlagItem[] = FLAG_COLOR_LABEL_KEYS.map((labelKey, idx) => ({
+  value: idx + 1,
+  labelKey,
+  color: FLAG_COLOR_VARS[idx + 1],
+}))
+
 export function isFlagged(flag: number): boolean {
   return flag >= 1 && flag <= FLAG_MAX
+}
+
+export function releaseFlagTitle(flag: number, tr: (key: string) => string): string {
+  return isFlagged(flag) ? tr(FLAG_COLOR_LABEL_KEYS[flag - 1]) : tr('release.flag')
 }
 
 export function releaseFlagged(release: ReleaseInfo): boolean {

@@ -1,17 +1,15 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { confirm } from '@tauri-apps/plugin-dialog'
-import type { ReleaseInfo, ReleaseSearchBody } from '../api/releases'
+import type { ReleaseInfo } from '../api/releases'
 import {
   batchDeleteReleases,
   batchSetReleaseFlag,
   batchUpdateReleaseStatus,
   getReleaseDetail,
-  getReleaseSearchBodies,
-  getReleaseSearchBodiesByIds,
   setNotificationState,
 } from '../api/releases'
-import { isReadStatus, isUnreadStatus, filterReleaseIndices, mergeBodyIndex, type BodyIndex, type AutoReadDetailMode } from '../utils'
+import { isReadStatus, isUnreadStatus, filterReleaseIndices, type AutoReadDetailMode } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
 import ReleaseCalendar from './ReleaseCalendar.vue'
 import ReleaseDateDetail from './ReleaseDateDetail.vue'
@@ -19,11 +17,12 @@ import ReleaseDetailModal from './ReleaseDetailModal.vue'
 import ReleaseSearchBar from './ReleaseSearchBar.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
-import { flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
+import { FLAG_ITEMS, flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { loadReleaseViewState, saveReleaseViewState } from '../utils/releaseViewStorage'
 import { clampCalendarMonth, toDateKey } from '../utils/dateKey'
 import { isEditableTarget } from '../utils/dom'
 import { useBulkSelection } from '../composables/useBulkSelection'
+import { useReleaseDeepSearch } from '../composables/useReleaseDeepSearch'
 import { track } from '../composables/useUsageTracking'
 import { ShowImportanceKey, AutoReadDetailKey, ShowToastKey } from '../injection-keys'
 import { t } from '../i18n'
@@ -257,257 +256,16 @@ const filteredReleases = computed(() => {
   return list
 })
 
-// ── 深度搜索（Tier2：GitHub / HF 正文与译文全文）──────────────
-// 目录只带正文预览（600 字，见后端 get_release_catalog 契约），全文按 id 游标
-// **从新到旧**分块预取，搜索全部留在前端。四条不变量：
-//  ① **水位** TIER2_CHAR_BUDGET 是索引正文总量的上界：从最新一块往下填，填到水位即停。
-//     方向是刻意的 —— 装不下的必须是更早的内容，否则「搜不到」的恰是用户最常搜的新版本；
-//  ② 填到库底 → coversAllBodies，此时水位覆盖全库正文；没填到 → 越界，
-//     UI 据 bodyTruncated 显式标注「仅搜索近期正文」，不静默降级；
-//  ③ 索引按 release id 建表并**增量维护**：目录刷新只补「新增行」（按 id 取，倒序游标
-//     在游标起点之上不回补）与「内容变化行」，不再整体重建 —— 整体重建会让每次轮询/
-//     标记已读后的命中结果闪一次；新版本挤入后从最旧一端淘汰，水位仍是上界；
-//  ④ 已取到的块在会话内驻留（重复开关深度搜索不重拉），组件卸载即释放。
-const TIER2_CHAR_BUDGET = 1_500_000    // 水位：索引正文总字符上界
-const TIER2_CHUNK_CHARS = 512 * 1024   // 单次请求正文预算（后端另有 64K–4M 的 clamp）
-// 首次游标：大于任何真实 release id（id 是 SQLite 自增 i64，远小于 2^53-1）
-const BODY_CURSOR_START = Number.MAX_SAFE_INTEGER
-
-const deepSearch = ref(false)
-const bodyIndex = shallowRef<BodyIndex>(new Map())
-const deepSearching = ref(false)           // 取正文 / 维护索引期间的 loading 态
-const coversAllBodies = ref(false)
-const bodyFillDone = ref(false)            // 首次预取是否已有定论（预取中不闪越界提示）
-/** 能力边界：水位没覆盖全库正文（且预取已告一段落）。 */
-const bodyTruncated = computed(() => bodyFillDone.value && !coversAllBodies.value)
-
-// 覆盖窗口 [bodyCursor, bodyTop]（闭区间，id 单调不减）：
-//   bodyCursor = 已取到的最小 id，既是窗口下界，也是下一块的排他上界（后端取 id < cursor）
-//   bodyTop    = 已见的最大 id，超出它的都是新增行
-let bodyCursor = BODY_CURSOR_START
-let bodyTop = 0
-let bodyIndexChars = 0                     // 已入索引的正文总字符数（水位累加）
-let disposed = false                       // 组件已卸载：中止全部在途流程
-
-// id → 入索引的字符数：淘汰/重取正文前要先扣掉旧值，否则水位被重复累加
-const bodyChars = new Map<number, number>()
-// id → 正文指纹（是否已有 body / 译文）：判定「已存在的行内容变了」的唯一信号
-const bodySignals = new Map<number, string>()
-
-/** 正文指纹。「从无到有 / 从有到无」才算内容变化，与目录里的预览长短无关。 */
-function bodySignal(r: ReleaseInfo): string {
-  return `${r.body ? 1 : 0}${r.body_translated ? 1 : 0}`
-}
-
-function maxCatalogId(): number {
-  let max = 0
-  for (const r of props.releases) if (r.id > max) max = r.id
-  return max
-}
-
-/** 本块的最小 id：倒序游标的下一站（本块各行都已取到，故可直接作排他上界）。 */
-function minIdOf(chunk: readonly ReleaseSearchBody[]): number {
-  let min = Number.MAX_SAFE_INTEGER
-  for (const c of chunk) if (c.id < min) min = c.id
-  return min
-}
-
-/** 让出一帧：nextTick 让 Vue 完成本轮渲染，rAF 让浏览器真正绘制。
- *  只有 rAF 能保证连续大响应之间出现绘制机会（微任务链会在同一帧内排空）。 */
-function yieldFrame(): Promise<void> {
-  return nextTick().then(
-    () => new Promise<void>(resolve => requestAnimationFrame(() => resolve())),
-  )
-}
-
-function applyChunk(chunk: readonly ReleaseSearchBody[]) {
-  if (chunk.length === 0) return
-  bodyIndex.value = mergeBodyIndex(bodyIndex.value, chunk)
-  for (const c of chunk) {
-    const chars = (c.body?.length ?? 0) + (c.body_translated?.length ?? 0)
-    bodyIndexChars += chars - (bodyChars.get(c.id) ?? 0)
-    bodyChars.set(c.id, chars)
-  }
-}
-
-/** 从最新一块往下填正文，直到填到库底、触及水位或组件卸载。 */
-async function prefetchBodies(maxId: number) {
-  bodyTop = Math.max(bodyTop, maxId)
-  try {
-    while (!disposed) {
-      const chunk = await getReleaseSearchBodies(bodyCursor, TIER2_CHUNK_CHARS)
-      if (disposed) return
-      if (chunk.length === 0) {
-        // 已到库底：窗口覆盖全库正文，此后只需增量维护
-        coversAllBodies.value = true
-        bodyCursor = 0
-        bodyFillDone.value = true
-        return
-      }
-      applyChunk(chunk)
-      bodyCursor = minIdOf(chunk)
-      if (bodyIndexChars >= TIER2_CHAR_BUDGET) {
-        bodyFillDone.value = true
-        return
-      }
-      await yieldFrame()
-    }
-  } catch {
-    // 取正文失败：保留已入索引的部分，不置 bodyFillDone，下次刷新会重试
-  }
-}
-
-/** 目录刷新后的增量维护。
- *
- *  - **新增行**（新 release，id 更大）：倒序游标在起点之上不回补，按 id 取；
- *  - **已存在行内容变化**：翻译落库填 body_translated、HF README 回填 body —— 按 id 重取。
- *
- *  只处理覆盖窗口内的行（`bodyCursor ≤ id`）：水位之外（更旧）的行不参与，否则
- *  每次翻译都会把水位外的正文拉进内存，水位就不再是上界。 */
-async function refreshChangedBodies(maxId: number) {
-  const refetch: number[] = []
-  const drop: number[] = []
-  const nextSignals = new Map<number, string>()
-  for (const r of props.releases) {
-    if (r.id < bodyCursor) continue
-    const sig = bodySignal(r)
-    nextSignals.set(r.id, sig)
-    if (r.id > bodyTop) {
-      // 新增行：从没取过，正文非空即取（取回后若超水位由 evictOldestBodies 淘汰最旧）
-      if (sig !== '00') refetch.push(r.id)
-      continue
-    }
-    const prev = bodySignals.get(r.id)
-    // prev 缺失 = 本次才被游标覆盖，索引内容与目录一致，只登记不重取
-    if (prev === undefined || prev === sig) continue
-    if (sig === '00') drop.push(r.id)
-    else refetch.push(r.id)
-  }
-  bodyTop = Math.max(bodyTop, maxId)
-  bodySignals.clear()
-  for (const [id, sig] of nextSignals) bodySignals.set(id, sig)
-
-  if (drop.length > 0) {
-    const next = new Map(bodyIndex.value)
-    for (const id of drop) {
-      bodyIndexChars -= bodyChars.get(id) ?? 0
-      bodyChars.delete(id)
-      next.delete(id)
-    }
-    bodyIndex.value = next
-  }
-
-  // 后端单次至多 500 个 id
-  for (let i = 0; i < refetch.length; i += 500) {
-    const chunk = await getReleaseSearchBodiesByIds(refetch.slice(i, i + 500))
-    if (disposed) return
-    applyChunk(chunk)
-  }
-
-  evictOldestBodies()
-}
-
-/** 新版本挤入后可能超过水位：从最旧一端淘汰，使水位仍是内存上界。
- *  至少保留一条（单条超大正文不能把索引清空），淘汰即水位下界上移。 */
-function evictOldestBodies() {
-  if (bodyIndexChars <= TIER2_CHAR_BUDGET) return
-  const ids = [...bodyChars.keys()].sort((a, b) => a - b)
-  const next = new Map(bodyIndex.value)
-  for (const id of ids) {
-    if (bodyIndexChars <= TIER2_CHAR_BUDGET || next.size <= 1) break
-    bodyIndexChars -= bodyChars.get(id) ?? 0
-    bodyChars.delete(id)
-    next.delete(id)
-    if (id >= bodyCursor) bodyCursor = id + 1
-    coversAllBodies.value = false
-  }
-  bodyIndex.value = next
-}
-
-/** 索引同步入口：预取新块 + 重取新增/内容变化的行。
- *
- *  重入保护：首次预取可能还在途中（目录已刷新），两个游标循环并发会在同一游标上
- *  重复取块。此时只记账，由当前这一轮收尾时补做。 */
-let syncRunning = false
-let syncAgain = false
-
-async function syncBodyIndex() {
-  if (disposed || !deepSearch.value) return
-  if (syncRunning) {
-    syncAgain = true
-    return
-  }
-  syncRunning = true
-  deepSearching.value = true
-  try {
-    do {
-      syncAgain = false
-      const maxId = maxCatalogId()
-      // 只在首次填充未定论时走游标：一旦填到库底或触及水位就不再回溯
-      // （否则新版本挤入触发淘汰后又会往下拉更早的正文，来回churn）。
-      // 不动 bodyTop：它必须留在「上次见到的最大 id」，新增行才认得出来（见 refreshChangedBodies）。
-      if (!bodyFillDone.value && bodyIndexChars < TIER2_CHAR_BUDGET) {
-        await prefetchBodies(maxId)
-      }
-      if (disposed || !deepSearch.value) return
-      await refreshChangedBodies(maxId)
-    } while (syncAgain && !disposed && deepSearch.value)
-  } finally {
-    syncRunning = false
-    deepSearching.value = false
-  }
-}
-
-// 同一渲染帧内多次目录刷新（轮询完成 + 标记已读等双路径）合并为一次同步。
-let bodyIndexSyncRaf = 0
-function scheduleBodyIndexSync() {
-  if (bodyIndexSyncRaf !== 0 || disposed) return
-  bodyIndexSyncRaf = requestAnimationFrame(() => {
-    bodyIndexSyncRaf = 0
-    void syncBodyIndex()
-  })
-}
-
-// 目录引用变化（轮询 / 标记 / 删除后重拉）只做增量维护，不清空索引。
-watch(() => props.releases, () => {
-  if (deepSearch.value) scheduleBodyIndexSync()
-})
-// 搜索词被清空时自动退出深度搜索态（索引保留，下次开启不重拉）
-watch(releaseSearch, (q) => {
-  if (!q.trim()) deepSearch.value = false
-})
-
-async function runDeepSearch() {
-  if (!releaseSearch.value.trim()) return
-  // 深度搜索态由 onDeepSearchToggle / enableDeepSearch 先行置位；此处只触发同步
-  await syncBodyIndex()
-}
-
-async function onDeepSearchToggle(on: boolean) {
-  deepSearch.value = on
-  if (!on) return
-  // 搜索栏切换前已 flush；新词同样要等 props 回传后才可见，
-  // 否则 runDeepSearch 读到旧词直接返回，正文索引静默不建。
-  await nextTick()
-  void runDeepSearch()
-}
-
-function enableDeepSearch() {
-  deepSearch.value = true
-  void runDeepSearch()
-}
-
-// 组件卸载（切 tab / 路由离开）时中止在途流程并释放索引：回调与在途响应都可能
-// 持有水位内的正文（最多 TIER2_CHAR_BUDGET 字符），不释放会拖慢回收。
-onUnmounted(() => {
-  disposed = true
-  if (bodyIndexSyncRaf !== 0) {
-    cancelAnimationFrame(bodyIndexSyncRaf)
-    bodyIndexSyncRaf = 0
-  }
-  bodyIndex.value = new Map()
-  bodyChars.clear()
-  bodySignals.clear()
+const {
+  deepSearch,
+  bodyIndex,
+  deepSearching,
+  bodyTruncated,
+  onDeepSearchToggle,
+  enableDeepSearch,
+} = useReleaseDeepSearch({
+  releases: () => props.releases,
+  searchQuery: releaseSearch,
 })
 
 async function handleSearchEnter() {
@@ -655,14 +413,7 @@ defineExpose({ focusSearch })
 // ── 简单视图键盘导航（j/k 移动、Enter 打开详情）──────────────
 // tab 用 v-show 常驻挂载，必须等 active 才响应；输入控件/可编辑区域内的按键不拦截。
 
-const BULK_FLAG_SWATCHES: { value: number; labelKey: string }[] = [
-  { value: 1, labelKey: 'release.flag_red' },
-  { value: 2, labelKey: 'release.flag_orange' },
-  { value: 3, labelKey: 'release.flag_yellow' },
-  { value: 4, labelKey: 'release.flag_green' },
-  { value: 5, labelKey: 'release.flag_blue' },
-  { value: 6, labelKey: 'release.flag_purple' },
-]
+const BULK_FLAG_SWATCHES = FLAG_ITEMS
 
 const bulkBusy = ref(false)
 const flagPopoverOpen = ref(false)

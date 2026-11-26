@@ -3,17 +3,19 @@ import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from '
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease, setReleaseFlag } from '../api/releases'
-import { openReleaseUrl, copyTextToClipboard, copyImageToClipboard } from '../api/client'
+import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
+import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
 import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel, tokenizeQuery, SNOOZE_MINUTES, type BodyIndex, type AutoReadDetailMode } from '../utils'
 import { collectQueryRanges, registerHighlightRanges, unregisterHighlightOwner, searchHighlightSupported, extractBodySnippet } from '../utils/searchHighlight'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease, releaseTitleRedundant } from '../utils/releaseDisplay'
-import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX } from '../utils/releaseFlag'
+import { FLAG_ITEMS } from '../utils/releaseFlag'
+import { formatCompactCount, formatVideoDuration, formatViewCount, parseVideoMeta, type VideoMeta } from '../utils/releaseMeta'
 import { mediaUrlOrEmpty } from '../utils/imageProxy'
 import { registerCloser, unregisterCloser, closeAllContextMenus, isTransientUiInvalidated } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
 import { useLineClamp } from '../composables/useLineClamp'
+import { useReleaseActions } from '../composables/useReleaseActions'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
@@ -45,7 +47,22 @@ const autoReadDetail = inject(AutoReadDetailKey, ref<AutoReadDetailMode>('off'))
 const aiEnabled = computed(() => aiEnabledRef.value)
 const agentEnabled = computed(() => agentEnabledRef.value)
 
-const isUpdating = ref(false)
+const {
+  isUpdating,
+  flagged,
+  flagColor,
+  flagTitle,
+  applyFlag,
+  updateStatus,
+  sendToAgent: handleSendToAgent,
+  copyImage,
+} = useReleaseActions({
+  release: () => props.release,
+  showToast,
+  openAgentWorkspace,
+  onUpdated: () => emit('update'),
+  onBeforeAction: () => closeMenus(),
+})
 let pendingShiftSelect = false
 
 function onSelectCheckboxClick(e: MouseEvent) {
@@ -197,24 +214,7 @@ const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   return items
 })
 
-// 旗标颜色菜单（1-6 与后端 releases.flag 编号一一对应，颜色语义由用户自行赋予）
-const FLAG_MENU: { value: number; labelKey: string }[] = [
-  { value: 1, labelKey: 'release.flag_red' },
-  { value: 2, labelKey: 'release.flag_orange' },
-  { value: 3, labelKey: 'release.flag_yellow' },
-  { value: 4, labelKey: 'release.flag_green' },
-  { value: 5, labelKey: 'release.flag_blue' },
-  { value: 6, labelKey: 'release.flag_purple' },
-]
-/** 旗标按钮/右键「快速标记」落下的默认颜色（红）。 */
 const DEFAULT_FLAG = 1
-
-const flagged = computed(() => releaseFlagged(props.release))
-const flagColor = computed(() => releaseFlagColor(props.release))
-const flagTitle = computed(() => {
-  const flag = props.release.flag
-  return flag >= 1 && flag <= FLAG_MAX ? t(FLAG_MENU[flag - 1].labelKey) : t('release.flag')
-})
 
 const releaseMenuItems = computed<ContextMenuItem[]>(() => {
   // 此处仅保留链接与通用操作；旗标颜色选择在旗标按钮的右键专属菜单（flagMenuItems）
@@ -299,28 +299,8 @@ async function handleReleaseMenuAction(actionId: string) {
   }
 }
 
-// ---- 旗标：0 = 清除，1-6 = 颜色；写库成功后整卡刷新 ----
-async function applyFlag(flag: number) {
-  closeMenus()
-  track('release.flag')
-  try {
-    await setReleaseFlag(props.release.id, flag)
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('release.flag_failed') + (e instanceof Error ? e.message : String(e)))
-  }
-}
-
-/** 卡片旗标按钮：未标记 → 打默认旗标（红）；已标记（不论颜色）→ 清除。换色右键本按钮（旗标专属颜色菜单）。 */
 function toggleFlag() {
   void applyFlag(flagged.value ? 0 : DEFAULT_FLAG)
-}
-
-// ---- “发送到 Agent”：唤起工作区并预置当前版本引用 ----
-function handleSendToAgent() {
-  closeMenus()
-  track('release.send_agent')
-  openAgentWorkspace({ entities: [{ kind: 'release', id: props.release.id }] })
 }
 
 // ---- 拖拽：把版本作为实体拖入 Agent 工作区 ----
@@ -373,13 +353,12 @@ function handleFlagTriggerKeydown(e: KeyboardEvent) {
   openFlagMenuAt(rect.left, rect.bottom, true)
 }
 
-/** 旗标按钮右键菜单：六色选择 + 清除（与筛选漏斗同一套色板与文案） */
 const flagMenuItems = computed<ContextMenuItem[]>(() => {
-  const items: ContextMenuItem[] = FLAG_MENU.map(f => ({
+  const items: ContextMenuItem[] = FLAG_ITEMS.map(f => ({
     id: `flag-${f.value}`,
     label: t(f.labelKey),
     iconHref: '/icons.svg#flag-tag-icon',
-    color: flagColorByIndex(f.value) ?? undefined,
+    color: f.color,
     checked: props.release.flag === f.value,
   }))
   if (flagged.value) {
@@ -417,14 +396,7 @@ function handleOpenLink() {
 async function handleCopyCoverImage() {
   const url = coverSourceUrl.value
   closeMenus()
-  if (!url) return
-  track('release.copy')
-  try {
-    await copyImageToClipboard(url)
-    showToast(t('release.copied'))
-  } catch (e: unknown) {
-    showToast(t('release.copy_image_failed') + (e instanceof Error ? e.message : String(e)))
-  }
+  await copyImage(url)
 }
 
 async function handleCopyCoverLink() {
@@ -447,27 +419,8 @@ function handleOpenCoverImage() {
   openReleaseUrl(url)
 }
 
-// ========== 操作处理 ==========
-function statusSuccessMessage(status: NotificationStatus): string {
-  if (status === 'snoozed') return t('release.snooze_scheduled')
-  if (status === 'ignored') return t('release.notification_cancelled')
-  return ''
-}
-
-async function updateReleaseStatus(release: ReleaseInfo, status: NotificationStatus, minutes?: number) {
-  closeMenus()
-  track(status === 'snoozed' ? 'release.snooze' : 'release.ignore')
-  isUpdating.value = true
-  try {
-    await setNotificationState(release.id, status, minutes)
-    const msg = statusSuccessMessage(status)
-    if (msg) showToast?.(msg)
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
-  } finally {
-    isUpdating.value = false
-  }
+async function updateReleaseStatus(_release: ReleaseInfo, status: NotificationStatus, minutes?: number) {
+  await updateStatus(status, minutes)
 }
 
 async function handleGoRelease(release: ReleaseInfo) {
@@ -498,19 +451,13 @@ const hfMeta = computed<HfMetaView | null>(() =>
   getSourceTypeDef(props.release.source_type)?.renderMeta?.(props.release) ?? null
 )
 
-function formatCount(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M'
-  if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K'
-  return String(n)
-}
-
 // HF 源 tooltip 内容：pipeline_tag / downloads / likes / gated
 const hfTooltip = computed<string | null>(() => {
   if (!hfMeta.value) return null
   const parts: string[] = []
   if (hfMeta.value.pipeline_tag) parts.push(`${t('release.hf_pipeline_tag')}: ${hfMeta.value.pipeline_tag}`)
-  if (hfMeta.value.downloads != null) parts.push(`${t('release.hf_downloads')}: ${formatCount(hfMeta.value.downloads)}`)
-  if (hfMeta.value.likes != null) parts.push(`${t('release.hf_likes')}: ${formatCount(hfMeta.value.likes)}`)
+  if (hfMeta.value.downloads != null) parts.push(`${t('release.hf_downloads')}: ${formatCompactCount(hfMeta.value.downloads)}`)
+  if (hfMeta.value.likes != null) parts.push(`${t('release.hf_likes')}: ${formatCompactCount(hfMeta.value.likes)}`)
   if (hfMeta.value.gated) parts.push('gated')
   return parts.length ? parts.join('  ·  ') : null
 })
@@ -553,31 +500,9 @@ const youtubeChannelName = computed(() => {
     ?? `${props.release.owner}/${props.release.repo}`
 })
 
-// YouTube 视频元数据（封面缩略图 / 类型 / 时长 / 播放量）
-interface YoutubeMeta {
-  thumbnail: string | null
-  kind: 'video' | 'live' | null
-  duration: string | null
-  viewCount: number | null
-}
-
-const youtubeMeta = computed<YoutubeMeta | null>(() => {
-  if (!isYoutube.value || !props.release.extra_metadata) return null
-  try {
-    const obj = JSON.parse(props.release.extra_metadata)
-    // B 站旧数据封面可能是 http://，升级为 https 兼容 CSP（img-src 仅允许 https）
-    const rawThumb = typeof obj.thumbnail === 'string' ? obj.thumbnail : null
-    const thumbnail = rawThumb?.startsWith('http://') ? rawThumb.replace(/^http:\/\//, 'https://') : rawThumb
-    return {
-      thumbnail,
-      kind: obj.kind === 'live' ? 'live' : obj.kind === 'video' ? 'video' : null,
-      duration: typeof obj.duration === 'string' && obj.duration ? obj.duration : null,
-      viewCount: typeof obj.view_count === 'number' ? obj.view_count : null,
-    }
-  } catch {
-    return null
-  }
-})
+const youtubeMeta = computed<VideoMeta | null>(() =>
+  isYoutube.value ? parseVideoMeta(props.release.extra_metadata) : null
+)
 
 // 封面走 media 网关（mediaUrlOrEmpty：null → '' 兼容模板 v-if；远程 URL 改写为
 // http://media.localhost/<原图>，由 Rust 按代理设置下载；data:/相对路径原样保留）
@@ -586,49 +511,14 @@ const youtubeThumb = computed(() => mediaUrlOrEmpty(youtubeMeta.value?.thumbnail
 const coverSourceUrl = computed(() => youtubeMeta.value?.thumbnail ?? null)
 const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
 
-// Data API 的 ISO 8601 时长（PT1H2M3S / PT12M34S）→ 人类可读（1:02:03 / 12:34）；RSS 模式无时长返回空
-function formatYoutubeDuration(iso: string | null): string {
-  if (!iso) return ''
-  const m = iso.match(/^PT(?:\d+H)?(?:\d+M)?(?:\d+S)?$/)
-  if (m) {
-    const parts = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/)
-    if (!parts) return ''
-    const h = parts[1] ? parseInt(parts[1], 10) : 0
-    const min = parts[2] ? parseInt(parts[2], 10) : 0
-    const sec = parts[3] ? parseInt(parts[3], 10) : 0
-    if (h > 0) return `${h}:${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
-    return `${min}:${String(sec).padStart(2, '0')}`
-  }
-  // 非 ISO 格式（如 B 站 duration_text "12:34" / "1:02:33"）原样展示
-  if (/^(?:\d+:)?\d{1,2}:\d{2}$/.test(iso)) return iso
-  return ''
-}
-
-const youtubeDuration = computed(() => formatYoutubeDuration(youtubeMeta.value?.duration ?? null))
-
-// 播放量格式化：中文环境用万/亿（123.4万 / 1.2亿），英文环境用 K/M（1.2M / 123K）。
-// 阈值取“四舍五入后不溢出当前单位”的下限（如 99,950,000 → 1亿，而非 10000万）
-function trimZero(v: number): string {
-  return v.toFixed(1).replace(/\.0$/, '')
-}
-
-function formatViewCount(n: number): string {
-  if (getLocale() === 'zh-CN') {
-    if (n >= 99_950_000) return trimZero(n / 100_000_000) + '亿'
-    if (n >= 9_950) return trimZero(n / 10_000) + '万'
-    return String(n)
-  }
-  if (n >= 999_500) return trimZero(n / 1_000_000) + 'M'
-  if (n >= 995) return trimZero(n / 1_000) + 'K'
-  return String(n)
-}
+const youtubeDuration = computed(() => formatVideoDuration(youtubeMeta.value?.duration ?? null))
 
 const youtubeViewCount = computed(() => youtubeMeta.value?.viewCount ?? null)
 // 播放量文案（如“123.4万次播放”）；无数据（YouTube RSS 模式）返回 null 整行隐藏
 const youtubeViewText = computed(() => {
   const n = youtubeViewCount.value
   if (n == null) return null
-  return t('release.yt_views', formatViewCount(n))
+  return t('release.yt_views', formatViewCount(n, getLocale()))
 })
 // 悬浮提示显示精确数字（格式化后的 123.4万 不便精确阅读）
 const youtubeViewTitle = computed(() =>

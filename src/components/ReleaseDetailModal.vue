@@ -5,19 +5,20 @@ import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import ImageLightbox from './common/ImageLightbox.vue'
 import FindBar from './common/FindBar.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
-import { type NotificationStatus, type ReleaseInfo, setReleaseFlag, setNotificationState } from '../api/releases'
-import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
+import { type ReleaseInfo } from '../api/releases'
+import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
 import { useOverlayEscape } from '../composables/useOverlayEscape'
 import { track } from '../composables/useUsageTracking'
+import { useReleaseActions } from '../composables/useReleaseActions'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { useElementFind } from '../composables/useElementFind'
 import { t } from '../i18n'
 import { formatDate, statusClass, statusLabel, isUnreadStatus, isReadStatus, SNOOZE_MINUTES } from '../utils'
 import { isEditableTarget } from '../utils/dom'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease } from '../utils/releaseDisplay'
-import { releaseFlagged, releaseFlagColor, flagColorByIndex, FLAG_MAX, FLAG_COLOR_LABEL_KEYS } from '../utils/releaseFlag'
+import { FLAG_ITEMS } from '../utils/releaseFlag'
 import { fromMediaUrl } from '../utils/imageProxy'
 import type { ReleaseContentMode } from './releaseTypes'
 import { getSourceTypeDef } from '../api/source-registry'
@@ -150,15 +151,7 @@ async function handleBodyMenuAction(actionId: string) {
       if (m.imgSrc) await copyText(m.imgSrc)
       break
     case 'copyImage':
-      track('release.copy')
-      if (m.imgSrc) {
-        try {
-          await copyImageToClipboard(m.imgSrc)
-          showToast?.(t('release.copied'))
-        } catch (e: unknown) {
-          showToast?.(t('release.copy_image_failed') + (e instanceof Error ? e.message : String(e)))
-        }
-      }
+      await copyImage(m.imgSrc)
       break
     case 'copySelection':
       track('release.copy')
@@ -303,13 +296,28 @@ function handleOpenLink() {
   openReleaseUrl(props.release.html_url)
 }
 
-// ========== 状态操作（与列表卡片同一套语义与文案） ==========
-// 弹窗是阅读闭环的终点：读完就地消未读/忽略/推迟/删除/发送给 Agent，
-// 不必关窗回列表再点一次。旗标色板在顶栏（见 header）。
-const statusUpdating = ref(false)
-// 未知历史状态（既非未读也非已读）不展示状态组，分隔线一并隐藏，避免行首孤立竖线。
-// 判据与卡片一致，刻意不传 snooze_until：未到期的 snoozed 两个谓词都为假，
-// 少了这个隐式让步就只剩「稍后提醒」（点下去只是重置提醒，取消不了）。
+const flagPopoverOpen = ref(false)
+
+const {
+  isUpdating: statusUpdating,
+  flagged,
+  flagColor,
+  flagTitle,
+  applyFlag,
+  updateStatus,
+  sendToAgent: handleSendToAgent,
+  copyImage,
+} = useReleaseActions({
+  release: () => props.release,
+  showToast,
+  openAgentWorkspace,
+  onUpdated: () => emit('update'),
+  onBeforeAction: () => {
+    flagPopoverOpen.value = false
+  },
+  onAfterSendToAgent: () => emit('close'),
+})
+
 type StatusGroup = 'unread' | 'read' | null
 const statusGroup = computed<StatusGroup>(() => {
   const status = props.release.notification_status
@@ -317,31 +325,6 @@ const statusGroup = computed<StatusGroup>(() => {
   if (isReadStatus(status)) return 'read'
   return null
 })
-
-async function updateStatus(status: NotificationStatus, minutes?: number) {
-  if (statusUpdating.value) return
-  statusUpdating.value = true
-  track(status === 'snoozed' ? 'release.snooze' : status === 'ignored' ? 'release.ignore' : 'release.mark_read')
-  try {
-    await setNotificationState(props.release.id, status, minutes)
-    if (status === 'snoozed') showToast?.(t('release.snooze_scheduled'))
-    else if (status === 'ignored') showToast?.(t('release.notification_cancelled'))
-    else showToast?.(t('release.marked_read'))
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
-  } finally {
-    statusUpdating.value = false
-  }
-}
-
-/** 发送到 Agent：工作区在主窗口右侧的常规文档流里，遮罩盖着它是无法操作的，
- *  因此先关弹窗（与卡片的右键菜单入口语义一致：发出即转移阵地）。 */
-function handleSendToAgent() {
-  track('release.send_agent')
-  openAgentWorkspace({ entities: [{ kind: 'release', id: props.release.id }] })
-  emit('close')
-}
 
 // ========== 键盘交互：Esc 逐层关闭，F3 查找跳转，←/→ 在版本间导航 ==========
 useOverlayEscape({
@@ -387,15 +370,6 @@ onUnmounted(() => {
 // HF 源 tag_name 已含组织名，不重复显示 owner/repo 前缀（注册表能力声明）
 const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_type)?.showRepoInDetail !== false)
 
-// ========== 旗标（与卡片 ReleaseItem 同一份数据与语义） ==========
-const flagged = computed(() => releaseFlagged(props.release))
-const flagColor = computed(() => releaseFlagColor(props.release))
-const flagTitle = computed(() => {
-  const flag = props.release.flag
-  return flag >= 1 && flag <= FLAG_MAX ? t(FLAG_COLOR_LABEL_KEYS[flag - 1]) : t('release.flag')
-})
-const flagPopoverOpen = ref(false)
-
 function handleFlagGlobalClick() {
   flagPopoverOpen.value = false
 }
@@ -408,18 +382,6 @@ watch(flagPopoverOpen, (open) => {
   }
 })
 onUnmounted(() => document.removeEventListener('click', handleFlagGlobalClick))
-
-/** 弹窗内旗标色板选择：0 = 清除。 */
-async function applyFlag(flag: number) {
-  flagPopoverOpen.value = false
-  track('release.flag')
-  try {
-    await setReleaseFlag(props.release.id, flag)
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('release.flag_failed') + (e instanceof Error ? e.message : String(e)))
-  }
-}
 
 // ========== 正文图片灯箱 ==========
 const lightbox = ref<{ src: string; originalUrl: string } | null>(null)
@@ -493,15 +455,15 @@ function toggleFind() {
             </button>
             <div v-if="flagPopoverOpen" class="dropdown-panel filter-dropdown flag-popover" @click.stop @pointerdown.stop>
               <button
-                v-for="(labelKey, i) in FLAG_COLOR_LABEL_KEYS"
-                :key="labelKey"
+                v-for="item in FLAG_ITEMS"
+                :key="item.value"
                 type="button"
-                :class="{ selected: props.release.flag === i + 1 }"
-                @click="applyFlag(i + 1)"
+                :class="{ selected: props.release.flag === item.value }"
+                @click="applyFlag(item.value)"
               >
-                <span class="flag-popover-icon" :style="{ color: flagColorByIndex(i + 1) ?? undefined }"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
-                {{ t(labelKey) }}
-                <span v-if="props.release.flag === i + 1" class="flag-popover-check">✓</span>
+                <span class="flag-popover-icon" :style="{ color: item.color }"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
+                {{ t(item.labelKey) }}
+                <span v-if="props.release.flag === item.value" class="flag-popover-check">✓</span>
               </button>
               <template v-if="flagged">
                 <div class="flag-popover-divider"></div>

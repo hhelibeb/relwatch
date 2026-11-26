@@ -4,7 +4,7 @@ import { t } from '../i18n'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import { getSourceTypeDef, sourceTypeDefs } from '../api/source-registry'
-import { flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
+import { FLAG_ITEMS, flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { isUnreadStatus } from '../utils'
 import { ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
 import type { ReleaseInfo } from '../api/releases'
@@ -124,15 +124,6 @@ function toggleFlagFilter() {
   track('release.filter_flag')
 }
 
-const FLAG_OPTIONS: { value: number; labelKey: string }[] = [
-  { value: 1, labelKey: 'release.flag_red' },
-  { value: 2, labelKey: 'release.flag_orange' },
-  { value: 3, labelKey: 'release.flag_yellow' },
-  { value: 4, labelKey: 'release.flag_green' },
-  { value: 5, labelKey: 'release.flag_blue' },
-  { value: 6, labelKey: 'release.flag_purple' },
-]
-
 const versionOptions = computed(() => [
   { value: 'major' as const, label: t('release.bump_major') },
   { value: 'minor' as const, label: t('release.bump_minor') },
@@ -203,7 +194,7 @@ const moreGroups = computed<MoreGroup[]>(() => [
       { value: 'all', label: t('release.filter_all') },
       { value: 'flagged', label: withCount(t('release.flag_flagged'), flaggedCount.value) },
       { value: 'unflagged', label: t('release.flag_unflagged') },
-      ...FLAG_OPTIONS.map(o => ({ value: o.value, label: t(o.labelKey), flagColor: flagColorByIndex(o.value) ?? undefined })),
+      ...FLAG_ITEMS.map(o => ({ value: o.value, label: t(o.labelKey), flagColor: o.color })),
     ],
     select: (v) => selectFlagFilter(v as ReleaseFlagFilter),
   },
@@ -255,7 +246,7 @@ const activeChips = computed<ActiveChip[]>(() => {
       ? t('release.flag_flagged')
       : props.flagFilter === 'unflagged'
         ? t('release.flag_unflagged')
-        : t(FLAG_OPTIONS[(props.flagFilter as number) - 1].labelKey)
+        : t(FLAG_ITEMS[(props.flagFilter as number) - 1].labelKey)
     chips.push({
       key: 'flag',
       label,
