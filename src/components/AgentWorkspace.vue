@@ -2,7 +2,7 @@
 import { ref, reactive, computed, inject, onMounted, onUnmounted, nextTick, watch, type ComponentPublicInstance } from 'vue'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { events } from '../bindings'
-import { ShowToastKey, ActiveTabKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
+import { AppCatalogKey, ShowToastKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
 import {
   getAgentConfig,
   getAgentAvailableModels,
@@ -11,7 +11,6 @@ import {
   saveAgentConfig,
   type AgentQueueItem,
   type AgentRunSummary,
-  type AgentChatMessage,
 } from '../api/agent'
 import { listSources, type Source } from '../api/sources'
 import { getReleaseCatalog, type ReleaseInfo } from '../api/releases'
@@ -23,9 +22,8 @@ import { useAgentModels } from './agent/useAgentModels'
 import { useAgentComposer } from './agent/useAgentComposer'
 import { useAgentSessions } from './agent/useAgentSessions'
 import { useAgentChat } from './agent/useAgentChat'
-import { isEntityDrag, parseEntityDrag } from './agent/agentChatUtils'
-import { useElementFind } from '../composables/useElementFind'
-import { registerOverlayActive } from '../composables/contextMenuBus'
+import { useAgentFind } from './agent/useAgentFind'
+import { useAgentDrop } from './agent/useAgentDrop'
 import AgentRpcIndicator from './agent/AgentRpcIndicator.vue'
 import AgentSessionSidebar from './agent/AgentSessionSidebar.vue'
 import AgentRunBanner from './agent/AgentRunBanner.vue'
@@ -39,13 +37,21 @@ const showToast = inject(ShowToastKey, () => {})
 // 面板宽度：默认 440；App.vue 传入的是壳布局算出的当前面板宽（视口 − 主界面 − 分隔线）
 const panelWidth = computed(() => props.width ?? 440)
 
-// ── 数据源：全局 skill 列表 + 实体目录（[[]] 菜单/名称映射）────
+// ── 数据源：全局 skill 列表 + 实体目录（优先复用 AppCatalogKey，单组件测试回退本地）────
+const sharedCatalog = inject(AppCatalogKey, null)
 const skills = ref<string[]>([])
-const sources = ref<Source[]>([])
-const releases = ref<ReleaseInfo[]>([])
-// 实体目录是否成功加载过（按类分开记）。判据只用于「存在性校验」的降级：
-// 目录没拿到 ≠ 实体已删除（详见 useAgentChat 的 existingEntities）。
-const catalogReady = ref<{ source: boolean; release: boolean }>({ source: false, release: false })
+const sources = sharedCatalog ? sharedCatalog.sources : ref<Source[]>([])
+const releases = sharedCatalog ? sharedCatalog.releases : ref<ReleaseInfo[]>([])
+const catalogReady = ref<{ source: boolean; release: boolean }>(
+  sharedCatalog
+    ? { source: sharedCatalog.sourcesLoaded.value, release: sharedCatalog.releasesLoaded.value }
+    : { source: false, release: false },
+)
+if (sharedCatalog) {
+  watch([sharedCatalog.sourcesLoaded, sharedCatalog.releasesLoaded], ([source, release]) => {
+    catalogReady.value = { source, release }
+  })
+}
 
 // ── 全局队列（侧栏状态点 / 横幅「被谁占用」共用）：编排层持有、useAgentChat 写入 ──
 const queueActive = ref<AgentQueueItem[]>([])
@@ -301,156 +307,28 @@ function startNewSession() {
 }
 
 
-// ── 页内查找（Ctrl+F）：只搜聊天消息，不与版本页搜索抢触发时机 ──
-// 面板与版本页同屏共存，若无条件注册接管器就会吞掉全局 Ctrl+F、把版本页搜索挤没。
-// 因此以「最后一次交互落在哪一侧」划界：收到面板内信号（含挂载后自动聚焦输入区的
-// focusin）即接管，交互落回主界面则交还。初值 false 只是「尚无信号」时的保守缺省。
 const rootEl = ref<HTMLElement | null>(null)
-const findScopeInside = ref(false)
-// 查找栏是否打开。useElementFind 的 immediate watcher 在 setup 期就会读一次
-// contentSource，那时 destructure 出的 findOpen 还在 TDZ 里，故这里用本地 ref 同步。
-const findActive = ref(false)
-let unregisterFindOverlay: (() => void) | null = null
-
-// 面板自身的浮层：Teleport 到 body 的菜单（rpc 状态 / 会话 ⋯），以及 App.vue 里
-// 属于面板的宽度分隔条（兄弟节点）——DOM 上都已脱离面板子树，语义上仍是面板侧
-const PANEL_OWNED_SELECTOR = '.agent-ws-menu, .agent-divider'
-
-function trackFindScope(e: Event) {
-  const root = rootEl.value
-  const target = e.target as Node | null
-  if (!root || !target) {
-    findScopeInside.value = false
-    return
-  }
-  findScopeInside.value =
-    root.contains(target)
-    || (target instanceof Element && target.closest(PANEL_OWNED_SELECTOR) !== null)
-}
-
-const injectedActiveTab = inject(ActiveTabKey, null)
-if (injectedActiveTab) {
-  // 切页签 = 注意力回到主界面。键盘 Ctrl+1..4 不产生 pointerdown，靠这里补一次
-  watch(injectedActiveTab, () => {
-    findScopeInside.value = false
-  })
-}
-
-/**
- * 内容指纹：流式合帧会原地改最后一条消息、会话切换会整体换内容，
- * 只比长度会让等长替换漏重算（命中停在过期文本上）。
- */
-function blocksFingerprint(blocks: AgentChatMessage['blocks']): string {
-  let out = ''
-  for (const b of blocks) {
-    switch (b.kind) {
-      case 'text':
-      case 'thinking':
-      case 'toolResult':
-        out += `${b.kind}:${b.text.length}:${b.text.slice(0, 12)}:${b.text.slice(-12)};`
-        break
-      case 'toolCall':
-        out += `toolCall:${b.name}:${b.args.length}:${b.args.slice(0, 12)};`
-        break
-      case 'bash':
-        out += `bash:${b.command.length}:${b.command.slice(0, 12)}:${b.output.length}:${b.output.slice(-12)};`
-        break
-      default: {
-        // 新增 block kind 却没纳入指纹时在此处编译期报错（否则会静默漏掉整类内容）
-        const unhandled: never = b
-        out += `${String(unhandled)};`
-      }
-    }
-  }
-  return out
-}
-
-/**
- * user 气泡上的装饰（引用实体 chip、失败备注、首轮模板折叠）是异步补全的：
- * 它们进入 DOM 后同样是可查找文本，必须参与指纹，否则命中停在补全前的内容上。
- */
-function decorationsFingerprint(): string {
-  let out = ''
-  for (const d of messageDecorations.value) {
-    if (!d) {
-      out += '-;'
-      continue
-    }
-    out += `${d.main.length}:${d.folded?.length ?? 0}:${d.entities.map((e) => `${e.kind}${e.id}`).join('.')}:${d.run?.status ?? ''}:${d.run?.error ?? ''};`
-  }
-  // 实体 chip 的可读名来自目录（打开面板时异步加载），目录到位后才会显示成 names
-  out += `${sources.value.length}/${releases.value.length}`
-  return out
-}
-
-const findContentSource = computed(() => {
-  // 查找栏关着时不必每帧拼指纹（流式合帧 50ms 一批，长会话上纯属空转）
-  if (!findActive.value) return ''
-  return `${activeKey.value}|`
-    + displayedMessages.value
-      .map((m) => `${m.role}@${m.timestamp}#${blocksFingerprint(m.blocks)}`)
-      .join('|')
-    + `|${decorationsFingerprint()}`
-})
-
 const {
-  open: findOpen,
-  query: findQuery,
-  inputEl: findInputEl,
-  matchCount: findMatchCount,
-  currentIndex: findCurrentIndex,
-  openFind,
+  findScopeInside,
+  findOpen,
+  findQuery,
+  findMatchCount,
+  findCurrentIndex,
+  setFindInputEl,
+  toggleFind,
   closeFind,
-  next: nextFindMatch,
-  prev: prevFindMatch,
-  handleInputKeydown: handleFindInputKeydown,
-} = useElementFind({
-  container: scrollRef,
-  skipSelector: 'button, .md-code-lang',
-  contentSource: () => findContentSource.value,
-  // 流式 = 有实时消息在增长。submitting 只覆盖 runAgentJob 这次 IPC（finally 里
-  // 就置回 false），delta 合帧期间它为 false，用它判流式会每 50ms 把进度重置回第 1 条
+  nextFindMatch,
+  prevFindMatch,
+  handleFindInputKeydown,
+} = useAgentFind({
+  rootEl,
+  scrollRef,
+  activeKey,
+  displayedMessages,
+  messageDecorations,
+  sources,
+  releases,
   isStreaming: () => liveMessages.value.length > 0 || submitting.value,
-  shouldHandle: () => findScopeInside.value,
-})
-
-function setFindInputEl(el: HTMLInputElement | null) {
-  findInputEl.value = el
-}
-
-function toggleFind() {
-  if (findOpen.value) closeFind()
-  else openFind()
-}
-
-/** 查找栏打开期间的全局按键：Esc 关闭（焦点已移出输入框时也生效）、F3 跳转。 */
-function handleFindKeydown(e: KeyboardEvent) {
-  if (!findOpen.value || e.isComposing) return
-  // 自行处理 Esc 的控件（如会话重命名框）优先，别抢它的取消语义
-  if ((e.target as HTMLElement | null)?.hasAttribute?.('data-esc-local')) return
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    e.stopPropagation()
-    closeFind()
-  } else if (e.key === 'F3') {
-    e.preventDefault()
-    if (e.shiftKey) prevFindMatch()
-    else nextFindMatch()
-  }
-}
-
-// 查找栏是覆盖层：打开期间注册活跃回调，Esc 才不会被 useEscapeToTray 当成
-// 「没有覆盖层」而 blur 输入框甚至最小化到托盘
-watch(findOpen, (open) => {
-  findActive.value = open
-  if (open) {
-    unregisterFindOverlay = registerOverlayActive(() => findOpen.value)
-    document.addEventListener('keydown', handleFindKeydown, true)
-  } else {
-    unregisterFindOverlay?.()
-    unregisterFindOverlay = null
-    document.removeEventListener('keydown', handleFindKeydown, true)
-  }
 })
 
 // ── 运行历史面板（耗时 / 模型 / 状态 / 引用实体）──
@@ -476,6 +354,7 @@ async function saveTimeout() {
     const cfg = await getAgentConfig()
     cfg.timeout_seconds = v
     await saveAgentConfig(cfg)
+    if (sharedCatalog) void sharedCatalog.loadAgentConfig()
     timeoutSecs.value = v
     adjustingTimeout.value = false
     showToast(t('agent.timeout_saved', String(v)))
@@ -505,6 +384,10 @@ let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
  * 双双保持原值——首次加载时就是双空，整个面板生命周期内所有 chip 都退化成 `#id`。
  */
 async function refreshEntityCatalog() {
+  if (sharedCatalog) {
+    await Promise.allSettled([sharedCatalog.loadSources(), sharedCatalog.loadReleases()])
+    return
+  }
   const [srcs, rels] = await Promise.allSettled([listSources(), getReleaseCatalog()])
   if (srcs.status === 'fulfilled') {
     sources.value = srcs.value
@@ -518,6 +401,10 @@ async function refreshEntityCatalog() {
 
 /** 合帧刷新实体目录（release-state-changed / 拖入未知实体时调用）。 */
 function scheduleCatalogRefresh() {
+  if (sharedCatalog) {
+    sharedCatalog.scheduleRefreshCatalog()
+    return
+  }
   if (catalogRefreshTimer !== null) return
   catalogRefreshTimer = setTimeout(() => {
     catalogRefreshTimer = null
@@ -525,16 +412,6 @@ function scheduleCatalogRefresh() {
   }, CATALOG_REFRESH_FRAME_MS)
 }
 
-/**
- * 拖入/预置实体时校验它在不在当前目录里；不在就补拉一次目录。
- *
- * 目录是**面板打开时的快照**，而主列表随 release-state-changed 实时刷新——
- * 于是「面板开着时轮询刚采到的新版本」在主列表可见可拖，在这里却查不到，
- * chip 只能回退成 `#id`（用户看不出是哪个版本），重试还会把它当已删除剔除。
- * 事件订阅已覆盖绝大多数情形，这里兜住两类漏网的：订阅建立前的窗口、
- * 以及刷新本身失败（首次加载失败也会走到这里）。不阻塞 chip 插入——
- * 名称解析是响应式的，目录到手后 chip 自行变可读。
- */
 function ensureEntityKnown(entity: AgentEntityRefSeed) {
   const known =
     entity.kind === 'source'
@@ -543,17 +420,27 @@ function ensureEntityKnown(entity: AgentEntityRefSeed) {
   if (!known) scheduleCatalogRefresh()
 }
 
-async function loadCatalog() {
-  // 技能列表 / 超时配置与实体目录解耦：任一失败都不连带丢另一份
-  try {
-    const cfg = await getAgentConfig()
+if (sharedCatalog) {
+  watch(sharedCatalog.agentConfig, (cfg) => {
+    if (!cfg) return
     skills.value = cfg.skills
     timeoutSecs.value = cfg.timeout_seconds
-  } catch {
-    // 配置读取失败不阻塞工作区使用（技能菜单为空，超时保持默认值）
+  }, { immediate: true })
+}
+
+async function loadCatalog() {
+  if (!sharedCatalog?.agentConfig.value) {
+    try {
+      const cfg = await getAgentConfig()
+      skills.value = cfg.skills
+      timeoutSecs.value = cfg.timeout_seconds
+    } catch {
+      // 配置读取失败不阻塞工作区使用（技能菜单为空，超时保持默认值）
+    }
   }
-  await refreshEntityCatalog()
-  // 模型列表独立拉取：失败仅影响模型下拉（只剩「默认」），不影响技能/实体目录
+  if (!sharedCatalog || !sharedCatalog.sourcesLoaded.value || !sharedCatalog.releasesLoaded.value) {
+    await refreshEntityCatalog()
+  }
   await loadModels()
 }
 
@@ -859,78 +746,27 @@ function applySeed() {
   }
 }
 
-// ── 拖拽：实体（监控源/版本）从主界面拖入工作区 → 插入引用 chip ──
-// 落区只拦截**实体拖拽**（自定义 MIME）。拖动选中文本走 text/plain，若一律
-// preventDefault 会把输入框自身的原生「拖入即插入」取消掉——那是浏览器默认行为，
-// 日志搜索框等未接管拖放的输入框一直依赖它。故两类拖拽必须分流：
-// 非实体 → 不 preventDefault、不置高亮，整条链路放行给原生。
-const dragOver = ref(false)
-
-function onDragOver(e: DragEvent) {
-  if (!isEntityDrag(e)) return // 放行：输入框原生粘贴/拖放照常
-  e.preventDefault()
-  dragOver.value = true
-  findScopeInside.value = true // 拖拽不产生 pointerdown/focusin，Ctrl+F 归属也要跟着落到面板
-}
-
-function onDragLeave() {
-  dragOver.value = false
-}
-
-function handleDrop(e: DragEvent) {
-  if (!isEntityDrag(e)) return // 放行：交给目标元素的原生默认行为
-  e.preventDefault()
-  dragOver.value = false
-  const entity = parseEntityDrag(e)
-  if (entity) {
+const {
+  dragOver,
+  headerDropOver,
+  onDragOver,
+  onDragLeave,
+  handleDrop,
+  onHeaderDragOver,
+  onHeaderDragLeave,
+  handleDropNewSession,
+} = useAgentDrop({
+  findScopeInside,
+  onAttachEntity: (entity) => {
     ensureEntityKnown(entity)
     afterAttach(entity, addEntity(entity))
-  }
-}
-
-// ── 拖到头部标题栏：切换新会话并把实体引用放进新会话 ──
-const headerDropOver = ref(false)
-
-function onHeaderDragOver(e: DragEvent) {
-  if (!isEntityDrag(e)) return // 同上：非实体拖拽不拦截
-  e.preventDefault()
-  headerDropOver.value = true
-  findScopeInside.value = true // 同上：拖拽没有 pointerdown，归属靠这里补
-}
-
-function onHeaderDragLeave(e: DragEvent) {
-  // 仅当真正离开标题栏时才取消高亮（子元素间移动不闪烁）
-  const el = e.currentTarget as HTMLElement
-  if (!el.contains(e.relatedTarget as Node | null)) {
-    headerDropOver.value = false
-  }
-}
-
-function handleDropNewSession(e: DragEvent) {
-  if (!isEntityDrag(e)) return // 放行：非实体拖拽不拦截
-  e.preventDefault()
-  e.stopPropagation()
-  dragOver.value = false
-  headerDropOver.value = false
-  const entity = parseEntityDrag(e)
-  if (entity) {
-    startNewSession()
-    ensureEntityKnown(entity)
-    afterAttach(entity, addEntity(entity))
-  }
-}
+  },
+  onStartNewSession: startNewSession,
+})
 
 onMounted(async () => {
-  // 捕获期记录 Ctrl+F 的归属侧：点、滚、焦点转移都算一次归属变化。
-  // 必须在首次 focusComposer() 之前挂上——挂载时的自动聚焦正是「我在面板里」的第一个信号。
-  document.addEventListener('pointerdown', trackFindScope, true)
-  document.addEventListener('focusin', trackFindScope, true)
-  document.addEventListener('wheel', trackFindScope, { capture: true, passive: true })
-
   applySeed()
   await Promise.all([loadCatalog(), loadChat(), loadRpcStatus()])
-  // 磁盘发现放在首次加载之后：会话文件是索引的兜底来源，索引缺失时补入，
-  // 补入的会话不打断当前激活会话（仅侧栏可见）
   const recovered = await discoverSessions()
   if (recovered > 0) showToast(t('agent.sessions_recovered', String(recovered)))
   unlistenRunFinished = await events.agentRunFinished.listen((e) => {
@@ -939,19 +775,16 @@ onMounted(async () => {
   unlistenRpcStream = await events.agentRpcStream.listen((e) => {
     handleRpcStream(e.payload)
   })
-  // 实体目录跟随 release 状态变更刷新：目录若停在面板打开那一刻的快照，
-  // 新采集的版本在主列表可拖、在这里却解析不出名字（chip 退化成 `#id`），
-  // 重试还会误剔引用。
-  unlistenReleaseState = await events.releaseStateChanged.listen(() => {
-    scheduleCatalogRefresh()
-  })
+  if (!sharedCatalog) {
+    unlistenReleaseState = await events.releaseStateChanged.listen(() => {
+      scheduleCatalogRefresh()
+    })
+  }
   await nextTick()
   focusComposer()
-  // 捕获期监听：点击菜单/触发控件之外的区域即收起打开的下拉菜单
   document.addEventListener('pointerdown', onDocumentPointerDown, true)
 })
 
-// 面板打开期间 seed 更新（重复点「发送到 Agent」）：追加新实体
 watch(
   () => props.seed,
   () => applySeed(),
@@ -966,12 +799,6 @@ onUnmounted(() => {
     catalogRefreshTimer = null
   }
   document.removeEventListener('pointerdown', onDocumentPointerDown, true)
-  document.removeEventListener('pointerdown', trackFindScope, true)
-  document.removeEventListener('focusin', trackFindScope, true)
-  document.removeEventListener('wheel', trackFindScope, { capture: true })
-  document.removeEventListener('keydown', handleFindKeydown, true)
-  unregisterFindOverlay?.()
-  unregisterFindOverlay = null
 })
 
 </script>
