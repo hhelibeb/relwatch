@@ -3,6 +3,7 @@ import { enableAutoUnmount, mount, type VueWrapper } from '@vue/test-utils'
 import { defineComponent, nextTick } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import type { ReleaseInfo } from '../api/releases'
+import { registerOverlayActive } from '../composables/contextMenuBus'
 
 // ReleaseTab 的键盘导航、视图状态持久化与日历跳转（子组件全部 stub，只验编排）。
 // tab 用 v-show 切换、组件常驻挂载，故快捷键必须靠 active 判定归属，
@@ -180,6 +181,22 @@ describe('ReleaseTab.vue — j/k 列表导航', () => {
 
     pressKey('j')
     expect(moveSelection).not.toHaveBeenCalled()
+  })
+
+  it('有浮层（如卡片封面灯箱）打开时不响应 j/k/Enter', () => {
+    mountTab({ active: true })
+    const off = registerOverlayActive(() => true)
+
+    pressKey('j')
+    pressKey('k')
+    pressKey('Enter')
+    expect(moveSelection).not.toHaveBeenCalled()
+    expect(openSelected).not.toHaveBeenCalled()
+
+    // 浮层关闭后快捷键恢复
+    off()
+    pressKey('j')
+    expect(moveSelection.mock.calls.map(c => c[0])).toEqual([1])
   })
 
   it.each([

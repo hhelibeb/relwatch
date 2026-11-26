@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { shallowMount, mount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
+import ImageLightbox from '../components/common/ImageLightbox.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
 import { t, setLocale } from '../i18n'
@@ -717,9 +718,10 @@ describe('ReleaseItem.vue — YouTube 源', () => {
     const wrapper = mountRelease(ytRelease({ extra_metadata: JSON.stringify({ kind: 'live', thumbnail: 'https://i.ytimg.com/vi/abc123/mqdefault.jpg' }) }))
     const img = wrapper.find('img.yt-thumb')
     expect(img.exists()).toBe(true)
-    // 封面经 media 网关（Rust 按代理设置下载），不再由浏览器直连远程图床
+    // 封面经 media 网关（Rust 按代理设置下载），不再由浏览器直连远程图床；
+    // 入库地址（mqdefault/hqdefault）只作兜底，展示层按 videoId 升级为 maxresdefault
     expect(img.attributes('src')).toBe(
-      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/mqdefault.jpg'),
+      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/maxresdefault.jpg'),
     )
     // no-referrer：B 站 CDN（hdslb.com）对非 bilibili 域名 Referer 返回 403，封面必须裸 Referer 加载
     expect(img.attributes('referrerpolicy')).toBe('no-referrer')
@@ -831,11 +833,40 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
   })
 
   it('http 封面自动升级为 https（兼容 CSP img-src 限制与 B 站旧数据）并经 media 网关', () => {
-    const wrapper = mountRelease(yt({ extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'http://i0.hdslb.com/bfs/archive/abc.jpg' }) }))
+    const wrapper = mountRelease(yt({
+      source_type: 'bilibili',
+      tag_name: 'BV1xx',
+      extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'http://i0.hdslb.com/bfs/archive/abc.jpg' }),
+    }))
     const img = wrapper.find('img.yt-thumb')
     expect(img.exists()).toBe(true)
     expect(img.attributes('src')).toBe(
       'http://media.localhost/' + encodeURIComponent('https://i0.hdslb.com/bfs/archive/abc.jpg'),
+    )
+  })
+
+  // YouTube 封面的可取值由 videoId 决定：入库的低清地址（RSS hqdefault / API medium）
+  // 只作兜底，展示层直接取 maxresdefault
+  it('YouTube 封面按 videoId 取 maxresdefault', () => {
+    const wrapper = mountRelease(yt())
+    expect(wrapper.find('img.yt-thumb').attributes('src')).toBe(
+      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/maxresdefault.jpg'),
+    )
+  })
+
+  it('tag_name 不是合法 videoId 时退回入库封面地址', () => {
+    const wrapper = mountRelease(yt({ tag_name: 'v1' }))
+    expect(wrapper.find('img.yt-thumb').attributes('src')).toBe(
+      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/hqdefault.jpg'),
+    )
+  })
+
+  it('入库已是 standard 档（sddefault，后端已选最高档）时不再拼 maxres', () => {
+    const wrapper = mountRelease(yt({
+      extra_metadata: JSON.stringify({ kind: 'video', thumbnail: 'https://i.ytimg.com/vi/abc123/sddefault.jpg' }),
+    }))
+    expect(wrapper.find('img.yt-thumb').attributes('src')).toBe(
+      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/sddefault.jpg'),
     )
   })
 
@@ -863,6 +894,17 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     })
     return { wrapper, showToast }
   }
+
+  it('入库无封面但 tag_name 合法时，仍能看到封面且保留封面菜单项', async () => {
+    const { wrapper } = mountCoverMenu(yt({ extra_metadata: JSON.stringify({ kind: 'video' }) }))
+
+    expect(wrapper.find('img.yt-thumb').attributes('src')).toBe(
+      'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/maxresdefault.jpg'),
+    )
+
+    await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
+    expect(wrapper.findAll('.stub-menu-item').map(i => i.text())).toContain(t('context.open_cover_image'))
+  })
 
   it('右键封面时菜单追加「复制封面图片 / 复制封面图片链接 / 打开封面图片」', async () => {
     const { wrapper } = mountCoverMenu(yt())
@@ -929,13 +971,24 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     expect(copyTextToClipboard).toHaveBeenCalledWith(COVER_URL)
   })
 
-  it('「打开封面图片」交给系统打开封面原图', async () => {
+  it('「打开封面图片」走内置查看器，不再交给系统浏览器', async () => {
     const { wrapper } = mountCoverMenu(yt())
 
     await wrapper.find('.yt-thumb-btn').trigger('contextmenu')
     await wrapper.findAll('.stub-menu-item')[4].trigger('click')
+    await nextTick()
 
-    expect(openReleaseUrl).toHaveBeenCalledWith(COVER_URL)
+    const lightbox = wrapper.findComponent(ImageLightbox)
+    expect(lightbox.exists()).toBe(true)
+    expect(lightbox.props()).toMatchObject({
+      src: 'http://media.localhost/' + encodeURIComponent('https://i.ytimg.com/vi/abc123/maxresdefault.jpg'),
+      originalUrl: COVER_URL,
+    })
+    expect(openReleaseUrl).not.toHaveBeenCalled()
+
+    lightbox.vm.$emit('close')
+    await nextTick()
+    expect(wrapper.findComponent(ImageLightbox).exists()).toBe(false)
   })
 })
 

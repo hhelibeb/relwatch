@@ -22,6 +22,7 @@ import { loadReleaseViewState, saveReleaseViewState } from '../utils/releaseView
 import { clampCalendarMonth, toDateKey } from '../utils/dateKey'
 import { isEditableTarget } from '../utils/dom'
 import { useBulkSelection } from '../composables/useBulkSelection'
+import { hasActiveOverlay } from '../composables/contextMenuBus'
 import { useReleaseDeepSearch } from '../composables/useReleaseDeepSearch'
 import { track } from '../composables/useUsageTracking'
 import { ShowImportanceKey, AutoReadDetailKey, ShowToastKey } from '../injection-keys'
@@ -578,6 +579,9 @@ function closeFlagPopover() {
 function onListKeydown(e: KeyboardEvent) {
   if (!props.active || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return
   if (detailReleaseId.value !== null || viewMode.value !== 'simple') return
+  // 任意浮层（卡片封面灯箱、右键菜单、下拉面板）打开时让出快捷键，
+  // 否则灯箱里按 j/k 会移动背后选中项、按 Enter 会在灯箱后弹出详情
+  if (hasActiveOverlay()) return
   if (isEditableTarget(e.target)) return
   if (e.key === 'j') {
     e.preventDefault()

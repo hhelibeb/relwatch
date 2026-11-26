@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
+import ImageLightbox from './common/ImageLightbox.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
@@ -411,12 +412,17 @@ async function handleCopyCoverLink() {
   }
 }
 
+// 封面灯箱：<img> 走 media 网关（CSP 只放行 media.localhost），「打开原图」用未经网关的原始地址。
+// 卡片右键「打开封面图片」走内置查看器，不再丢给系统浏览器。
+const coverLightbox = ref<{ src: string; originalUrl: string } | null>(null)
+
 function handleOpenCoverImage() {
-  const url = coverSourceUrl.value
+  const originalUrl = coverSourceUrl.value
+  const src = youtubeThumb.value
   closeMenus()
-  if (!url) return
+  if (!originalUrl || !src) return
   track('release.open')
-  openReleaseUrl(url)
+  coverLightbox.value = { src, originalUrl }
 }
 
 async function updateReleaseStatus(_release: ReleaseInfo, status: NotificationStatus, minutes?: number) {
@@ -504,11 +510,34 @@ const youtubeMeta = computed<VideoMeta | null>(() =>
   isYoutube.value ? parseVideoMeta(props.release.extra_metadata) : null
 )
 
+// 封面清晰度：RSS 只给 hqdefault（480×360）、Data API 早期只取 medium（320×180），
+// 卡片里看不清视频内容；而 YouTube 封面的可取值完全由 videoId 决定，低清档位一律升级到
+// maxresdefault（1280×720）。入库已是 standard/maxres 档（后端已选最高档）时信任后端，
+// 否则会为一张不存在的 maxres 多打一次 404，还被网关降级回 hqdefault（反而更糊）。
+// 高清图缺失时由 media 网关逐级回退 sddefault → hqdefault，不会破图。
+const LOW_TIER_THUMB = /\/vi\/[^/]+\/(?:default|mqdefault|hqdefault)\.jpg$/i
+
+const maxresCoverUrl = computed<string | null>(() => {
+  if (props.release.source_type !== 'youtube') return null
+  const id = (props.release.tag_name ?? '').trim()
+  return /^[A-Za-z0-9_-]{6,32}$/.test(id) ? `https://i.ytimg.com/vi/${id}/maxresdefault.jpg` : null
+})
+
+// 展示用封面（未经 media 网关改写）：低清档升级，高清档信任入库值
+const coverDisplayUrl = computed<string | null>(() => {
+  const stored = youtubeMeta.value?.thumbnail ?? null
+  const upgraded = maxresCoverUrl.value
+  if (!upgraded) return stored
+  if (stored && !LOW_TIER_THUMB.test(stored)) return stored
+  return upgraded
+})
+
 // 封面走 media 网关（mediaUrlOrEmpty：null → '' 兼容模板 v-if；远程 URL 改写为
 // http://media.localhost/<原图>，由 Rust 按代理设置下载；data:/相对路径原样保留）
-const youtubeThumb = computed(() => mediaUrlOrEmpty(youtubeMeta.value?.thumbnail ?? null))
-// 封面原始地址（未经 media 网关改写）：复制图片 / 复制链接 / 打开图片都用它
-const coverSourceUrl = computed(() => youtubeMeta.value?.thumbnail ?? null)
+const youtubeThumb = computed(() => mediaUrlOrEmpty(coverDisplayUrl.value))
+// 可分享的封面地址：优先源站给出的真实地址，缺失时退回按 videoId 推导的地址。
+// 与“封面是否可见”保持同一来源，避免看得见图但右键没有封面菜单。
+const coverSourceUrl = computed(() => youtubeMeta.value?.thumbnail ?? maxresCoverUrl.value)
 const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
 
 const youtubeDuration = computed(() => formatVideoDuration(youtubeMeta.value?.duration ?? null))
@@ -722,6 +751,13 @@ const bodyHitSnippet = computed(() => {
   <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="releaseMenuItems" @action="handleReleaseMenuAction" @close="closeMenus" />
   <ContextMenu v-if="flagMenu" :x="flagMenu.x" :y="flagMenu.y" :items="flagMenuItems" @action="handleFlagMenuAction" @close="closeMenus" />
   <ContextMenu v-if="summaryContextMenu" :x="summaryContextMenu.x" :y="summaryContextMenu.y" :items="summaryMenuItems" @action="handleSummaryMenuAction" @close="closeMenus" />
+
+  <ImageLightbox
+    v-if="coverLightbox"
+    :src="coverLightbox.src"
+    :original-url="coverLightbox.originalUrl"
+    @close="coverLightbox = null"
+  />
 
   <div
     v-if="summaryTooltip"
