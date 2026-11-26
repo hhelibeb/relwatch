@@ -40,6 +40,8 @@ const openReleaseUrlMock = vi.mocked(openReleaseUrl)
 const messageMock = vi.mocked(message)
 const confirmMock = vi.mocked(confirm)
 
+const mountedWrappers: Array<ReturnType<typeof mount>> = []
+
 function mountSourceTab(
   sources: TestSource[] = [createSource()],
   opts: {
@@ -67,6 +69,7 @@ function mountSourceTab(
       stubs: { ContextMenu: true },
     },
   })
+  mountedWrappers.push(wrapper)
   return { wrapper, showToast }
 }
 
@@ -94,6 +97,9 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  while (mountedWrappers.length > 0) {
+    mountedWrappers.pop()?.unmount()
+  }
   vi.clearAllMocks()
 })
 
@@ -1082,6 +1088,43 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     expect(confirmMock).toHaveBeenCalled()
     expect(batchRemoveSourcesMock).toHaveBeenCalledTimes(1)
     expect(batchRemoveSourcesMock).toHaveBeenCalledWith(expect.arrayContaining([1, 2]))
+  })
+
+  it('搜索过滤隐藏已选源时自动剔除选中态，避免误删不可见源', async () => {
+    const sources = [
+      createSource({ id: 1, owner: 'vuejs', repo: 'core' }),
+      createSource({ id: 2, owner: 'rust-lang', repo: 'rust' }),
+    ]
+    const { wrapper } = mountSourceTab(sources)
+
+    await wrapper.get('.btn-select').trigger('click')
+    const checkboxes = wrapper.findAll('.source-checkbox input[type="checkbox"]')
+    await checkboxes[0].setValue(true)
+    await checkboxes[1].setValue(true)
+
+    await wrapper.get('.btn-mode-toggle').trigger('click')
+    await wrapper.get('.search-input').setValue('vuejs')
+    await flushPromises()
+
+    const deleteButton = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_delete'))!
+    await deleteButton.trigger('click')
+    await flushPromises()
+
+    expect(batchRemoveSourcesMock).toHaveBeenCalledWith([1])
+  })
+
+  it('选择模式下按 Esc 自动退出选择模式并清空选中', async () => {
+    const sources = [createSource({ id: 1 })]
+    const { wrapper } = mountSourceTab(sources)
+
+    await wrapper.get('.btn-select').trigger('click')
+    expect(wrapper.find('.bulk-bar').exists()).toBe(true)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', cancelable: true }))
+    await flushPromises()
+
+    expect(wrapper.find('.bulk-bar').exists()).toBe(false)
+    wrapper.unmount()
   })
 
   it('更多菜单中按源全部标为已读：有未读时显示，确认后调用 markSourceReleasesRead', async () => {

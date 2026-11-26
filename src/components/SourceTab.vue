@@ -7,12 +7,13 @@ import { checkSingleSource, markSourceReleasesRead } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
+import { useBulkSelection } from '../composables/useBulkSelection'
 import { track } from '../composables/useUsageTracking'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import EmptyState from './common/EmptyState.vue'
 import ErrorBlock from './common/ErrorBlock.vue'
 import SkeletonList from './common/SkeletonList.vue'
-import { AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
+import { ActiveTabKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
 import { t, tm } from '../i18n'
 import { formatDate } from '../utils'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
@@ -114,16 +115,7 @@ function handleDragStart(e: DragEvent, source: Source) {
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
 }
 const headerMode = ref<HeaderMode>('add')
-
-const selectionMode = ref(false)
-const selectedSourceIds = ref<Set<number>>(new Set())
-const bulkBusy = ref(false)
-
-function toggleSelectionMode() {
-  selectionMode.value = !selectionMode.value
-  if (!selectionMode.value) clearSelection()
-  track('source.select')
-}
+const activeTab = inject(ActiveTabKey, ref('sources'))
 
 function toggleHeaderMode() {
   headerMode.value = headerMode.value === 'add' ? 'search' : 'add'
@@ -147,30 +139,6 @@ function selectSortDirection(dir: SortDirection) {
   sortDropdown.close()
   track('source.sort')
 }
-
-function toggleSelection(sourceId: number) {
-  const next = new Set(selectedSourceIds.value)
-  if (next.has(sourceId)) next.delete(sourceId)
-  else next.add(sourceId)
-  selectedSourceIds.value = next
-}
-
-function selectAllVisible() {
-  selectedSourceIds.value = new Set(sortedSources.value.map(s => s.id))
-  track('source.bulk_select_all')
-}
-
-function clearSelectedSources() {
-  selectedSourceIds.value = new Set()
-  track('source.bulk_clear')
-}
-
-function clearSelection() {
-  selectedSourceIds.value = new Set()
-  selectionMode.value = false
-}
-
-const selectedCount = computed(() => selectedSourceIds.value.size)
 
 async function handleBulkToggle(enabled: boolean) {
   const ids = [...selectedSourceIds.value]
@@ -555,6 +523,44 @@ const sortedSources = computed(() => {
   })
 })
 
+const visibleSourceIds = computed(() => sortedSources.value.map(s => s.id))
+const bulkSelection = useBulkSelection<number>({
+  visibleIds: visibleSourceIds,
+  active: computed(() => activeTab.value === 'sources'),
+})
+const {
+  selectionMode,
+  selectedIds: selectedSourceIds,
+  selectedCount,
+} = bulkSelection
+const bulkBusy = ref(false)
+let pendingShiftClick = false
+
+function onSelectionCheckboxClick(e: MouseEvent) {
+  pendingShiftClick = e.shiftKey
+}
+
+function toggleSelectionMode() {
+  bulkSelection.toggleSelectionMode()
+  track('source.select')
+}
+
+function toggleSelection(sourceId: number) {
+  const shiftKey = pendingShiftClick
+  pendingShiftClick = false
+  bulkSelection.toggle(sourceId, shiftKey)
+}
+
+function selectAllVisible() {
+  bulkSelection.selectAllVisible()
+  track('source.bulk_select_all')
+}
+
+function clearSelectedSources() {
+  bulkSelection.clearSelected()
+  track('source.bulk_clear')
+}
+
 const sortLabelText = computed(() => {
   const labels: Record<SourceSortField, string> = {
     'default': t('source.sort_default'),
@@ -767,7 +773,7 @@ function hideHealthTooltip() {
       </EmptyState>
       <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }" :draggable="agentEnabled && agentPanelOpen" @dragstart="handleDragStart($event, source)">
       <div v-if="selectionMode" class="source-checkbox">
-        <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @change="toggleSelection(source.id)" />
+        <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @click="onSelectionCheckboxClick" @change="toggleSelection(source.id)" />
       </div>
         <div class="source-main">
           <div class="source-info">

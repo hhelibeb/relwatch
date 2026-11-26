@@ -22,7 +22,8 @@ import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, R
 import { flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { loadReleaseViewState, saveReleaseViewState } from '../utils/releaseViewStorage'
 import { clampCalendarMonth, toDateKey } from '../utils/dateKey'
-import { registerOverlayActive } from '../composables/contextMenuBus'
+import { isEditableTarget } from '../utils/dom'
+import { useBulkSelection } from '../composables/useBulkSelection'
 import { track } from '../composables/useUsageTracking'
 import { ShowImportanceKey, AutoReadDetailKey, ShowToastKey } from '../injection-keys'
 import { t } from '../i18n'
@@ -653,13 +654,6 @@ defineExpose({ focusSearch })
 
 // ── 简单视图键盘导航（j/k 移动、Enter 打开详情）──────────────
 // tab 用 v-show 常驻挂载，必须等 active 才响应；输入控件/可编辑区域内的按键不拦截。
-function isEditableTarget(el: EventTarget | null): boolean {
-  if (!(el instanceof HTMLElement)) return false
-  const tag = el.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
-  const ce = el.getAttribute('contenteditable')
-  return ce !== null && ce !== 'false'
-}
 
 const BULK_FLAG_SWATCHES: { value: number; labelKey: string }[] = [
   { value: 1, labelKey: 'release.flag_red' },
@@ -670,9 +664,6 @@ const BULK_FLAG_SWATCHES: { value: number; labelKey: string }[] = [
   { value: 6, labelKey: 'release.flag_purple' },
 ]
 
-const selectionMode = ref(false)
-const selectedIds = ref<Set<number>>(new Set())
-const lastToggledId = ref<number | null>(null)
 const bulkBusy = ref(false)
 const flagPopoverOpen = ref(false)
 
@@ -699,78 +690,44 @@ const unreadInViewIds = computed(() =>
     .map(r => r.id),
 )
 
-const selectedCount = computed(() => selectedIds.value.size)
+const visibleSelectionIds = computed(() => visibleSelectionReleases.value.map(r => r.id))
 
-const allVisibleSelected = computed(() =>
-  visibleSelectionReleases.value.length > 0
-  && visibleSelectionReleases.value.every(r => selectedIds.value.has(r.id)),
-)
-
-watch(visibleSelectionReleases, (list) => {
-  if (selectedIds.value.size === 0) return
-  const valid = new Set(list.map(r => r.id))
-  let pruned = false
-  const next = new Set<number>()
-  for (const id of selectedIds.value) {
-    if (valid.has(id)) next.add(id)
-    else pruned = true
-  }
-  if (pruned) selectedIds.value = next
+const bulkSelection = useBulkSelection<number>({
+  visibleIds: visibleSelectionIds,
+  canSelect,
+  active: computed(() => props.active),
+  canHandleEscape: () => detailReleaseId.value === null,
+  onEscapeBeforeExit: () => {
+    if (!flagPopoverOpen.value) return false
+    flagPopoverOpen.value = false
+    return true
+  },
+  onExit: () => {
+    flagPopoverOpen.value = false
+  },
 })
 
-watch(canSelect, (ok) => {
-  if (!ok && selectionMode.value) exitSelectionMode()
-})
-
-function exitSelectionMode() {
-  selectionMode.value = false
-  selectedIds.value = new Set()
-  lastToggledId.value = null
-  flagPopoverOpen.value = false
-}
+const {
+  selectionMode,
+  selectedIds,
+  selectedCount,
+  allVisibleSelected,
+  exitSelectionMode,
+  clearSelected,
+} = bulkSelection
 
 function toggleSelectionMode() {
-  if (!canSelect.value) return
-  if (selectionMode.value) {
-    exitSelectionMode()
-  } else {
-    selectionMode.value = true
-  }
+  if (!bulkSelection.toggleSelectionMode()) return
   track('release.select')
 }
 
 function toggleSelectRelease(id: number, shiftKey = false) {
-  const next = new Set(selectedIds.value)
-  const shouldSelect = !next.has(id)
-  if (shiftKey && lastToggledId.value !== null) {
-    const orderedIds = visibleSelectionReleases.value.map(r => r.id)
-    const from = orderedIds.indexOf(lastToggledId.value)
-    const to = orderedIds.indexOf(id)
-    if (from >= 0 && to >= 0) {
-      const [start, end] = from <= to ? [from, to] : [to, from]
-      for (let i = start; i <= end; i++) {
-        if (shouldSelect) next.add(orderedIds[i])
-        else next.delete(orderedIds[i])
-      }
-      selectedIds.value = next
-      lastToggledId.value = id
-      return
-    }
-  }
-  if (shouldSelect) next.add(id)
-  else next.delete(id)
-  selectedIds.value = next
-  lastToggledId.value = id
+  bulkSelection.toggle(id, shiftKey)
 }
 
 function selectAllVisible() {
-  selectedIds.value = new Set(visibleSelectionReleases.value.map(r => r.id))
+  bulkSelection.selectAllVisible()
   track('release.bulk_select_all')
-}
-
-function clearSelected() {
-  selectedIds.value = new Set()
-  lastToggledId.value = null
 }
 
 async function runBulkAction(
@@ -869,12 +826,6 @@ function closeFlagPopover() {
 
 function onListKeydown(e: KeyboardEvent) {
   if (!props.active || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return
-  if (e.key === 'Escape' && selectionMode.value && detailReleaseId.value === null) {
-    e.preventDefault()
-    if (flagPopoverOpen.value) flagPopoverOpen.value = false
-    else exitSelectionMode()
-    return
-  }
   if (detailReleaseId.value !== null || viewMode.value !== 'simple') return
   if (isEditableTarget(e.target)) return
   if (e.key === 'j') {
@@ -891,18 +842,13 @@ function onListKeydown(e: KeyboardEvent) {
   }
 }
 
-let unregisterSelectionOverlay: (() => void) | null = null
-
 onMounted(() => {
   window.addEventListener('keydown', onListKeydown)
   document.addEventListener('click', closeFlagPopover)
-  unregisterSelectionOverlay = registerOverlayActive(() => props.active && selectionMode.value)
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onListKeydown)
   document.removeEventListener('click', closeFlagPopover)
-  unregisterSelectionOverlay?.()
-  unregisterSelectionOverlay = null
 })
 
 </script>
