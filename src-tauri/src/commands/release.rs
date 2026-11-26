@@ -101,13 +101,16 @@ use serde_json::json;
     db::releases::set_notification_state(&conn, release_id, &status, snooze_str)?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-    match rel {
-        Some(r) => {
-            let (log_owner, log_repo, log_tag) = db::logs::release_log_ident(&r);
-            db::logs::write_log_key(&conn, "INFO", "release.status_changed", &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": release_id, "action": &status}).to_string())
-        }
-        None => db::logs::write_log_key(&conn, "INFO", "release.status_changed_unknown", &json!({"id": release_id, "action": &status}).to_string()),
-    }
+    let mut extra = serde_json::Map::new();
+    extra.insert("action".to_string(), json!(&status));
+    db::logs::write_release_log(
+        &conn,
+        rel.as_ref(),
+        release_id,
+        "release.status_changed",
+        "release.status_changed_unknown",
+        Some(extra),
+    );
 
     let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
 
@@ -124,20 +127,14 @@ use serde_json::json;
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-    match rel {
-        Some(r) => db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "release.deleted",
-            &json!({"owner": &r.owner, "repo": &r.repo, "tag": &r.tag_name, "id": release_id}).to_string(),
-        ),
-        None => db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "release.deleted_unknown",
-            &json!({"id": release_id}).to_string(),
-        ),
-    }
+    db::logs::write_release_log(
+        &conn,
+        rel.as_ref(),
+        release_id,
+        "release.deleted",
+        "release.deleted_unknown",
+        None,
+    );
 
     db::releases::delete_release(&conn, release_id)?;
 
@@ -159,13 +156,16 @@ use serde_json::json;
     db::releases::set_release_flag(&conn, release_id, flag)?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-    match rel {
-        Some(r) => {
-            let (log_owner, log_repo, log_tag) = db::logs::release_log_ident(&r);
-            db::logs::write_log_key(&conn, "INFO", "release.flag_changed", &json!({"owner": &log_owner, "repo": &log_repo, "tag": &log_tag, "id": release_id, "flag": flag}).to_string())
-        }
-        None => db::logs::write_log_key(&conn, "INFO", "release.flag_changed_unknown", &json!({"id": release_id, "flag": flag}).to_string()),
-    }
+    let mut extra = serde_json::Map::new();
+    extra.insert("flag".to_string(), json!(flag));
+    db::logs::write_release_log(
+        &conn,
+        rel.as_ref(),
+        release_id,
+        "release.flag_changed",
+        "release.flag_changed_unknown",
+        Some(extra),
+    );
 
     let _ = crate::events::ReleaseStateChanged(release_id).emit(&app);
 

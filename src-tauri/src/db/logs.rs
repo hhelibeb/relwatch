@@ -117,6 +117,34 @@ pub fn release_log_ident(r: &crate::db::releases::ReleaseInfo) -> (String, Strin
     }
 }
 
+pub fn write_release_log(
+    conn: &Connection,
+    release: Option<&crate::db::releases::ReleaseInfo>,
+    release_id: i64,
+    key: &str,
+    unknown_key: &str,
+    extra: Option<serde_json::Map<String, serde_json::Value>>,
+) {
+    let mut args = extra.unwrap_or_default();
+    args.insert("id".to_string(), serde_json::json!(release_id));
+    let log_key = match release {
+        Some(r) => {
+            let (log_owner, log_repo, log_tag) = release_log_ident(r);
+            args.insert("owner".to_string(), serde_json::json!(log_owner));
+            args.insert("repo".to_string(), serde_json::json!(log_repo));
+            args.insert("tag".to_string(), serde_json::json!(log_tag));
+            key
+        }
+        None => unknown_key,
+    };
+    write_log_key(
+        conn,
+        "INFO",
+        log_key,
+        &serde_json::Value::Object(args).to_string(),
+    );
+}
+
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
     let now = chrono::Utc::now().to_rfc3339();
     // 所有日志出口默认脱敏：凭据（userinfo / query 参数 / 已知 token 形状）
@@ -687,5 +715,69 @@ mod tests {
         assert_eq!(warns.len(), 2, "503 和 429 应各产生 1 条 WARN，共 2 条");
         let (errors, _) = search_logs(&conn, "", Some("ERROR"), 1, 10).unwrap();
         assert_eq!(errors.len(), 1, "404 应产生 1 条 ERROR");
+    }
+
+    #[test]
+    fn test_write_release_log_uses_ident_and_handles_unknown_and_extra() {
+        let conn = init_memory_db().unwrap();
+        let sid = crate::db::sources::add_source(
+            &conn,
+            "youtube",
+            "UC_test_channel",
+            "",
+            "Test Channel",
+        )
+        .unwrap();
+        let rid = crate::db::releases::insert_release(
+            &conn,
+            sid,
+            "vid_abc",
+            "Episode 1",
+            "https://youtu.be/vid_abc",
+            "2026-01-01T00:00:00Z",
+            false,
+            None,
+        )
+        .unwrap();
+        let rel = crate::db::releases::get_release(&conn, rid).unwrap();
+
+        let mut extra = serde_json::Map::new();
+        extra.insert("action".to_string(), serde_json::json!("clicked"));
+        write_release_log(
+            &conn,
+            rel.as_ref(),
+            rid,
+            "release.status_changed",
+            "release.status_changed_unknown",
+            Some(extra),
+        );
+        write_release_log(
+            &conn,
+            None,
+            9999,
+            "release.deleted",
+            "release.deleted_unknown",
+            None,
+        );
+
+        let logs = get_logs(&conn, 10).unwrap();
+        let known = logs
+            .iter()
+            .find(|l| l.message_key.as_deref() == Some("release.status_changed"))
+            .unwrap();
+        let known_args: serde_json::Value =
+            serde_json::from_str(known.message_args.as_deref().unwrap()).unwrap();
+        assert_eq!(known_args["owner"], "Test Channel");
+        assert_eq!(known_args["repo"], "");
+        assert_eq!(known_args["tag"], "Episode 1");
+        assert_eq!(known_args["action"], "clicked");
+
+        let unknown = logs
+            .iter()
+            .find(|l| l.message_key.as_deref() == Some("release.deleted_unknown"))
+            .unwrap();
+        let unknown_args: serde_json::Value =
+            serde_json::from_str(unknown.message_args.as_deref().unwrap()).unwrap();
+        assert_eq!(unknown_args["id"], 9999);
     }
 }
