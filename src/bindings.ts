@@ -10,6 +10,8 @@ export const commands = {
 	listSourceTypes: () => __TAURI_INVOKE<SourceTypeInfo[]>("list_source_types"),
 	removeSource: (id: number) => __TAURI_INVOKE<null>("remove_source", { id }),
 	updateSource: (id: number, enabled: boolean, pollIntervalMinutes: number, muted: boolean | null, config: string | null) => __TAURI_INVOKE<null>("update_source", { id, enabled, pollIntervalMinutes, muted, config }),
+	batchUpdateSources: (ids: number[], enabled: boolean | null, muted: boolean | null) => __TAURI_INVOKE<number>("batch_update_sources", { ids, enabled, muted }),
+	batchRemoveSources: (ids: number[]) => __TAURI_INVOKE<number>("batch_remove_sources", { ids }),
 	listSources: () => __TAURI_INVOKE<Source[]>("list_sources"),
 	/**
 	 *  版本列表数据源：**全库**目录（无 LIMIT）。

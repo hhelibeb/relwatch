@@ -104,7 +104,8 @@ export default {
   'source.bulk_unmute': 'Unmute',
   'source.bulk_delete': 'Delete',
   'source.bulk_delete_confirm': 'Delete {0} selected sources? This action cannot be undone.',
-  'source.bulk_result': 'Succeeded: {0}, Failed: {1}',
+  'source.mark_all_read': 'Mark all read ({0})',
+  'source.mark_all_read_confirm': 'Mark all {1} unread release(s) in "{0}" as read?',
 
   'settings.general': 'General',
   'settings.accounts': 'Accounts',
@@ -405,6 +406,11 @@ export default {
   'source.updated': 'Source updated: {owner}/{repo} id={id}',
   'source.updated_unknown': 'Source updated: id={id}',
   'source.log_config_updated': 'Source config updated: {owner}/{repo} id={id}',
+  'source.batch_resumed': 'Batch resumed {count} source(s)',
+  'source.batch_paused': 'Batch paused {count} source(s)',
+  'source.batch_muted': 'Batch muted {count} source(s)',
+  'source.batch_unmuted': 'Batch unmuted {count} source(s)',
+  'source.batch_removed': 'Batch removed {count} source(s)',
 
   'check.manual': '[Manual] Check {owner}/{repo}: {count} new release(s)',
   'check.auto': 'Check {owner}/{repo}: {count} new release(s)',

@@ -104,7 +104,8 @@ export default {
   'source.bulk_unmute': '取消静默',
   'source.bulk_delete': '删除',
   'source.bulk_delete_confirm': '确定要删除选中的 {0} 个监控源吗？此操作不可撤销。',
-  'source.bulk_result': '成功: {0}，失败: {1}',
+  'source.mark_all_read': '全部标为已读 ({0})',
+  'source.mark_all_read_confirm': '确定将「{0}」的 {1} 条未读版本全部标为已读吗？',
 
   'settings.general': '常规设置',
   'settings.accounts': '账号',
@@ -405,6 +406,11 @@ export default {
   'source.updated': '更新监控源 {owner}/{repo} id={id}',
   'source.updated_unknown': '更新监控源 id={id}',
   'source.log_config_updated': '更新监控源配置 {owner}/{repo} id={id}',
+  'source.batch_resumed': '批量恢复 {count} 个监控源',
+  'source.batch_paused': '批量暂停 {count} 个监控源',
+  'source.batch_muted': '批量静默 {count} 个监控源',
+  'source.batch_unmuted': '批量取消静默 {count} 个监控源',
+  'source.batch_removed': '批量移除 {count} 个监控源',
 
   'check.manual': '[手动] 检查 {owner}/{repo}: {count} 个新版本',
   'check.auto': '检查 {owner}/{repo}: {count} 个新版本',

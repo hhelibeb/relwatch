@@ -60,6 +60,8 @@ fn specta_builder() -> Builder<tauri::Wry> {
         commands::list_source_types,
         commands::remove_source,
         commands::update_source,
+        commands::batch_update_sources,
+        commands::batch_remove_sources,
         commands::list_sources,
         commands::get_release_catalog,
         commands::get_release_detail,

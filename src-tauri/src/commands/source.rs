@@ -325,6 +325,95 @@ fn update_source_core<E: BadgeEventEmitter>(
     db::sources::list_sources(&conn)
 }
 
+fn batch_update_sources_core<E: BadgeEventEmitter>(
+    conn: &mut rusqlite::Connection,
+    ids: &[i64],
+    enabled: Option<bool>,
+    muted: Option<bool>,
+    emitter: &E,
+) -> Result<u32, String> {
+    if ids.is_empty() || (enabled.is_none() && muted.is_none()) {
+        return Ok(0);
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut updated = 0u32;
+    let mut muted_changed = false;
+
+    if let Some(en) = enabled {
+        let count = db::sources::batch_set_sources_enabled(&tx, ids, en)?;
+        updated += count;
+        if count > 0 {
+            let key = if en { "source.batch_resumed" } else { "source.batch_paused" };
+            db::logs::write_log_key(&tx, "INFO", key, &json!({"count": count}).to_string());
+        }
+    }
+
+    if let Some(m) = muted {
+        let count = db::sources::batch_set_sources_muted(&tx, ids, m)?;
+        updated += count;
+        if count > 0 {
+            muted_changed = true;
+            let key = if m { "source.batch_muted" } else { "source.batch_unmuted" };
+            db::logs::write_log_key(&tx, "INFO", key, &json!({"count": count}).to_string());
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    if muted_changed {
+        emitter.emit_release_state_changed(0);
+    }
+    Ok(updated)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn batch_update_sources(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    ids: Vec<i64>,
+    enabled: Option<bool>,
+    muted: Option<bool>,
+) -> Result<u32, String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    batch_update_sources_core(&mut conn, &ids, enabled, muted, &TauriBadgeEventEmitter(&app))
+}
+
+fn batch_remove_sources_core<E: BadgeEventEmitter>(
+    conn: &mut rusqlite::Connection,
+    ids: &[i64],
+    emitter: &E,
+) -> Result<u32, String> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let removed = db::sources::batch_remove_sources(&tx, ids)?;
+    if removed > 0 {
+        db::logs::write_log_key(
+            &tx,
+            "INFO",
+            "source.batch_removed",
+            &json!({"count": removed}).to_string(),
+        );
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if removed > 0 {
+        emitter.emit_release_state_changed(0);
+    }
+    Ok(removed)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn batch_remove_sources(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    ids: Vec<i64>,
+) -> Result<u32, String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    batch_remove_sources_core(&mut conn, &ids, &TauriBadgeEventEmitter(&app))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,5 +579,44 @@ mod tests {
 
         let logs = db::logs::get_logs(&conn, 10).unwrap();
         assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.updated_unknown")));
+    }
+
+    #[test]
+    fn test_batch_update_sources_core_enabled_muted_and_badge() {
+        let mut conn = init_memory_db().unwrap();
+        let s1 = db::sources::add_source(&conn, "github", "a", "b", "").unwrap();
+        let s2 = db::sources::add_source(&conn, "github", "c", "d", "").unwrap();
+        db::sources::record_check_failure(&conn, s2, "err").unwrap();
+        let emitter = CountingBadgeEmitter::new();
+
+        // Pause s2 only
+        let paused = batch_update_sources_core(&mut conn, &[s2], Some(false), None, &emitter).unwrap();
+        assert_eq!(paused, 1);
+        assert!(!db::sources::get_source(&conn, s2).unwrap().unwrap().enabled);
+        assert_eq!(emitter.emitted_count(), 0);
+
+        // Batch mute both: only enabled s1 is muted, s2 stays unmuted; single badge event emitted
+        let muted = batch_update_sources_core(&mut conn, &[s1, s2], None, Some(true), &emitter).unwrap();
+        assert_eq!(muted, 1);
+        assert!(db::sources::get_source(&conn, s1).unwrap().unwrap().muted);
+        assert!(!db::sources::get_source(&conn, s2).unwrap().unwrap().muted);
+        assert_eq!(emitter.emitted_count(), 1);
+
+        // Batch resume both: only s2 changes and resets consecutive_failures
+        let resumed = batch_update_sources_core(&mut conn, &[s1, s2], Some(true), None, &emitter).unwrap();
+        assert_eq!(resumed, 1);
+        let s2_after = db::sources::get_source(&conn, s2).unwrap().unwrap();
+        assert!(s2_after.enabled);
+        assert_eq!(s2_after.consecutive_failures, 0);
+
+        // Batch remove both: single badge event emitted
+        let removed = batch_remove_sources_core(&mut conn, &[s1, s2], &emitter).unwrap();
+        assert_eq!(removed, 2);
+        assert!(db::sources::list_sources(&conn).unwrap().is_empty());
+        assert_eq!(emitter.emitted_count(), 2);
+
+        let logs = db::logs::get_logs(&conn, 10).unwrap();
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.batch_muted")));
+        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.batch_removed")));
     }
 }

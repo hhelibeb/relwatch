@@ -83,6 +83,80 @@ pub fn remove_source(conn: &Connection, id: i64) -> Result<(), String> {
     Ok(())
 }
 
+pub fn batch_set_sources_enabled(conn: &Connection, ids: &[i64], enabled: bool) -> Result<u32, String> {
+    let ids = super::dedup_ids(ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut total = 0usize;
+    for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 2);
+        let sql = if enabled {
+            format!(
+                "UPDATE sources SET enabled = 1, consecutive_failures = 0, updated_at = ?1
+                 WHERE enabled = 0 AND id IN ({placeholders})"
+            )
+        } else {
+            format!(
+                "UPDATE sources SET enabled = 0, updated_at = ?1
+                 WHERE enabled = 1 AND id IN ({placeholders})"
+            )
+        };
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(chunk.len() + 1);
+        params_vec.push(Box::new(now.clone()));
+        for &id in chunk {
+            params_vec.push(Box::new(id));
+        }
+        let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
+pub fn batch_set_sources_muted(conn: &Connection, ids: &[i64], muted: bool) -> Result<u32, String> {
+    let ids = super::dedup_ids(ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let muted_int = muted as i64;
+    let mut total = 0usize;
+    for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 3);
+        // Skip paused sources to match the disabled semantics of single-source mute controls.
+        let sql = format!(
+            "UPDATE sources SET muted = ?1, updated_at = ?2
+             WHERE enabled = 1 AND muted != ?1 AND id IN ({placeholders})"
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(chunk.len() + 2);
+        params_vec.push(Box::new(muted_int));
+        params_vec.push(Box::new(now.clone()));
+        for &id in chunk {
+            params_vec.push(Box::new(id));
+        }
+        let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
+pub fn batch_remove_sources(conn: &Connection, ids: &[i64]) -> Result<u32, String> {
+    let ids = super::dedup_ids(ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0usize;
+    for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 1);
+        let sql = format!("DELETE FROM sources WHERE id IN ({placeholders})");
+        let params_ref: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
 pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> {
     let mut stmt = conn
         .prepare(

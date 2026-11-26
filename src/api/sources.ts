@@ -77,6 +77,16 @@ export async function updateSource(id: number, enabled: boolean, pollIntervalMin
   await invokeI18nFn(() => commands.updateSource(id, enabled, pollIntervalMinutes, muted ?? null, config ?? null))
 }
 
+export async function batchUpdateSources(ids: number[], enabled?: boolean, muted?: boolean): Promise<number> {
+  if (ids.length === 0) return 0
+  return invokeI18nFn(() => commands.batchUpdateSources(ids, enabled ?? null, muted ?? null))
+}
+
+export async function batchRemoveSources(ids: number[]): Promise<number> {
+  if (ids.length === 0) return 0
+  return invokeI18nFn(() => commands.batchRemoveSources(ids))
+}
+
 export async function listSources(): Promise<Source[]> {
   return invokeI18nFn(commands.listSources)
 }

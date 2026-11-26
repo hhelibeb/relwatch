@@ -14,25 +14,28 @@ vi.mock('@tauri-apps/plugin-clipboard-manager', () => ({ readText: vi.fn() }))
 // API 层：仅替换发起 IPC 的函数；parseSourceUrl / buildYoutubeConfig / 源类型注册表走真实实现
 vi.mock('../api/sources', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/sources')>()
-  return { ...actual, addSource: vi.fn(), removeSource: vi.fn(), updateSource: vi.fn() }
+  return { ...actual, addSource: vi.fn(), removeSource: vi.fn(), updateSource: vi.fn(), batchUpdateSources: vi.fn(), batchRemoveSources: vi.fn() }
 })
 vi.mock('../api/releases', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/releases')>()
-  return { ...actual, checkSingleSource: vi.fn() }
+  return { ...actual, checkSingleSource: vi.fn(), markSourceReleasesRead: vi.fn() }
 })
 vi.mock('../api/client', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../api/client')>()
   return { ...actual, openReleaseUrl: vi.fn() }
 })
 
-import { addSource, removeSource, updateSource } from '../api/sources'
-import { checkSingleSource } from '../api/releases'
+import { addSource, removeSource, updateSource, batchUpdateSources, batchRemoveSources } from '../api/sources'
+import { checkSingleSource, markSourceReleasesRead } from '../api/releases'
 import { openReleaseUrl } from '../api/client'
 
 const addSourceMock = vi.mocked(addSource)
 const removeSourceMock = vi.mocked(removeSource)
 const updateSourceMock = vi.mocked(updateSource)
+const batchUpdateSourcesMock = vi.mocked(batchUpdateSources)
+const batchRemoveSourcesMock = vi.mocked(batchRemoveSources)
 const checkSingleSourceMock = vi.mocked(checkSingleSource)
+const markSourceReleasesReadMock = vi.mocked(markSourceReleasesRead)
 const openReleaseUrlMock = vi.mocked(openReleaseUrl)
 const messageMock = vi.mocked(message)
 const confirmMock = vi.mocked(confirm)
@@ -81,7 +84,10 @@ beforeEach(() => {
   addSourceMock.mockResolvedValue(1)
   removeSourceMock.mockResolvedValue(undefined)
   updateSourceMock.mockResolvedValue(undefined)
+  batchUpdateSourcesMock.mockResolvedValue(2)
+  batchRemoveSourcesMock.mockResolvedValue(2)
   checkSingleSourceMock.mockResolvedValue({ new_releases: [] })
+  markSourceReleasesReadMock.mockResolvedValue(3)
   openReleaseUrlMock.mockResolvedValue(undefined)
   messageMock.mockResolvedValue(undefined as any)
   confirmMock.mockResolvedValue(true as any)
@@ -1012,7 +1018,7 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     expect(wrapper.find('.source-checkbox').exists()).toBe(false)
   })
 
-  it('批量暂停选中 source，调用 updateSource 并 emit update', async () => {
+  it('批量暂停选中 source，单次调用 batchUpdateSources 并 emit update', async () => {
     const sources = [createSource({ id: 1 }), createSource({ id: 2, owner: 'other', repo: 'repo' })]
     const { wrapper } = mountSourceTab(sources)
 
@@ -1025,11 +1031,12 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     await pauseBtn.trigger('click')
     await flushPromises()
 
-    expect(updateSourceMock).toHaveBeenCalledTimes(2)
+    expect(batchUpdateSourcesMock).toHaveBeenCalledTimes(1)
+    expect(batchUpdateSourcesMock).toHaveBeenCalledWith(expect.arrayContaining([1, 2]), false)
     expect(wrapper.emitted('update')).toBeTruthy()
   })
 
-  it('批量静默/取消静默选中 source（按钮入口）', async () => {
+  it('批量静默/取消静默选中 source（单次批量命令）', async () => {
     const sources = [createSource({ id: 1 }), createSource({ id: 2, owner: 'other', repo: 'repo' })]
     const { wrapper } = mountSourceTab(sources)
 
@@ -1041,14 +1048,12 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     const muteBtn = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_mute'))!
     await muteBtn.trigger('click')
     await flushPromises()
-    expect(updateSourceMock).toHaveBeenCalledWith(1, true, 60, true)
-    expect(updateSourceMock).toHaveBeenCalledWith(2, true, 60, true)
+    expect(batchUpdateSourcesMock).toHaveBeenCalledWith(expect.arrayContaining([1, 2]), undefined, true)
 
     const unmuteBtn = wrapper.findAll('.bulk-bar .btn-sm').find(b => b.text() === t('source.bulk_unmute'))!
     await unmuteBtn.trigger('click')
     await flushPromises()
-    expect(updateSourceMock).toHaveBeenCalledWith(1, true, 60, false)
-    expect(updateSourceMock).toHaveBeenCalledWith(2, true, 60, false)
+    expect(batchUpdateSourcesMock).toHaveBeenCalledWith(expect.arrayContaining([1, 2]), undefined, false)
   })
 
   it('批量操作无选中时不触发（按钮禁用）', async () => {
@@ -1061,7 +1066,7 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     expect(deleteButton.attributes('disabled')).toBeDefined()
   })
 
-  it('批量删除经确认后调用 removeSource', async () => {
+  it('批量删除经确认后单次调用 batchRemoveSources', async () => {
     const sources = [createSource({ id: 1 }), createSource({ id: 2, owner: 'other', repo: 'repo' })]
     const { wrapper } = mountSourceTab(sources)
 
@@ -1075,7 +1080,30 @@ describe('SourceTab — 选择模式批量操作（组件级）', () => {
     await flushPromises()
 
     expect(confirmMock).toHaveBeenCalled()
-    expect(removeSourceMock).toHaveBeenCalledTimes(2)
+    expect(batchRemoveSourcesMock).toHaveBeenCalledTimes(1)
+    expect(batchRemoveSourcesMock).toHaveBeenCalledWith(expect.arrayContaining([1, 2]))
+  })
+
+  it('更多菜单中按源全部标为已读：有未读时显示，确认后调用 markSourceReleasesRead', async () => {
+    const source = createSource({ id: 7, owner: 'vuejs', repo: 'core' })
+    const { wrapper, showToast } = mountSourceTab([source], {
+      unreadReleaseCounts: { 'github|vuejs|core': 3 },
+    })
+
+    await wrapper.get('.btn-more').trigger('click')
+    const markBtn = wrapper.findAll('.dropdown-item').find(b => b.text().includes(t('source.mark_all_read', '3')))!
+    expect(markBtn).toBeTruthy()
+
+    await markBtn.trigger('click')
+    await flushPromises()
+
+    expect(confirmMock).toHaveBeenCalledWith(
+      t('source.mark_all_read_confirm', 'vuejs/core', '3'),
+      expect.any(Object),
+    )
+    expect(markSourceReleasesReadMock).toHaveBeenCalledWith(7)
+    expect(showToast).toHaveBeenCalledWith(t('release.bulk_marked_read', '3'))
+    expect(wrapper.emitted('update')).toBeTruthy()
   })
 })
 

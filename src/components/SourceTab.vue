@@ -2,8 +2,8 @@
 import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { ShowToastKey } from '../injection-keys'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { type Source, parseSourceUrl, addSource, removeSource, updateSource, buildYoutubeConfig, patchSourceConfig, readConfigFlag, getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/sources'
-import { checkSingleSource } from '../api/releases'
+import { type Source, parseSourceUrl, addSource, removeSource, updateSource, batchUpdateSources, batchRemoveSources, buildYoutubeConfig, patchSourceConfig, readConfigFlag, getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/sources'
+import { checkSingleSource, markSourceReleasesRead } from '../api/releases'
 import { openReleaseUrl, translateError } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
@@ -177,18 +177,14 @@ async function handleBulkToggle(enabled: boolean) {
   if (ids.length === 0) return
   track(enabled ? 'source.bulk_resume' : 'source.bulk_pause')
   bulkBusy.value = true
-  let success = 0, failed = 0
-  for (const id of ids) {
-    try {
-      const source = props.sources.find(s => s.id === id)
-      if (!source) continue
-      await updateSource(id, enabled, source.poll_interval_minutes)
-      success++
-    } catch { failed++ }
+  try {
+    await batchUpdateSources(ids, enabled)
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    bulkBusy.value = false
   }
-  bulkBusy.value = false
-  if (failed > 0) showToast?.(t('source.bulk_result', String(success), String(failed)))
-  emit('update')
 }
 
 async function handleBulkMuteToggle(muted: boolean) {
@@ -196,19 +192,14 @@ async function handleBulkMuteToggle(muted: boolean) {
   if (ids.length === 0) return
   track(muted ? 'source.bulk_mute' : 'source.bulk_unmute')
   bulkBusy.value = true
-  let success = 0, failed = 0
-  for (const id of ids) {
-    try {
-      const source = props.sources.find(s => s.id === id)
-      // 跳过已暂停源：对暂停源执行静音无意义，与单源静音按钮 disabled 语义一致
-      if (!source || !source.enabled) continue
-      await updateSource(id, source.enabled, source.poll_interval_minutes, muted)
-      success++
-    } catch { failed++ }
+  try {
+    await batchUpdateSources(ids, undefined, muted)
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    bulkBusy.value = false
   }
-  bulkBusy.value = false
-  if (failed > 0) showToast?.(t('source.bulk_result', String(success), String(failed)))
-  emit('update')
 }
 
 async function handleBulkRemove() {
@@ -218,17 +209,34 @@ async function handleBulkRemove() {
   if (!confirmed) return
   track('source.bulk_delete')
   bulkBusy.value = true
-  let success = 0, failed = 0
-  for (const id of ids) {
-    try {
-      await removeSource(id)
-      success++
-    } catch { failed++ }
+  try {
+    await batchRemoveSources(ids)
+    clearSelectedSources()
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('source.delete_failed') + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    bulkBusy.value = false
   }
-  bulkBusy.value = false
-  if (failed > 0) showToast?.(t('source.bulk_result', String(success), String(failed)))
-  clearSelectedSources()
-  emit('update')
+}
+
+async function handleMarkSourceRead(source: Source) {
+  moreDropdown.close()
+  const count = unreadReleaseCount(source)
+  if (count <= 0) return
+  const confirmed = await confirm(
+    t('source.mark_all_read_confirm', sourceDisplayName(source), String(count)),
+    { title: t('release.mark_all_read'), kind: 'info' },
+  )
+  if (!confirmed) return
+  track('source.mark_all_read')
+  try {
+    const updated = await markSourceReleasesRead(source.id)
+    if (updated > 0) showToast?.(t('release.bulk_marked_read', String(updated)))
+    emit('update')
+  } catch (e: unknown) {
+    showToast?.(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)))
+  }
 }
 
 function sourceMatchesSearch(source: Source, query: string): boolean {
@@ -857,6 +865,10 @@ function hideHealthTooltip() {
                 </select>
               </label>
               <div class="sort-dropdown-divider"></div>
+              <button v-if="unreadReleaseCount(source) > 0" type="button" role="menuitem" class="dropdown-item" @click="handleMarkSourceRead(source)">
+                <span class="dropdown-icon"><svg><use href="/icons.svg#check-double-icon"/></svg></span>
+                {{ t('source.mark_all_read', String(unreadReleaseCount(source))) }}
+              </button>
               <button type="button" role="menuitem" class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
                 <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
                 {{ source.muted ? t('source.unmute') : t('source.mute') }}
