@@ -56,6 +56,29 @@ export async function setReleaseFlag(releaseId: number, flag: number): Promise<v
   await invokeI18nFn(() => commands.setReleaseFlag(releaseId, flag))
 }
 
+export async function batchUpdateReleaseStatus(
+  releaseIds: number[],
+  status: NotificationStatus,
+  snoozeMinutes?: number,
+): Promise<number> {
+  if (releaseIds.length === 0) return 0
+  return invokeI18nFn(() => commands.batchUpdateReleaseStatus(releaseIds, status, snoozeMinutes ?? null))
+}
+
+export async function batchSetReleaseFlag(releaseIds: number[], flag: number): Promise<number> {
+  if (releaseIds.length === 0) return 0
+  return invokeI18nFn(() => commands.batchSetReleaseFlag(releaseIds, flag))
+}
+
+export async function batchDeleteReleases(releaseIds: number[]): Promise<number> {
+  if (releaseIds.length === 0) return 0
+  return invokeI18nFn(() => commands.batchDeleteReleases(releaseIds))
+}
+
+export async function markSourceReleasesRead(sourceId: number): Promise<number> {
+  return invokeI18nFn(() => commands.markSourceReleasesRead(sourceId))
+}
+
 export async function translateRelease(releaseId: number): Promise<void> {
   await invokeI18nFn(() => commands.translateRelease(releaseId))
 }

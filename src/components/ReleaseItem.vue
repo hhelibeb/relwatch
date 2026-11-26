@@ -18,8 +18,20 @@ import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
-const props = defineProps<{ release: ReleaseInfo; highlighted?: boolean; selected?: boolean; searchQuery?: string; bodyIndex?: BodyIndex | null }>()
-const emit = defineEmits<{ update: []; 'open-detail': [release: ReleaseInfo] }>()
+const props = defineProps<{
+  release: ReleaseInfo
+  highlighted?: boolean
+  selected?: boolean
+  selectable?: boolean
+  checked?: boolean
+  searchQuery?: string
+  bodyIndex?: BodyIndex | null
+}>()
+const emit = defineEmits<{
+  update: []
+  'open-detail': [release: ReleaseInfo]
+  'toggle-select': [releaseId: number, shiftKey: boolean]
+}>()
 const showToast = inject(ShowToastKey, () => {})
 const aiEnabledRef = inject(AiEnabledKey, ref(false))
 const showImportance = inject(ShowImportanceKey, ref(false))
@@ -34,6 +46,18 @@ const aiEnabled = computed(() => aiEnabledRef.value)
 const agentEnabled = computed(() => agentEnabledRef.value)
 
 const isUpdating = ref(false)
+let pendingShiftSelect = false
+
+function onSelectCheckboxClick(e: MouseEvent) {
+  pendingShiftSelect = e.shiftKey
+  queueMicrotask(() => { pendingShiftSelect = false })
+}
+
+function onSelectCheckboxChange() {
+  const shift = pendingShiftSelect
+  pendingShiftSelect = false
+  emit('toggle-select', props.release.id, shift)
+}
 
 // ========== 卡片内容预览：摘要 > 译文 > 原文 ==========
 // 摘要/译文/原文的切换集中在详情弹窗内进行，
@@ -666,11 +690,20 @@ const bodyHitSnippet = computed(() => {
 <template>
   <div class="release-item"
     ref="cardEl"
-    :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted, 'release-selected': props.selected }, showImportance ? releaseImportanceClass(release) : '']"
-    :draggable="agentEnabled && agentPanelOpen"
+    :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted, 'release-selected': props.selected, 'release-checked': props.selectable && props.checked }, showImportance ? releaseImportanceClass(release) : '']"
+    :draggable="agentEnabled && agentPanelOpen && !props.selectable"
     @dragstart="handleDragStart">
     <div class="release-header">
       <div class="release-heading">
+        <label v-if="props.selectable" class="release-select-box" @click.stop>
+          <input
+            type="checkbox"
+            :checked="props.checked"
+            :aria-label="`${release.owner}/${release.repo} ${release.tag_name}`"
+            @click="onSelectCheckboxClick"
+            @change="onSelectCheckboxChange"
+          />
+        </label>
         <span v-if="showReleaseRepo" class="release-repo" :title="`${release.owner}/${release.repo}`">{{ release.owner }}/{{ release.repo }}</span>
         <span v-else-if="isYoutube" class="release-repo release-repo-yt" :title="youtubeChannelName">{{ youtubeChannelName }}</span>
         <!-- 版本号过长时与仓库名等权收缩（见样式 min-width:0 + 省略号）；完整值用原生 title 兜底。
@@ -850,6 +883,25 @@ const bodyHitSnippet = computed(() => {
 .release-item.release-selected {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
+}
+
+.release-item.release-checked {
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
+}
+
+.release-item.release-checked:hover {
+  background: var(--primary-soft-bg);
+}
+
+.release-select-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+  padding: 2px;
+  margin-left: -2px;
 }
 
 @keyframes release-focus-pulse {

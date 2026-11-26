@@ -7,7 +7,7 @@ import type { RepoGroup } from './releaseTypes'
 import { useContextMenu } from '../composables/useContextMenu'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
-import { formatDate } from '../utils'
+import { formatDate, isUnreadStatus } from '../utils'
 import { loadExpandedRepos, saveExpandedRepos } from '../utils/releaseViewStorage'
 import { openReleaseUrl } from '../api/client'
 import { getSourceTypeDef, sourceRepoKey } from '../api/source-registry'
@@ -23,6 +23,8 @@ const props = defineProps<{
   loading?: boolean
   searchQuery?: string
   bodyIndex?: BodyIndex | null
+  selectable?: boolean
+  selectedIds?: Set<number>
 }>()
 
 /** 分组显示名：按注册表 displayName（YouTube 频道名），其余 owner/repo。 */
@@ -40,7 +42,15 @@ const emit = defineEmits<{
   'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]
   'clear-search': []
   'clear-filters': []
+  'toggle-select': [releaseId: number, shiftKey: boolean]
+  'mark-group-read': [groupName: string, unreadIds: number[]]
 }>()
+
+function groupUnreadIds(group: RepoGroup): number[] {
+  return group.releases
+    .filter(r => isUnreadStatus(r.notification_status, r.snooze_until))
+    .map(r => r.id)
+}
 
 // 空态分三级：与简单视图同一套口径（首次为空 / 搜索无结果 / 筛选无结果）
 const emptyTitle = computed(() =>
@@ -170,6 +180,16 @@ function handleOpenUrl(url: string) {
         <svg><use href="/icons.svg#link-icon"/></svg>
       </button>
       <span class="repo-latest-date">{{ formatDate(group.releases[0].published_at) }}</span>
+      <button
+        v-if="groupUnreadIds(group).length > 0"
+        type="button"
+        class="btn-icon-link repo-mark-read-btn"
+        :title="t('release.mark_source_read_tip', repoGroupName(group), String(groupUnreadIds(group).length))"
+        :aria-label="t('release.mark_source_read_tip', repoGroupName(group), String(groupUnreadIds(group).length))"
+        @click.stop="emit('mark-group-read', repoGroupName(group), groupUnreadIds(group))"
+      >
+        <svg><use href="/icons.svg#check-double-icon"/></svg>
+      </button>
       <span class="repo-meta">{{ t('release.versions', String(group.releases.length)) }}</span>
     </div>
     <div v-if="expandedRepos.has(group.key)" class="repo-group-body">
@@ -177,10 +197,13 @@ function handleOpenUrl(url: string) {
         v-for="release in group.releases"
         :key="release.id"
         :release="release"
+        :selectable="props.selectable"
+        :checked="props.selectedIds?.has(release.id)"
         :search-query="props.searchQuery"
         :body-index="props.bodyIndex"
         @update="emit('update')"
         @open-detail="forwardOpenDetail"
+        @toggle-select="(id, shift) => emit('toggle-select', id, shift)"
       />
     </div>
   </div>
@@ -243,6 +266,33 @@ function handleOpenUrl(url: string) {
   font-size: var(--fs-meta);
   color: var(--text-muted);
   white-space: nowrap;
+}
+
+.repo-mark-read-btn {
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.repo-mark-read-btn:hover {
+  background: var(--hover-surface-nested);
+  color: var(--primary);
+}
+
+@media (hover: hover) {
+  .repo-group-header .repo-mark-read-btn {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-hover) var(--ease-out), background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
+  }
+
+  .repo-group-header:hover .repo-mark-read-btn,
+  .repo-group-header:has(:focus-visible) .repo-mark-read-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .repo-group-toggle {

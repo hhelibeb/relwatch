@@ -33,6 +33,10 @@ export const commands = {
 	setNotificationState: (releaseId: number, status: string, snoozeMinutes: number | null) => __TAURI_INVOKE<null>("set_notification_state", { releaseId, status, snoozeMinutes }),
 	setReleaseFlag: (releaseId: number, flag: number) => __TAURI_INVOKE<null>("set_release_flag", { releaseId, flag }),
 	deleteRelease: (releaseId: number) => __TAURI_INVOKE<null>("delete_release", { releaseId }),
+	batchUpdateReleaseStatus: (releaseIds: number[], status: string, snoozeMinutes: number | null) => __TAURI_INVOKE<number>("batch_update_release_status", { releaseIds, status, snoozeMinutes }),
+	batchSetReleaseFlag: (releaseIds: number[], flag: number) => __TAURI_INVOKE<number>("batch_set_release_flag", { releaseIds, flag }),
+	batchDeleteReleases: (releaseIds: number[]) => __TAURI_INVOKE<number>("batch_delete_releases", { releaseIds }),
+	markSourceReleasesRead: (sourceId: number) => __TAURI_INVOKE<number>("mark_source_releases_read", { sourceId }),
 	/**
 	 *  对单条 release 触发 AI 全文翻译。
 	 *  用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
@@ -788,7 +792,7 @@ export type ReleaseSearchBody = {
 	body_translated: string | null,
 };
 
-/**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id。 */
+/**  release 状态变更（新增/已读/忽略/删除等），payload 为 release id（0 表示批量变更）。 */
 export type ReleaseStateChanged = number;
 
 /**

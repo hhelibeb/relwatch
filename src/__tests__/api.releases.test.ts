@@ -18,6 +18,10 @@ vi.mock('../bindings', () => ({
     setNotificationState: vi.fn(),
     deleteRelease: vi.fn(),
     setReleaseFlag: vi.fn(),
+    batchUpdateReleaseStatus: vi.fn(),
+    batchSetReleaseFlag: vi.fn(),
+    batchDeleteReleases: vi.fn(),
+    markSourceReleasesRead: vi.fn(),
     translateRelease: vi.fn(),
     triggerPoll: vi.fn(),
     checkSingleSource: vi.fn(),
@@ -34,6 +38,10 @@ import {
   getReleaseSearchBodiesByIds,
   setNotificationState,
   deleteRelease,
+  batchUpdateReleaseStatus,
+  batchSetReleaseFlag,
+  batchDeleteReleases,
+  markSourceReleasesRead,
   triggerPoll,
   checkSingleSource,
   getPollCountdown,
@@ -168,6 +176,34 @@ describe('deleteRelease', () => {
     await deleteRelease(5)
 
     expect(invokeI18nFn).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('batch release APIs', () => {
+  it('空数组不发 IPC 直接返回 0', async () => {
+    expect(await batchUpdateReleaseStatus([], 'clicked')).toBe(0)
+    expect(await batchSetReleaseFlag([], 1)).toBe(0)
+    expect(await batchDeleteReleases([])).toBe(0)
+    expect(invokeI18nFn).not.toHaveBeenCalled()
+  })
+
+  it('批量状态/标记/删除/按源已读透传给后端命令', async () => {
+    vi.mocked(commands.batchUpdateReleaseStatus).mockResolvedValue(2)
+    vi.mocked(commands.batchSetReleaseFlag).mockResolvedValue(2)
+    vi.mocked(commands.batchDeleteReleases).mockResolvedValue(2)
+    vi.mocked(commands.markSourceReleasesRead).mockResolvedValue(3)
+
+    expect(await batchUpdateReleaseStatus([1, 2], 'clicked')).toBe(2)
+    expect(commands.batchUpdateReleaseStatus).toHaveBeenCalledWith([1, 2], 'clicked', null)
+
+    expect(await batchSetReleaseFlag([1, 2], 4)).toBe(2)
+    expect(commands.batchSetReleaseFlag).toHaveBeenCalledWith([1, 2], 4)
+
+    expect(await batchDeleteReleases([1, 2])).toBe(2)
+    expect(commands.batchDeleteReleases).toHaveBeenCalledWith([1, 2])
+
+    expect(await markSourceReleasesRead(9)).toBe(3)
+    expect(commands.markSourceReleasesRead).toHaveBeenCalledWith(9)
   })
 })
 

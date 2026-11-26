@@ -17,6 +17,8 @@ const props = defineProps<{
   loading?: boolean
   searchQuery?: string
   bodyIndex?: BodyIndex | null
+  selectable?: boolean
+  selectedIds?: Set<number>
 }>()
 
 // open-detail 携带导航序列：简单视图使用全局时间倒序序列
@@ -28,6 +30,7 @@ const emit = defineEmits<{
   'enable-deep': []
   'clear-search': []
   'clear-filters': []
+  'toggle-select': [releaseId: number, shiftKey: boolean]
 }>()
 
 // 空态分三级：因成因不同，文案与出口也不同（首次为空 / 搜索无结果 / 筛选无结果）
@@ -165,10 +168,13 @@ defineExpose({ focusReleaseId, moveSelection, selectFirst, openSelected })
           :release="item"
           :highlighted="highlightId === item.id"
           :selected="item.id === selectedId"
+          :selectable="props.selectable"
+          :checked="props.selectedIds?.has(item.id)"
           :search-query="props.searchQuery"
           :body-index="props.bodyIndex"
           @update="emit('update')"
           @open-detail="(release) => emit('open-detail', release, sortedReleases)"
+          @toggle-select="(id, shift) => emit('toggle-select', id, shift)"
         />
       </template>
     </VirtualList>

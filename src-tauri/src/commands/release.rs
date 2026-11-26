@@ -172,6 +172,182 @@ use serde_json::json;
     Ok(())
 }
 
+fn batch_update_release_status_core(
+    conn: &mut rusqlite::Connection,
+    release_ids: &[i64],
+    status: &str,
+    snooze_minutes: Option<i64>,
+    emit_changed: impl Fn(i64),
+) -> Result<u32, String> {
+    if release_ids.is_empty() {
+        return Ok(0);
+    }
+    let snooze_until = snooze_minutes.map(|minutes| {
+        let until = chrono::Utc::now() + chrono::Duration::minutes(minutes);
+        until.to_rfc3339()
+    });
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let updated = db::releases::batch_set_notification_state(
+        &tx,
+        release_ids,
+        status,
+        snooze_until.as_deref(),
+    )?;
+    if updated > 0 {
+        db::logs::write_log_key(
+            &tx,
+            "INFO",
+            "release.batch_status_changed",
+            &json!({"count": updated, "action": status}).to_string(),
+        );
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if updated > 0 {
+        emit_changed(0);
+    }
+    Ok(updated)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn batch_update_release_status(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    release_ids: Vec<i64>,
+    status: String,
+    snooze_minutes: Option<i64>,
+) -> Result<u32, String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    batch_update_release_status_core(&mut conn, &release_ids, &status, snooze_minutes, |id| {
+        let _ = crate::events::ReleaseStateChanged(id).emit(&app);
+    })
+}
+
+fn batch_set_release_flag_core(
+    conn: &mut rusqlite::Connection,
+    release_ids: &[i64],
+    flag: i64,
+    emit_changed: impl Fn(i64),
+) -> Result<u32, String> {
+    if release_ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let updated = db::releases::batch_set_release_flag(&tx, release_ids, flag)?;
+    if updated > 0 {
+        db::logs::write_log_key(
+            &tx,
+            "INFO",
+            "release.batch_flag_changed",
+            &json!({"count": updated, "flag": flag}).to_string(),
+        );
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if updated > 0 {
+        emit_changed(0);
+    }
+    Ok(updated)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn batch_set_release_flag(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    release_ids: Vec<i64>,
+    flag: i64,
+) -> Result<u32, String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    batch_set_release_flag_core(&mut conn, &release_ids, flag, |id| {
+        let _ = crate::events::ReleaseStateChanged(id).emit(&app);
+    })
+}
+
+fn batch_delete_releases_core(
+    conn: &mut rusqlite::Connection,
+    release_ids: &[i64],
+    emit_changed: impl Fn(i64),
+) -> Result<u32, String> {
+    if release_ids.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let deleted = db::releases::batch_delete_releases(&tx, release_ids)?;
+    if deleted > 0 {
+        db::logs::write_log_key(
+            &tx,
+            "INFO",
+            "release.batch_deleted",
+            &json!({"count": deleted}).to_string(),
+        );
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if deleted > 0 {
+        emit_changed(0);
+    }
+    Ok(deleted)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn batch_delete_releases(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    release_ids: Vec<i64>,
+) -> Result<u32, String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    batch_delete_releases_core(&mut conn, &release_ids, |id| {
+        let _ = crate::events::ReleaseStateChanged(id).emit(&app);
+    })
+}
+
+fn mark_source_releases_read_core(
+    conn: &mut rusqlite::Connection,
+    source_id: i64,
+    emit_changed: impl Fn(i64),
+) -> Result<u32, String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let source = db::sources::get_source(&tx, source_id)?;
+    let updated = db::releases::mark_source_releases_read(&tx, source_id)?;
+    if updated > 0 {
+        if let Some(s) = source {
+            let (log_owner, log_repo) =
+                db::logs::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
+            db::logs::write_log_key(
+                &tx,
+                "INFO",
+                "release.source_marked_read",
+                &json!({"owner": &log_owner, "repo": &log_repo, "count": updated}).to_string(),
+            );
+        } else {
+            db::logs::write_log_key(
+                &tx,
+                "INFO",
+                "release.batch_status_changed",
+                &json!({"count": updated, "action": "clicked"}).to_string(),
+            );
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    if updated > 0 {
+        emit_changed(0);
+    }
+    Ok(updated)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn mark_source_releases_read(
+    app: tauri::AppHandle,
+    state: tauri::State<AppState>,
+    source_id: i64,
+) -> Result<u32, String> {
+    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    mark_source_releases_read_core(&mut conn, source_id, |id| {
+        let _ = crate::events::ReleaseStateChanged(id).emit(&app);
+    })
+}
+
 #[tauri::command]
 
 #[specta::specta]pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollResult, String> {
@@ -418,5 +594,46 @@ mod tests {
 
         let logs = db::logs::get_logs(&conn, 10).unwrap();
         assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("release.deleted_unknown")));
+    }
+
+    #[test]
+    fn test_batch_release_commands_emit_single_event_and_write_summary_logs() {
+        let mut conn = init_memory_db().unwrap();
+        let sid = db::sources::add_source(&conn, "github", "owner", "repo", "").unwrap();
+        let r1 = db::releases::insert_release(&conn, sid, "v1.0", "R1", "https://x/1", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let r2 = db::releases::insert_release(&conn, sid, "v2.0", "R2", "https://x/2", "2024-01-02T00:00:00Z", false, None).unwrap();
+
+        let emitted = std::cell::RefCell::new(Vec::new());
+        let emit = |id: i64| emitted.borrow_mut().push(id);
+
+        assert_eq!(batch_update_release_status_core(&mut conn, &[r1, r2], "ignored", None, emit).unwrap(), 2);
+        assert_eq!(*emitted.borrow(), vec![0]);
+
+        // Invalid status rolls back without emitting or logging
+        assert!(batch_update_release_status_core(&mut conn, &[r1], "bad", None, emit).is_err());
+        assert_eq!(emitted.borrow().len(), 1);
+
+        assert_eq!(batch_set_release_flag_core(&mut conn, &[r1, r2], 2, emit).unwrap(), 2);
+        assert_eq!(emitted.borrow().len(), 2);
+
+        // Reset to pending then mark_source_releases_read
+        db::releases::set_notification_state(&conn, r1, "pending", None).unwrap();
+        assert_eq!(mark_source_releases_read_core(&mut conn, sid, emit).unwrap(), 1);
+        assert_eq!(emitted.borrow().len(), 3);
+
+        assert_eq!(batch_delete_releases_core(&mut conn, &[r1, r2], emit).unwrap(), 2);
+        assert_eq!(*emitted.borrow(), vec![0, 0, 0, 0]);
+        assert!(db::releases::get_releases_with_state(&conn).unwrap().is_empty());
+
+        // No-op when targets do not exist emits nothing
+        assert_eq!(batch_delete_releases_core(&mut conn, &[999], emit).unwrap(), 0);
+        assert_eq!(emitted.borrow().len(), 4);
+
+        let logs = db::logs::get_logs(&conn, 20).unwrap();
+        let keys: Vec<_> = logs.iter().filter_map(|l| l.message_key.as_deref()).collect();
+        assert!(keys.contains(&"release.batch_status_changed"));
+        assert!(keys.contains(&"release.batch_flag_changed"));
+        assert!(keys.contains(&"release.source_marked_read"));
+        assert!(keys.contains(&"release.batch_deleted"));
     }
 }

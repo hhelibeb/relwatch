@@ -13,6 +13,8 @@ const props = defineProps<{
   releases: ReleaseInfo[]
   searchQuery?: string
   bodyIndex?: BodyIndex | null
+  selectable?: boolean
+  selectedIds?: Set<number>
 }>()
 
 const emit = defineEmits<{
@@ -20,6 +22,7 @@ const emit = defineEmits<{
   back: []
   // open-detail 携带导航序列：日历视图使用当日版本序列
   'open-detail': [release: ReleaseInfo, sequence: ReleaseInfo[]]
+  'toggle-select': [releaseId: number, shiftKey: boolean]
 }>()
 
 const dateDetailReleases = computed(() => {
@@ -55,10 +58,13 @@ function handleBack() {
       v-for="release in dateDetailReleases"
       :key="release.id"
       :release="release"
+      :selectable="props.selectable"
+      :checked="props.selectedIds?.has(release.id)"
       :search-query="props.searchQuery"
       :body-index="props.bodyIndex"
       @update="emit('update')"
       @open-detail="(release) => emit('open-detail', release, dateDetailReleases)"
+      @toggle-select="(id, shift) => emit('toggle-select', id, shift)"
     />
   </div>
 </template>

@@ -1,7 +1,16 @@
 <script setup lang="ts">
 import { computed, inject, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { confirm } from '@tauri-apps/plugin-dialog'
 import type { ReleaseInfo, ReleaseSearchBody } from '../api/releases'
-import { getReleaseDetail, getReleaseSearchBodies, getReleaseSearchBodiesByIds, setNotificationState } from '../api/releases'
+import {
+  batchDeleteReleases,
+  batchSetReleaseFlag,
+  batchUpdateReleaseStatus,
+  getReleaseDetail,
+  getReleaseSearchBodies,
+  getReleaseSearchBodiesByIds,
+  setNotificationState,
+} from '../api/releases'
 import { isReadStatus, isUnreadStatus, filterReleaseIndices, mergeBodyIndex, type BodyIndex, type AutoReadDetailMode } from '../utils'
 import ReleaseAggregatedList from './ReleaseAggregatedList.vue'
 import ReleaseCalendar from './ReleaseCalendar.vue'
@@ -10,11 +19,12 @@ import ReleaseDetailModal from './ReleaseDetailModal.vue'
 import ReleaseSearchBar from './ReleaseSearchBar.vue'
 import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
-import { releaseFlagged } from '../utils/releaseFlag'
+import { flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { loadReleaseViewState, saveReleaseViewState } from '../utils/releaseViewStorage'
-import { clampCalendarMonth } from '../utils/dateKey'
+import { clampCalendarMonth, toDateKey } from '../utils/dateKey'
+import { registerOverlayActive } from '../composables/contextMenuBus'
 import { track } from '../composables/useUsageTracking'
-import { ShowImportanceKey, AutoReadDetailKey } from '../injection-keys'
+import { ShowImportanceKey, AutoReadDetailKey, ShowToastKey } from '../injection-keys'
 import { t } from '../i18n'
 import ErrorBlock from './common/ErrorBlock.vue'
 
@@ -77,6 +87,7 @@ const viewMode = ref<ViewMode>(savedViewState.viewMode)
 const showImportance = inject(ShowImportanceKey, ref(false))
 // 「打开详情自动标为已读」档位（设置页常规，App provide）：off / open / navigate
 const autoReadDetail = inject(AutoReadDetailKey, ref<AutoReadDetailMode>('off'))
+const showToast = inject(ShowToastKey, () => {})
 const importanceFilter = ref<ReleaseImportanceFilter>(savedViewState.importanceFilter)
 const sourceFilter = ref<ReleaseSourceFilter>(savedViewState.sourceFilter)
 const flagFilter = ref<ReleaseFlagFilter>(savedViewState.flagFilter)
@@ -650,8 +661,220 @@ function isEditableTarget(el: EventTarget | null): boolean {
   return ce !== null && ce !== 'false'
 }
 
+const BULK_FLAG_SWATCHES: { value: number; labelKey: string }[] = [
+  { value: 1, labelKey: 'release.flag_red' },
+  { value: 2, labelKey: 'release.flag_orange' },
+  { value: 3, labelKey: 'release.flag_yellow' },
+  { value: 4, labelKey: 'release.flag_green' },
+  { value: 5, labelKey: 'release.flag_blue' },
+  { value: 6, labelKey: 'release.flag_purple' },
+]
+
+const selectionMode = ref(false)
+const selectedIds = ref<Set<number>>(new Set())
+const lastToggledId = ref<number | null>(null)
+const bulkBusy = ref(false)
+const flagPopoverOpen = ref(false)
+
+const canSelect = computed(() => viewMode.value !== 'calendar' || selectedDate.value !== null)
+
+const visibleSelectionReleases = computed<ReleaseInfo[]>(() => {
+  if (viewMode.value === 'calendar') {
+    if (selectedDate.value === null) return []
+    return filteredReleases.value
+      .filter(r => toDateKey(new Date(r.published_at)) === selectedDate.value)
+      .sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
+  }
+  if (viewMode.value === 'simple') {
+    return [...filteredReleases.value].sort(
+      (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime(),
+    )
+  }
+  return filteredReleases.value
+})
+
+const unreadInViewIds = computed(() =>
+  filteredReleases.value
+    .filter(r => isUnreadStatus(r.notification_status, r.snooze_until))
+    .map(r => r.id),
+)
+
+const selectedCount = computed(() => selectedIds.value.size)
+
+const allVisibleSelected = computed(() =>
+  visibleSelectionReleases.value.length > 0
+  && visibleSelectionReleases.value.every(r => selectedIds.value.has(r.id)),
+)
+
+watch(visibleSelectionReleases, (list) => {
+  if (selectedIds.value.size === 0) return
+  const valid = new Set(list.map(r => r.id))
+  let pruned = false
+  const next = new Set<number>()
+  for (const id of selectedIds.value) {
+    if (valid.has(id)) next.add(id)
+    else pruned = true
+  }
+  if (pruned) selectedIds.value = next
+})
+
+watch(canSelect, (ok) => {
+  if (!ok && selectionMode.value) exitSelectionMode()
+})
+
+function exitSelectionMode() {
+  selectionMode.value = false
+  selectedIds.value = new Set()
+  lastToggledId.value = null
+  flagPopoverOpen.value = false
+}
+
+function toggleSelectionMode() {
+  if (!canSelect.value) return
+  if (selectionMode.value) {
+    exitSelectionMode()
+  } else {
+    selectionMode.value = true
+  }
+  track('release.select')
+}
+
+function toggleSelectRelease(id: number, shiftKey = false) {
+  const next = new Set(selectedIds.value)
+  const shouldSelect = !next.has(id)
+  if (shiftKey && lastToggledId.value !== null) {
+    const orderedIds = visibleSelectionReleases.value.map(r => r.id)
+    const from = orderedIds.indexOf(lastToggledId.value)
+    const to = orderedIds.indexOf(id)
+    if (from >= 0 && to >= 0) {
+      const [start, end] = from <= to ? [from, to] : [to, from]
+      for (let i = start; i <= end; i++) {
+        if (shouldSelect) next.add(orderedIds[i])
+        else next.delete(orderedIds[i])
+      }
+      selectedIds.value = next
+      lastToggledId.value = id
+      return
+    }
+  }
+  if (shouldSelect) next.add(id)
+  else next.delete(id)
+  selectedIds.value = next
+  lastToggledId.value = id
+}
+
+function selectAllVisible() {
+  selectedIds.value = new Set(visibleSelectionReleases.value.map(r => r.id))
+  track('release.bulk_select_all')
+}
+
+function clearSelected() {
+  selectedIds.value = new Set()
+  lastToggledId.value = null
+}
+
+async function runBulkAction(
+  action: () => Promise<number>,
+  toastKey: (count: number) => string,
+  errPrefixKey: string,
+  onSuccess?: () => void,
+) {
+  bulkBusy.value = true
+  try {
+    const affected = await action()
+    onSuccess?.()
+    if (affected > 0) showToast(toastKey(affected))
+    emit('update')
+  } catch (e: unknown) {
+    showToast(t(errPrefixKey) + (e instanceof Error ? e.message : String(e)))
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+async function confirmAndMarkRead(ids: number[], confirmMsg: string, titleKey: string, trackEvent: string) {
+  if (ids.length === 0 || bulkBusy.value) return
+  const confirmed = await confirm(confirmMsg, { title: t(titleKey), kind: 'info' })
+  if (!confirmed) return
+  track(trackEvent)
+  await runBulkAction(
+    () => batchUpdateReleaseStatus(ids, 'clicked'),
+    (n) => t('release.bulk_marked_read', String(n)),
+    'release.status_failed',
+  )
+}
+
+async function handleMarkAllRead() {
+  const ids = unreadInViewIds.value
+  const msg = hasActiveFilter.value
+    ? t('release.mark_all_read_filtered_confirm', String(ids.length))
+    : t('release.mark_all_read_confirm', String(ids.length))
+  await confirmAndMarkRead(ids, msg, 'release.mark_all_read', 'release.mark_all_read')
+}
+
+async function handleMarkGroupRead(groupName: string, unreadIds: number[]) {
+  await confirmAndMarkRead(
+    unreadIds,
+    t('release.mark_source_read_confirm', groupName, String(unreadIds.length)),
+    'release.mark_source_read',
+    'release.mark_source_read',
+  )
+}
+
+async function handleBulkStatus(status: 'clicked' | 'ignored') {
+  const ids = [...selectedIds.value]
+  if (ids.length === 0 || bulkBusy.value) return
+  flagPopoverOpen.value = false
+  track(status === 'clicked' ? 'release.bulk_read' : 'release.bulk_ignore')
+  await runBulkAction(
+    () => batchUpdateReleaseStatus(ids, status),
+    (n) => t(status === 'clicked' ? 'release.bulk_marked_read' : 'release.bulk_ignored', String(n)),
+    'release.status_failed',
+  )
+}
+
+async function handleBulkFlag(flag: number) {
+  const ids = [...selectedIds.value]
+  flagPopoverOpen.value = false
+  if (ids.length === 0 || bulkBusy.value) return
+  track('release.bulk_flag')
+  await runBulkAction(
+    () => batchSetReleaseFlag(ids, flag),
+    (n) => t(flag === 0 ? 'release.bulk_flag_cleared' : 'release.bulk_flagged', String(n)),
+    'release.flag_failed',
+  )
+}
+
+async function handleBulkDelete() {
+  const ids = [...selectedIds.value]
+  if (ids.length === 0 || bulkBusy.value) return
+  flagPopoverOpen.value = false
+  const confirmed = await confirm(t('release.bulk_delete_confirm', String(ids.length)), {
+    title: t('release.bulk_delete'),
+    kind: 'warning',
+  })
+  if (!confirmed) return
+  track('release.bulk_delete')
+  await runBulkAction(
+    () => batchDeleteReleases(ids),
+    (n) => t('release.bulk_deleted', String(n)),
+    'release.delete_failed',
+    clearSelected,
+  )
+}
+
+function closeFlagPopover() {
+  flagPopoverOpen.value = false
+}
+
 function onListKeydown(e: KeyboardEvent) {
   if (!props.active || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return
+  if (e.key === 'Escape' && selectionMode.value && detailReleaseId.value === null) {
+    e.preventDefault()
+    if (flagPopoverOpen.value) flagPopoverOpen.value = false
+    else exitSelectionMode()
+    return
+  }
   if (detailReleaseId.value !== null || viewMode.value !== 'simple') return
   if (isEditableTarget(e.target)) return
   if (e.key === 'j') {
@@ -668,8 +891,19 @@ function onListKeydown(e: KeyboardEvent) {
   }
 }
 
-onMounted(() => window.addEventListener('keydown', onListKeydown))
-onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
+let unregisterSelectionOverlay: (() => void) | null = null
+
+onMounted(() => {
+  window.addEventListener('keydown', onListKeydown)
+  document.addEventListener('click', closeFlagPopover)
+  unregisterSelectionOverlay = registerOverlayActive(() => props.active && selectionMode.value)
+})
+onUnmounted(() => {
+  window.removeEventListener('keydown', onListKeydown)
+  document.removeEventListener('click', closeFlagPopover)
+  unregisterSelectionOverlay?.()
+  unregisterSelectionOverlay = null
+})
 
 </script>
 
@@ -689,9 +923,112 @@ onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
       :deep-search="deepSearch"
       :deep-searching="deepSearching"
       :body-truncated="bodyTruncated"
+      :unread-in-view="unreadInViewIds.length"
+      :selection-mode="selectionMode"
+      :can-select="canSelect"
+      :bulk-busy="bulkBusy"
       @update:deep-search="onDeepSearchToggle"
       @search-enter="handleSearchEnter"
-    />
+      @mark-all-read="handleMarkAllRead"
+      @toggle-select="toggleSelectionMode"
+    >
+      <template #below>
+        <Transition name="bulk-bar">
+          <div v-if="selectionMode" class="release-bulk-bar">
+            <span class="bulk-count" :class="{ active: selectedCount > 0 }">
+              {{ t('release.bulk_count', String(selectedCount)) }}
+            </span>
+            <button
+              type="button"
+              class="bulk-link-btn"
+              :disabled="visibleSelectionReleases.length === 0 || allVisibleSelected"
+              @click="selectAllVisible"
+            >{{ t('release.bulk_select_all') }}</button>
+            <button
+              v-if="selectedCount > 0"
+              type="button"
+              class="bulk-link-btn"
+              @click="clearSelected"
+            >{{ t('release.bulk_clear') }}</button>
+            <span class="bulk-sep" aria-hidden="true"></span>
+            <button
+              type="button"
+              class="bulk-action-btn"
+              :disabled="selectedCount === 0 || bulkBusy"
+              @click="handleBulkStatus('clicked')"
+            >
+              <svg class="bulk-action-icon" aria-hidden="true"><use href="/icons.svg#check-icon"/></svg>
+              <span>{{ t('release.bulk_read') }}</span>
+            </button>
+            <button
+              type="button"
+              class="bulk-action-btn"
+              :disabled="selectedCount === 0 || bulkBusy"
+              @click="handleBulkStatus('ignored')"
+            >
+              <svg class="bulk-action-icon" aria-hidden="true"><use href="/icons.svg#ignore-icon"/></svg>
+              <span>{{ t('release.bulk_ignore') }}</span>
+            </button>
+            <div class="bulk-flag-wrap" @click.stop>
+              <button
+                type="button"
+                class="bulk-action-btn"
+                :class="{ active: flagPopoverOpen }"
+                :disabled="selectedCount === 0 || bulkBusy"
+                :aria-expanded="flagPopoverOpen"
+                aria-haspopup="menu"
+                @click="flagPopoverOpen = !flagPopoverOpen"
+              >
+                <svg class="bulk-action-icon" aria-hidden="true"><use href="/icons.svg#flag-tag-icon"/></svg>
+                <span>{{ t('release.bulk_flag') }}</span>
+                <svg class="bulk-flag-caret" width="10" height="10" aria-hidden="true"><use href="/icons.svg#chevron-down-icon"/></svg>
+              </button>
+              <div v-if="flagPopoverOpen" class="dropdown-panel bulk-flag-popover" role="menu">
+                <div class="bulk-flag-swatches">
+                  <button
+                    v-for="swatch in BULK_FLAG_SWATCHES"
+                    :key="swatch.value"
+                    type="button"
+                    role="menuitem"
+                    class="bulk-flag-swatch"
+                    :style="{ color: flagColorByIndex(swatch.value) ?? undefined }"
+                    :title="t(swatch.labelKey)"
+                    :aria-label="t(swatch.labelKey)"
+                    @click="handleBulkFlag(swatch.value)"
+                  >
+                    <svg width="15" height="15" aria-hidden="true"><use href="/icons.svg#flag-tag-icon"/></svg>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  role="menuitem"
+                  class="bulk-flag-clear"
+                  @click="handleBulkFlag(0)"
+                >{{ t('release.flag_clear') }}</button>
+              </div>
+            </div>
+            <div class="bulk-right">
+              <button
+                type="button"
+                class="bulk-action-btn bulk-action-danger"
+                :disabled="selectedCount === 0 || bulkBusy"
+                @click="handleBulkDelete"
+              >
+                <svg class="bulk-action-icon" aria-hidden="true"><use href="/icons.svg#trash-icon"/></svg>
+                <span>{{ t('release.bulk_delete') }}</span>
+              </button>
+              <button
+                type="button"
+                class="bulk-close-btn"
+                :title="t('release.select_cancel')"
+                :aria-label="t('release.select_cancel')"
+                @click="exitSelectionMode"
+              >✕</button>
+            </div>
+          </div>
+        </Transition>
+      </template>
+    </ReleaseSearchBar>
 
     <ErrorBlock
       v-if="showLoadError"
@@ -710,11 +1047,14 @@ onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
       :loading="props.loading"
       :search-query="releaseSearch"
       :body-index="deepSearch ? bodyIndex : null"
+      :selectable="selectionMode"
+      :selected-ids="selectedIds"
       @enable-deep="enableDeepSearch"
       @clear-search="clearSearch"
       @clear-filters="clearFilters"
       @update="emit('update')"
       @open-detail="openReleaseDetail"
+      @toggle-select="toggleSelectRelease"
     />
 
     <ReleaseAggregatedList
@@ -726,10 +1066,14 @@ onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
       :loading="props.loading"
       :search-query="releaseSearch"
       :body-index="deepSearch ? bodyIndex : null"
+      :selectable="selectionMode"
+      :selected-ids="selectedIds"
       @clear-search="clearSearch"
       @clear-filters="clearFilters"
       @update="emit('update')"
       @open-detail="openReleaseDetail"
+      @toggle-select="toggleSelectRelease"
+      @mark-group-read="handleMarkGroupRead"
     />
 
     <template v-else-if="viewMode === 'calendar'">
@@ -739,9 +1083,12 @@ onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
         :releases="filteredReleases"
         :search-query="releaseSearch"
         :body-index="deepSearch ? bodyIndex : null"
+        :selectable="selectionMode"
+        :selected-ids="selectedIds"
         @back="backToCalendar"
         @update="emit('update')"
         @open-detail="openReleaseDetail"
+        @toggle-select="toggleSelectRelease"
       />
       <ReleaseCalendar
         v-else
@@ -770,3 +1117,212 @@ onUnmounted(() => window.removeEventListener('keydown', onListKeydown))
 
   </section>
 </template>
+<style scoped>
+.release-bulk-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 5px 8px 5px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: var(--fs-meta);
+}
+
+.bulk-count {
+  color: var(--text-muted);
+  font-weight: 500;
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+.bulk-count.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.bulk-link-btn {
+  padding: 3px 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--primary);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out);
+}
+
+.bulk-link-btn:hover:not(:disabled) {
+  background: var(--primary-soft-bg);
+}
+
+.bulk-link-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.bulk-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.bulk-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out);
+}
+
+.bulk-action-btn:hover:not(:disabled),
+.bulk-action-btn.active {
+  background: var(--hover-surface);
+}
+
+.bulk-action-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+
+.bulk-action-icon {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+.bulk-action-btn:hover:not(:disabled) .bulk-action-icon {
+  color: var(--text);
+}
+
+.bulk-action-danger {
+  color: var(--danger);
+}
+
+.bulk-action-danger .bulk-action-icon {
+  color: var(--danger);
+}
+
+.bulk-action-danger:hover:not(:disabled) {
+  background: var(--danger-soft-bg);
+  color: var(--danger);
+}
+
+.bulk-action-danger:hover:not(:disabled) .bulk-action-icon {
+  color: var(--danger);
+}
+
+.bulk-flag-wrap {
+  position: relative;
+}
+
+.bulk-flag-caret {
+  color: var(--text-muted);
+  margin-left: -2px;
+}
+
+.bulk-flag-popover {
+  top: calc(100% + 6px);
+  left: 0;
+  padding: 6px;
+  min-width: 184px;
+  box-shadow: var(--shadow-lg);
+}
+
+.bulk-flag-swatches {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px;
+}
+
+.bulk-flag-swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-out), transform var(--dur-hover) var(--ease-out);
+}
+
+.bulk-flag-swatch:hover {
+  background: var(--hover-surface);
+  transform: scale(1.08);
+}
+
+.bulk-flag-clear {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  padding: 4px 8px;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-xs) var(--radius-xs);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  text-align: center;
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
+}
+
+.bulk-flag-clear:hover {
+  background: var(--hover-surface);
+  color: var(--text);
+}
+
+.bulk-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.bulk-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
+}
+
+.bulk-close-btn:hover {
+  background: var(--hover-surface);
+  color: var(--text);
+}
+
+.bulk-bar-enter-active,
+.bulk-bar-leave-active {
+  transition: opacity var(--dur-state) var(--ease-out), transform var(--dur-state) var(--ease-out);
+}
+
+.bulk-bar-enter-from,
+.bulk-bar-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+</style>

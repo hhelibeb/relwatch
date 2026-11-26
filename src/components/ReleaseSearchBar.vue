@@ -26,9 +26,17 @@ const props = withDefaults(defineProps<{
   deepSearching?: boolean
   /** 深度搜索已触及字符水位：正文索引只覆盖近期，命中面小于全库。 */
   bodyTruncated?: boolean
+  unreadInView?: number
+  selectionMode?: boolean
+  canSelect?: boolean
+  bulkBusy?: boolean
 }>(), {
   releases: () => [],
   showSearch: true,
+  unreadInView: 0,
+  selectionMode: false,
+  canSelect: true,
+  bulkBusy: false,
 })
 
 const emit = defineEmits<{
@@ -41,6 +49,8 @@ const emit = defineEmits<{
   'update:versionFilter': [value: ReleaseVersionFilter]
   'update:deepSearch': [value: boolean]
   searchEnter: []
+  markAllRead: []
+  toggleSelect: []
 }>()
 
 // ========== 筛选下拉状态 ==========
@@ -463,6 +473,33 @@ function clearAllFilters() {
           </div>
         </div>
       </div>
+      <div class="release-toolbar-actions">
+        <button
+          type="button"
+          class="toolbar-icon-btn mark-all-read-btn"
+          :class="{ 'has-unread': props.unreadInView > 0 }"
+          :disabled="props.unreadInView <= 0 || props.bulkBusy"
+          :title="props.unreadInView > 0 ? t('release.mark_all_read_tip', String(props.unreadInView)) : t('release.mark_all_read_empty')"
+          :aria-label="props.unreadInView > 0 ? t('release.mark_all_read_tip', String(props.unreadInView)) : t('release.mark_all_read_empty')"
+          @click="emit('markAllRead')"
+        >
+          <svg width="14" height="14" aria-hidden="true"><use href="/icons.svg#check-double-icon"/></svg>
+        </button>
+        <template v-if="props.canSelect">
+          <div class="filter-divider"></div>
+          <button
+            type="button"
+            class="toolbar-icon-btn select-mode-btn"
+            :class="{ active: props.selectionMode }"
+            :aria-pressed="props.selectionMode"
+            :title="props.selectionMode ? t('release.select_cancel') : t('release.select')"
+            :aria-label="props.selectionMode ? t('release.select_cancel') : t('release.select')"
+            @click="emit('toggleSelect')"
+          >
+            <svg width="14" height="14" aria-hidden="true"><use :href="props.selectionMode ? '/icons.svg#checkbox-checked-icon' : '/icons.svg#checkbox-icon'"/></svg>
+          </button>
+        </template>
+      </div>
       <slot />
     </div>
     <div v-if="showDeepSearchLimit" class="deep-search-limit">
@@ -483,6 +520,7 @@ function clearAllFilters() {
         <span class="filter-chip-x">✕</span>
       </button>
     </div>
+    <slot name="below" />
   </div>
 </template>
 <style scoped>
@@ -755,5 +793,54 @@ function clearAllFilters() {
 
 .importance-dot-low {
   background: var(--success);
+}
+
+.release-toolbar-actions {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.toolbar-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 6px 0;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out), opacity var(--dur-hover) var(--ease-out);
+}
+
+.toolbar-icon-btn:hover:not(:disabled) {
+  background: var(--hover-surface);
+  color: var(--text);
+}
+
+.toolbar-icon-btn:disabled {
+  opacity: 0.36;
+  cursor: default;
+}
+
+.mark-all-read-btn.has-unread:hover:not(:disabled) {
+  background: var(--primary-soft-bg);
+  color: var(--primary);
+}
+
+.select-mode-btn.active {
+  background: var(--primary-soft-bg);
+  color: var(--primary);
+}
+
+.select-mode-btn.active:hover {
+  background: var(--primary-soft-bg);
+  color: var(--primary);
 }
 </style>

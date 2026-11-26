@@ -7,7 +7,7 @@ use serde::Serialize;
 use specta::Type;
 use tauri_specta::Event;
 
-/// release 状态变更（新增/已读/忽略/删除等），payload 为 release id。
+/// release 状态变更（新增/已读/忽略/删除等），payload 为 release id（0 表示批量变更）。
 #[derive(Debug, Clone, Serialize, Type, Event)]
 pub struct ReleaseStateChanged(pub i64);
 

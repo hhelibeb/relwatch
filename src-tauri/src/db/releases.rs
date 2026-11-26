@@ -206,6 +206,29 @@ pub fn set_release_flag(conn: &Connection, release_id: i64, flag: i64) -> Result
     Ok(())
 }
 
+pub fn batch_set_release_flag(conn: &Connection, release_ids: &[i64], flag: i64) -> Result<u32, String> {
+    if !(0..=6).contains(&flag) {
+        return Err(format!("err.release_flag_invalid|{}", flag));
+    }
+    let ids = super::dedup_ids(release_ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0usize;
+    for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 2);
+        let sql = format!("UPDATE releases SET flag = ?1 WHERE id IN ({placeholders})");
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(chunk.len() + 1);
+        params_vec.push(Box::new(flag));
+        for &id in chunk {
+            params_vec.push(Box::new(id));
+        }
+        let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
 /// 根据排除集合动态构建 `NOT IN (...)` 条件子句与参数。
 /// 排除集合为空时不附加条件（不排除任何源类型）。
 fn exclusion_clause<'a>(
@@ -399,6 +422,22 @@ pub fn delete_release(conn: &Connection, release_id: i64) -> Result<(), String> 
     Ok(())
 }
 
+pub fn batch_delete_releases(conn: &Connection, release_ids: &[i64]) -> Result<u32, String> {
+    let ids = super::dedup_ids(release_ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let mut total = 0usize;
+    for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 1);
+        let sql = format!("DELETE FROM releases WHERE id IN ({placeholders})");
+        let params_ref: Vec<&dyn rusqlite::ToSql> =
+            chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
 pub fn set_notification_state(
     conn: &Connection,
     release_id: i64,
@@ -407,7 +446,7 @@ pub fn set_notification_state(
 ) -> Result<(), String> {
     match status {
         "pending" | "snoozed" | "clicked" | "ignored" => {}
-        _ => return Err(format!("无效的通知状态值: {}", status)),
+        _ => return Err(format!("err.invalid_notification_status|{}", status)),
     }
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -421,6 +460,74 @@ pub fn set_notification_state(
     )
     .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+pub fn batch_set_notification_state(
+    conn: &Connection,
+    release_ids: &[i64],
+    status: &str,
+    snooze_until: Option<&str>,
+) -> Result<u32, String> {
+    match status {
+        "pending" | "snoozed" | "clicked" | "ignored" => {}
+        _ => return Err(format!("err.invalid_notification_status|{}", status)),
+    }
+    let ids = super::dedup_ids(release_ids);
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let mut total = 0usize;
+    for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
+        let placeholders = super::in_placeholders(chunk.len(), 4);
+        // Filter through releases table so non-existent IDs are ignored instead of failing FK constraints.
+        let sql = format!(
+            "INSERT INTO notification_state (release_id, status, snooze_until, created_at, updated_at)
+             SELECT id, ?1, ?2, ?3, ?3 FROM releases WHERE id IN ({placeholders})
+             ON CONFLICT(release_id) DO UPDATE SET status = ?1, snooze_until = ?2,
+               last_notified_at = CASE WHEN ?1 IN ('snoozed', 'pending') THEN NULL ELSE last_notified_at END,
+               notify_failures = CASE WHEN ?1 IN ('snoozed', 'pending') THEN 0 ELSE notify_failures END,
+               updated_at = ?3"
+        );
+        let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::with_capacity(chunk.len() + 3);
+        params_vec.push(Box::new(status.to_string()));
+        params_vec.push(Box::new(snooze_until.map(|s| s.to_string())));
+        params_vec.push(Box::new(now.clone()));
+        for &id in chunk {
+            params_vec.push(Box::new(id));
+        }
+        let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
+        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+    }
+    Ok(total as u32)
+}
+
+pub fn mark_source_releases_read(conn: &Connection, source_id: i64) -> Result<u32, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT r.id, COALESCE(ns.status, 'pending'), ns.snooze_until
+             FROM releases r
+             LEFT JOIN notification_state ns ON r.id = ns.release_id
+             WHERE r.source_id = ?1 AND COALESCE(ns.status, 'pending') IN ('pending', 'snoozed')",
+        )
+        .map_err(|e| e.to_string())?;
+    let due_ids: Vec<i64> = stmt
+        .query_map(params![source_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|(_, status, snooze_until)| is_release_due(status, snooze_until.as_deref()))
+        .map(|(id, _, _)| id)
+        .collect();
+    drop(stmt);
+    batch_set_notification_state(conn, &due_ids, "clicked", None)
 }
 
 /// 标记 release 已通知：**upsert**，不依赖 state 行已存在。
@@ -1734,5 +1841,68 @@ mod tests {
         set_body_translated(&conn, a, "译文 a").unwrap();
         let refreshed = get_release_bodies_by_ids(&conn, &[a]).unwrap();
         assert_eq!(refreshed[0].body_translated.as_deref(), Some("译文 a"));
+    }
+
+    #[test]
+    fn test_batch_set_notification_state_dedups_and_skips_missing() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let r1 = insert_release(&conn, sid, "v1", "R1", "u1", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let r2 = insert_release(&conn, sid, "v2", "R2", "u2", "2024-01-02T00:00:00Z", false, None).unwrap();
+
+        let updated = batch_set_notification_state(&conn, &[r1, r1, r2, 9999], "clicked", None).unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(get_release(&conn, r1).unwrap().unwrap().notification_status, "clicked");
+        assert_eq!(get_release(&conn, r2).unwrap().unwrap().notification_status, "clicked");
+
+        assert!(batch_set_notification_state(&conn, &[r1], "bogus", None).is_err());
+        assert_eq!(batch_set_notification_state(&conn, &[], "ignored", None).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_batch_set_release_flag_and_delete() {
+        let conn = init_memory_db().unwrap();
+        let sid = sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let r1 = insert_release(&conn, sid, "v1", "R1", "u1", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let r2 = insert_release(&conn, sid, "v2", "R2", "u2", "2024-01-02T00:00:00Z", false, None).unwrap();
+        let r3 = insert_release(&conn, sid, "v3", "R3", "u3", "2024-01-03T00:00:00Z", false, None).unwrap();
+
+        assert_eq!(batch_set_release_flag(&conn, &[r1, r2, r2, 9999], 3).unwrap(), 2);
+        assert_eq!(get_release(&conn, r1).unwrap().unwrap().flag, 3);
+        assert_eq!(get_release(&conn, r2).unwrap().unwrap().flag, 3);
+        assert_eq!(get_release(&conn, r3).unwrap().unwrap().flag, 0);
+        assert!(batch_set_release_flag(&conn, &[r1], 7).is_err());
+
+        assert_eq!(batch_delete_releases(&conn, &[r1, r2, 9999]).unwrap(), 2);
+        assert!(get_release(&conn, r1).unwrap().is_none());
+        assert!(get_release(&conn, r2).unwrap().is_none());
+        assert!(get_release(&conn, r3).unwrap().is_some());
+    }
+
+    #[test]
+    fn test_mark_source_releases_read_respects_future_snooze_and_source_scope() {
+        let conn = init_memory_db().unwrap();
+        let s1 = sources::add_source(&conn, "github", "o", "r1", "").unwrap();
+        let s2 = sources::add_source(&conn, "github", "o", "r2", "").unwrap();
+
+        let r_pending = insert_release(&conn, s1, "v1", "R1", "u1", "2024-01-01T00:00:00Z", false, None).unwrap();
+        let r_due_snooze = insert_release(&conn, s1, "v2", "R2", "u2", "2024-01-02T00:00:00Z", false, None).unwrap();
+        let r_future_snooze = insert_release(&conn, s1, "v3", "R3", "u3", "2024-01-03T00:00:00Z", false, None).unwrap();
+        let r_ignored = insert_release(&conn, s1, "v4", "R4", "u4", "2024-01-04T00:00:00Z", false, None).unwrap();
+        let r_other_source = insert_release(&conn, s2, "v1", "O1", "u5", "2024-01-05T00:00:00Z", false, None).unwrap();
+
+        let past = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        let future = (chrono::Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        set_notification_state(&conn, r_due_snooze, "snoozed", Some(&past)).unwrap();
+        set_notification_state(&conn, r_future_snooze, "snoozed", Some(&future)).unwrap();
+        set_notification_state(&conn, r_ignored, "ignored", None).unwrap();
+
+        let updated = mark_source_releases_read(&conn, s1).unwrap();
+        assert_eq!(updated, 2);
+        assert_eq!(get_release(&conn, r_pending).unwrap().unwrap().notification_status, "clicked");
+        assert_eq!(get_release(&conn, r_due_snooze).unwrap().unwrap().notification_status, "clicked");
+        assert_eq!(get_release(&conn, r_future_snooze).unwrap().unwrap().notification_status, "snoozed");
+        assert_eq!(get_release(&conn, r_ignored).unwrap().unwrap().notification_status, "ignored");
+        assert_eq!(get_release(&conn, r_other_source).unwrap().unwrap().notification_status, "pending");
     }
 }
