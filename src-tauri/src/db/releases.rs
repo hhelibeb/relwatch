@@ -939,6 +939,57 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
         .collect())
 }
 
+pub fn has_due_unread_release(conn: &Connection) -> Result<bool, String> {
+    let has_pending: bool = conn
+        .prepare(
+            "SELECT 1
+             FROM notification_state ns
+             JOIN releases r ON r.id = ns.release_id
+             JOIN sources s ON r.source_id = s.id
+             WHERE ns.status = 'pending'
+               AND s.muted = 0
+             LIMIT 1",
+        )
+        .map_err(|e| e.to_string())?
+        .exists([])
+        .map_err(|e| e.to_string())?;
+    if has_pending {
+        return Ok(true);
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT ns.snooze_until
+             FROM notification_state ns
+             JOIN releases r ON r.id = ns.release_id
+             JOIN sources s ON r.source_id = s.id
+             WHERE ns.status = 'snoozed'
+               AND s.muted = 0",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let snooze_until: Option<String> = row.get(0).map_err(|e| e.to_string())?;
+        if is_release_due("snoozed", snooze_until.as_deref()) {
+            return Ok(true);
+        }
+    }
+
+    // 兜底极罕见无 notification_state 行的孤儿 release（COALESCE 语义等价 pending）
+    conn.prepare(
+        "SELECT 1
+         FROM releases r
+         JOIN sources s ON r.source_id = s.id
+         WHERE s.muted = 0
+           AND NOT EXISTS (SELECT 1 FROM notification_state ns WHERE ns.release_id = r.id)
+         LIMIT 1",
+    )
+    .map_err(|e| e.to_string())?
+    .exists([])
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
 pub fn get_unread_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
     query_unread_releases(conn, false)
 }

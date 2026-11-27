@@ -1,6 +1,7 @@
 use rusqlite::backup::Backup;
 use rusqlite::Connection;
 use serde_json::json;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::Manager;
@@ -54,10 +55,17 @@ fn vacuum_into(conn: &Connection, target: &Path) -> Result<(), String> {
     })
 }
 
-/// 验证指定路径的文件是有效的 SQLite 数据库（检查魔数前 16 字节）
 pub fn validate_sqlite_file(path: &str) -> Result<(), String> {
-    let header = std::fs::read(path).map_err(|e| format!("err.backup_read_failed|{}", e))?;
-    if header.len() < 16 || &header[..16] != b"SQLite format 3\0" {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("err.backup_read_failed|{}", e))?;
+    let mut header = [0u8; 16];
+    match file.read_exact(&mut header) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            return Err("err.backup_invalid_file".to_string());
+        }
+        Err(e) => return Err(format!("err.backup_read_failed|{}", e)),
+    }
+    if &header != b"SQLite format 3\0" {
         return Err("err.backup_invalid_file".to_string());
     }
     Ok(())
@@ -101,27 +109,25 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
         None => return Err("err.backup_cancelled_export".to_string()),
     };
 
-    // FilePath 在桌面端恒为 Path 变体；此处仍不用 unwrap——路径形态意外时
-    // 报可读错误，比 panic 掉整个命令好
-    let Some(target) = path.as_path() else {
+    let Some(target) = path.as_path().map(|p| p.to_path_buf()) else {
         return Err("err.backup_export_failed|path is not a filesystem path".to_string());
     };
     let path_str = target.to_string_lossy().to_string();
 
     let state = app.state::<crate::types::AppState>();
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+    let pool = state.db.clone();
+    let log_path = path_str.clone();
 
-    // WAL checkpoint 确保数据完整性
-    conn
-        .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
-        .map_err(|e| format!("err.backup_wal_checkpoint_failed|{}", e))?;
-
-    // 导出紧凑副本（含「目标已存在 / 路径转义」处理，见 vacuum_into 文档）
-    vacuum_into(&conn, target)?;
-
-    if let Ok(conn) = state.db.get() {
-        crate::db::logs::write_log_key(&conn, "INFO", "backup.exported", &json!({"path": &path_str}).to_string());
-    }
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| format!("err.backup_wal_checkpoint_failed|{}", e))?;
+        vacuum_into(&conn, &target)?;
+        crate::db::logs::write_log_key(&conn, "INFO", "backup.exported", &json!({"path": &log_path}).to_string());
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("err.backup_export_failed|{}", e))??;
 
     Ok(path_str)
 }
@@ -135,75 +141,58 @@ async fn open_file_dialog(app: &tauri::AppHandle) -> Option<tauri_plugin_dialog:
         None => return Err("err.backup_cancelled_import".to_string()),
     };
 
-    let path_str = path.as_path().unwrap().to_string_lossy().to_string();
+    let Some(src_path) = path.as_path() else {
+        return Err("err.backup_open_failed|path is not a filesystem path".to_string());
+    };
+    let path_str = src_path.to_string_lossy().to_string();
 
-    // 持有 poll 锁，防止导入期间轮询线程并发修改数据库
-    let _poll_guard = crate::poll::acquire_lock()
-        .map_err(|_| "err.backup_import_busy".to_string())?;
-
-    validate_sqlite_file(&path_str)?;
-
-    let src_conn = rusqlite::Connection::open(&path_str)
-        .map_err(|e| format!("err.backup_open_failed|{}", e))?;
-
-    // 从连接池获取目标连接（避免使用独立连接绕过连接池导致并发冲突）
     let state = app.state::<crate::types::AppState>();
-    let mut dst_conn = state
-        .db
-        .get()
-        .map_err(|e| format!("err.db_connect|{}", e))?;
+    let pool = state.db.clone();
+    let agent_gate = state.agent_gate.clone();
 
-    // 不预先 DELETE：SQLite Backup API 是页级整库覆盖拷贝，目标库的内容会被
-    // 源库**完整替换**（含 schema），预先 DELETE 对结果无影响、反而会在恢复失败
-    // 时造成用户数据被清空且无法回滚的数据丢失窗口。
-    //
-    // 使用 rusqlite backup API 将备份文件内容复制到运行中的数据库。
-    // 通过池连接写入，SQLite 自身的 WAL 锁机制保证并发一致性。
-    {
-        let backup = Backup::new(&src_conn, &mut dst_conn)
-            .map_err(|e| format!("err.backup_session_failed|{}", e))?;
-        backup
-            .run_to_completion(100, Duration::from_millis(250), None)
-            .map_err(|e| format!("err.backup_restore_failed|{}", e))?;
-    } // backup 在此处释放，dst_conn 不再被借用
-    drop(dst_conn);
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let _poll_guard = crate::poll::acquire_lock()
+            .map_err(|_| "err.backup_import_busy".to_string())?;
 
-    // 恢复后跑迁移： imported 备份可能来自旧版本应用（缺 ai_summary/muted/
-    // body_translated/rendered_message 等列），不补列会让引用这些列的查询立即报错，
-    // 应用处于半瘫痪直到下次重启。此处主动补齐，避免该断裂。
-    // 同时检查 master key 一致性： 备份里的加密设置（github_token/deepseek_api_key）
-    // 用的是导出机器的 master key 加密，本机 master key 无法解密，自动清空避免静默失效。
-    let cleared_keys: Vec<&'static str> = {
-        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        // Backup 整库覆盖后，目标库 schema 被备份的 schema 完全替换。旧版本备份可能
-        // 缺 logs 等基础表，也可能缺 ai_summary 等 ALTER 后新增的列。先 apply_schema
-        // （CREATE TABLE IF NOT EXISTS 补齐缺失基础表），再 migrate（ALTER 补齐新增列），
-        // 确保运行中的应用查询新列/新表不会报错。
-        if let Err(e) = crate::db::init::apply_schema(&conn) {
+        validate_sqlite_file(&path_str)?;
+
+        let src_conn = rusqlite::Connection::open(&path_str)
+            .map_err(|e| format!("err.backup_open_failed|{}", e))?;
+
+        let mut dst_conn = pool
+            .get()
+            .map_err(|e| format!("err.db_connect|{}", e))?;
+
+        // 不预先 DELETE 目标表：Backup API 是页级整库替换，预删会在恢复中途失败时造成不可回滚的数据丢失
+        {
+            let backup = Backup::new(&src_conn, &mut dst_conn)
+                .map_err(|e| format!("err.backup_session_failed|{}", e))?;
+            backup
+                .run_to_completion(100, Duration::from_millis(250), None)
+                .map_err(|e| format!("err.backup_restore_failed|{}", e))?;
+        }
+        drop(src_conn);
+
+        if let Err(e) = crate::db::init::apply_schema(&dst_conn) {
             return Err(format!("err.backup_reinit_failed|{}", e));
         }
-        if let Err(e) = crate::db::init::migrate(&conn) {
+        if let Err(e) = crate::db::init::migrate(&dst_conn) {
             return Err(format!("err.backup_migrate_failed|{}", e));
         }
-        crate::crypto::verify_master_key_consistency(&conn)
-    };
-    if !cleared_keys.is_empty() {
-        eprintln!(
-            "WARNING: 导入的备份中以下加密设置无法用本机 master key 解密，已自动清空，请重新配置: {}",
-            cleared_keys.join(", ")
-        );
-    }
+        let cleared_keys = crate::crypto::verify_master_key_consistency(&dst_conn);
+        if !cleared_keys.is_empty() {
+            eprintln!(
+                "WARNING: 导入的备份中以下加密设置无法用本机 master key 解密，已自动清空，请重新配置: {}",
+                cleared_keys.join(", ")
+            );
+        }
 
-    // 导入是整库替换 app_settings：进程内缓存了值的东西要重新对齐。Agent 并发闸门
-    // 缓存了 agent_max_concurrency，不重新对齐就会「设置页显示 1、实际按 3 并行」，
-    // 直到重启应用。（其余设置都是每次用时重读 DB，无需处理。）
-    if let Ok(conn) = state.db.get() {
-        state.agent_gate.sync_from_db(&conn);
-    }
-
-    if let Ok(conn) = state.db.get() {
-        crate::db::logs::write_log_key(&conn, "INFO", "backup.imported", &json!({"path": &path_str}).to_string());
-    }
+        agent_gate.sync_from_db(&dst_conn);
+        crate::db::logs::write_log_key(&dst_conn, "INFO", "backup.imported", &json!({"path": &path_str}).to_string());
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("err.backup_restore_failed|{}", e))??;
 
     Ok(())
 }

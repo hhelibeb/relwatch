@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::sync::OnceLock;
 
 use tauri::{
     Listener, Manager,
@@ -7,6 +7,28 @@ use tauri::{
 };
 use crate::types::AppState;
 use tauri_specta::Event;
+
+fn cached_tray_icon(has_badge: bool) -> Option<tauri::image::Image<'static>> {
+    static BADGE_ICON: OnceLock<Option<tauri::image::Image<'static>>> = OnceLock::new();
+    static NORMAL_ICON: OnceLock<Option<tauri::image::Image<'static>>> = OnceLock::new();
+    if has_badge {
+        BADGE_ICON
+            .get_or_init(|| {
+                tauri::image::Image::from_bytes(include_bytes!("../icons/icon-badge.png"))
+                    .ok()
+                    .map(|img| img.to_owned())
+            })
+            .clone()
+    } else {
+        NORMAL_ICON
+            .get_or_init(|| {
+                tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png"))
+                    .ok()
+                    .map(|img| img.to_owned())
+            })
+            .clone()
+    }
+}
 
 pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> {
     let sources = MenuItemBuilder::with_id("tray_sources", "监控源").build(app)?;
@@ -99,22 +121,8 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// 判断是否存在应亮红点的未读版本：
-/// 静音源的 release 不参与托盘红点判定（静音语义 = 不要打扰，红点也是一种打扰）。
-/// 未读列表本身不区分来源是否被静音，过滤留在这里做，避免污染全局未读语义。
-fn has_unread_badge(unread: &[crate::db::releases::ReleaseInfo], muted_ids: &HashSet<i64>) -> bool {
-    unread.iter().any(|r| !muted_ids.contains(&r.source_id))
-}
-
-/// 判定是否应亮托盘红点：独立成纯 DB 读取 + 判定，便于单测锁住"静音源→红点消失 / 取消→恢复"整条链路；
-/// update_tray_badge 只做"图标选择 + set_icon"，判定逻辑不依赖 AppHandle 也能测。
 fn should_show_badge(conn: &rusqlite::Connection) -> bool {
-    let unread = crate::db::releases::get_unread_releases(conn).unwrap_or_default();
-    let muted_ids: HashSet<i64> = crate::db::sources::list_muted_source_ids(conn)
-        .unwrap_or_default()
-        .into_iter()
-        .collect();
-    has_unread_badge(&unread, &muted_ids)
+    crate::db::releases::has_due_unread_release(conn).unwrap_or(false)
 }
 
 pub fn update_tray_badge(app: &tauri::AppHandle) {
@@ -124,13 +132,7 @@ pub fn update_tray_badge(app: &tauri::AppHandle) {
             Ok(c) => c,
             Err(_) => return,
         };
-        let icon = if should_show_badge(&conn) {
-            tauri::image::Image::from_bytes(include_bytes!("../icons/icon-badge.png")).ok()
-        } else {
-            tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).ok()
-        };
-
-        if let Some(icon) = icon {
+        if let Some(icon) = cached_tray_icon(should_show_badge(&conn)) {
             let _ = tray.set_icon(Some(icon));
         }
     }
@@ -152,57 +154,32 @@ pub fn setup_tray_listeners(app: &tauri::AppHandle) {
 mod tests {
     use super::*;
 
-    /// 构造最小 ReleaseInfo，仅填充托盘红点判定所需的 source_id。
-    fn release(source_id: i64) -> crate::db::releases::ReleaseInfo {
-        crate::db::releases::ReleaseInfo {
-            id: source_id,
-            source_id,
-            source_type: "github".to_string(),
-            owner: "o".to_string(),
-            repo: "r".to_string(),
-            tag_name: "v1".to_string(),
-            release_name: "R".to_string(),
-            html_url: "https://x".to_string(),
-            published_at: "2024-01-01T00:00:00Z".to_string(),
-            prerelease: false,
-            body: None,
-            detected_at: "2024-01-01T00:00:00Z".to_string(),
-            notification_status: "pending".to_string(),
-            snooze_until: None,
-            ai_summary: None,
-            ai_importance: None,
-            body_translated: None,
-            extra_metadata: None,
-            source_description: None,
-            flag: 0,
-            version_bump: None,
-        }
-    }
-
     #[test]
-    fn test_has_unread_badge_empty_no_badge() {
-        assert!(!has_unread_badge(&[], &HashSet::new()));
-    }
+    fn test_should_show_badge_snoozed_due_and_future() {
+        let conn = crate::db::init::init_memory_db().unwrap();
+        let sid = crate::db::sources::add_source(&conn, "github", "o", "r", "").unwrap();
+        let rid = crate::db::releases::insert_release(
+            &conn,
+            sid,
+            "v1",
+            "R",
+            "https://x",
+            "2024-01-01T00:00:00Z",
+            false,
+            None,
+        )
+        .unwrap();
 
-    #[test]
-    fn test_has_unread_badge_unread_not_muted() {
-        let unread = vec![release(1), release(2)];
-        assert!(has_unread_badge(&unread, &HashSet::new()));
-    }
+        let future = (chrono::Utc::now() + chrono::Duration::hours(1)).to_rfc3339();
+        crate::db::releases::set_notification_state(&conn, rid, "snoozed", Some(&future)).unwrap();
+        assert!(!should_show_badge(&conn));
 
-    #[test]
-    fn test_has_unread_badge_all_muted_no_badge() {
-        let unread = vec![release(1), release(2)];
-        let muted: HashSet<i64> = [1, 2].into_iter().collect();
-        assert!(!has_unread_badge(&unread, &muted));
-    }
+        let past = (chrono::Utc::now() - chrono::Duration::hours(1)).to_rfc3339();
+        crate::db::releases::set_notification_state(&conn, rid, "snoozed", Some(&past)).unwrap();
+        assert!(should_show_badge(&conn));
 
-    #[test]
-    fn test_has_unread_badge_mixed_muted_and_unmuted() {
-        let unread = vec![release(1), release(2), release(3)];
-        let muted: HashSet<i64> = [1, 3].into_iter().collect();
-        // source 2 未静音 → 应亮红点
-        assert!(has_unread_badge(&unread, &muted));
+        crate::db::releases::set_notification_state(&conn, rid, "clicked", None).unwrap();
+        assert!(!should_show_badge(&conn));
     }
 
     /// 整条链路集成测试：DB 读取未读 + muted → 判定 → 是否亮红点。

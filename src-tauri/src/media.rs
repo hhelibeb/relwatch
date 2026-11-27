@@ -121,12 +121,15 @@ fn read_cached(url: &str) -> Result<Option<(Vec<u8>, String)>, String> {
     Ok(Some((bytes, meta.content_type)))
 }
 
-/// 写缓存（原子：先写临时再 rename，避免半截文件被当完整命中）。
 fn write_cache(url: &str, bytes: &[u8], content_type: &str) {
+    static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let bytes_path = cache_path_for_url(url);
-    let tmp = bytes_path.with_extension("tmp");
+    let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = bytes_path.with_extension(format!("tmp-{}-{}", std::process::id(), seq));
     if std::fs::write(&tmp, bytes).is_ok() {
         let _ = std::fs::rename(&tmp, &bytes_path);
+    } else {
+        let _ = std::fs::remove_file(&tmp);
     }
     let meta = serde_json::json!({
         "content_type": content_type,
@@ -157,8 +160,21 @@ fn evict_if_needed() {
     let mut total: u64 = 0;
     for e in entries.flatten() {
         let p = e.path();
-        if p.extension().and_then(|x| x.to_str()) == Some("tmp") {
-            let _ = std::fs::remove_file(&p); // 遗留临时文件
+        let is_tmp = p
+            .extension()
+            .and_then(|x| x.to_str())
+            .is_some_and(|ext| ext == "tmp" || ext.starts_with("tmp-"));
+        if is_tmp {
+            // 仅清理超过 60s 的遗留临时文件，避免误删正在并发写入的新鲜 .tmp
+            let is_stale = e
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| SystemTime::now().duration_since(t).ok())
+                .is_some_and(|age| age > Duration::from_secs(60));
+            if is_stale {
+                let _ = std::fs::remove_file(&p);
+            }
             continue;
         }
         if let Ok(m) = e.metadata() {
@@ -236,23 +252,28 @@ fn hex_val(b: u8) -> Option<u8> {
 /// 解码 + 命中缓存/回源下载。返回 (bytes, content_type)。
 async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String), String> {
     let url = decode_media_path(path.trim_start_matches('/'))?;
-    if let Some(hit) = read_cached(&url)? {
+    let cache_url = url.clone();
+    if let Some(hit) = tokio::task::spawn_blocking(move || read_cached(&cache_url))
+        .await
+        .map_err(|e| e.to_string())??
+    {
         return Ok(hit);
     }
-    // 读代理设置并交给下载核心：核心会解析+校验目标为公网并固定 IP（防 DNS 重绑定）。
-    let (proxy_url, proxy_mode) = read_proxy_settings(app)?;
+
+    let app_for_proxy = app.clone();
+    let (proxy_url, proxy_mode) =
+        tokio::task::spawn_blocking(move || read_proxy_settings(&app_for_proxy))
+            .await
+            .map_err(|e| e.to_string())??;
     let config = http::HttpClientConfig {
         proxy_url: &proxy_url,
         proxy_mode: &proxy_mode,
-        // 禁自动重定向：逐跳 SSRF 校验必须手动跟随（核心内固定）
         follow_redirects: false,
         ..Default::default()
     };
     let (bytes, content_type) =
         match http::fetch_public_with_headers(&config, &url, MAX_MEDIA_BYTES).await {
             Ok(v) => v,
-            // 高清封面缺失（maxresdefault 并非每个视频都生成）时逐级降档，
-            // 避免列表封面直接破图。缓存仍按原 URL 记，语义是“该视频的封面”。
             Err(e) if e.contains("HTTP 404") => {
                 let mut fallback = None;
                 for alt in yt_thumbnail_fallbacks(&url) {
@@ -267,13 +288,16 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
             }
             Err(e) => return Err(e),
         };
-    // Content-Type 白名单：media 是被 Tauri 判定为本地源的自定义协议，
-    // 透传远端 Content-Type 意味着 text/html 可成为可导航文档；只放行真正的
-    // 媒体类型，其余一律 octet-stream（nosniff 下不会被执行/渲染为 HTML）。
-    // SVG 不在白名单（可含脚本）。缓存的 content_type 一并白名单化，保证缓存与响应一致。
+    // 自定义协议会被 WebView 视为本地源：必须白名单化并禁 SVG，防止远端返回 text/html 或脚本 SVG 被执行
     let content_type = sanitize_content_type(&content_type.unwrap_or_default());
-    write_cache(&url, &bytes, &content_type);
-    evict_if_needed();
+    let write_ct = content_type.clone();
+    let bytes = tokio::task::spawn_blocking(move || {
+        write_cache(&url, &bytes, &write_ct);
+        bytes
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(evict_if_needed);
     Ok((bytes, content_type))
 }
 

@@ -101,33 +101,32 @@ pub fn parse_session_jsonl(content: &str) -> Result<Vec<AgentChatMessage>, Strin
         entries.push((id, parent, convert_message(&msg, &timestamp)));
     }
 
-    // 从最后一条消息沿 parentId 回溯到根，反转得到当前 leaf 路径。
-    // 损坏文件可能出现 parentId 环（自引用/回指祖先）：visited 集合防死循环，
-    // 深度上限兜底（正常会话数千条消息封顶，同步命令不可被损坏文件拖死）。
-    let mut chain: Vec<String> = Vec::new();
+    // 重复 id 时保留首次出现，与原 iter().find() 语义一致。
+    let mut index_by_id: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(entries.len());
+    for (i, (id, _, _)) in entries.iter().enumerate() {
+        index_by_id.entry(id.clone()).or_insert(i);
+    }
+
+    let mut chain_indices: Vec<usize> = Vec::new();
     let mut cur = last_id;
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let max_depth = entries.len().max(1) * 2 + 1000; // 正常树深度 ≤ 消息数，留余量
+    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let max_depth = entries.len().max(1) * 2 + 1000;
     while let Some(c) = cur {
-        if !visited.insert(c.clone()) {
-            break; // 检测到环
-        }
-        if chain.len() >= max_depth {
+        let Some(&idx) = index_by_id.get(&c) else {
+            break;
+        };
+        if !visited.insert(idx) || chain_indices.len() >= max_depth {
             break;
         }
-        chain.push(c.clone());
-        cur = entries
-            .iter()
-            .find(|(id, _, _)| *id == c)
-            .and_then(|(_, parent, _)| parent.clone());
+        chain_indices.push(idx);
+        cur = entries[idx].1.clone();
     }
-    chain.reverse();
+    chain_indices.reverse();
 
-    let mut out = Vec::with_capacity(chain.len());
-    for id in chain {
-        if let Some((_, _, m)) = entries.iter().find(|(eid, _, _)| *eid == id) {
-            out.push(m.clone());
-        }
+    let mut out = Vec::with_capacity(chain_indices.len());
+    for idx in chain_indices {
+        out.push(entries[idx].2.clone());
     }
     Ok(out)
 }

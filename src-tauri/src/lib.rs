@@ -310,17 +310,13 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol("media", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             let uri = request.uri().to_string();
-            std::thread::spawn(move || {
-                let app = app.clone();
-                let response = tauri::async_runtime::block_on(async move {
-                    // 提取 path：http://media.localhost/<path> → <path>
-                    let path = uri
-                        .split("localhost/")
-                        .nth(1)
-                        .map(|p| p.to_string())
-                        .unwrap_or_default();
-                    crate::media::handle_media_request(&app, &path).await
-                });
+            tauri::async_runtime::spawn(async move {
+                let path = uri
+                    .split("localhost/")
+                    .nth(1)
+                    .map(|p| p.to_string())
+                    .unwrap_or_default();
+                let response = crate::media::handle_media_request(&app, &path).await;
                 responder.respond(response);
             });
         })

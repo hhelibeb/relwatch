@@ -134,9 +134,16 @@ const AGENT_RUNS_COLUMN_NAMES: &[&str] = &[
     "files",
 ];
 
-/// agent_runs 会话键索引（列表/会话路径查询均按 session_key）。
 const AGENT_RUNS_SESSION_INDEX: &str =
     "CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_key);";
+
+const SECONDARY_INDEXES_SQL: &str = "
+    CREATE INDEX IF NOT EXISTS idx_releases_source_published ON releases(source_id, published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_notification_state_status ON notification_state(status);
+    CREATE INDEX IF NOT EXISTS idx_logs_level_id ON logs(level, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_logs_created_at ON logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_agent_runs_status_session ON agent_runs(status, session_key);
+";
 
 pub fn apply_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(&(
@@ -266,6 +273,7 @@ pub fn migrate(conn: &Connection) -> Result<()> {
 fn migrate_steps(conn: &Connection) -> Result<()> {
     // 守卫逐列判断，不用「组守卫」（只看组内首列）：组守卫对已经半迁移的库会永久跳过
     // 缺口（它已当成整组执行过），而重跑整组又会以 duplicate column 失败。
+    // Migration 1–4: releases.ai_*, logs.message_*, sources 健康状态与 description
     if !table_has_column(conn, "releases", "ai_summary") {
         conn.execute_batch("ALTER TABLE releases ADD COLUMN ai_summary TEXT")?;
     }
@@ -303,51 +311,27 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE sources ADD COLUMN description TEXT")?;
     }
 
-    // ── Migration 5: retry_count on releases ──
-    let has_retry_count: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='retry_count'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_retry_count {
+    // Migration 5: releases.retry_count
+    if !table_has_column(conn, "releases", "retry_count") {
         conn.execute_batch(
-            "ALTER TABLE releases ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE releases ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
 
-    // ── Migration 6: last_notified_at on notification_state ──
-    let has_last_notified: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('notification_state') WHERE name='last_notified_at'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_last_notified {
-        conn.execute_batch(
-            "ALTER TABLE notification_state ADD COLUMN last_notified_at TEXT;"
-        )?;
+    // Migration 6: notification_state.last_notified_at
+    if !table_has_column(conn, "notification_state", "last_notified_at") {
+        conn.execute_batch("ALTER TABLE notification_state ADD COLUMN last_notified_at TEXT;")?;
     }
 
-    // ── Migration 7: muted on sources ──
-    let has_muted: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='muted'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_muted {
-        conn.execute_batch(
-            "ALTER TABLE sources ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;"
-        )?;
+    // Migration 7: sources.muted
+    if !table_has_column(conn, "sources", "muted") {
+        conn.execute_batch("ALTER TABLE sources ADD COLUMN muted INTEGER NOT NULL DEFAULT 0;")?;
     }
 
-    // ── Migration 8: rendered_message on logs ──
-    let has_rendered: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('logs') WHERE name='rendered_message'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_rendered {
-        conn.execute_batch(
-            "ALTER TABLE logs ADD COLUMN rendered_message TEXT;"
-        )?;
+    // Migration 8: logs.rendered_message
+    if !table_has_column(conn, "logs", "rendered_message") {
+        conn.execute_batch("ALTER TABLE logs ADD COLUMN rendered_message TEXT;")?;
 
-        // 清理历史错误写入的 raw template（含未替换的 {key} 占位符）；
-        // 仅首次加列时执行，避免重复 NULL → backfill → 再次 NULL 的循环
         let _ = conn.execute(
             "UPDATE logs SET rendered_message = NULL WHERE rendered_message LIKE '%{%}%'",
             [],
@@ -364,8 +348,7 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         }
     }
 
-    // ── Migration 9: body_translated + translate_retry_count on releases ──
-    // 用于 AI 翻译 release note 全文功能。
+    // Migration 9: releases.body_translated + translate_retry_count
     if !table_has_column(conn, "releases", "body_translated") {
         conn.execute_batch("ALTER TABLE releases ADD COLUMN body_translated TEXT;")?;
     }
@@ -375,35 +358,17 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         )?;
     }
 
-    // ── Migration 10: extra_metadata on releases ──
-    // 用于 HuggingFace 模型元数据（pipeline_tag/downloads/likes/gated/tags 等），
-    // body 列改为存储模型 README（人类可读内容）。
-    let has_extra_metadata: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('releases') WHERE name='extra_metadata'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_extra_metadata {
-        conn.execute_batch(
-            "ALTER TABLE releases ADD COLUMN extra_metadata TEXT;",
-        )?;
+    // Migration 10: releases.extra_metadata
+    if !table_has_column(conn, "releases", "extra_metadata") {
+        conn.execute_batch("ALTER TABLE releases ADD COLUMN extra_metadata TEXT;")?;
     }
 
-    // ── Migration 11: config on sources ──
-    // 源级附加配置（JSON），目前用于 YouTube 订阅内容类型（视频/直播/帖子）。
-    let has_source_config: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('sources') WHERE name='config'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_source_config {
-        conn.execute_batch(
-            "ALTER TABLE sources ADD COLUMN config TEXT;",
-        )?;
+    // Migration 11: sources.config
+    if !table_has_column(conn, "sources", "config") {
+        conn.execute_batch("ALTER TABLE sources ADD COLUMN config TEXT;")?;
     }
 
-    // ── Migration 14: Agent 全局化重构 ──
-    // 逐源绑定模型（source_agent_bindings + agent_runs 含 binding_id）废弃，
-    // 改为全局 Agent 配置（app_settings key）+ 工作区会话提交记录（agent_runs 重建）。
-    // 该模型随分支引入且未发布，旧表数据直接丢弃重建，无迁移成本。
+    // Migration 14: Agent 全局化（移除旧绑定表与 binding_id 版 agent_runs）
     let has_bindings_table: bool = conn
         .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_agent_bindings'")
         .and_then(|mut s| s.exists([]))
@@ -411,29 +376,16 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
     if has_bindings_table {
         conn.execute_batch("DROP TABLE source_agent_bindings;")?;
     }
-    let has_old_runs: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('agent_runs') WHERE name='binding_id'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if has_old_runs {
+    if table_has_column(conn, "agent_runs", "binding_id") {
         conn.execute_batch("DROP TABLE agent_runs;")?;
-        // 与 apply_schema 共用同一份列定义（含 CHECK 约束）；表重建后索引丢失需重建
-        conn.execute_batch(
-            &format!(
-                "CREATE TABLE agent_runs {};\n{}",
-                AGENT_RUNS_COLUMNS, AGENT_RUNS_SESSION_INDEX
-            ),
-        )?;
+        conn.execute_batch(&format!(
+            "CREATE TABLE agent_runs {};\n{}",
+            AGENT_RUNS_COLUMNS, AGENT_RUNS_SESSION_INDEX
+        ))?;
     }
 
-    // ── Migration 15: 工作区提交可选模型（agent_runs.model）──
-    // 提交时显式选择的 pi 模型（`{"provider":..,"model_id":..}` JSON），
-    // None = 跟随 pi 当前/默认模型。老库无此列时补列（新库已含于 AGENT_RUNS_COLUMNS）。
-    let has_run_model: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('agent_runs') WHERE name='model'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_run_model {
+    // Migration 15: agent_runs.model
+    if !table_has_column(conn, "agent_runs", "model") {
         conn.execute_batch("ALTER TABLE agent_runs ADD COLUMN model TEXT;")?;
     }
 
@@ -513,29 +465,14 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
         }
     }
 
-    // ── Migration 19: notify_failures on notification_state ──
-    // 通知发送失败的累计次数（失败留痕 + 受限重试，见 `notify::handle_send_failure`）。
-    // 刻意**不**在 `set_last_notified_at`（发送前的批量标记）里清零：否则每轮标记都会把
-    // 重试预算重置，失败重试就失去上限了。清零只发生在「重置为待通知/稍后提醒」时。
-    let has_notify_failures: bool = conn
-        .prepare("SELECT 1 FROM pragma_table_info('notification_state') WHERE name='notify_failures'")
-        .and_then(|mut s| s.exists([]))
-        .unwrap_or(false);
-    if !has_notify_failures {
+    // Migration 19: notification_state.notify_failures（刻意不在 set_last_notified_at 清零，避免每轮重置重试上限）
+    if !table_has_column(conn, "notification_state", "notify_failures") {
         conn.execute_batch(
-            "ALTER TABLE notification_state ADD COLUMN notify_failures INTEGER NOT NULL DEFAULT 0;"
+            "ALTER TABLE notification_state ADD COLUMN notify_failures INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
 
-    // ── Migration 20: sources.poll_interval_minutes 归一为「未设置」──
-    // 该列自建库起就是死字段：写入与前端透传都在，但无人读，存量行的值清一色来自
-    // 建表默认值 30，**不含任何用户意图**，只会在将来重新引入按源调度时静默压掉
-    // 用户设的全局周期。
-    //
-    // 这里把值等于建表默认值 30 的行统一置 0，并定下约定：
-    //   0 = 未设置（跟随全局周期）；>0 = 显式间隔（重新引入按源调度时必须先处理 0）。
-    // 只动等于 30 的行：其他值只可能来自开发期手动写入的显式选择，不该被这次归一化抹掉。
-    // 用 app_settings 标记保证只跑一次；失败不写标记，下次启动重试。
+    // Migration 20: sources.poll_interval_minutes 归一为 0（只改历史默认 30，保留其他显式配置值）
     const SOURCE_INTERVAL_MARKER: &str = "migration.source_interval_follow_global_v1";
     let interval_normalized = super::settings::get_setting(conn, SOURCE_INTERVAL_MARKER)
         .ok()
@@ -561,6 +498,9 @@ fn migrate_steps(conn: &Connection) -> Result<()> {
             Err(e) => log::error!("源检查间隔归一失败（不写标记，下次启动重试）: {}", e),
         }
     }
+
+    // 建索引放在所有列迁移之后，避免旧版备份在补列前因缺列报错
+    conn.execute_batch(SECONDARY_INDEXES_SQL)?;
 
     Ok(())
 }
@@ -736,6 +676,9 @@ fn rebuild_agent_runs(conn: &Connection) -> Result<()> {
     conn.execute_batch("DROP TABLE agent_runs;")?;
     conn.execute_batch("ALTER TABLE agent_runs_new RENAME TO agent_runs;")?;
     conn.execute_batch(AGENT_RUNS_SESSION_INDEX)?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_agent_runs_status_session ON agent_runs(status, session_key);",
+    )?;
     Ok(())
 }
 
@@ -1338,5 +1281,96 @@ mod tests {
             )
             .unwrap();
         assert_eq!(c, 30, "带标记时不得重跑归一化");
+    }
+
+    #[test]
+    fn test_secondary_indexes_exist_and_used_by_hot_queries() {
+        let conn = init_memory_db().unwrap();
+        for idx in [
+            "idx_releases_source_published",
+            "idx_notification_state_status",
+            "idx_logs_level_id",
+            "idx_logs_created_at",
+            "idx_agent_runs_status_session",
+        ] {
+            let exists: bool = conn
+                .prepare("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1")
+                .and_then(|mut s| s.exists([idx]))
+                .unwrap();
+            assert!(exists, "缺少预期二级索引: {idx}");
+        }
+
+        let explain = |sql: &str| -> String {
+            let mut stmt = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+
+        assert!(explain("SELECT 1 FROM releases WHERE source_id = 1 ORDER BY published_at DESC")
+            .contains("idx_releases_source_published"));
+        assert!(explain("SELECT snooze_until FROM notification_state WHERE status = 'snoozed'")
+            .contains("idx_notification_state_status"));
+        assert!(explain("SELECT 1 FROM notification_state ns JOIN releases r ON r.id = ns.release_id JOIN sources s ON r.source_id = s.id WHERE ns.status = 'pending' AND s.muted = 0 LIMIT 1")
+            .contains("idx_notification_state_status"));
+        assert!(explain("SELECT id FROM logs WHERE level = 'ERROR' ORDER BY id DESC LIMIT 20")
+            .contains("idx_logs_level_id"));
+        assert!(explain("DELETE FROM logs WHERE created_at < '2025-01-01T00:00:00Z'")
+            .contains("idx_logs_created_at"));
+        assert!(explain("SELECT id FROM agent_runs WHERE status = 'running' AND session_key = 'ws-1'")
+            .contains("idx_agent_runs_status_session"));
+    }
+
+    #[test]
+    fn test_apply_schema_and_migrate_succeed_on_legacy_backup_without_altered_columns() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_type TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                repo TEXT NOT NULL,
+                poll_interval_minutes INTEGER NOT NULL DEFAULT 30,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE releases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_id INTEGER NOT NULL,
+                tag_name TEXT NOT NULL,
+                release_name TEXT NOT NULL,
+                html_url TEXT NOT NULL,
+                published_at TEXT NOT NULL,
+                prerelease INTEGER NOT NULL DEFAULT 0,
+                body TEXT,
+                detected_at TEXT NOT NULL
+            );
+            CREATE TABLE notification_state (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                release_id INTEGER NOT NULL UNIQUE,
+                status TEXT NOT NULL DEFAULT 'pending',
+                snooze_until TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+
+        apply_schema(&conn).unwrap();
+        migrate(&conn).unwrap();
+
+        assert!(has_column(&conn, "notification_state", "last_notified_at"));
+        assert!(has_column(&conn, "notification_state", "notify_failures"));
+        assert!(has_column(&conn, "releases", "version_bump"));
     }
 }
