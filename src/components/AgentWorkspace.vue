@@ -4,6 +4,8 @@ import type { UnlistenFn } from '@tauri-apps/api/event'
 import { events } from '../bindings'
 import { AppCatalogKey, ShowToastKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
 import {
+  AGENT_TIMEOUT_MAX,
+  AGENT_TIMEOUT_MIN,
   getAgentConfig,
   getAgentAvailableModels,
   openAgentSession,
@@ -346,7 +348,7 @@ function startAdjustTimeout() {
 
 async function saveTimeout() {
   const v = Number(timeoutInput.value)
-  if (!Number.isInteger(v) || v < 10 || v > 3600) {
+  if (!Number.isInteger(v) || v < AGENT_TIMEOUT_MIN || v > AGENT_TIMEOUT_MAX) {
     showToast(t('agent.timeout_range'))
     return
   }

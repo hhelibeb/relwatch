@@ -13,7 +13,14 @@ import {
 } from '../api/settings'
 import { openReleaseUrl } from '../api/client'
 import { useAppUpdate } from '../api/update'
-import { getAgentConfig, saveAgentConfig, type AgentConfig } from '../api/agent'
+import {
+  AGENT_MAX_CONCURRENCY_LIMIT,
+  AGENT_TIMEOUT_MAX,
+  AGENT_TIMEOUT_MIN,
+  getAgentConfig,
+  saveAgentConfig,
+  type AgentConfig,
+} from '../api/agent'
 import { t, tm, setLocale, languages } from '../i18n'
 import { skillShortName } from '../utils'
 import { track } from '../composables/useUsageTracking'
@@ -83,18 +90,12 @@ async function loadAgentConfig() {
   }
 }
 
-/** 超时秒数归一化：输入框清空时 v-model.number 得 NaN，
- *  Math.max(1, NaN) 仍是 NaN → JSON 序列化为 null → 后端 serde 反序列化报错。 */
 function normalizedAgentTimeout(): number {
   const v = agentTimeout.value
-  return Number.isFinite(v) ? Math.max(1, Math.floor(v)) : 1
+  if (!Number.isFinite(v)) return AGENT_TIMEOUT_MIN
+  return Math.min(AGENT_TIMEOUT_MAX, Math.max(AGENT_TIMEOUT_MIN, Math.floor(v)))
 }
 
-/** 并发会话数上限（与后端 db::agent::MAX_AGENT_CONCURRENCY 对齐）。 */
-const AGENT_MAX_CONCURRENCY_LIMIT = 8
-
-/** 并发上限归一化：同 timeout 的 NaN 问题；再夹到 [1, 上限]——后端也会 clamp，
- *  但前端先收口才能让输入框显示值与实际生效值一致。 */
 function normalizedAgentMaxConcurrency(): number {
   const v = agentMaxConcurrency.value
   if (!Number.isFinite(v)) return 1
@@ -829,7 +830,8 @@ async function handleImportBackup() {
             <input
               type="number"
               v-model.number="agentTimeout"
-              min="1"
+              :min="AGENT_TIMEOUT_MIN"
+              :max="AGENT_TIMEOUT_MAX"
               class="setting-input setting-input-narrow"
               style="width:calc(8ch * 1.25)"
             />

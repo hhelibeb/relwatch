@@ -31,6 +31,10 @@ export type {
   RpcAvailableModel,
 } from '../bindings'
 
+export const AGENT_MAX_CONCURRENCY_LIMIT = 8
+export const AGENT_TIMEOUT_MIN = 10
+export const AGENT_TIMEOUT_MAX = 3600
+
 export async function getAgentConfig(): Promise<AgentConfig> {
   return invokeI18nFn(commands.getAgentConfig)
 }

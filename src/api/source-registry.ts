@@ -15,7 +15,8 @@
  */
 import { commands } from '../bindings'
 import type { Source } from './sources'
-import type { SourceType } from '../components/releaseTypes'
+
+export type SourceType = 'github' | 'huggingface' | 'youtube' | 'bilibili'
 
 /** 输入解析结果：type 与后端 source_type 一致。 */
 export interface ParsedSource {
