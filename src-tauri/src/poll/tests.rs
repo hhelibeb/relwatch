@@ -3,9 +3,8 @@ use super::ai_jobs::*;
 use super::check::*;
 use super::settings::*;
 use crate::db::settings::{KEY_FETCH_HISTORY, KEY_FETCH_HISTORY_COUNT};
-use crate::github;
+use crate::adapters::github;
 use crate::source;
-use serde_json::json;
 use std::sync::Arc;
 
 /// 已到点（包括系统休眠唤醒后挂钟已远超 target 的情形）应返回 `None`，
@@ -43,44 +42,44 @@ fn poll_wait_slice_is_clamped_to_slice() {
 
 #[test]
 fn test_poll_lock_acquire_and_release() {
-    POLL_LOCK.store(false, Ordering::Release);
-
-    assert!(POLL_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_ok());
-    assert!(POLL_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err());
-    POLL_LOCK.store(false, Ordering::Release);
-    assert!(POLL_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_ok());
-    POLL_LOCK.store(false, Ordering::Release);
+    let rt = PollRuntime::const_new();
+    let g1 = rt.acquire_lock();
+    assert!(g1.is_ok());
+    assert!(rt.acquire_lock().is_err());
+    drop(g1);
+    assert!(rt.acquire_lock().is_ok());
 }
 
 #[test]
 fn test_poll_guard_drop_releases_lock() {
-    POLL_LOCK.store(false, Ordering::Release);
-
+    let rt = PollRuntime::const_new();
     {
-        assert!(POLL_LOCK
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_ok());
-        let _guard = PollGuard;
-        assert!(POLL_LOCK.load(Ordering::Relaxed));
+        let _guard = rt.acquire_lock().unwrap();
+        assert!(rt.lock.load(Ordering::Relaxed));
     }
-    assert!(!POLL_LOCK.load(Ordering::Relaxed));
+    assert!(!rt.lock.load(Ordering::Relaxed));
+}
+
+#[test]
+fn test_poll_runtime_instances_are_isolated() {
+    let rt_a = PollRuntime::const_new();
+    let rt_b = PollRuntime::const_new();
+    let _g = rt_a.acquire_lock().unwrap();
+    assert!(rt_b.acquire_lock().is_ok());
+    rt_a.stop();
+    assert!(!rt_a.is_running());
+    assert!(rt_b.is_running());
 }
 
 #[test]
 fn test_poll_running_flag() {
-    POLL_RUNNING.store(true, Ordering::SeqCst);
+    RUNTIME.running.store(true, Ordering::SeqCst);
     assert!(is_poll_running());
 
     stop_poll();
     assert!(!is_poll_running());
 
-    POLL_RUNNING.store(true, Ordering::SeqCst);
+    RUNTIME.running.store(true, Ordering::SeqCst);
 }
 
 use crate::db::init::init_memory_db;
@@ -222,12 +221,12 @@ fn test_next_poll_at_startup_falls_back_when_expired() {
 #[test]
 fn test_acquire_lock_succeeds_and_fails() {
     // 验证 pub(crate) acquire_lock API
-    POLL_LOCK.store(false, Ordering::Release);
+    RUNTIME.lock.store(false, Ordering::Release);
 
     // 第一次获取应成功
     let guard1 = acquire_lock();
     assert!(guard1.is_ok(), "first acquire should succeed");
-    assert!(POLL_LOCK.load(Ordering::Relaxed));
+    assert!(RUNTIME.lock.load(Ordering::Relaxed));
 
     // 第二次获取应失败（锁已被持有）
     let guard2 = acquire_lock();
@@ -235,7 +234,7 @@ fn test_acquire_lock_succeeds_and_fails() {
 
     // 释放第一个 guard
     drop(guard1);
-    assert!(!POLL_LOCK.load(Ordering::Relaxed));
+    assert!(!RUNTIME.lock.load(Ordering::Relaxed));
 
     // 再次获取应成功
     let guard3 = acquire_lock();
@@ -243,7 +242,7 @@ fn test_acquire_lock_succeeds_and_fails() {
 
     // 清理
     drop(guard3);
-    POLL_LOCK.store(false, Ordering::Release);
+    RUNTIME.lock.store(false, Ordering::Release);
 }
 
 #[test]
@@ -338,31 +337,31 @@ fn test_compute_plan_count_101() {
 
 #[test]
 fn test_uncounted_failure_covers_rate_limit_and_save_timeout() {
-    // 全局性、可自愈的故障不烧断路器额度。回归点：未配置 GitHub Token 时限流是
-    // 403 + x-ratelimit-remaining:0（http::rate_limit_error 归类），照旧累加的话
-    // 连续 3 轮会把**所有** GitHub 源集体禁用。
-    for msg in [
-        "err.rate_limit",
-        "err.rate_limit_reset|120",
-        "err.credential_invalid",
-        "err.save_timeout|300",
-        "err.youtube_api_quota|quota",
-        "err.bili_rate_limit",
+    use crate::error::{SourceError, SourceErrorKind};
+    for err in [
+        SourceError::rate_limit(429),
+        SourceError::rate_limit_reset(403, 120),
+        SourceError::credential_invalid(401),
+        SourceError::save_timeout(300),
+        SourceError::new(
+            403,
+            SourceErrorKind::YoutubeApiQuota {
+                detail: Some("quota".into()),
+            },
+        ),
+        SourceError::new(429, SourceErrorKind::BiliRateLimit),
     ] {
-        assert!(is_uncounted_failure(msg), "{} 应豁免断路器", msg);
+        assert!(err.is_uncounted_failure(), "{} 应豁免断路器", err);
     }
-    // 私有仓库/404/持续拉取超时是源自身的问题，照常累加（该禁就禁）
-    for msg in [
-        "err.api_error|403|Forbidden",
-        "err.api_error|404|Not Found",
-        "err.source_timeout|300",
+    for err in [
+        SourceError::api_error(403, "Forbidden"),
+        SourceError::api_error(404, "Not Found"),
+        SourceError::source_timeout(300),
     ] {
-        assert!(!is_uncounted_failure(msg), "{} 应计入断路器", msg);
+        assert!(!err.is_uncounted_failure(), "{} 应计入断路器", err);
     }
 }
 
-/// 只驱动编排+保存路径的最小适配器：`fetch` 依次吐出预置窗口，`save` 走真实的
-/// [`crate::db::save::save_entries_generic`]，用于端到端验证增量轮转语义。
 struct StubAdapter {
     windows: std::sync::Mutex<Vec<Vec<(&'static str, &'static str)>>>,
 }
@@ -379,14 +378,22 @@ impl source::SourceAdapter for StubAdapter {
         _source: &db::sources::Source,
         _per_page: usize,
         _token: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    ) -> Result<Vec<source::FetchedRelease>, crate::error::SourceError> {
         Ok(self
             .windows
             .lock()
             .unwrap()
             .remove(0)
             .into_iter()
-            .map(|(tag, published)| json!({"tag": tag, "published": published}))
+            .map(|(tag, published)| source::FetchedRelease {
+                tag: tag.to_string(),
+                name: tag.to_string(),
+                html_url: format!("https://x/{}", tag),
+                published: published.to_string(),
+                prerelease: false,
+                body: None,
+                extra: source::SourceExtraMetadata::None,
+            })
             .collect())
     }
 
@@ -396,7 +403,7 @@ impl source::SourceAdapter for StubAdapter {
         source: &db::sources::Source,
         _max_count: Option<usize>,
         token: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    ) -> Result<Vec<source::FetchedRelease>, crate::error::SourceError> {
         self.fetch(client, source, 0, token).await
     }
 
@@ -404,7 +411,7 @@ impl source::SourceAdapter for StubAdapter {
         &self,
         db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
         source: &db::sources::Source,
-        data: &[serde_json::Value],
+        data: &[source::FetchedRelease],
         max_count: usize,
         _client: &reqwest::Client,
     ) -> Vec<(i64, Option<String>)> {
@@ -414,18 +421,7 @@ impl source::SourceAdapter for StubAdapter {
         };
         let entries: Vec<db::save::SaveEntry> = data
             .iter()
-            .map(|v| {
-                let tag = v["tag"].as_str().unwrap_or_default().to_string();
-                db::save::SaveEntry {
-                    name: tag.clone(),
-                    html_url: format!("https://x/{}", tag),
-                    published: v["published"].as_str().unwrap_or_default().to_string(),
-                    tag,
-                    prerelease: false,
-                    body: None,
-                    metadata: None,
-                }
-            })
+            .map(source::FetchedRelease::to_save_entry)
             .collect();
         db::save::save_entries_generic(
             &conn,
@@ -443,7 +439,7 @@ impl source::SourceAdapter for StubAdapter {
         _owner: &str,
         _repo: &str,
         _token: Option<&str>,
-    ) -> Result<String, (u16, String)> {
+    ) -> Result<String, crate::error::SourceError> {
         Ok("stub".to_string())
     }
 }
@@ -552,7 +548,7 @@ fn test_load_poll_settings_defaults() {
     let settings = load_poll_settings(&conn).unwrap();
     assert_eq!(settings.proxy.url, "");
     assert_eq!(settings.proxy.mode, "none");
-    assert!(settings.credentials.github_token.is_none());
+    assert!(settings.credentials.get(source::AuthKind::GitHubToken).is_none());
     assert!(!settings.fetch_history);
     assert_eq!(settings.fetch_history_count, 1);
 }
@@ -572,7 +568,10 @@ fn test_load_poll_settings_configured() {
     let settings = load_poll_settings(&conn).unwrap();
     assert_eq!(settings.proxy.url, "http://127.0.0.1:1080");
     assert_eq!(settings.proxy.mode, "custom");
-    assert_eq!(settings.credentials.github_token.as_deref(), Some("ghp_configured"));
+    assert_eq!(
+        settings.credentials.get(source::AuthKind::GitHubToken),
+        Some("ghp_configured")
+    );
     assert!(settings.fetch_history);
     assert_eq!(settings.fetch_history_count, 5);
 }
@@ -643,15 +642,16 @@ fn test_mark_older_as_read_all_when_newer_exists() {
 
 // ── source 分发测试 ──
 
-fn gh_release(tag: &str, date: &str, body: Option<&str>) -> serde_json::Value {
-    serde_json::json!({
-        "tag_name": tag,
-        "name": tag,
-        "html_url": format!("https://github.com/o/r/releases/tag/{}", tag),
-        "published_at": date,
-        "prerelease": false,
-        "body": body,
-    })
+fn gh_release(tag: &str, date: &str, body: Option<&str>) -> source::FetchedRelease {
+    source::FetchedRelease {
+        tag: tag.to_string(),
+        name: tag.to_string(),
+        html_url: format!("https://github.com/o/r/releases/tag/{}", tag),
+        published: date.to_string(),
+        prerelease: false,
+        body: body.map(|s| s.to_string()),
+        extra: source::SourceExtraMetadata::None,
+    }
 }
 
 /// github 入库逻辑由 `github::save_releases` 覆盖（trait 实现内部调它）。
@@ -681,9 +681,13 @@ fn test_github_save_respects_max_count() {
 fn test_get_adapter_unsupported_type_errors() {
     match source::get_adapter("gitlab") {
         Ok(_) => panic!("不支持的源类型应返回错误"),
-        Err((status, msg)) => {
-            assert_eq!(status, 0);
-            assert!(msg.contains("err.unsupported_source"), "错误信息: {}", msg);
+        Err(e) => {
+            assert_eq!(e.status(), 0);
+            assert!(
+                e.to_ipc_string().contains("err.unsupported_source"),
+                "错误信息: {}",
+                e
+            );
         }
     }
 }
@@ -712,16 +716,15 @@ fn make_source(conn: &rusqlite::Connection, owner: &str, repo: &str) -> db::sour
 
 #[test]
 fn is_uncounted_failure_matches_account_level_errors() {
-    // 配额/限流/凭据类：重试会自愈或需改配置，且一次命中全部同类源
-    assert!(is_uncounted_failure("err.youtube_api_quota|quotaExceeded"));
-    assert!(is_uncounted_failure("err.youtube_api_key_invalid|keyInvalid"));
-    assert!(is_uncounted_failure("err.bili_rate_limit"));
-    assert!(is_uncounted_failure("err.bili_risk"));
-    // 源本身的问题仍计入，断路器不能被废掉
-    assert!(!is_uncounted_failure("err.api_error|500|boom"));
-    assert!(!is_uncounted_failure("err.source_timeout|300"));
-    assert!(!is_uncounted_failure("err.repo_not_found|404"));
-    assert!(!is_uncounted_failure("err.youtube_channel_not_found|x"));
+    use crate::error::{SourceError, SourceErrorKind};
+    assert!(SourceError::new(403, SourceErrorKind::YoutubeApiQuota { detail: Some("quotaExceeded".into()) }).is_uncounted_failure());
+    assert!(SourceError::new(400, SourceErrorKind::YoutubeApiKeyInvalid { detail: Some("keyInvalid".into()) }).is_uncounted_failure());
+    assert!(SourceError::new(429, SourceErrorKind::BiliRateLimit).is_uncounted_failure());
+    assert!(SourceError::new(403, SourceErrorKind::BiliRisk { detail: None }).is_uncounted_failure());
+    assert!(!SourceError::api_error(500, "boom").is_uncounted_failure());
+    assert!(!SourceError::source_timeout(300).is_uncounted_failure());
+    assert!(!SourceError::coded(404, "err.repo_not_found", ["404"]).is_uncounted_failure());
+    assert!(!SourceError::coded(404, "err.youtube_channel_not_found", ["x"]).is_uncounted_failure());
 }
 
 fn outcome(id: i64, failed: bool) -> TaskOutcome {
@@ -1256,7 +1259,7 @@ async fn test_schedule_translations_background_translates_and_emits() {
     let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
 
     // 门控状态复位（同一进程内其他测试可能动过；已拿互斥锁，此刻无人在跑）
-    TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+    RUNTIME.translation_batch_running.store(false, Ordering::Release);
 
     schedule_translations_background(&pool, &sem, &emitter);
 
@@ -1302,7 +1305,7 @@ async fn test_schedule_translations_background_noop_when_translate_off() {
     let sem = Arc::new(tokio::sync::Semaphore::new(2));
     let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
     let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
-    TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+    RUNTIME.translation_batch_running.store(false, Ordering::Release);
 
     schedule_translations_background(&pool, &sem, &emitter);
 
@@ -1346,7 +1349,7 @@ async fn test_translation_batch_notifies_log_refresh_even_on_failure() {
     let sem = Arc::new(tokio::sync::Semaphore::new(2));
     let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
     let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
-    TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+    RUNTIME.translation_batch_running.store(false, Ordering::Release);
 
     // 直接跑单批（绕过调度门控，聚焦收尾行为）
     run_single_translation_batch(&pool, &sem, &emitter).await;
@@ -1432,7 +1435,7 @@ async fn test_schedule_summaries_background_backfills() {
     let sem = Arc::new(tokio::sync::Semaphore::new(2));
     let noop = std::sync::Arc::new(crate::types::NoopEmitter::new());
     let emitter: std::sync::Arc<dyn crate::types::Emitter> = noop.clone();
-    SUMMARY_BATCH_RUNNING.store(false, Ordering::Release);
+    RUNTIME.summary_batch_running.store(false, Ordering::Release);
 
     schedule_summaries_background(&pool, &sem, &emitter);
 
@@ -1492,12 +1495,12 @@ async fn test_schedule_translations_background_skips_when_batch_running() {
 
     // 模拟「上一批在跑」：置 true 后 schedule 应同步返回、不派发。
     // 已拿互斥锁，窗口内不会有并行测试复位门控，可安全观察。
-    TRANSLATION_BATCH_RUNNING.store(true, Ordering::Release);
+    RUNTIME.translation_batch_running.store(true, Ordering::Release);
     schedule_translations_background(&pool, &sem, &emitter);
     // 给潜在（不应发生的）派发留观察窗口
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     // 断言完成后复位，再放锁（drop 顺序：_gate 在函数末尾）
-    TRANSLATION_BATCH_RUNNING.store(false, Ordering::Release);
+    RUNTIME.translation_batch_running.store(false, Ordering::Release);
 
     assert!(!release_translated(&pool, id), "批在跑时本轮不应翻译");
     assert_eq!(

@@ -1,28 +1,20 @@
 use crate::db;
+use crate::services::source_service;
+use crate::source;
 use crate::types::AppState;
-use crate::{http, source};
-use serde_json::json;
-use tauri_specta::Event;
 
-/// 源类型的能力元数据：由 `ADAPTERS` 注册表动态枚举，供前端注册表对拍/展示。
-/// 新增源类型只需在 source.rs::ADAPTERS 登记，本命令自动下发。
 #[derive(serde::Serialize, specta::Type)]
 pub struct SourceTypeInfo {
-    /// 与后端 source_type 一致的标识（如 "github"）。
     pub source_type: String,
-    /// 鉴权方式标识（none / github_token / youtube_api_key / bilibili_cookie）。
     pub auth_kind: String,
-    /// 是否参与 AI 摘要/翻译（对应前端 SourceTypeDef.aiSummary）。
     pub ai_eligible: bool,
-    /// 是否每次检查都按 fetch_history_count 拉历史。
     pub always_fetch_history: bool,
-    /// 检查成功后是否刷新 description。
     pub refresh_description_after_check: bool,
 }
 
 #[tauri::command]
-
-#[specta::specta]pub fn list_source_types() -> Vec<SourceTypeInfo> {
+#[specta::specta]
+pub fn list_source_types() -> Vec<SourceTypeInfo> {
     source::list_adapters()
         .into_iter()
         .map(|a| SourceTypeInfo {
@@ -36,578 +28,79 @@ pub struct SourceTypeInfo {
 }
 
 #[tauri::command]
-
-#[specta::specta]pub async fn add_source(
+#[specta::specta]
+pub async fn add_source(
     state: tauri::State<'_, AppState>,
     source_type: String,
     owner: String,
     repo: String,
     config: Option<String>,
 ) -> Result<i64, String> {
-    let log_add_failed = |level: &str, err: &str| {
-        if let Ok(conn) = state.db.get() {
-            db::logs::write_log_key(
-                &conn,
-                level,
-                "source.add_failed",
-                &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": err}).to_string(),
-            );
-        }
-    };
-
-    let adapter = match source::get_adapter(&source_type) {
-        Ok(a) => a,
-        Err((_, msg)) => {
-            log_add_failed("ERROR", &msg);
-            return Err(msg);
-        }
-    };
-
-    let (proxy, token) = {
-        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        let proxy = db::settings::load_proxy_config(&conn)?;
-        let token = source::SourceCredentials::load_for(&conn, adapter.as_ref());
-        (proxy, token)
-    };
-
-    let client = match http::build_http_client(http::HttpClientConfig {
-        proxy_url: &proxy.url,
-        proxy_mode: &proxy.mode,
-        bearer_token: None,
-        ..Default::default()
-    }) {
-        Ok(c) => c,
-        Err(e) => {
-            log_add_failed("ERROR", &e);
-            return Err(e);
-        }
-    };
-
-    let resolved_owner = match adapter
-        .resolve_owner(&client, &owner, token.as_deref())
+    source_service::add_source(&state.db, source_type, owner, repo, config)
         .await
-    {
-        Ok(o) => o,
-        Err((status, msg)) => {
-            log_add_failed(db::logs::failure_log_level(status), &msg);
-            return Err(msg);
-        }
-    };
-
-    {
-        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        if db::sources::source_exists(&conn, &source_type, &resolved_owner, &repo)? {
-            return Ok(0);
-        }
-    }
-
-    let description = match adapter
-        .verify_and_describe(&client, &resolved_owner, &repo, token.as_deref())
-        .await
-    {
-        Ok(d) => d,
-        Err((status, msg)) => {
-            log_add_failed(db::logs::failure_log_level(status), &msg);
-            return Err(msg);
-        }
-    };
-
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    let id = db::sources::add_source_with_config(
-        &conn, &source_type, &resolved_owner, &repo, &description, config.as_deref(),
-    )?;
-    if id == 0 {
-        return Ok(0);
-    }
-    let (log_owner, log_repo) = source::source_log_ident(&source_type, &resolved_owner, &repo, Some(&description));
-    db::logs::write_log_key(
-        &conn,
-        "INFO",
-        "source.added",
-        &json!({"source_type": &source_type, "owner": &log_owner, "repo": &log_repo}).to_string(),
-    );
-    Ok(id)
+        .map_err(|e| e.to_ipc_string())
 }
 
 #[tauri::command]
-
-#[specta::specta]pub fn remove_source(app: tauri::AppHandle, state: tauri::State<AppState>, id: i64) -> Result<(), String> {
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    let source = db::sources::get_source(&conn, id)?;
-    db::sources::remove_source(&conn, id)?;
-    match source {
-        Some(s) => {
-            let (log_owner, log_repo) = source::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
-            db::logs::write_log_key(&conn, "INFO", "source.removed", &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string())
-        }
-        None => db::logs::write_log_key(&conn, "INFO", "source.removed_unknown", &json!({"id": id}).to_string()),
-    }
-    // 删除源会级联删除其 releases（未读计数变化），通知托盘刷新角标
-    let _ = crate::events::ReleaseStateChanged(id).emit(&app);
-    Ok(())
-}
-
-/// 可测试的"状态变化事件"发射器抽象（复用 types::Emitter 的依赖注入模式）：
-/// update_source 命令薄壳注入 Tauri 实现，测试注入 CountingEmitter 断言
-/// "静音/取消静音 → 补发 ReleaseStateChanged 实时刷新托盘红点"。
-pub trait BadgeEventEmitter: Send + Sync {
-    fn emit_release_state_changed(&self, id: i64);
-}
-
-/// Tauri AppHandle 实现：向主进程补发 release-state-changed，托盘角标据此即时重算。
-struct TauriBadgeEventEmitter<'a>(&'a tauri::AppHandle);
-
-impl BadgeEventEmitter for TauriBadgeEventEmitter<'_> {
-    fn emit_release_state_changed(&self, id: i64) {
-        let _ = crate::events::ReleaseStateChanged(id).emit(self.0);
-    }
-}
-
-#[cfg(test)]
-struct CountingBadgeEmitter {
-    emitted: std::sync::Mutex<Vec<i64>>,
-}
-
-#[cfg(test)]
-impl CountingBadgeEmitter {
-    const fn new() -> Self {
-        CountingBadgeEmitter {
-            emitted: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-    fn emitted_count(&self) -> usize {
-        self.emitted.lock().unwrap().len()
-    }
-}
-
-#[cfg(test)]
-impl BadgeEventEmitter for CountingBadgeEmitter {
-    fn emit_release_state_changed(&self, id: i64) {
-        self.emitted.lock().unwrap().push(id);
-    }
-}
-
-/// update_source 的核心逻辑（不依赖 AppHandle / State，仅需 DB 连接 + 事件发射器）。
-/// 把"静音状态变化 → 触发托盘红点重算"的判据（muted_changed）与事件派发抽离出来，
-/// 便于单测覆盖"静音/取消静音时是否补发 ReleaseStateChanged"。
-fn update_source_core<E: BadgeEventEmitter>(
-    conn: &mut rusqlite::Connection,
-    id: i64,
-    enabled: bool,
-    poll_interval_minutes: i64,
-    muted: Option<bool>,
-    config: Option<String>,
-    emitter: &E,
-) -> Result<(), String> {
-    let source = db::sources::get_source(conn, id)?;
-    let old_enabled = source.as_ref().map(|s| s.enabled);
-    let old_muted = source.as_ref().map(|s| s.muted);
-    let old_config = source.as_ref().and_then(|s| s.config.clone());
-    let mut muted_changed = false;
-
-    // `poll_interval_minutes` 现在是历史透传参数：调度只读全局周期
-    // （`app_settings.key='poll_interval_minutes'`），该列恒为 0 = 未设置
-    // （约定与存量归一化见 Migration 20）。
-    //
-    // **不要在这里做 clamp**：把 0 归一到 5 会把「未设置」写成真实间隔，
-    // 将来重新引入按源调度时会被误读成「每 5 分钟查一次」。越界与归一都留给
-    // 未来的读取方处理。
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-
-    db::sources::update_source(&tx, id, enabled, poll_interval_minutes)?;
-
-    if let Some(m) = muted {
-        db::sources::set_source_muted(&tx, id, m)?;
-    }
-    if let Some(c) = &config {
-        db::sources::update_source_config(&tx, id, c)?;
-    }
-
-    match source {
-        Some(s) => {
-            let mut logged = false;
-
-            let (log_owner, log_repo) = source::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
-
-            // enabled 变化 → 暂停/恢复
-            if old_enabled != Some(enabled) {
-                logged = true;
-                if enabled {
-                    db::logs::write_log_key(&tx, "INFO", "source.log_resumed",
-                        &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
-                } else {
-                    db::logs::write_log_key(&tx, "INFO", "source.log_paused",
-                        &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
-                }
-            }
-
-            // muted 变化 → 静默/取消静默
-            if let Some(m) = muted {
-                if old_muted != Some(m) {
-                    logged = true;
-                    muted_changed = true;
-                    if m {
-                        db::logs::write_log_key(&tx, "INFO", "source.log_muted",
-                            &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
-                    } else {
-                        db::logs::write_log_key(&tx, "INFO", "source.log_unmuted",
-                            &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
-                    }
-                }
-            }
-
-            // config 变化 → 订阅内容调整
-            if let Some(c) = &config {
-                if old_config.as_deref() != Some(c.as_str()) {
-                    logged = true;
-                    db::logs::write_log_key(&tx, "INFO", "source.log_config_updated",
-                        &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
-                }
-            }
-
-            // 没有具体变更被记录时，回退到通用 updated
-            if !logged {
-                db::logs::write_log_key(&tx, "INFO", "source.updated",
-                    &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string());
-            }
-        }
-        None => {
-            db::logs::write_log_key(&tx, "INFO", "source.updated_unknown",
-                &json!({"id": id}).to_string());
-        }
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    // 静音切换会改变「该源新版本是否参与托盘红点」的判定，补发一次 state-changed 事件
-    // 让托盘角标即时刷新（红点立刻消失/恢复）。payload 沿用 remove_source 传入 source id 的既有约定。
-    if muted_changed {
-        emitter.emit_release_state_changed(id);
-    }
-    Ok(())
-}
-
-// 命令薄壳：取出 DB 连接后交给 update_source_core，注入 Tauri 事件发射器。
-#[tauri::command]
-
-#[specta::specta]pub fn update_source(
+#[specta::specta]
+pub async fn remove_source(
     app: tauri::AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+) -> Result<(), String> {
+    source_service::remove_source(&state.db, id, &app)
+        .await
+        .map_err(|e| e.to_ipc_string())
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn update_source(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
     id: i64,
     enabled: bool,
     poll_interval_minutes: i64,
     muted: Option<bool>,
     config: Option<String>,
 ) -> Result<(), String> {
-    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    update_source_core(
-        &mut conn,
-        id,
-        enabled,
-        poll_interval_minutes,
-        muted,
-        config,
-        &TauriBadgeEventEmitter(&app),
-    )
-}
-
-#[tauri::command]
-
-#[specta::specta]pub fn list_sources(state: tauri::State<AppState>) -> Result<Vec<db::sources::Source>, String> {
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    db::sources::list_sources(&conn)
-}
-
-fn batch_update_sources_core<E: BadgeEventEmitter>(
-    conn: &mut rusqlite::Connection,
-    ids: &[i64],
-    enabled: Option<bool>,
-    muted: Option<bool>,
-    emitter: &E,
-) -> Result<u32, String> {
-    if ids.is_empty() || (enabled.is_none() && muted.is_none()) {
-        return Ok(0);
-    }
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let mut updated = 0u32;
-    let mut muted_changed = false;
-
-    if let Some(en) = enabled {
-        let count = db::sources::batch_set_sources_enabled(&tx, ids, en)?;
-        updated += count;
-        if count > 0 {
-            let key = if en { "source.batch_resumed" } else { "source.batch_paused" };
-            db::logs::write_log_key(&tx, "INFO", key, &json!({"count": count}).to_string());
-        }
-    }
-
-    if let Some(m) = muted {
-        let count = db::sources::batch_set_sources_muted(&tx, ids, m)?;
-        updated += count;
-        if count > 0 {
-            muted_changed = true;
-            let key = if m { "source.batch_muted" } else { "source.batch_unmuted" };
-            db::logs::write_log_key(&tx, "INFO", key, &json!({"count": count}).to_string());
-        }
-    }
-
-    tx.commit().map_err(|e| e.to_string())?;
-    if muted_changed {
-        emitter.emit_release_state_changed(0);
-    }
-    Ok(updated)
+    source_service::update_source(&state.db, id, enabled, poll_interval_minutes, muted, config, &app)
+        .await
+        .map_err(|e| e.to_ipc_string())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn batch_update_sources(
-    app: tauri::AppHandle,
-    state: tauri::State<AppState>,
-    ids: Vec<i64>,
-    enabled: Option<bool>,
-    muted: Option<bool>,
-) -> Result<u32, String> {
-    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    batch_update_sources_core(&mut conn, &ids, enabled, muted, &TauriBadgeEventEmitter(&app))
-}
-
-fn batch_remove_sources_core<E: BadgeEventEmitter>(
-    conn: &mut rusqlite::Connection,
-    ids: &[i64],
-    emitter: &E,
-) -> Result<u32, String> {
-    if ids.is_empty() {
-        return Ok(0);
-    }
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let removed = db::sources::batch_remove_sources(&tx, ids)?;
-    if removed > 0 {
-        db::logs::write_log_key(
-            &tx,
-            "INFO",
-            "source.batch_removed",
-            &json!({"count": removed}).to_string(),
-        );
-    }
-    tx.commit().map_err(|e| e.to_string())?;
-    if removed > 0 {
-        emitter.emit_release_state_changed(0);
-    }
-    Ok(removed)
+pub async fn list_sources(
+    state: tauri::State<'_, AppState>,
+) -> Result<Vec<db::sources::Source>, String> {
+    source_service::list_sources(&state.db)
+        .await
+        .map_err(|e| e.to_ipc_string())
 }
 
 #[tauri::command]
 #[specta::specta]
-pub fn batch_remove_sources(
+pub async fn batch_update_sources(
     app: tauri::AppHandle,
-    state: tauri::State<AppState>,
+    state: tauri::State<'_, AppState>,
     ids: Vec<i64>,
+    enabled: Option<bool>,
+    muted: Option<bool>,
 ) -> Result<u32, String> {
-    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    batch_remove_sources_core(&mut conn, &ids, &TauriBadgeEventEmitter(&app))
+    source_service::batch_update_sources(&state.db, ids, enabled, muted, &app)
+        .await
+        .map_err(|e| e.to_ipc_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::db::init::init_memory_db;
-
-    #[test]
-    fn test_remove_source_writes_log() {
-        let conn = init_memory_db().unwrap();
-        let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
-        assert!(id > 0);
-
-        // Simulate remove_source's internal logic
-        let source = db::sources::get_source(&conn, id).unwrap().unwrap();
-        db::sources::remove_source(&conn, id).unwrap();
-        db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "source.removed",
-            &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": id}).to_string(),
-        );
-
-        // Source should be gone
-        assert!(db::sources::list_sources(&conn).unwrap().is_empty());
-
-        // Log entry should exist
-        let logs = db::logs::get_logs(&conn, 10).unwrap();
-        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.removed")));
-    }
-
-    #[test]
-    fn test_remove_source_unknown_writes_log() {
-        let conn = init_memory_db().unwrap();
-        // Remove non-existent source
-        let result = db::sources::remove_source(&conn, 999);
-        // remove_source for non-existent id should succeed (no rows affected)
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_update_source_writes_log() {
-        let conn = init_memory_db().unwrap();
-        let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
-
-        // Simulate update_source's internal logic (enabled: true → false, 应该记录暂停)
-        let source = db::sources::get_source(&conn, id).unwrap().unwrap();
-        db::sources::update_source(&conn, id, false, 60).unwrap();
-        db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "source.log_paused",
-            &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": id}).to_string(),
-        );
-
-        // Verify update took effect
-        let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
-        assert!(!updated.enabled);
-        assert_eq!(updated.poll_interval_minutes, 60);
-
-        // Log entry should exist
-        let logs = db::logs::get_logs(&conn, 10).unwrap();
-        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.log_paused")));
-    }
-
-    #[test]
-    fn test_list_sources_roundtrip() {
-        let conn = init_memory_db().unwrap();
-        assert!(db::sources::list_sources(&conn).unwrap().is_empty());
-
-        db::sources::add_source(&conn, "github", "a", "b", "d1").unwrap();
-        db::sources::add_source(&conn, "github", "c", "d", "d2").unwrap();
-
-        let list = db::sources::list_sources(&conn).unwrap();
-        assert_eq!(list.len(), 2);
-        assert!(list.iter().any(|s| s.owner == "a" && s.repo == "b"));
-        assert!(list.iter().any(|s| s.owner == "c" && s.repo == "d"));
-    }
-
-    #[test]
-    fn test_add_source_duplicate_returns_zero() {
-        let conn = init_memory_db().unwrap();
-        let id1 = db::sources::add_source(&conn, "github", "o", "r", "d").unwrap();
-        assert!(id1 > 0);
-        let id2 = db::sources::add_source(&conn, "github", "o", "r", "d").unwrap();
-        assert_eq!(id2, 0);
-    }
-
-    #[test]
-    fn test_update_source_with_muted() {
-        let conn = init_memory_db().unwrap();
-        let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
-
-        // 模拟 update_source 命令中传 muted=true 的逻辑（应该记录静默）
-        let source = db::sources::get_source(&conn, id).unwrap().unwrap();
-        db::sources::update_source(&conn, id, true, 30).unwrap();
-        db::sources::set_source_muted(&conn, id, true).unwrap();
-        db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "source.log_muted",
-            &serde_json::json!({"owner": &source.owner, "repo": &source.repo, "id": id}).to_string(),
-        );
-
-        // 验证静默生效
-        let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
-        assert!(updated.muted, "muted 应被设为 true");
-
-        // 切换回非静默
-        db::sources::set_source_muted(&conn, id, false).unwrap();
-        let updated = db::sources::get_source(&conn, id).unwrap().unwrap();
-        assert!(!updated.muted);
-    }
-
-    #[test]
-    fn test_update_source_core_mute_toggle_emits_badge_event() {
-        let mut conn = init_memory_db().unwrap();
-        let id = db::sources::add_source(&conn, "github", "owner", "repo", "desc").unwrap();
-        let emitter = CountingBadgeEmitter::new();
-
-        // 静音 → 补发 ReleaseStateChanged（托盘红点应重算）
-        update_source_core(&mut conn, id, true, 30, Some(true), None, &emitter).unwrap();
-        assert_eq!(emitter.emitted_count(), 1, "静音应补发一次事件");
-
-        // 取消静音 → 补发事件
-        update_source_core(&mut conn, id, true, 30, Some(false), None, &emitter).unwrap();
-        assert_eq!(emitter.emitted_count(), 2, "取消静音应补发一次事件");
-
-        // 其余变更（enabled 切换、muted 传 None / 同值）不应触发
-        update_source_core(&mut conn, id, false, 60, None, None, &emitter).unwrap();
-        update_source_core(&mut conn, id, true, 30, Some(false), None, &emitter).unwrap();
-        assert_eq!(emitter.emitted_count(), 2, "非 muted 变化不应补发事件");
-    }
-
-    #[test]
-    fn test_add_source_failure_writes_log() {
-        let conn = init_memory_db().unwrap();
-
-        // 模拟 add_source 中 fetch_repo_info 失败时的日志写入（404 → ERROR）
-        db::logs::write_log_key(
-            &conn,
-            "ERROR",
-            "source.add_failed",
-            &serde_json::json!({"source_type":"github","owner":"o","repo":"r","error":"404 Not Found"}).to_string(),
-        );
-
-        let logs = db::logs::get_logs(&conn, 10).unwrap();
-        assert_eq!(logs.len(), 1);
-        assert_eq!(logs[0].level, "ERROR");
-        assert_eq!(logs[0].message_key.as_deref(), Some("source.add_failed"));
-        assert!(logs[0].rendered_message.as_deref().unwrap().contains("404"));
-    }
-
-    #[test]
-    fn test_update_source_nonexistent_id_logs_unknown() {
-        let conn = init_memory_db().unwrap();
-
-        // 模拟 update_source 对不存在的 id 走 None 分支（写 source.updated_unknown）
-        db::logs::write_log_key(
-            &conn,
-            "INFO",
-            "source.updated_unknown",
-            &serde_json::json!({"id": 999}).to_string(),
-        );
-
-        let logs = db::logs::get_logs(&conn, 10).unwrap();
-        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.updated_unknown")));
-    }
-
-    #[test]
-    fn test_batch_update_sources_core_enabled_muted_and_badge() {
-        let mut conn = init_memory_db().unwrap();
-        let s1 = db::sources::add_source(&conn, "github", "a", "b", "").unwrap();
-        let s2 = db::sources::add_source(&conn, "github", "c", "d", "").unwrap();
-        db::sources::record_check_failure(&conn, s2, "err").unwrap();
-        let emitter = CountingBadgeEmitter::new();
-
-        // Pause s2 only
-        let paused = batch_update_sources_core(&mut conn, &[s2], Some(false), None, &emitter).unwrap();
-        assert_eq!(paused, 1);
-        assert!(!db::sources::get_source(&conn, s2).unwrap().unwrap().enabled);
-        assert_eq!(emitter.emitted_count(), 0);
-
-        // Batch mute both: only enabled s1 is muted, s2 stays unmuted; single badge event emitted
-        let muted = batch_update_sources_core(&mut conn, &[s1, s2], None, Some(true), &emitter).unwrap();
-        assert_eq!(muted, 1);
-        assert!(db::sources::get_source(&conn, s1).unwrap().unwrap().muted);
-        assert!(!db::sources::get_source(&conn, s2).unwrap().unwrap().muted);
-        assert_eq!(emitter.emitted_count(), 1);
-
-        // Batch resume both: only s2 changes and resets consecutive_failures
-        let resumed = batch_update_sources_core(&mut conn, &[s1, s2], Some(true), None, &emitter).unwrap();
-        assert_eq!(resumed, 1);
-        let s2_after = db::sources::get_source(&conn, s2).unwrap().unwrap();
-        assert!(s2_after.enabled);
-        assert_eq!(s2_after.consecutive_failures, 0);
-
-        // Batch remove both: single badge event emitted
-        let removed = batch_remove_sources_core(&mut conn, &[s1, s2], &emitter).unwrap();
-        assert_eq!(removed, 2);
-        assert!(db::sources::list_sources(&conn).unwrap().is_empty());
-        assert_eq!(emitter.emitted_count(), 2);
-
-        let logs = db::logs::get_logs(&conn, 10).unwrap();
-        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.batch_muted")));
-        assert!(logs.iter().any(|l| l.message_key.as_deref() == Some("source.batch_removed")));
-    }
+#[tauri::command]
+#[specta::specta]
+pub async fn batch_remove_sources(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    ids: Vec<i64>,
+) -> Result<u32, String> {
+    source_service::batch_remove_sources(&state.db, ids, &app)
+        .await
+        .map_err(|e| e.to_ipc_string())
 }

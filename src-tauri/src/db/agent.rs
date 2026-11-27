@@ -20,6 +20,7 @@ use super::settings::{
     KEY_AGENT_PROMPT_SUFFIX, KEY_AGENT_SKILLS, KEY_AGENT_TIMEOUT_SECONDS, KEY_AGENT_TYPE,
     KEY_AGENT_WORKING_DIR, KEY_AGENT_WS_WIDTH,
 };
+use crate::error::{DbError, DbResult};
 
 pub const DEFAULT_AGENT_MAX_CONCURRENCY: i64 = 3;
 pub const MAX_AGENT_CONCURRENCY: i64 = 8;
@@ -86,8 +87,7 @@ pub struct AgentModelRef {
     pub model_id: String,
 }
 
-/// 读取全局 Agent 配置（缺省回退默认值）。
-pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
+pub fn load_agent_config(conn: &Connection) -> DbResult<AgentConfig> {
     let skills_raw = get_setting_str(conn, KEY_AGENT_SKILLS, "[]")?;
     let skills = serde_json::from_str::<Vec<String>>(&skills_raw)
         .unwrap_or_default()
@@ -112,10 +112,15 @@ pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
     })
 }
 
-pub fn save_agent_config(conn: &mut Connection, cfg: &AgentConfig) -> Result<(), String> {
+pub fn save_agent_config(conn: &mut Connection, cfg: &AgentConfig) -> DbResult<()> {
     match cfg.agent_type.as_str() {
         "pi" => {}
-        other => return Err(format!("err.agent.unsupported_type|{}", other)),
+        other => {
+            return Err(DbError::validation_args(
+                "err.agent.unsupported_type",
+                [other],
+            ));
+        }
     }
     let mut skills: Vec<String> = Vec::new();
     for s in &cfg.skills {
@@ -124,15 +129,13 @@ pub fn save_agent_config(conn: &mut Connection, cfg: &AgentConfig) -> Result<(),
             skills.push(t.to_string());
         }
     }
-    let skills_json = serde_json::to_string(&skills).map_err(|e| e.to_string())?;
+    let skills_json = serde_json::to_string(&skills)?;
     let timeout = cfg
         .timeout_seconds
         .clamp(MIN_AGENT_TIMEOUT_SECONDS, MAX_AGENT_TIMEOUT_SECONDS);
     let max_concurrency = cfg.max_concurrency.clamp(1, MAX_AGENT_CONCURRENCY);
 
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     set_setting(&tx, KEY_AGENT_ENABLED, &cfg.enabled.to_string())?;
     set_setting(&tx, KEY_AGENT_TYPE, &cfg.agent_type)?;
     set_setting(&tx, KEY_AGENT_BINARY, cfg.binary.as_deref().unwrap_or(""))?;
@@ -142,17 +145,15 @@ pub fn save_agent_config(conn: &mut Connection, cfg: &AgentConfig) -> Result<(),
     set_setting(&tx, KEY_AGENT_TIMEOUT_SECONDS, &timeout.to_string())?;
     set_setting(&tx, KEY_AGENT_MAX_CONCURRENCY, &max_concurrency.to_string())?;
     set_setting(&tx, KEY_AGENT_SKILLS, &skills_json)?;
-    tx.commit().map_err(|e| e.to_string())?;
+    tx.commit()?;
     Ok(())
 }
 
-/// 读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。
-pub fn load_agent_ws_width(conn: &Connection) -> Result<i64, String> {
+pub fn load_agent_ws_width(conn: &Connection) -> DbResult<i64> {
     get_setting_i64(conn, KEY_AGENT_WS_WIDTH, 0)
 }
 
-/// 保存 Agent 工作区面板宽度（前端拖窗口右边框后写入）。
-pub fn save_agent_ws_width(conn: &Connection, width: i64) -> Result<(), String> {
+pub fn save_agent_ws_width(conn: &Connection, width: i64) -> DbResult<()> {
     set_setting(conn, KEY_AGENT_WS_WIDTH, &width.max(1).to_string())
 }
 
@@ -212,10 +213,9 @@ pub struct NewRun<'a> {
     pub files: Option<&'a str>,
 }
 
-/// 创建一次提交（初始状态 pending，等待调度器执行）。
-pub fn create_run(conn: &Connection, run: &NewRun<'_>) -> Result<i64, String> {
+pub fn create_run(conn: &Connection, run: &NewRun<'_>) -> DbResult<i64> {
     let now = chrono::Utc::now().to_rfc3339();
-    let entities_json = serde_json::to_string(run.entities).map_err(|e| e.to_string())?;
+    let entities_json = serde_json::to_string(run.entities)?;
     conn.execute(
         "INSERT INTO agent_runs (session_key, skill_path, entities, instruction, model, session_path, status, created_at, files)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7, ?8)",
@@ -229,33 +229,27 @@ pub fn create_run(conn: &Connection, run: &NewRun<'_>) -> Result<i64, String> {
             now,
             run.files
         ],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(conn.last_insert_rowid())
 }
 
-/// 运行开始：pending → running，记录 started_at。
-pub fn mark_run_started(conn: &Connection, run_id: i64) -> Result<(), String> {
+pub fn mark_run_started(conn: &Connection, run_id: i64) -> DbResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE agent_runs SET status = 'running', started_at = ?2 WHERE id = ?1",
         params![run_id, now],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 固化本次提交的会话文件路径（create_run 后调用）。
-pub fn set_run_session_path(conn: &Connection, run_id: i64, session_path: &str) -> Result<(), String> {
+pub fn set_run_session_path(conn: &Connection, run_id: i64, session_path: &str) -> DbResult<()> {
     conn.execute(
         "UPDATE agent_runs SET session_path = ?2 WHERE id = ?1",
         params![run_id, session_path],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 运行结束：写终态与输出。
 pub fn finish_run(
     conn: &Connection,
     run_id: i64,
@@ -264,37 +258,31 @@ pub fn finish_run(
     stdout: Option<&str>,
     stderr: Option<&str>,
     error: Option<&str>,
-) -> Result<(), String> {
+) -> DbResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE agent_runs
          SET status = ?2, exit_code = ?3, stdout = ?4, stderr = ?5, error = ?6, finished_at = ?7
          WHERE id = ?1",
         params![run_id, status, exit_code, stdout, stderr, error, now],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 读取运行记录。
-pub fn get_run(conn: &Connection, run_id: i64) -> Result<Option<AgentRun>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
-                    stdout, stderr, error, started_at, finished_at, created_at, files
-             FROM agent_runs WHERE id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query_map(params![run_id], run_from_row).map_err(|e| e.to_string())?;
+pub fn get_run(conn: &Connection, run_id: i64) -> DbResult<Option<AgentRun>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
+                stdout, stderr, error, started_at, finished_at, created_at, files
+         FROM agent_runs WHERE id = ?1",
+    )?;
+    let mut rows = stmt.query_map(params![run_id], run_from_row)?;
     match rows.next() {
         Some(Ok(r)) => Ok(Some(r)),
-        Some(Err(e)) => Err(e.to_string()),
+        Some(Err(e)) => Err(e.into()),
         None => Ok(None),
     }
 }
 
-/// 一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
-/// stdout 存的是模型完整输出，列表接口按批拉取，全列返回会拖慢查询与序列化。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct AgentRunSummary {
     pub id: i64,
@@ -310,166 +298,123 @@ pub struct AgentRunSummary {
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
     pub created_at: String,
-    /// 本次提交附带的本地文件绝对路径（JSON 字符串数组；无附件时 None）。
     pub files: Option<String>,
 }
 
-/// 按工作区会话列出提交记录摘要（倒序，不含 stdout/stderr 大字段）。
 pub fn list_run_summaries(
     conn: &Connection,
     session_key: &str,
     limit: i64,
-) -> Result<Vec<AgentRunSummary>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
-                    error, started_at, finished_at, created_at, files
-             FROM agent_runs WHERE session_key = ?1
-             ORDER BY id DESC LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![session_key, limit], |row| {
-            Ok(AgentRunSummary {
-                id: row.get(0)?,
-                session_key: row.get(1)?,
-                skill_path: row.get(2)?,
-                entities: row.get(3)?,
-                instruction: row.get(4)?,
-                model: row.get(5)?,
-                session_path: row.get(6)?,
-                status: row.get(7)?,
-                exit_code: row.get(8)?,
-                error: row.get(9)?,
-                started_at: row.get(10)?,
-                finished_at: row.get(11)?,
-                created_at: row.get(12)?,
-                files: row.get(13)?,
-            })
+) -> DbResult<Vec<AgentRunSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
+                error, started_at, finished_at, created_at, files
+         FROM agent_runs WHERE session_key = ?1
+         ORDER BY id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![session_key, limit], |row| {
+        Ok(AgentRunSummary {
+            id: row.get(0)?,
+            session_key: row.get(1)?,
+            skill_path: row.get(2)?,
+            entities: row.get(3)?,
+            instruction: row.get(4)?,
+            model: row.get(5)?,
+            session_path: row.get(6)?,
+            status: row.get(7)?,
+            exit_code: row.get(8)?,
+            error: row.get(9)?,
+            started_at: row.get(10)?,
+            finished_at: row.get(11)?,
+            created_at: row.get(12)?,
+            files: row.get(13)?,
         })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    })?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// 按工作区会话列出提交记录（倒序）。
-pub fn list_runs(conn: &Connection, session_key: &str, limit: i64) -> Result<Vec<AgentRun>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
-                    stdout, stderr, error, started_at, finished_at, created_at, files
-             FROM agent_runs WHERE session_key = ?1
-             ORDER BY id DESC LIMIT ?2",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![session_key, limit], run_from_row)
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+pub fn list_runs(conn: &Connection, session_key: &str, limit: i64) -> DbResult<Vec<AgentRun>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_key, skill_path, entities, instruction, model, session_path, status, exit_code,
+                stdout, stderr, error, started_at, finished_at, created_at, files
+         FROM agent_runs WHERE session_key = ?1
+         ORDER BY id DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![session_key, limit], run_from_row)?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// 全局 Agent 队列状态（「排队中」提示的数据源）。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct AgentQueueStatus {
-    /// 本会话最新 pending run 的全局队列位置（1 = 下一个执行；无 pending → None）。
     pub position: Option<i64>,
-    /// 是否存在其他会话的 running run（执行位被占用）。
     pub other_running: bool,
-    /// 其他会话 running run 的 session_key（前端可映射为会话标题）。
     pub running_sessions: Vec<String>,
-    /// 全局并发上限（1 = 串行排队；>1 = 并行执行，仅达上限才排队）。
     pub max_concurrency: i64,
-    /// 全局 running run 总数（含本会话）。≥ max_concurrency 时 pending 才是真排队。
     pub running_count: i64,
 }
 
-/// 查询全局队列状态：本会话最新 pending run 的队列位置 + 其他会话占用情况。
-///
-/// 调度器并发上限为 `agent_max_concurrency`（默认 1 = 串行；N > 1 时最多 N 个会话
-/// 并行执行），pending run 按创建顺序排队；队列位置 = 全局 status ∈ {pending, running}
-/// 且 id 更小的 run 数 + 1。
-/// 注意：并发上限 > 1 时 `other_running` 不再等于「本会话被阻塞」——只要
-/// `running_count < max_concurrency`，本会话的 pending run 下一个就会被调度。
-pub fn agent_queue_status(conn: &Connection, session_key: &str) -> Result<AgentQueueStatus, String> {
+pub fn agent_queue_status(conn: &Connection, session_key: &str) -> DbResult<AgentQueueStatus> {
     let latest_pending: Option<i64> = conn
         .query_row(
             "SELECT id FROM agent_runs WHERE session_key = ?1 AND status = 'pending' ORDER BY id DESC LIMIT 1",
             params![session_key],
             |row| row.get(0),
         )
-        .map_err(|e| e.to_string())
         .ok();
     let position = match latest_pending {
         Some(run_id) => {
-            let ahead: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending','running') AND id < ?1",
-                    params![run_id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
+            let ahead: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM agent_runs WHERE status IN ('pending','running') AND id < ?1",
+                params![run_id],
+                |row| row.get(0),
+            )?;
             Some(ahead + 1)
         }
         None => None,
     };
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT session_key FROM agent_runs WHERE status = 'running' AND session_key != ?1",
-        )
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT session_key FROM agent_runs WHERE status = 'running' AND session_key != ?1",
+    )?;
     let running_sessions: Vec<String> = stmt
-        .query_map(params![session_key], |row| row.get(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map(params![session_key], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(AgentQueueStatus {
         position,
         other_running: !running_sessions.is_empty(),
         running_sessions,
-        max_concurrency: get_setting_i64(conn, KEY_AGENT_MAX_CONCURRENCY, DEFAULT_AGENT_MAX_CONCURRENCY)?
-            .clamp(1, MAX_AGENT_CONCURRENCY),
-        running_count: conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?,
+        max_concurrency: get_setting_i64(
+            conn,
+            KEY_AGENT_MAX_CONCURRENCY,
+            DEFAULT_AGENT_MAX_CONCURRENCY,
+        )?
+        .clamp(1, MAX_AGENT_CONCURRENCY),
+        running_count: conn.query_row(
+            "SELECT COUNT(*) FROM agent_runs WHERE status = 'running'",
+            [],
+            |row| row.get(0),
+        )?,
     })
 }
 
-/// 全局队列中的一条活跃 run（排队可视化：侧栏状态点 + 横幅「谁在占用」）。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct AgentQueueItem {
     pub run_id: i64,
-    /// 所属工作区会话（前端映射为会话标题）。
     pub session_key: String,
-    /// pending | running。
     pub status: String,
-    /// 全局队列位置（1 = 正在执行；>1 = 排在其后的等待位）。
     pub position: i64,
 }
 
-/// 查询全局队列（全部活跃 run，按执行顺序升序）。
-///
-/// 活跃 run 即 `status IN ('pending','running')`，按 id 升序（创建顺序）。
-/// 并发上限 > 1 时位置只表示创建顺序（前 `max_concurrency` 个可同时执行），
-/// 不再等于「还要等几个」。前端用它给侧栏每个会话画运行状态点、
-/// 给「排队中」横幅定位占用者（哪些会话的 run 正在执行）。
-pub fn agent_queue(conn: &Connection) -> Result<Vec<AgentQueueItem>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, session_key, status FROM agent_runs
-             WHERE status IN ('pending','running') ORDER BY id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
-        })
-        .map_err(|e| e.to_string())?;
+pub fn agent_queue(conn: &Connection) -> DbResult<Vec<AgentQueueItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, session_key, status FROM agent_runs
+         WHERE status IN ('pending','running') ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+    })?;
     let mut out = Vec::new();
     for (i, row) in rows.enumerate() {
-        let (run_id, session_key, status) = row.map_err(|e| e.to_string())?;
+        let (run_id, session_key, status) = row?;
         out.push(AgentQueueItem {
             run_id,
             session_key,
@@ -480,78 +425,53 @@ pub fn agent_queue(conn: &Connection) -> Result<Vec<AgentQueueItem>, String> {
     Ok(out)
 }
 
-/// 某会话**全部**活跃 run 的 id（pending / running，按创建顺序升序）。
-///
-/// 不用「拉最近 N 条摘要再筛状态」：摘要查询的 LIMIT 会漏掉更早的活跃 run，
-/// 而删除会话这类「漏一个就破坏承诺」的场景不该依赖概率（按状态查询从定义上无窗口）。
-pub fn active_runs_for_session(conn: &Connection, session_key: &str) -> Result<Vec<i64>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id FROM agent_runs
-             WHERE session_key = ?1 AND status IN ('pending','running')
-             ORDER BY id ASC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![session_key], |row| row.get::<_, i64>(0))
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+pub fn active_runs_for_session(conn: &Connection, session_key: &str) -> DbResult<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM agent_runs
+         WHERE session_key = ?1 AND status IN ('pending','running')
+         ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map(params![session_key], |row| row.get::<_, i64>(0))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
 }
 
-/// 某会话当前活跃 run 数量（pending / running）。
-/// run_agent_job 的同会话守卫用：前端在会话有活跃 run 时按钮即「停止」、Enter 被拒，
-/// 该守卫把同一语义落到后端，封堵前端双保险之外的任何提交途径。
-pub fn active_run_count_for_session(conn: &Connection, session_key: &str) -> Result<i64, String> {
-    conn.query_row(
+pub fn active_run_count_for_session(conn: &Connection, session_key: &str) -> DbResult<i64> {
+    Ok(conn.query_row(
         "SELECT COUNT(*) FROM agent_runs WHERE session_key = ?1 AND status IN ('pending','running')",
         params![session_key],
         |row| row.get(0),
-    )
-    .map_err(|e| e.to_string())
+    )?)
 }
 
-/// 一个会话在 DB 侧的运行摘要（磁盘发现时用于关联 last status / 最后提交时间）。
 #[derive(Debug, Clone, Default)]
 pub struct SessionRunDigest {
-    /// 最近一次提交的状态（pending / running / success / failed / timeout / cancelled / unknown）。
     pub last_status: Option<String>,
-    /// 最近一次提交的创建时间（RFC3339）。
     pub last_created_at: Option<String>,
-    /// 该会话的累计提交次数。
     pub run_count: i64,
 }
 
-/// 批量查询全部会话的运行摘要（一次扫描，避免逐会话查询）。
-///
-/// 会话文件是「磁盘发现」的主数据源，但状态只存在于 DB（pending / running 决定
-/// 侧栏是否显示运行指示）。返回 session_key → 最近一次 run 的映射。
 pub fn latest_run_digests(
     conn: &Connection,
-) -> Result<std::collections::HashMap<String, SessionRunDigest>, String> {
-    // 每会话取 MAX(id)（最新提交），同时带出提交次数；COUNT 与 MAX 一次 GROUP BY 完成
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.session_key, r.status, r.created_at, c.cnt
-             FROM agent_runs r
-             JOIN (
-                 SELECT session_key, MAX(id) AS mid, COUNT(*) AS cnt
-                 FROM agent_runs GROUP BY session_key
-             ) c ON r.id = c.mid",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-            ))
-        })
-        .map_err(|e| e.to_string())?;
+) -> DbResult<std::collections::HashMap<String, SessionRunDigest>> {
+    let mut stmt = conn.prepare(
+        "SELECT r.session_key, r.status, r.created_at, c.cnt
+         FROM agent_runs r
+         JOIN (
+             SELECT session_key, MAX(id) AS mid, COUNT(*) AS cnt
+             FROM agent_runs GROUP BY session_key
+         ) c ON r.id = c.mid",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    })?;
     let mut out = std::collections::HashMap::new();
     for row in rows {
-        let (key, status, created_at, cnt) = row.map_err(|e| e.to_string())?;
+        let (key, status, created_at, cnt) = row?;
         out.insert(
             key,
             SessionRunDigest {
@@ -564,17 +484,18 @@ pub fn latest_run_digests(
     Ok(out)
 }
 
-/// 删除某会话的全部运行记录（会话文件删除由命令层负责）。
-pub fn delete_runs_for_session(conn: &Connection, session_key: &str) -> Result<(), String> {
+pub fn delete_runs_for_session(conn: &Connection, session_key: &str) -> DbResult<()> {
     conn.execute(
         "DELETE FROM agent_runs WHERE session_key = ?1",
         params![session_key],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn batch_active_runs_for_sessions(conn: &Connection, session_keys: &[String]) -> Result<Vec<i64>, String> {
+pub fn batch_active_runs_for_sessions(
+    conn: &Connection,
+    session_keys: &[String],
+) -> DbResult<Vec<i64>> {
     if session_keys.is_empty() {
         return Ok(Vec::new());
     }
@@ -588,19 +509,20 @@ pub fn batch_active_runs_for_sessions(conn: &Connection, session_keys: &[String]
         );
         let params_ref: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
-        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-        let rows = stmt
-            .query_map(params_ref.as_slice(), |row| row.get::<_, i64>(0))
-            .map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params_ref.as_slice(), |row| row.get::<_, i64>(0))?;
         for row in rows {
-            ids.push(row.map_err(|e| e.to_string())?);
+            ids.push(row?);
         }
     }
     ids.sort_unstable();
     Ok(ids)
 }
 
-pub fn batch_delete_runs_for_sessions(conn: &Connection, session_keys: &[String]) -> Result<u32, String> {
+pub fn batch_delete_runs_for_sessions(
+    conn: &Connection,
+    session_keys: &[String],
+) -> DbResult<u32> {
     if session_keys.is_empty() {
         return Ok(0);
     }
@@ -610,24 +532,21 @@ pub fn batch_delete_runs_for_sessions(conn: &Connection, session_keys: &[String]
         let sql = format!("DELETE FROM agent_runs WHERE session_key IN ({placeholders})");
         let params_ref: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|k| k as &dyn rusqlite::ToSql).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
 
-/// 工作区会话的最近一次会话文件路径（多轮继续：None = 新会话）。
-pub fn get_session_path(conn: &Connection, session_key: &str) -> Result<Option<String>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT session_path FROM agent_runs
-             WHERE session_key = ?1 AND session_path IS NOT NULL AND session_path != ''
-             ORDER BY id DESC LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query_map(params![session_key], |row| row.get::<_, Option<String>>(0)).map_err(|e| e.to_string())?;
+pub fn get_session_path(conn: &Connection, session_key: &str) -> DbResult<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT session_path FROM agent_runs
+         WHERE session_key = ?1 AND session_path IS NOT NULL AND session_path != ''
+         ORDER BY id DESC LIMIT 1",
+    )?;
+    let mut rows = stmt.query_map(params![session_key], |row| row.get::<_, Option<String>>(0))?;
     match rows.next() {
         Some(Ok(p)) => Ok(p),
-        Some(Err(e)) => Err(e.to_string()),
+        Some(Err(e)) => Err(e.into()),
         None => Ok(None),
     }
 }

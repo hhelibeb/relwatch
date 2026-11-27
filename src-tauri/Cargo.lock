@@ -3672,6 +3672,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "tauri-winrt-notification",
+ "thiserror 2.0.18",
  "tokio",
  "windows 0.61.3",
  "wiremock",

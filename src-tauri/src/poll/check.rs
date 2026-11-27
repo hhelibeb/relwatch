@@ -5,6 +5,7 @@ use tauri_specta::Event;
 
 use crate::db;
 use crate::deepseek;
+use crate::error::SourceError;
 use crate::http;
 use crate::source;
 use crate::types::{AppState, PollResult};
@@ -96,8 +97,6 @@ pub(super) async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::S
     let history_query = fetch_history && (is_first_query || ctx.adapter.always_fetch_history());
     let (max_count, per_page, needs_pagination) = compute_fetch_plan(fetch_history, history_query, ctx.fetch_history_count);
 
-    // 单源超时保护：fetch（含适配器内部重试）整体约束在 SOURCE_FETCH_TIMEOUT_SECS 内，
-    // 超时转临时故障错误走统一失败分支（记 check.failed），下轮自动重试。
     let fetch_result = tokio::time::timeout(
         std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
         async {
@@ -109,16 +108,10 @@ pub(super) async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::S
         },
     )
     .await
-    .unwrap_or_else(|_| Err((0, format!("err.source_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS))));
+    .unwrap_or_else(|_| Err(SourceError::source_timeout(SOURCE_FETCH_TIMEOUT_SECS)));
 
     match fetch_result {
         Ok(releases) => {
-            // save 统一走 trait，吸收 github 同步 / HF 异步三阶段差异。
-            // save 阶段同样纳入 SOURCE_FETCH_TIMEOUT_SECS 整体超时：HF 源 save 会
-            // 并发拉取新模型的 README（Semaphore(8)），大组织首扫可达数千请求，
-            // 无超时保护会无限占用 POLL_LOCK（手动检查一直报 in_progress、定时
-            // 轮询静默跳过）。超时按本轮保存不完整处理（已 insert 的 release 仍
-            // 在库中，body 留空，下轮正常轮询继续增量）。
             let saved = match tokio::time::timeout(
                 std::time::Duration::from_secs(SOURCE_FETCH_TIMEOUT_SECS),
                 ctx.adapter.save(ctx.db_pool, source, &releases, max_count.unwrap_or(usize::MAX), ctx.client),
@@ -127,12 +120,8 @@ pub(super) async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::S
             {
                 Ok(saved) => saved,
                 Err(_) => {
-                    // 超时意味着本轮结果**不完整**（已 insert 的 release 仍在库中，其余没落库），
-                    // 不是「本轮无新增」。走未计数失败路径（err.save_timeout 在豁免名单里，
-                    // 不烧断路器额度）后直接返回：若继续落进成功分支，缺失会被记成 INFO 成功、
-                    // 断路器清零，用户无从察觉。
-                    let msg = format!("err.save_timeout|{}", SOURCE_FETCH_TIMEOUT_SECS);
-                    return Err(record_check_failure(ctx.db_pool, source.id, log_owner, log_repo, 0, &msg).await);
+                    let err = SourceError::save_timeout(SOURCE_FETCH_TIMEOUT_SECS);
+                    return Err(record_check_failure(ctx.db_pool, source.id, log_owner, log_repo, &err).await);
                 }
             };
             // 抓到的每一条都是新内容、且吃满单页 → feed 窗口被上游截断：比它更旧的新版本没随
@@ -185,8 +174,8 @@ pub(super) async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::S
                 }
             }
         }
-        Err((status, msg)) => {
-            let msg = record_check_failure(ctx.db_pool, source.id, log_owner, log_repo, status, &msg).await;
+        Err(err) => {
+            let msg = record_check_failure(ctx.db_pool, source.id, log_owner, log_repo, &err).await;
             Err(msg)
         }
     }
@@ -232,13 +221,11 @@ pub(super) async fn record_check_failure(
     source_id: i64,
     owner: String,
     repo: String,
-    status: u16,
-    msg: &str,
+    err: &SourceError,
 ) -> String {
-    let msg = crate::redact::redact(msg);
-    let level = db::logs::failure_log_level(status);
-    // 上游配额/限流/保存超时这类环境故障不计入断路器（见 is_uncounted_failure）
-    let uncounted = is_uncounted_failure(&msg);
+    let msg = crate::redact::redact(&err.to_ipc_string());
+    let level = db::logs::failure_log_level(err.status());
+    let uncounted = err.is_uncounted_failure();
     let log_key_failed = if uncounted { "check.failed_uncounted" } else { "check.failed" };
     let pool = db_pool.clone();
     let msg_for_log = msg.clone();
@@ -288,7 +275,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     // HF → None），无需逐个 source_type 特判。
     let adapter = match source::get_adapter(&source_obj.source_type) {
         Ok(a) => a,
-        Err((_, msg)) => return Err(msg),
+        Err(e) => return Err(e.to_ipc_string()),
     };
     let token = settings.credentials.token_for(adapter.as_ref());
 
@@ -384,37 +371,6 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
 }
 
 
-/// 环境/上游类失败的错误前缀：不该计入连续失败（详见 [`is_uncounted_failure`]）。
-pub(super) const UNCOUNTED_FAILURE_PREFIXES: &[&str] = &[
-    // YouTube Data API 配额用尽（按日重置）
-    "err.youtube_api_quota",
-    // YouTube API key 失效/受限（全局凭据问题，共用同一 key 的源会一起挂）
-    "err.youtube_api_key_invalid",
-    // B 站风控校验失败 / IP 级限流（账号/IP 层，非源本身）
-    "err.bili_risk",
-    "err.bili_rate_limit",
-    // 上游速率限制（GitHub 主/次级限流、任意主机的 429，见 http::rate_limit_error）：
-    // 与上面几条同构——共用 token / 共用出口 IP 会一次命中全部同类源，且限流解除即自愈。
-    // 照旧累加的话，未配置 GitHub Token（60 次/小时按 IP 共享）连续 3 轮就会把所有
-    // GitHub 源集体禁用。
-    "err.rate_limit",
-    "err.rate_limit_reset",
-    // 凭据失效（带失效 Authorization 头时 GitHub 以 401 回）：改配置即自愈，同样全局命中
-    "err.credential_invalid",
-    // save 阶段超时：本轮数据量/上游速度问题，不是这个源坏了（下轮继续增量）
-    "err.save_timeout",
-];
-
-/// 该错误是否属于「不该计入连续失败」的类别。
-///
-/// 为什么要分这一条：这些错误要么重试会自愈（配额按日重置），要么需要用户改配置，
-/// 而且常常**一次命中全部同类源**（共用 API key / cookie）——照旧累加的话，
-/// 只要连续 3 轮配额耗尽，所有 YouTube/B 站源就会被断路器逐个禁掉并需手动重开。
-/// 自动禁用的本意是干掉「怎么重试都不会好的源」，不是干掉能自愈的。
-pub(super) fn is_uncounted_failure(msg: &str) -> bool {
-    UNCOUNTED_FAILURE_PREFIXES.iter().any(|p| msg.starts_with(p))
-}
-
 pub(super) async fn poll_all_sources_async(
     db_pool: &r2d2::Pool<crate::db::SqliteConnectionManager>,
     sources: &[db::sources::Source],
@@ -458,8 +414,8 @@ pub(super) async fn poll_all_sources_async(
         // GitHub → PAT，HF → None）。spawn 需要 'static，先克隆为 owned。
         let adapter = match source::get_adapter(&source.source_type) {
             Ok(a) => a,
-            Err((_, msg)) => {
-                log::error!("{}", msg);
+            Err(e) => {
+                log::error!("{}", e);
                 continue;
             }
         };

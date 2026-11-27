@@ -2,6 +2,8 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
+use crate::error::DbResult;
+
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct Source {
     pub id: i64,
@@ -23,7 +25,6 @@ pub struct Source {
     pub config: Option<String>,
 }
 
-/// 仅测试使用的便捷封装（生产统一走 `add_source_with_config`）。
 #[cfg(test)]
 pub fn add_source(
     conn: &Connection,
@@ -31,11 +32,10 @@ pub fn add_source(
     owner: &str,
     repo: &str,
     description: &str,
-) -> Result<i64, String> {
+) -> DbResult<i64> {
     add_source_with_config(conn, source_type, owner, repo, description, None)
 }
 
-/// 带源级配置的添加（config 为 JSON 字符串，如 YouTube 订阅内容类型）。
 pub fn add_source_with_config(
     conn: &Connection,
     source_type: &str,
@@ -43,17 +43,15 @@ pub fn add_source_with_config(
     repo: &str,
     description: &str,
     config: Option<&str>,
-) -> Result<i64, String> {
+) -> DbResult<i64> {
     let now = chrono::Utc::now().to_rfc3339();
     let desc = if description.is_empty() { None } else { Some(description) };
-    // `poll_interval_minutes` **显式**写 0 = 未设置（跟随全局）：老库的建表默认值
-    // 仍是历史遗留的 30，省略此列会让每个新源凭空带上一个 30 分钟间隔。
+    // poll_interval_minutes 显式写 0 = 跟随全局周期（旧表建表默认值为 30）
     conn.execute(
         "INSERT OR IGNORE INTO sources (source_type, owner, repo, poll_interval_minutes, description, config, created_at, updated_at)
          VALUES (?1, ?2, ?3, 0, ?4, ?5, ?6, ?7)",
         params![source_type, owner, repo, desc, config, now, now],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     if conn.changes() == 0 {
         return Ok(0);
     }
@@ -65,25 +63,21 @@ pub fn source_exists(
     source_type: &str,
     owner: &str,
     repo: &str,
-) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT 1 FROM sources
-             WHERE source_type = ?1 AND lower(owner) = lower(?2) AND lower(repo) = lower(?3)
-             LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?;
-    stmt.exists(params![source_type, owner, repo])
-        .map_err(|e| e.to_string())
+) -> DbResult<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT 1 FROM sources
+         WHERE source_type = ?1 AND lower(owner) = lower(?2) AND lower(repo) = lower(?3)
+         LIMIT 1",
+    )?;
+    Ok(stmt.exists(params![source_type, owner, repo])?)
 }
 
-pub fn remove_source(conn: &Connection, id: i64) -> Result<(), String> {
-    conn.execute("DELETE FROM sources WHERE id = ?1", params![id])
-        .map_err(|e| e.to_string())?;
+pub fn remove_source(conn: &Connection, id: i64) -> DbResult<()> {
+    conn.execute("DELETE FROM sources WHERE id = ?1", params![id])?;
     Ok(())
 }
 
-pub fn batch_set_sources_enabled(conn: &Connection, ids: &[i64], enabled: bool) -> Result<u32, String> {
+pub fn batch_set_sources_enabled(conn: &Connection, ids: &[i64], enabled: bool) -> DbResult<u32> {
     let ids = super::dedup_ids(ids);
     if ids.is_empty() {
         return Ok(0);
@@ -109,12 +103,12 @@ pub fn batch_set_sources_enabled(conn: &Connection, ids: &[i64], enabled: bool) 
             params_vec.push(Box::new(id));
         }
         let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
 
-pub fn batch_set_sources_muted(conn: &Connection, ids: &[i64], muted: bool) -> Result<u32, String> {
+pub fn batch_set_sources_muted(conn: &Connection, ids: &[i64], muted: bool) -> DbResult<u32> {
     let ids = super::dedup_ids(ids);
     if ids.is_empty() {
         return Ok(0);
@@ -124,7 +118,6 @@ pub fn batch_set_sources_muted(conn: &Connection, ids: &[i64], muted: bool) -> R
     let mut total = 0usize;
     for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
         let placeholders = super::in_placeholders(chunk.len(), 3);
-        // Skip paused sources to match the disabled semantics of single-source mute controls.
         let sql = format!(
             "UPDATE sources SET muted = ?1, updated_at = ?2
              WHERE enabled = 1 AND muted != ?1 AND id IN ({placeholders})"
@@ -136,12 +129,12 @@ pub fn batch_set_sources_muted(conn: &Connection, ids: &[i64], muted: bool) -> R
             params_vec.push(Box::new(id));
         }
         let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
 
-pub fn batch_remove_sources(conn: &Connection, ids: &[i64]) -> Result<u32, String> {
+pub fn batch_remove_sources(conn: &Connection, ids: &[i64]) -> DbResult<u32> {
     let ids = super::dedup_ids(ids);
     if ids.is_empty() {
         return Ok(0);
@@ -152,48 +145,44 @@ pub fn batch_remove_sources(conn: &Connection, ids: &[i64]) -> Result<u32, Strin
         let sql = format!("DELETE FROM sources WHERE id IN ({placeholders})");
         let params_ref: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
 
-pub fn get_source(conn: &Connection, id: i64) -> Result<Option<Source>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
-                    last_checked_at, last_check_status, last_check_message,
-                    consecutive_failures, last_new_count, muted, created_at, updated_at,
-                    description, config
-             FROM sources WHERE id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
+const SOURCE_COLUMNS: &str = "id, source_type, owner, repo, poll_interval_minutes, enabled,
+    last_checked_at, last_check_status, last_check_message,
+    consecutive_failures, last_new_count, muted, created_at, updated_at,
+    description, config";
 
-    let mut rows = stmt
-        .query_map(params![id], |row| {
-            Ok(Source {
-                id: row.get(0)?,
-                source_type: row.get(1)?,
-                owner: row.get(2)?,
-                repo: row.get(3)?,
-                poll_interval_minutes: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? != 0,
-                last_checked_at: row.get(6)?,
-                last_check_status: row.get(7)?,
-                last_check_message: row.get(8)?,
-                consecutive_failures: row.get(9)?,
-                last_new_count: row.get(10)?,
-                muted: row.get::<_, i64>(11)? != 0,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-                description: row.get(14)?,
-                config: row.get(15)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
+fn row_to_source(row: &rusqlite::Row<'_>) -> rusqlite::Result<Source> {
+    Ok(Source {
+        id: row.get(0)?,
+        source_type: row.get(1)?,
+        owner: row.get(2)?,
+        repo: row.get(3)?,
+        poll_interval_minutes: row.get(4)?,
+        enabled: row.get::<_, i64>(5)? != 0,
+        last_checked_at: row.get(6)?,
+        last_check_status: row.get(7)?,
+        last_check_message: row.get(8)?,
+        consecutive_failures: row.get(9)?,
+        last_new_count: row.get(10)?,
+        muted: row.get::<_, i64>(11)? != 0,
+        created_at: row.get(12)?,
+        updated_at: row.get(13)?,
+        description: row.get(14)?,
+        config: row.get(15)?,
+    })
+}
 
+pub fn get_source(conn: &Connection, id: i64) -> DbResult<Option<Source>> {
+    let sql = format!("SELECT {SOURCE_COLUMNS} FROM sources WHERE id = ?1");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map(params![id], row_to_source)?;
     match rows.next() {
         Some(Ok(source)) => Ok(Some(source)),
-        Some(Err(e)) => Err(e.to_string()),
+        Some(Err(e)) => Err(e.into()),
         None => Ok(None),
     }
 }
@@ -203,60 +192,48 @@ pub fn update_source(
     id: i64,
     enabled: bool,
     poll_interval_minutes: i64,
-) -> Result<(), String> {
+) -> DbResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     if enabled {
-        // 手动重新启用时重置连续失败计数，避免一次失败即再次被断路器禁用
+        // 重新启用时重置连续失败计数，避免单次失败立刻再次触发断路器
         conn.execute(
             "UPDATE sources SET enabled = 1, poll_interval_minutes = ?1, consecutive_failures = 0, updated_at = ?2 WHERE id = ?3",
             params![poll_interval_minutes, now, id],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
     } else {
         conn.execute(
             "UPDATE sources SET enabled = 0, poll_interval_minutes = ?1, updated_at = ?2 WHERE id = ?3",
             params![poll_interval_minutes, now, id],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
     }
     Ok(())
 }
 
-pub fn update_source_config(conn: &Connection, id: i64, config: &str) -> Result<(), String> {
+pub fn update_source_config(conn: &Connection, id: i64, config: &str) -> DbResult<()> {
     conn.execute(
         "UPDATE sources SET config = ?1, updated_at = ?2 WHERE id = ?3",
         params![config, chrono::Utc::now().to_rfc3339(), id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn set_source_muted(
-    conn: &Connection,
-    id: i64,
-    muted: bool,
-) -> Result<(), String> {
+pub fn set_source_muted(conn: &Connection, id: i64, muted: bool) -> DbResult<()> {
     conn.execute(
         "UPDATE sources SET muted = ?1, updated_at = ?2 WHERE id = ?3",
         params![muted as i64, chrono::Utc::now().to_rfc3339(), id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn list_muted_source_ids(conn: &Connection) -> Result<Vec<i64>, String> {
-    let mut stmt = conn
-        .prepare("SELECT id FROM sources WHERE muted = 1")
-        .map_err(|e| e.to_string())?;
+pub fn list_muted_source_ids(conn: &Connection) -> DbResult<Vec<i64>> {
+    let mut stmt = conn.prepare("SELECT id FROM sources WHERE muted = 1")?;
     let ids = stmt
-        .query_map([], |row| row.get::<_, i64>(0))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map([], |row| row.get::<_, i64>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ids)
 }
 
-pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Result<(), String> {
+pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> DbResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE sources
@@ -268,46 +245,23 @@ pub fn record_check_success(conn: &Connection, id: i64, new_count: usize) -> Res
              updated_at = ?1
          WHERE id = ?3",
         params![now, new_count as i64, id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 记录一次检查失败（源健康状态 + 累计失败数）。
-///
-/// `sources.last_check_message` 是**不经过** `db::logs::write_log_key` 的凭据出口：
-/// 错误文本常回显完整请求 URL（如 `…&key=AIzaSy…`），而该列会被源列表 /
-/// 详情展示，并随备份导出。故 `record_check_failure_inner`（该列的唯一写入者，
-/// 两个公开入口共用）在落库前统一脱敏，避免每个调用点各写一遍而漏掉某一处。
-pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
+pub fn record_check_failure(conn: &Connection, id: i64, message: &str) -> DbResult<()> {
     record_check_failure_inner(conn, id, message, true)
 }
 
-/// 记录一次检查失败，但**不**累加 `consecutive_failures`。
-///
-/// 用于两类「不是源本身坏了」的失败（误伤断路器的那两类）：
-/// - 上游按账号/配额/风控拒绝服务（YouTube 配额、B 站限流/风控、API key 失效）：
-///   重试会自愈（配额按日重置），且常一次命中全部同类源（共用 key/cookie），
-///   把它们逐个自动禁用纯属误伤。
-/// - 本轮已判定为网络层抖动（≥50% 源同轮失败）时预检失败的全量源。
-///
-/// 状态与消息照旧落库（`last_check_status/last_check_message`），所以源列表依旧显示
-/// 红点与错误文本，只是不再往断路器的计数上摞。
-pub fn record_check_failure_uncounted(conn: &Connection, id: i64, message: &str) -> Result<(), String> {
+pub fn record_check_failure_uncounted(conn: &Connection, id: i64, message: &str) -> DbResult<()> {
     record_check_failure_inner(conn, id, message, false)
 }
 
-/// 回退一次失败累加（下限 0）。
-///
-/// 断路器判定需要**整轮结果**才能下结论（见 `poll::apply_mass_failure_guard`），而失败
-/// 记录发生在单源检查内部、早于整轮汇总。故采用「先照常累加、整轮汇总后回退」：
-/// 每轮每源最多累加 1，所以回退 1 就等于本轮不累加，不会误伤上一轮的计数。
-pub fn decrement_consecutive_failures(conn: &Connection, id: i64) -> Result<(), String> {
+pub fn decrement_consecutive_failures(conn: &Connection, id: i64) -> DbResult<()> {
     conn.execute(
         "UPDATE sources SET consecutive_failures = MAX(consecutive_failures - 1, 0), updated_at = ?2 WHERE id = ?1",
         params![id, chrono::Utc::now().to_rfc3339()],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
@@ -316,7 +270,7 @@ fn record_check_failure_inner(
     id: i64,
     message: &str,
     count_failure: bool,
-) -> Result<(), String> {
+) -> DbResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let trimmed: String = crate::redact::redact(message).chars().take(500).collect();
     conn.execute(
@@ -339,21 +293,15 @@ fn record_check_failure_inner(
              WHERE id = ?3"
         },
         params![now, trimmed, id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 读源级配置槽（`sources.config` JSON）里的布尔开关：`Some(true/false)` = 该源显式覆盖，
-/// `None` = 未配置/解析失败/非布尔值（调用方回退全局设置）。
-///
-/// 目前只用于 `fetch_history` 与 `check_prereleases` 两个开关的「全局默认 + 按源覆盖」。
 pub fn config_flag(config: Option<&str>, key: &str) -> Option<bool> {
     let parsed: serde_json::Value = serde_json::from_str(config?).ok()?;
     parsed.get(key)?.as_bool()
 }
 
-/// 同上，但按源 id 取行后解析（适配器只能拿到 `source_id` 时用，如 `github::save_releases`）。
 pub fn source_config_flag(conn: &Connection, id: i64, key: &str) -> Option<bool> {
     let config: Option<String> = conn
         .query_row("SELECT config FROM sources WHERE id = ?1", params![id], |r| r.get(0))
@@ -362,52 +310,21 @@ pub fn source_config_flag(conn: &Connection, id: i64, key: &str) -> Option<bool>
     config_flag(config.as_deref(), key)
 }
 
-pub fn update_source_description(conn: &Connection, id: i64, description: &str) -> Result<(), String> {
+pub fn update_source_description(conn: &Connection, id: i64, description: &str) -> DbResult<()> {
     let desc = if description.is_empty() { None } else { Some(description) };
     conn.execute(
         "UPDATE sources SET description = ?1, updated_at = ?2 WHERE id = ?3",
         params![desc, chrono::Utc::now().to_rfc3339(), id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn list_sources(conn: &Connection) -> Result<Vec<Source>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, source_type, owner, repo, poll_interval_minutes, enabled,
-                    last_checked_at, last_check_status, last_check_message,
-                    consecutive_failures, last_new_count, muted, created_at, updated_at,
-                    description, config
-             FROM sources ORDER BY id DESC",
-        )
-        .map_err(|e| e.to_string())?;
-
+pub fn list_sources(conn: &Connection) -> DbResult<Vec<Source>> {
+    let sql = format!("SELECT {SOURCE_COLUMNS} FROM sources ORDER BY id DESC");
+    let mut stmt = conn.prepare(&sql)?;
     let sources = stmt
-        .query_map([], |row| {
-            Ok(Source {
-                id: row.get(0)?,
-                source_type: row.get(1)?,
-                owner: row.get(2)?,
-                repo: row.get(3)?,
-                poll_interval_minutes: row.get(4)?,
-                enabled: row.get::<_, i64>(5)? != 0,
-                last_checked_at: row.get(6)?,
-                last_check_status: row.get(7)?,
-                last_check_message: row.get(8)?,
-                consecutive_failures: row.get(9)?,
-                last_new_count: row.get(10)?,
-                muted: row.get::<_, i64>(11)? != 0,
-                created_at: row.get(12)?,
-                updated_at: row.get(13)?,
-                description: row.get(14)?,
-                config: row.get(15)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-
+        .query_map([], row_to_source)?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(sources)
 }
 

@@ -210,17 +210,16 @@ fn evict_if_needed() {
 
 // ── media URL 解码 ──
 
-/// 把 media path（percent-encoded 原始 URL）解码为 http(s) 地址。
-pub fn decode_media_path(path: &str) -> Result<String, String> {
+pub fn decode_media_path(path: &str) -> crate::error::AppResult<String> {
     let raw = percent_decode(path)?;
     if raw.starts_with("https://") || raw.starts_with("http://") {
         Ok(raw)
     } else {
-        Err("err.invalid_url".to_string())
+        Err(crate::error::SourceError::invalid_url().into())
     }
 }
 
-fn percent_decode(input: &str) -> Result<String, String> {
+fn percent_decode(input: &str) -> crate::error::AppResult<String> {
     let bytes = input.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -235,7 +234,7 @@ fn percent_decode(input: &str) -> Result<String, String> {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8(out).map_err(|_| "err.invalid_url".to_string())
+    String::from_utf8(out).map_err(|_| crate::error::SourceError::invalid_url().into())
 }
 
 fn hex_val(b: u8) -> Option<u8> {
@@ -249,13 +248,16 @@ fn hex_val(b: u8) -> Option<u8> {
 
 // ── 服务入口 ──
 
-/// 解码 + 命中缓存/回源下载。返回 (bytes, content_type)。
-async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String), String> {
+async fn fetch_or_cache(
+    app: &AppHandle,
+    path: &str,
+) -> crate::error::AppResult<(Vec<u8>, String)> {
     let url = decode_media_path(path.trim_start_matches('/'))?;
     let cache_url = url.clone();
     if let Some(hit) = tokio::task::spawn_blocking(move || read_cached(&cache_url))
         .await
-        .map_err(|e| e.to_string())??
+        .map_err(|e| crate::error::AppError::raw(e.to_string()))?
+        .map_err(crate::error::AppError::raw)?
     {
         return Ok(hit);
     }
@@ -264,7 +266,8 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
     let (proxy_url, proxy_mode) =
         tokio::task::spawn_blocking(move || read_proxy_settings(&app_for_proxy))
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| crate::error::AppError::raw(e.to_string()))?
+            .map_err(crate::error::AppError::raw)?;
     let config = http::HttpClientConfig {
         proxy_url: &proxy_url,
         proxy_mode: &proxy_mode,
@@ -284,11 +287,10 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
                         break;
                     }
                 }
-                fallback.ok_or(e)?
+                fallback.ok_or_else(|| crate::error::AppError::raw(e))?
             }
-            Err(e) => return Err(e),
+            Err(e) => return Err(crate::error::AppError::raw(e)),
         };
-    // 自定义协议会被 WebView 视为本地源：必须白名单化并禁 SVG，防止远端返回 text/html 或脚本 SVG 被执行
     let content_type = sanitize_content_type(&content_type.unwrap_or_default());
     let write_ct = content_type.clone();
     let bytes = tokio::task::spawn_blocking(move || {
@@ -296,7 +298,7 @@ async fn fetch_or_cache(app: &AppHandle, path: &str) -> Result<(Vec<u8>, String)
         bytes
     })
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| crate::error::AppError::raw(e.to_string()))?;
     tokio::task::spawn_blocking(evict_if_needed);
     Ok((bytes, content_type))
 }
@@ -371,8 +373,10 @@ pub async fn handle_media_request(app: &AppHandle, path: &str) -> Response<Vec<u
                     error_response(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
                 })
         }
-        Err(e) if e == "err.invalid_url" => error_response(StatusCode::BAD_REQUEST, &e),
-        Err(e) => error_response(StatusCode::BAD_GATEWAY, &e),
+        Err(e) if e.is_invalid_url() => {
+            error_response(StatusCode::BAD_REQUEST, &e.to_ipc_string())
+        }
+        Err(e) => error_response(StatusCode::BAD_GATEWAY, &e.to_ipc_string()),
     }
 }
 

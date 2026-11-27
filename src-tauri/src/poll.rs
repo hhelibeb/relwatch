@@ -21,42 +21,80 @@ use settings::{load_poll_settings, PollSettings};
 pub use check::check_single_source;
 
 const MAX_CONSECUTIVE_FAILURES: i64 = 3;
-static POLL_LOCK: AtomicBool = AtomicBool::new(false);
-static POLL_RUNNING: AtomicBool = AtomicBool::new(true);
-static POLL_WAKE: tokio::sync::Notify = tokio::sync::Notify::const_new();
 const MAX_CONCURRENCY: usize = 10;
 const SOURCE_FETCH_TIMEOUT_SECS: u64 = 300;
 
-pub fn is_poll_running() -> bool {
-    POLL_RUNNING.load(Ordering::Relaxed)
+/// 轮询与后台 AI 批的运行时状态容器（默认单例供应用使用，测试可独立实例化隔离并发）。
+pub struct PollRuntime {
+    pub(crate) lock: AtomicBool,
+    pub(crate) running: AtomicBool,
+    pub(crate) wake: tokio::sync::Notify,
+    pub(crate) translation_batch_running: AtomicBool,
+    pub(crate) summary_batch_running: AtomicBool,
 }
 
-/// 唤醒轮询线程重新计算下一次执行时间（设置变更后调用）。
+impl PollRuntime {
+    pub const fn const_new() -> Self {
+        Self {
+            lock: AtomicBool::new(false),
+            running: AtomicBool::new(true),
+            wake: tokio::sync::Notify::const_new(),
+            translation_batch_running: AtomicBool::new(false),
+            summary_batch_running: AtomicBool::new(false),
+        }
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn notify_wake(&self) {
+        self.wake.notify_waiters();
+    }
+
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        self.wake.notify_waiters();
+    }
+
+    pub(crate) fn acquire_lock(&self) -> Result<PollGuard<'_>, String> {
+        if self
+            .lock
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err("err.poll_in_progress".to_string());
+        }
+        Ok(PollGuard { lock: &self.lock })
+    }
+}
+
+pub(crate) static RUNTIME: PollRuntime = PollRuntime::const_new();
+
+pub fn is_poll_running() -> bool {
+    RUNTIME.is_running()
+}
+
 pub fn notify_poll_wake() {
-    POLL_WAKE.notify_waiters();
+    RUNTIME.notify_wake();
 }
 
 pub fn stop_poll() {
-    POLL_RUNNING.store(false, Ordering::SeqCst);
-    // 立即打断轮询线程的长 sleep，退出延迟从最长一个轮询间隔缩短到即时
-    POLL_WAKE.notify_waiters();
+    RUNTIME.stop();
 }
 
-pub(crate) struct PollGuard;
-impl Drop for PollGuard {
+pub(crate) struct PollGuard<'a> {
+    lock: &'a AtomicBool,
+}
+
+impl Drop for PollGuard<'_> {
     fn drop(&mut self) {
-        POLL_LOCK.store(false, Ordering::Release);
+        self.lock.store(false, Ordering::Release);
     }
 }
 
-pub(crate) fn acquire_lock() -> Result<PollGuard, String> {
-    if POLL_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
-        return Err("err.poll_in_progress".to_string());
-    }
-    Ok(PollGuard)
+pub(crate) fn acquire_lock() -> Result<PollGuard<'static>, String> {
+    RUNTIME.acquire_lock()
 }
 
 
@@ -161,13 +199,9 @@ pub fn trigger_poll_async(app: tauri::AppHandle) {
 }
 
 async fn do_poll_async(app: tauri::AppHandle) {
-    if POLL_LOCK
-        .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .is_err()
-    {
+    let Ok(_guard) = acquire_lock() else {
         return;
-    }
-    let _guard = PollGuard;
+    };
 
     if !is_poll_running() {
         return;
@@ -311,7 +345,7 @@ pub fn start_poll_thread(app_handle: tauri::AppHandle, next_poll: std::sync::Arc
                 // 设置变更（update_settings 改间隔）、手动触发或 stop_poll 都经
                 // POLL_WAKE 提前唤醒重算，替代逐秒 sleep 轮询。
                 tokio::select! {
-                    _ = POLL_WAKE.notified() => {}
+                    _ = RUNTIME.wake.notified() => {}
                     _ = tokio::time::sleep(slice) => {}
                 }
             }

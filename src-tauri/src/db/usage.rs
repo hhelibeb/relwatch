@@ -3,6 +3,8 @@ use serde::Serialize;
 use specta::Type;
 use std::collections::HashMap;
 
+use crate::error::DbResult;
+
 /// 单个事件的聚合统计行：total_count 为累计次数（SUM），daily 为按天趋势。
 #[derive(Debug, Serialize, Clone, Type)]
 pub struct UsageStatRow {
@@ -26,7 +28,7 @@ pub fn local_today() -> String {
 
 /// 批量累加事件计数（UPSERT，幂等可重放）。
 /// events 为 (事件 key, 本次次数) 列表，由前端 5s 节流聚合后批量上报。
-pub fn record_usage(conn: &Connection, events: &[(String, u32)]) -> Result<(), String> {
+pub fn record_usage(conn: &Connection, events: &[(String, u32)]) -> DbResult<()> {
     if events.is_empty() {
         return Ok(());
     }
@@ -39,42 +41,31 @@ pub fn record_usage(conn: &Connection, events: &[(String, u32)]) -> Result<(), S
             "INSERT INTO usage_stats (key, day, count) VALUES (?1, ?2, ?3)
              ON CONFLICT(key, day) DO UPDATE SET count = count + excluded.count",
             params![key, today, *count],
-        )
-        .map_err(|e| format!("记录使用统计失败: {}", e))?;
+        )?;
     }
     Ok(())
 }
 
-/// 查询统计：按 key 聚合，返回累计次数降序列表。
-/// `days` 提供时仅统计最近 N 天（趋势窗口），daily 为窗口内逐日计数。
-/// 表很小（几十个 key × 天数），直接全量读取后在内存聚合，避免 N+1 查询。
-pub fn get_usage_stats(conn: &Connection, days: Option<u32>) -> Result<Vec<UsageStatRow>, String> {
-    let mut stmt = conn
-        .prepare("SELECT key, day, count FROM usage_stats")
-        .map_err(|e| format!("查询使用统计失败: {}", e))?;
+pub fn get_usage_stats(conn: &Connection, days: Option<u32>) -> DbResult<Vec<UsageStatRow>> {
+    let mut stmt = conn.prepare("SELECT key, day, count FROM usage_stats")?;
 
-    // 过滤窗口：最近 N 天（含今天）
-    let min_day = days
-        .map(|n| {
-            (chrono::Local::now() - chrono::Duration::days(n.saturating_sub(1) as i64))
-                .format("%Y-%m-%d")
-                .to_string()
-        });
+    let min_day = days.map(|n| {
+        (chrono::Local::now() - chrono::Duration::days(n.saturating_sub(1) as i64))
+            .format("%Y-%m-%d")
+            .to_string()
+    });
 
-    // key -> (total, last_day, daily 有序列表)
     let mut by_key: HashMap<String, (i64, String, Vec<UsageDaily>)> = HashMap::new();
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, i64>(2)?,
-            ))
-        })
-        .map_err(|e| format!("查询使用统计失败: {}", e))?;
+    let rows = stmt.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
 
     for row in rows {
-        let (key, day, count) = row.map_err(|e| format!("读取使用统计行失败: {}", e))?;
+        let (key, day, count) = row?;
         if let Some(ref min) = min_day {
             if day.as_str() < min.as_str() {
                 continue;
@@ -88,7 +79,6 @@ pub fn get_usage_stats(conn: &Connection, days: Option<u32>) -> Result<Vec<Usage
         entry.2.push(UsageDaily { day, count });
     }
 
-    // 每 key 的 daily 按天升序
     let mut result: Vec<UsageStatRow> = by_key
         .into_iter()
         .map(|(key, (total_count, last_day, mut daily))| {
@@ -102,15 +92,12 @@ pub fn get_usage_stats(conn: &Connection, days: Option<u32>) -> Result<Vec<Usage
         })
         .collect();
 
-    // 累计次数降序，同次数按 key 字典序（稳定输出）
     result.sort_by(|a, b| b.total_count.cmp(&a.total_count).then(a.key.cmp(&b.key)));
     Ok(result)
 }
 
-/// 清空全部统计。
-pub fn clear_usage_stats(conn: &Connection) -> Result<(), String> {
-    conn.execute("DELETE FROM usage_stats", [])
-        .map_err(|e| format!("清空使用统计失败: {}", e))?;
+pub fn clear_usage_stats(conn: &Connection) -> DbResult<()> {
+    conn.execute("DELETE FROM usage_stats", [])?;
     Ok(())
 }
 

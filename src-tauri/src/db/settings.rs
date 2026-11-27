@@ -1,5 +1,7 @@
 use rusqlite::{params, Connection};
 
+use crate::error::DbResult;
+
 // ── 设置键常量 ──────────────────────────────────────
 pub const KEY_POLL_INTERVAL: &str = "poll_interval_minutes";
 pub const KEY_PROXY_URL: &str = "proxy_url";
@@ -163,39 +165,38 @@ pub fn get_default_language() -> String {
 
 // ── 基础存取 ────────────────────────────────────────
 
-pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
-    conn.query_row(
-        "SELECT value FROM app_settings WHERE key = ?1",
-        params![key],
-        |row| row.get(0),
-    )
-    .optional()
-    .map_err(|e| e.to_string())
-    .map(|v| v.flatten())
+pub fn get_setting(conn: &Connection, key: &str) -> DbResult<Option<String>> {
+    let val = conn
+        .query_row(
+            "SELECT value FROM app_settings WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(val.flatten())
 }
 
-pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> DbResult<()> {
     conn.execute(
         "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?1, ?2)",
         params![key, value],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
 // ── 类型化读取封装 ──────────────────────────────────
 
-pub fn get_setting_str(conn: &Connection, key: &str, default: &str) -> Result<String, String> {
+pub fn get_setting_str(conn: &Connection, key: &str, default: &str) -> DbResult<String> {
     Ok(get_setting(conn, key)?.unwrap_or_else(|| default.to_string()))
 }
 
-pub fn get_setting_bool(conn: &Connection, key: &str, default: bool) -> Result<bool, String> {
+pub fn get_setting_bool(conn: &Connection, key: &str, default: bool) -> DbResult<bool> {
     Ok(get_setting(conn, key)?
         .map(|v| v == "true")
         .unwrap_or(default))
 }
 
-pub fn get_setting_i64(conn: &Connection, key: &str, default: i64) -> Result<i64, String> {
+pub fn get_setting_i64(conn: &Connection, key: &str, default: i64) -> DbResult<i64> {
     Ok(get_setting(conn, key)?
         .unwrap_or_else(|| default.to_string())
         .parse::<i64>()
@@ -217,7 +218,7 @@ impl Default for ProxyConfig {
     }
 }
 
-pub fn load_proxy_config(conn: &Connection) -> Result<ProxyConfig, String> {
+pub fn load_proxy_config(conn: &Connection) -> DbResult<ProxyConfig> {
     let url = get_setting_str(conn, KEY_PROXY_URL, DEFAULT_PROXY_URL)?;
     let default_mode = if url.is_empty() { "none" } else { "custom" };
     let mode = get_setting_str(conn, KEY_PROXY_MODE, default_mode)?;
@@ -275,7 +276,7 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
 pub fn apply_settings(
     conn: &mut Connection,
     items: &[(&str, &str, &str, &str)],
-) -> Result<(bool, Vec<String>), String> {
+) -> DbResult<(bool, Vec<String>)> {
     let mut interval_changed = false;
     let mut changes: Vec<String> = Vec::new();
     let changed_items: Vec<(&str, &str, &str)> = items
@@ -288,9 +289,7 @@ pub fn apply_settings(
         return Ok((false, changes));
     }
 
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     for (key, new_val, label) in changed_items {
         set_setting(&tx, key, new_val)?;
         if key == KEY_POLL_INTERVAL {
@@ -300,7 +299,7 @@ pub fn apply_settings(
             changes.push(format!("{}→{}", label, new_val));
         }
     }
-    tx.commit().map_err(|e| e.to_string())?;
+    tx.commit()?;
 
     Ok((interval_changed, changes))
 }

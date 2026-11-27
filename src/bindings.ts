@@ -13,24 +13,9 @@ export const commands = {
 	batchUpdateSources: (ids: number[], enabled: boolean | null, muted: boolean | null) => __TAURI_INVOKE<number>("batch_update_sources", { ids, enabled, muted }),
 	batchRemoveSources: (ids: number[]) => __TAURI_INVOKE<number>("batch_remove_sources", { ids }),
 	listSources: () => __TAURI_INVOKE<Source[]>("list_sources"),
-	/**
-	 *  版本列表数据源：**全库**目录（无 LIMIT）。
-	 * 
-	 *  正文为预览投影（见 `db::releases::get_release_catalog` 的契约说明）；全文由
-	 *  `get_release_detail`（详情弹窗）与 `get_release_search_bodies`（全文搜索）按需取。
-	 */
 	getReleaseCatalog: () => __TAURI_INVOKE<ReleaseInfo[]>("get_release_catalog"),
-	/**  单条 release 全文（详情弹窗用）：目录里只有正文预览，打开详情时取全文。 */
 	getReleaseDetail: (releaseId: number) => __TAURI_INVOKE<ReleaseInfo>("get_release_detail", { releaseId }),
-	/**
-	 *  全文搜索索引的正文分块（按 id 游标 + 单次字符预算，**从新到旧**）。详见
-	 *  `db::releases::get_release_search_bodies` 的契约说明。
-	 */
 	getReleaseSearchBodies: (beforeId: number, maxChars: number) => __TAURI_INVOKE<ReleaseSearchBody[]>("get_release_search_bodies", { beforeId, maxChars }),
-	/**
-	 *  按 id 批量取正文：用于刷新索引里内容已变化的条目（翻译落库 / README 回填），
-	 *  游标分块只覆盖新增行，覆盖不了"已存在的行内容变了"。
-	 */
 	getReleaseSearchBodiesByIds: (ids: number[]) => __TAURI_INVOKE<ReleaseSearchBody[]>("get_release_search_bodies_by_ids", { ids }),
 	setNotificationState: (releaseId: number, status: string, snoozeMinutes: number | null) => __TAURI_INVOKE<null>("set_notification_state", { releaseId, status, snoozeMinutes }),
 	setReleaseFlag: (releaseId: number, flag: number) => __TAURI_INVOKE<null>("set_release_flag", { releaseId, flag }),
@@ -39,66 +24,19 @@ export const commands = {
 	batchSetReleaseFlag: (releaseIds: number[], flag: number) => __TAURI_INVOKE<number>("batch_set_release_flag", { releaseIds, flag }),
 	batchDeleteReleases: (releaseIds: number[]) => __TAURI_INVOKE<number>("batch_delete_releases", { releaseIds }),
 	markSourceReleasesRead: (sourceId: number) => __TAURI_INVOKE<number>("mark_source_releases_read", { sourceId }),
-	/**
-	 *  对单条 release 触发 AI 全文翻译。
-	 *  用于用户在「原文」视图右键手动请求翻译旧 release 的场景。
-	 *  仅在 AI 已启用且已配置 API key 时生效；若该 release 已有译文则直接返回。
-	 * 
-	 *  译文分片经 `release-translate-chunk` 事件实时投递，前端弹窗边收边渲染（流式）。
-	 *  分片只是体感优化：落库与失败判定仍以回查 `body_translated` 为准。
-	 * 
-	 *  返回**真实结果**（前端靠 Err 复位「翻译中」状态，静默 Ok 会让卡片永久禁用无法重试）：
-	 *  - 前置校验 AI 未启用 / key 缺失 → Err
-	 *  - 执行后回查：translate_single_release 返回时所有任务与落库动作均已
-	 *    await 完成，该 release 仍未落库 = 翻译失败（断网/API 错误等）→ Err
-	 */
 	translateRelease: (releaseId: number) => __TAURI_INVOKE<null>("translate_release", { releaseId }),
 	clearLogs: () => __TAURI_INVOKE<null>("clear_logs"),
 	triggerPoll: () => __TAURI_INVOKE<PollResult>("trigger_poll"),
 	checkSingleSource: (id: number) => __TAURI_INVOKE<PollResult>("check_single_source", { id }),
 	getSettings: () => __TAURI_INVOKE<AppSettings>("get_settings"),
-	/**
-	 *  设置读写共用 `AppSettings`（types.rs）：无需维护第二份与 AppSettings
-	 *  逐字段重复的 payload 结构，新增设置项少一处同步点。
-	 */
 	updateSettings: (payload: AppSettings) => __TAURI_INVOKE<null>("update_settings", { payload }),
 	getPollCountdown: () => __TAURI_INVOKE<number>("get_poll_countdown"),
-	/**
-	 *  设置/更新单个加密凭据：空值清除，非空值加密存储。
-	 *  `kind` 必须命中 `CREDENTIAL_KINDS` 注册表，未知 kind 返回错误（不静默）。
-	 */
 	setCredential: (kind: string, value: string) => __TAURI_INVOKE<null>("set_credential", { kind, value }),
-	/**
-	 *  从登录 WebView 读取 SESSDATA，验证有效后加密存储。
-	 * 
-	 *  - `Ok(true)`：读取并保存成功（前端应关闭登录窗口）
-	 *  - `Err(err.bili_login_not_logged_in)`：窗口在但尚未登录（前端继续轮询）
-	 *  - `Err(err.bili_login_window_missing)`：窗口已关闭（前端停止轮询）
-	 *  - 其它 Err：读取/验证失败（前端提示）
-	 */
 	readBilibiliLoginCookie: (windowLabel: string) => __TAURI_INVOKE<boolean>("read_bilibili_login_cookie", { windowLabel }),
-	/**  关闭登录窗口（前端在登录成功或用户放弃时调用）。 */
 	closeBilibiliLoginWindow: (windowLabel: string) => __TAURI_INVOKE<null>("close_bilibili_login_window", { windowLabel }),
 	/**
-	 *  用 Rust 建窗打开 B 站登录窗口（可注入应用代理设置）。
-	 * 
-	 *  为什么不用前端 `new WebviewWindow`：JS 的 `WindowOptions` 没有 proxy 字段，
-	 *  登录窗口加载整个远程站点时网络请求只能走系统代理。此命令在 Tauri 侧建窗，
-	 *  按 `net::ProxyPolicy` 决定是否注入 `proxy_url`——
-	 *  `custom` + 非空 url → 注入（登录页/后续请求走应用自定义代理）；
-	 *  `system` / `none` / 空 url → 不注入（交由平台默认 = 系统代理）。
-	 *  若窗口已存在（如轮询期间用户重复点击）则静默成功（幂等）。
-	 * 
-	 *  必须是 `async` 命令：Tauri 对**同步**命令在调用线程（= 主线程/事件循环线程）
-	 *  直接执行函数体，而 Windows 下 `WebviewWindowBuilder::build()` 经
-	 *  `WaitWithPump` 等待 WebView2 的异步环境/控制器回调——回调依赖主线程消息泵，
-	 *  主线程被占死等回调即自我死锁（wry#583，Tauri 文档对 `WebviewWindowBuilder`
-	 *  与 `Webview::cookies` 均有明确警告）。表现为点击后弹出一个空窗口骨架且完全
-	 *  无法关闭：空窗口是 tao 在事件循环中建好的 HWND（标题/尺寸已生效），webview
-	 *  与 WebView2 环境仍卡在等待中；关不掉是因为 WM_CLOSE 只投递 `CloseRequested`
-	 *  到事件循环，而事件循环正卡在 `WaitWithPump` 的死循环里（tao 的 WM_CLOSE
-	 *  → 事件循环处理，事件循环不动则窗口无法销毁）。改为 async 后命令体在
-	 *  async runtime（非主线程）执行，主线程消息泵保持可用。
+	 *  必须在 async + spawn_blocking 中建窗：Windows 下 WebView2 build() 的 WaitWithPump
+	 *  在主线程或 tokio reactor 线程执行会导致自我死锁或阻塞事件循环。
 	 */
 	openBilibiliLoginWindow: (title: string) => __TAURI_INVOKE<null>("open_bilibili_login_window", { title }),
 	testDeepseekConnection: (payload: {
@@ -136,15 +74,6 @@ export const commands = {
 	 *  `minimize_to_tray` 设置时才会被调用。
 	 */
 	hideToTray: () => __TAURI_INVOKE<null>("hide_to_tray"),
-	/**
-	 *  下载任意 http(s) URL 的原始字节并返回给前端。
-	 *  前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
-	 *  返回 `Vec<u8>`，IPC 序列化为 number[]。
-	 * 
-	 *  SSRF 防护：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
-	 *  （防 DNS 重绑定；TUN fake-ip 环境下解析结果不可用时不固定，交由 TUN/代理按域名解析）、
-	 *  禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
-	 */
 	fetchUrlBytes: (url: string) => __TAURI_INVOKE<number[]>("fetch_url_bytes", { url }),
 	/**
 	 *  写入文本到系统剪贴板。
@@ -157,143 +86,30 @@ export const commands = {
 	 *  这里解码为 RGBA 后交给 arboard（由它生成 Windows 需要的 DIBV5/PNG 格式）。
 	 */
 	setClipboardImage: (bytes: number[]) => __TAURI_INVOKE<null>("set_clipboard_image", { bytes }),
-	/**
-	 *  批量记录功能按钮点击统计。
-	 *  内部校验诊断开关（enable_usage_stats）：关闭时静默丢弃，不做任何写入。
-	 */
 	recordUsage: (events: ([string, number])[]) => __TAURI_INVOKE<null>("record_usage", { events }),
-	/**
-	 *  查询使用统计（按累计次数降序）。仅开发者工具调用，不进入任何用户 UI。
-	 *  `days` 提供时仅返回最近 N 天的数据（趋势窗口）。
-	 */
 	getUsageStats: (days: number | null) => __TAURI_INVOKE<UsageStatRow[]>("get_usage_stats", { days }),
 	clearUsageStats: () => __TAURI_INVOKE<null>("clear_usage_stats"),
-	/**
-	 *  查询 AI（摘要/翻译/语言检测/连接测试）token 用量聚合：
-	 *  一次返回逐日（热力图）、按监控源（表格）、按操作类型（饼图）三组。
-	 *  `source_id` 为 None 时统计全部源；`days` 为 None 时统计全部历史。
-	 */
 	getAiUsageStats: (sourceId: number | null, days: number | null) => __TAURI_INVOKE<AiUsageStats>("get_ai_usage_stats", { sourceId, days }),
-	/**
-	 *  保存全局 Agent 配置。
-	 *  进程级字段（agent_type / binary / model / working_dir / skills）变化时重启 RPC 进程池：
-	 *  spawn 只在启动时读一次这些字段，不重启则新配置静默不生效（新增 skill 后 @ 它
-	 *  会回到 /skill: 透传失效，改 model 会静默用旧模型）；有 run 在跑时推迟到当前 run
-	 *  结束，下次提交自动重建。
-	 *  max_concurrency 变化不重启进程，只调调度层闸门：抬高立即多出执行位，压低则等
-	 *  正在跑的 run 收尾归还执行位后到位。
-	 *  timeout / prompt_suffix / enabled 每次调度重读，无需重启。
-	 */
 	saveAgentConfig: (config: AgentConfig) => __TAURI_INVOKE<null>("save_agent_config", { config }),
-	/**  读取全局 Agent 配置。 */
 	getAgentConfig: () => __TAURI_INVOKE<AgentConfig>("get_agent_config"),
-	/**  读取 Agent 工作区面板宽度（逻辑 px；未设置返回 0，前端回退默认 440）。 */
 	getAgentWsWidth: () => __TAURI_INVOKE<number>("get_agent_ws_width"),
-	/**  保存 Agent 工作区面板宽度（前端拖窗口右边框调节后写入）。 */
 	saveAgentWsWidth: (width: number) => __TAURI_INVOKE<null>("save_agent_ws_width", { width }),
-	/**
-	 *  查询 pi 当前可用模型（scope model）与当前激活模型，供工作区模型下拉。
-	 *  惰性拉取：RPC 进程未启动则先启动（常驻进程，后续 run 复用）。
-	 *  Agent 未启用时直接返回空（不拉起常驻进程，避免无谓资源占用）。
-	 */
 	getAgentAvailableModels: () => __TAURI_INVOKE<AgentModelsInfo>("get_agent_available_models"),
-	/**
-	 *  工作区提交：校验 → 建 run → 后台调度执行，返回 run_id。
-	 * 
-	 *  - Agent 未启用、skill 未配置、实体无效时拒绝；
-	 *  - 会话文件已存在（历史提交）则复用，实现多轮继续；
-	 *  - 实际执行在后台任务完成，终态经 `AgentRunFinished` 事件推送。
-	 */
 	runAgentJob: (input: AgentJobInput) => __TAURI_INVOKE<number>("run_agent_job", { input }),
-	/**  查询工作区会话的提交记录（倒序摘要，不含 stdout/stderr 大字段，默认最近 20 条）。 */
 	listAgentRuns: (sessionKey: string, limit: number | null) => __TAURI_INVOKE<AgentRunSummary[]>("list_agent_runs", { sessionKey, limit }),
-	/**
-	 *  查询全局 Agent 队列状态：本会话 pending run 的队列位置 + 其他会话占用情况。
-	 *  「排队中」提示的数据源：pending 说明已达并发上限（`agent_max_concurrency`），
-	 *  前端据此提示「等待空闲执行位」并展示占用者。
-	 *  注意并发上限 > 1 时，其他会话正在跑不等于本会话被阻塞（还有空闲位就直接上）。
-	 */
 	getAgentQueueStatus: (sessionKey: string) => __TAURI_INVOKE<AgentQueueStatus>("get_agent_queue_status", { sessionKey }),
-	/**
-	 *  查询全局队列（全部活跃 run，按执行顺序升序）。
-	 * 
-	 *  会话侧栏运行状态点 / 横幅「被谁占用 · 前往停止」的数据源：活跃 run
-	 *  （pending / running）即执行队列，前端据此给每个会话画运行状态
-	 *  （执行中 / 排队第 N 位），并定位「哪些会话的 run 正在执行」以便横幅一键跳转。
-	 *  并发上限 > 1 时前 `max_concurrency` 个可能同时在跑，位置只表示创建顺序。
-	 */
 	getAgentQueue: () => __TAURI_INVOKE<AgentQueueItem[]>("get_agent_queue"),
-	/**
-	 *  查询会话文件的上下文水位（当前上下文词元/模型窗口 + 消息数 + 累计词元与成本）。
-	 * 
-	 *  「上下文水位可见性」的数据源：relwatch 侧不做会话长度治理（依赖 pi 自身管理），
-	 *  但应向用户暴露水位——`context_tokens / context_window` 与 pi footer 的
-	 *  `5.2% / 1.0M` 同口径（见 agent_context 模块），累计字段回答「花了多少」。
-	 */
 	getAgentSessionUsage: (sessionKey: string) => __TAURI_INVOKE<AgentSessionUsage>("get_agent_session_usage", { sessionKey }),
-	/**
-	 *  读取会话的完整聊天消息流（pi 落盘的 JSONL，leaf 路径，时间正序）。
-	 *  会话文件不存在（新会话未提交）→ 空数组；写入中的半行容忍（下轮轮询补齐）。
-	 * 
-	 *  对位 run_id：把 user 消息按创建顺序直连到本会话的 run 记录，前端据此把失败
-	 *  备注 / 重试入口精确挂到对应气泡。
-	 *  注意「一次提交 = 一个 run + 一条 user 消息」并非恒成立——存在 run 不产生消息
-	 *  的路径（排队中被取消 / 派发前失败 / RPC 启动或 prompt 失败），纯顺序对位会把
-	 *  后续消息整体错位一位。因此对位带 started_at 邻近校验（60s 窗），把未产生
-	 *  消息的 run 跳过（排队取消的 run 无 started_at，天然被跳过）。
-	 */
 	listAgentMessages: (sessionKey: string) => __TAURI_INVOKE<AgentChatMessage_Serialize[]>("list_agent_messages", { sessionKey }),
 	listAgentSessions: () => __TAURI_INVOKE<AgentSessionInfo[]>("list_agent_sessions"),
-	/**
-	 *  取消一次正在运行（或排队中）的 Agent 提交。
-	 *  「停止」= 向 RPC 常驻进程发 `abort`（不杀进程）：会话上下文保留在进程内存
-	 *  与 JSONL 文件，继续对话直接再提交即可，无需恢复流程。
-	 *  终态由调度器统一写入（cancelled），本命令不直接写库，避免竞态覆盖。
-	 */
 	cancelAgentRun: (runId: number) => __TAURI_INVOKE<null>("cancel_agent_run", { runId }),
-	/**
-	 *  删除一个工作区会话：移除会话文件与全部运行记录。
-	 * 
-	 *  若该会话存在活跃 run（pending / running），先取消（停止）再删除：
-	 *  正在运行的 pi 进程会继续烧 token 直到自然结束或超时，产出写入已删除记录后
-	 *  静默丢弃——用户直觉是「删除=停止」，因此删除即停止，避免静默丢产出。
-	 *  前端在确认对话框中提示「正在运行，删除将同时停止」。
-	 */
 	deleteAgentSession: (sessionKey: string) => __TAURI_INVOKE<null>("delete_agent_session", { sessionKey }),
 	pruneAgentSessions: (sessionKeys: string[]) => __TAURI_INVOKE<PruneAgentSessionsResult>("prune_agent_sessions", { sessionKeys }),
 	getAgentSessionCommand: (runId: number) => __TAURI_INVOKE<string>("get_agent_session_command", { runId }),
 	openAgentSession: (runId: number) => __TAURI_INVOKE<null>("open_agent_session", { runId }),
-	/**
-	 *  查询 pi RPC 进程池状态（健康指示 + 配置推迟提示）。
-	 * 
-	 *  惰性设计：不主动拉起进程——进程未启动属正常（首次提交时才 spawn），
-	 *  指示灯显示「未运行」即可，不该为了让灯变绿而白白起一个 node 进程。
-	 */
 	getAgentRpcStatus: () => __TAURI_INVOKE<AgentRpcStatus>("get_agent_rpc_status"),
-	/**
-	 *  手动重启 pi RPC 进程池（改了 pi 路径/模型/skill 后想立刻生效，或怀疑进程卡死）。
-	 * 
-	 *  有 run 在跑时**拒绝**重启（kill 会以 `rpc_exited` 中断当前 run、记 failed，
-	 *  已产生的词元全部作废）；返回 false 表示被拒绝，前端据此提示「当前有任务在跑」。
-	 *  返回 true 表示已清空进程池（下次提交时惰性重建）。
-	 */
 	restartAgentRpc: () => __TAURI_INVOKE<boolean>("restart_agent_rpc"),
-	/**
-	 *  导出会话为 Markdown 或 JSON 文件（经保存对话框选择落盘位置）。
-	 * 
-	 *  两种格式的定位不同：
-	 *  - `md`：给人读（复盘 / 贴进文档），保留工具调用与 bash 输出；
-	 *  - `json`：给程序读（结构化消息数组，便于二次处理）。
-	 * 
-	 *  返回实际写入的路径；用户取消对话框时返回 `err.agent.export_cancelled`。
-	 */
 	exportAgentSession: (sessionKey: string, title: string, format: string) => __TAURI_INVOKE<string>("export_agent_session", { sessionKey, title, format }),
-	/**
-	 *  应用内更新安装前调用：优雅关闭 pi RPC 常驻进程（关 stdin → pi 自身清理其子进程）。
-	 *  与 `RunEvent::Exit` 的关闭语义一致——更新安装会硬杀主进程（Windows NSIS `exit(0)` /
-	 *  Linux relaunch），不走 `RunEvent::Exit`，若不提前关闭 pi 会残留。
-	 *  仅 Linux/macOS 在 `relaunch()` 前调用本命令；Windows 上安装器接管退出，前端不会执行到。
-	 */
 	agentShutdownForUpdate: () => __TAURI_INVOKE<null>("agent_shutdown_for_update"),
 	/**
 	 *  检查应用更新。返回 `None` 表示当前已是最新版本（endpoint 返回 204，或远端版本不高于当前版本）。
@@ -412,19 +228,12 @@ export type AgentEntityRef = {
 	id: number,
 };
 
-/**  工作区提交的完整输入。 */
 export type AgentJobInput = {
-	/**  工作区会话标识（前端 UUID）。同会话多次提交共享 pi 会话文件（多轮继续）。 */
 	session_key: string,
-	/**  本次提交引用的实体（拖拽 / `[[]]` 解析结果）。 */
 	entities: AgentEntityRef[],
-	/**  本次提交使用的 skill 路径（`@` 选择；None = 全局列表首个）。 */
 	skill_path: string | null,
-	/**  用户输入文本（引用已解析剥离）。 */
 	instruction: string,
-	/**  本次提交显式选择的模型（None = 跟随 pi 当前/默认模型）。 */
 	model: AgentModelRef | null,
-	/**  本次提交附带的本地文件绝对路径（文件对话框自选；空/None = 无附件）。 */
 	files?: string[] | null,
 };
 
@@ -442,48 +251,30 @@ export type AgentModelRef = {
 	model_id: string,
 };
 
-/**  工作区可选模型信息：pi 当前可用模型列表 + 当前激活模型（「默认」选项实际落点）。 */
 export type AgentModelsInfo = {
-	/**  scope model：pi 已配置鉴权、可直接使用的模型列表。 */
 	models: RpcAvailableModel[],
-	/**  pi 进程当前激活模型（None = 无模型）。「默认」选项将使用该模型。 */
 	current: RpcAvailableModel | null,
 };
 
-/**  全局队列中的一条活跃 run（排队可视化：侧栏状态点 + 横幅「谁在占用」）。 */
 export type AgentQueueItem = {
 	run_id: number,
-	/**  所属工作区会话（前端映射为会话标题）。 */
 	session_key: string,
-	/**  pending | running。 */
 	status: string,
-	/**  全局队列位置（1 = 正在执行；>1 = 排在其后的等待位）。 */
 	position: number,
 };
 
-/**  全局 Agent 队列状态（「排队中」提示的数据源）。 */
 export type AgentQueueStatus = {
-	/**  本会话最新 pending run 的全局队列位置（1 = 下一个执行；无 pending → None）。 */
 	position: number | null,
-	/**  是否存在其他会话的 running run（执行位被占用）。 */
 	other_running: boolean,
-	/**  其他会话 running run 的 session_key（前端可映射为会话标题）。 */
 	running_sessions: string[],
-	/**  全局并发上限（1 = 串行排队；>1 = 并行执行，仅达上限才排队）。 */
 	max_concurrency: number,
-	/**  全局 running run 总数（含本会话）。≥ max_concurrency 时 pending 才是真排队。 */
 	running_count: number,
 };
 
-/**  pi RPC 进程池的健康状态（工作区头部指示灯数据源）。 */
 export type AgentRpcStatus = {
-	/**  池中是否有存活进程（`pi --mode rpc`）。 */
 	running: boolean,
-	/**  常驻进程 pid（未运行时 None）；临时进程 pid 不在此暴露，总数见 process_count。 */
 	pid: number | null,
-	/**  存活进程数（1 = 仅常驻；>1 = 有会话正在并行，各占一个 pi 进程）。 */
 	process_count: number,
-	/**  进程级配置变更是否因「有 run 在跑」被推迟到当前任务结束后生效。 */
 	restart_pending: boolean,
 };
 
@@ -508,10 +299,6 @@ export type AgentRunFinished = {
 	message: string | null,
 };
 
-/**
- *  一次工作区提交的列表摘要（不含 stdout/stderr 大字段，供会话记录列表）。
- *  stdout 存的是模型完整输出，列表接口按批拉取，全列返回会拖慢查询与序列化。
- */
 export type AgentRunSummary = {
 	id: number,
 	session_key: string,
@@ -526,7 +313,6 @@ export type AgentRunSummary = {
 	started_at: string | null,
 	finished_at: string | null,
 	created_at: string,
-	/**  本次提交附带的本地文件绝对路径（JSON 字符串数组；无附件时 None）。 */
 	files: string | null,
 };
 
@@ -772,7 +558,6 @@ export type ReleaseInfo = {
 	version_bump: string | null,
 };
 
-/**  全文搜索索引用的正文分块。 */
 export type ReleaseSearchBody = {
 	id: number,
 	body: string | null,
@@ -794,12 +579,6 @@ export type ReleaseTranslateChunk = {
 	delta: string,
 };
 
-/**
- *  pi 可选模型（scope model：provider 已配置鉴权、可直接使用）。
- *  来自 RPC `get_available_models` / `get_state` 返回的 Model JSON，仅提取前端需要的字段。
- *  注意 id 可能自带 provider 前缀（如 `cline-pass/deepseek-v4-flash`），
- *  因此 `set_model` 必须用 provider + modelId 双字段精确匹配。
- */
 export type RpcAvailableModel = {
 	provider: string,
 	id: string,
@@ -834,27 +613,14 @@ export type SourceAutoDisabled = {
 	failures: number,
 };
 
-/**
- *  源类型的能力元数据：由 `ADAPTERS` 注册表动态枚举，供前端注册表对拍/展示。
- *  新增源类型只需在 source.rs::ADAPTERS 登记，本命令自动下发。
- */
 export type SourceTypeInfo = {
-	/**  与后端 source_type 一致的标识（如 "github"）。 */
 	source_type: string,
-	/**  鉴权方式标识（none / github_token / youtube_api_key / bilibili_cookie）。 */
 	auth_kind: string,
-	/**  是否参与 AI 摘要/翻译（对应前端 SourceTypeDef.aiSummary）。 */
 	ai_eligible: boolean,
-	/**  是否每次检查都按 fetch_history_count 拉历史。 */
 	always_fetch_history: boolean,
-	/**  检查成功后是否刷新 description。 */
 	refresh_description_after_check: boolean,
 };
 
-/**
- *  测试连接的可选覆盖参数：前端把表单当前值（含未保存修改）传入，
- *  留空的项回退到已保存配置，实现"先试后存"。
- */
 export type TestDeepseekPayload = {
 	model: string | null,
 	baseUrl: string | null,

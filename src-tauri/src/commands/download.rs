@@ -1,28 +1,19 @@
+use crate::db;
 use crate::db::settings::load_proxy_config;
 use crate::http;
 use crate::types::AppState;
 
-// 剪贴板图片等场景的单次下载上限：25MB
 const MAX_DOWNLOAD_BYTES: usize = 25 * 1024 * 1024;
 
-/// 下载任意 http(s) URL 的原始字节并返回给前端。
-/// 前端复制图片时走 Rust 端下载：绕过 webview CORS 限制，并自动继承应用的代理设置。
-/// 返回 `Vec<u8>`，IPC 序列化为 number[]。
-///
-/// SSRF 防护：下载核心见 `http::fetch_public_bytes`——每跳解析并固定公网 IP
-/// （防 DNS 重绑定；TUN fake-ip 环境下解析结果不可用时不固定，交由 TUN/代理按域名解析）、
-/// 禁自动重定向、手动跟随（最多 10 跳）且每跳重新校验（含云元数据私网拦截）。
 #[tauri::command]
-
-#[specta::specta]pub async fn fetch_url_bytes(
+#[specta::specta]
+pub async fn fetch_url_bytes(
     state: tauri::State<'_, AppState>,
     url: String,
 ) -> Result<Vec<u8>, String> {
-    let proxy = {
-        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        load_proxy_config(&conn)?
-        // conn 随作用域结束归还连接池，网络请求期间不占用
-    };
+    let proxy = db::run_blocking(&state.db, |conn| Ok(load_proxy_config(conn)?))
+        .await
+        .map_err(|e| e.to_ipc_string())?;
     http::fetch_public_bytes(
         &http::HttpClientConfig {
             proxy_url: &proxy.url,

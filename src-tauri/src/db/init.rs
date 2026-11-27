@@ -1,6 +1,8 @@
 use rusqlite::{Connection, Result};
 use std::path::PathBuf;
 
+use crate::error::DbResult;
+
 pub fn app_data_dir() -> PathBuf {
     dirs::data_dir()
         .expect("Failed to get app data dir")
@@ -21,69 +23,49 @@ pub fn init_memory_db() -> Result<Connection> {
     Ok(conn)
 }
 
-/// 仅测试使用的内存连接池。
 #[cfg(test)]
-pub fn init_memory_pool(
-) -> Result<r2d2::Pool<crate::db::SqliteConnectionManager>, String> {
+pub fn init_memory_pool() -> DbResult<crate::db::DbPool> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
     let name = format!(
         "file:relwatch_test_{}?mode=memory&cache=shared",
         NEXT_ID.fetch_add(1, Ordering::Relaxed)
     );
-    // 与生产池同策略：PRAGMA 在 with_init 里对**每条新建连接**执行。
-    // 若只对 pool.get() 返回的单条连接手动执行，r2d2 预建的其余 idle 连接
-    // （默认 min_idle = max_size，build() 时已建齐）仍无 busy_timeout，
-    // 多连接并发写时照旧立即 BUSY（防测试 flaky 的目的落空）。
     let manager = crate::db::SqliteConnectionManager::file(&name).with_init(|conn| {
         conn.execute_batch(
             "PRAGMA foreign_keys=ON;
              PRAGMA busy_timeout=5000;",
         )
     });
-    let pool = r2d2::Pool::builder()
-        .max_size(2)
-        .build(manager)
-        .map_err(|e| e.to_string())?;
+    let pool = r2d2::Pool::builder().max_size(2).build(manager)?;
     {
-        let conn = pool.get().map_err(|e| e.to_string())?;
-        apply_schema(&conn).map_err(|e| e.to_string())?;
-        migrate(&conn).map_err(|e| e.to_string())?;
+        let conn = pool.get()?;
+        apply_schema(&conn)?;
+        migrate(&conn)?;
     }
     Ok(pool)
 }
 
-pub fn init_pool(
-) -> Result<r2d2::Pool<crate::db::SqliteConnectionManager>, String> {
+pub fn init_pool() -> DbResult<crate::db::DbPool> {
     let dir = app_data_dir();
     std::fs::create_dir_all(&dir).expect("Failed to create app data dir");
 
-    // WAL 只允许单写者：轮询的 spawn_blocking（≤10 源并发）× UI 写等会从不同连接
-    // 并发写，写锁冲突默认（busy_timeout=0）立即返回 SQLITE_BUSY。统一设 5s 等待
-    // 窗口：冲突时等待而非失败，避免偶发 "database is locked" 引发健康状态漏记/操作报错。
-    let manager = crate::db::SqliteConnectionManager::file(db_path())
-        .with_init(|conn| {
-            conn.execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA wal_autocheckpoint=1000;
-                 PRAGMA foreign_keys=ON;
-                 PRAGMA busy_timeout=5000;",
-            )
-        });
+    let manager = crate::db::SqliteConnectionManager::file(db_path()).with_init(|conn| {
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA wal_autocheckpoint=1000;
+             PRAGMA foreign_keys=ON;
+             PRAGMA busy_timeout=5000;",
+        )
+    });
 
-    // 容量与 poll MAX_CONCURRENCY(10) 对齐并留余量，覆盖 spawn_blocking 闭包与
-    // collect_pending_and_notify 并发取连接；避免 spawn 内 pool.get() 排队。
-    let pool = r2d2::Pool::builder()
-        .max_size(16)
-        .build(manager)
-        .map_err(|e| e.to_string())?;
+    let pool = r2d2::Pool::builder().max_size(16).build(manager)?;
 
     {
-        let conn = pool.get().map_err(|e| e.to_string())?;
-        apply_schema(&conn).map_err(|e| e.to_string())?;
-        migrate(&conn).map_err(|e| e.to_string())?;
-        // 启动清理：上次进程遗留的 pending/running run 置终态（防永久悬挂）
-        cleanup_stale_agent_runs(&conn).map_err(|e| e.to_string())?;
+        let conn = pool.get()?;
+        apply_schema(&conn)?;
+        migrate(&conn)?;
+        cleanup_stale_agent_runs(&conn)?;
     }
 
     Ok(pool)

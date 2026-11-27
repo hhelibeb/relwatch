@@ -4,6 +4,8 @@ use specta::Type;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use crate::error::{DbError, DbResult};
+
 /// 降级日志文件大小上限（1MB）：超过即轮转为 `fallback.log.1`（覆盖上一份），
 /// 保证 DB 长期不可用时该文件不会无界增长。
 const FALLBACK_MAX_BYTES: u64 = 1024 * 1024;
@@ -86,40 +88,58 @@ pub struct LogEntry {
     pub rendered_message: Option<String>,
 }
 
-pub fn failure_log_level(status: u16) -> &'static str {
-    if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
-        "WARN"
-    } else {
-        "ERROR"
-    }
+pub use crate::domain::release_policy::failure_log_level;
+
+const LOG_ENTRY_COLUMNS: &str =
+    "id, level, message, message_key, message_args, rendered_message, created_at";
+
+fn row_to_log_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<LogEntry> {
+    Ok(LogEntry {
+        id: row.get(0)?,
+        level: row.get(1)?,
+        message: row.get(2)?,
+        message_key: row.get(3)?,
+        message_args: row.get(4)?,
+        rendered_message: row.get(5)?,
+        created_at: row.get(6)?,
+    })
 }
 
-pub fn write_log(conn: &Connection, level: &str, message: &str) {
+pub fn write_log_raw(conn: &Connection, level: &str, message: &str) {
     let now = chrono::Utc::now().to_rfc3339();
-    // 所有日志出口默认脱敏：凭据（userinfo / query 参数 / 已知 token 形状）
-    // 不得以明文落库——日志可搜索、可导出，等同于凭据外泄。
-    let message = crate::redact::redact(message);
     if let Err(e) = conn.execute(
         "INSERT INTO logs (level, message, created_at) VALUES (?1, ?2, ?3)",
         params![level, message, now],
     ) {
         log::error!("日志写入失败（降级写文件，V23）: {}", e);
-        fallback_on_failure(level, &message, "");
+        fallback_on_failure(level, message, "");
     }
 }
 
-pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
+pub fn write_log_key_rendered(
+    conn: &Connection,
+    level: &str,
+    key: &str,
+    args: &str,
+    rendered: &str,
+) {
     let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = conn.execute(
+        "INSERT INTO logs (level, message, message_key, message_args, rendered_message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![level, key, key, args, rendered, now],
+    ) {
+        log::error!("日志写入失败（降级写文件，V23）: {}", e);
+        fallback_on_failure(level, key, args);
+    }
+}
 
-    // 所有日志出口默认脱敏：先把 args 过滤再渲染，使 message_args 与
-    // rendered_message 两侧都无明文，且渲染输入与落库内容一致。
+pub fn write_log(conn: &Connection, level: &str, message: &str) {
+    let message = crate::redact::redact(message);
+    write_log_raw(conn, level, &message);
+}
+
+pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     let args = crate::redact::redact(args);
-
-    // 读取用户语言设置，渲染翻译文本用于搜索
-    // 注意：rendered_message 在写入时固定了当前 locale。切换语言后已有日志行
-    // 的 rendered_message 不会自动重新渲染，导致关键词搜索只能命中当前语言的行。
-    // 这是有意为之的设计决策（locale-frozen），避免每次语言切换都触发全表回填。
-    // 远期方案：改为惰性渲染，搜索时从 message_key + message_args 实时计算展示文本。
     let locale = crate::db::settings::get_setting_str(
         conn,
         crate::db::settings::KEY_LANGUAGE,
@@ -127,14 +147,7 @@ pub fn write_log_key(conn: &Connection, level: &str, key: &str, args: &str) {
     ).unwrap_or_else(|_| crate::db::settings::get_default_language());
     let args_value: serde_json::Value = serde_json::from_str(&args).unwrap_or_default();
     let rendered = crate::i18n::render(key, &args_value, &locale);
-
-    if let Err(e) = conn.execute(
-        "INSERT INTO logs (level, message, message_key, message_args, rendered_message, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![level, key, key, args, rendered, now],
-    ) {
-        log::error!("日志写入失败（降级写文件，V23）: {}", e);
-        fallback_on_failure(level, key, &args);
-    }
+    write_log_key_rendered(conn, level, key, &args, &rendered);
 }
 
 pub fn search_logs(
@@ -143,13 +156,13 @@ pub fn search_logs(
     level: Option<&str>,
     page: i64,
     page_size: i64,
-) -> Result<(Vec<LogEntry>, i64), String> {
+) -> DbResult<(Vec<LogEntry>, i64)> {
     let offset = (page - 1) * page_size;
     let has_keyword = !keyword.is_empty();
     let has_level = level.is_some_and(|l| !l.is_empty() && l != "all");
 
-    let mut sql = String::from(
-        "SELECT id, level, message, message_key, message_args, rendered_message, created_at, COUNT(*) OVER() as total FROM logs WHERE 1=1"
+    let mut sql = format!(
+        "SELECT {LOG_ENTRY_COLUMNS}, COUNT(*) OVER() as total FROM logs WHERE 1=1"
     );
     let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
@@ -171,52 +184,27 @@ pub fn search_logs(
     params_vec.push(Box::new(page_size));
     params_vec.push(Box::new(offset));
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql)?;
     let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
 
     let mut total: i64 = 0;
     let logs = stmt
         .query_map(params_refs.as_slice(), |row| {
             total = row.get(7)?;
-            Ok(LogEntry {
-                id: row.get(0)?,
-                level: row.get(1)?,
-                message: row.get(2)?,
-                message_key: row.get(3)?,
-                message_args: row.get(4)?,
-                rendered_message: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+            row_to_log_entry(row)
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok((logs, total))
 }
 
-pub fn get_logs(conn: &Connection, limit: i64) -> Result<Vec<LogEntry>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, level, message, message_key, message_args, rendered_message, created_at FROM logs ORDER BY id DESC LIMIT ?1",
-        )
-        .map_err(|e| e.to_string())?;
+pub fn get_logs(conn: &Connection, limit: i64) -> DbResult<Vec<LogEntry>> {
+    let sql = format!("SELECT {LOG_ENTRY_COLUMNS} FROM logs ORDER BY id DESC LIMIT ?1");
+    let mut stmt = conn.prepare(&sql)?;
 
     let logs = stmt
-        .query_map(params![limit], |row| {
-            Ok(LogEntry {
-                id: row.get(0)?,
-                level: row.get(1)?,
-                message: row.get(2)?,
-                message_key: row.get(3)?,
-                message_args: row.get(4)?,
-                rendered_message: row.get(5)?,
-                created_at: row.get(6)?,
-            })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map(params![limit], row_to_log_entry)?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(logs)
 }
@@ -229,22 +217,18 @@ pub fn delete_old_logs(conn: &Connection, days: i64) {
     let _ = conn.execute("DELETE FROM logs WHERE created_at < ?1", rusqlite::params![cutoff]);
 }
 
-pub fn clear_logs(conn: &Connection) -> Result<(), String> {
-    conn.execute("DELETE FROM logs", rusqlite::params![])
-        .map_err(|e| e.to_string())?;
+pub fn clear_logs(conn: &Connection) -> DbResult<()> {
+    conn.execute("DELETE FROM logs", rusqlite::params![])?;
     Ok(())
 }
 
-/// 回填所有已有日志的 rendered_message（一次性迁移辅助）
-pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
+pub fn backfill_rendered_messages(conn: &Connection) -> DbResult<usize> {
     let locale = crate::db::settings::get_setting_str(conn, crate::db::settings::KEY_LANGUAGE, "zh-CN")
         .unwrap_or_else(|_| "zh-CN".to_string());
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, message_key, message_args FROM logs WHERE message_key IS NOT NULL AND rendered_message IS NULL"
-        )
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT id, message_key, message_args FROM logs WHERE message_key IS NOT NULL AND rendered_message IS NULL",
+    )?;
 
     let rows: Vec<(i64, String, Option<String>)> = stmt
         .query_map([], |row| {
@@ -253,13 +237,10 @@ pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
             ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
-    let count = rows.len();
-    if count == 0 {
+    if rows.is_empty() {
         return Ok(0);
     }
 
@@ -275,7 +256,7 @@ pub fn backfill_rendered_messages(conn: &Connection) -> Result<usize, String> {
             Ok(n) => updated += n,
             Err(e) => {
                 eprintln!("[migration] backfill row {id} failed: {e}");
-                return Err(format!("backfill row {id} failed: {e}"));
+                return Err(DbError::Other(format!("backfill row {id} failed: {e}")));
             }
         }
     }

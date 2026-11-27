@@ -2,6 +2,8 @@ use rusqlite::{params, Connection};
 use serde::Serialize;
 use specta::Type;
 
+use crate::error::DbResult;
+
 /// 单次 AI 调用的用量记录（落 `ai_usage` 表的最小单元）。
 /// `estimated`：API 未返回 usage（部分中转会剥离）时按字符数 ÷2 估算的标记，
 /// 与真实统计区分展示。
@@ -78,7 +80,7 @@ pub fn insert_call_usage(
     release_id: Option<i64>,
     model: &str,
     usages: &[CallUsage],
-) -> Result<(), String> {
+) -> DbResult<()> {
     if usages.is_empty() {
         return Ok(());
     }
@@ -110,8 +112,7 @@ pub fn insert_call_usage(
                 day,
                 created_at,
             ],
-        )
-        .map_err(|e| format!("写入 ai_usage 失败: {}", e))?;
+        )?;
     }
     Ok(())
 }
@@ -182,93 +183,81 @@ pub fn get_ai_usage_stats(
     conn: &Connection,
     source_id: Option<i64>,
     days: Option<u32>,
-) -> Result<AiUsageStats, String> {
+) -> DbResult<AiUsageStats> {
     let min_day = min_day(days);
 
     let mut daily = Vec::new();
     {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT day, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),
-                        SUM(cache_hit_tokens), SUM(cache_miss_tokens),
-                        SUM(CASE WHEN estimated = 1 THEN prompt_tokens + completion_tokens ELSE 0 END)
-                 FROM ai_usage {} GROUP BY day ORDER BY day",
-                filtered_where()
-            ))
-            .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
-        let rows = stmt
-            .query_map(params![source_id, min_day], |r| {
-                Ok(AiUsageDaily {
-                    day: r.get(0)?,
-                    calls: r.get(1)?,
-                    prompt_tokens: r.get(2)?,
-                    completion_tokens: r.get(3)?,
-                    cache_hit_tokens: r.get(4)?,
-                    cache_miss_tokens: r.get(5)?,
-                    estimated_tokens: r.get(6)?,
-                })
+        let mut stmt = conn.prepare(&format!(
+            "SELECT day, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens),
+                    SUM(cache_hit_tokens), SUM(cache_miss_tokens),
+                    SUM(CASE WHEN estimated = 1 THEN prompt_tokens + completion_tokens ELSE 0 END)
+             FROM ai_usage {} GROUP BY day ORDER BY day",
+            filtered_where()
+        ))?;
+        let rows = stmt.query_map(params![source_id, min_day], |r| {
+            Ok(AiUsageDaily {
+                day: r.get(0)?,
+                calls: r.get(1)?,
+                prompt_tokens: r.get(2)?,
+                completion_tokens: r.get(3)?,
+                cache_hit_tokens: r.get(4)?,
+                cache_miss_tokens: r.get(5)?,
+                estimated_tokens: r.get(6)?,
             })
-            .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
+        })?;
         for row in rows {
-            daily.push(row.map_err(|e| format!("读取 AI 用量统计失败: {}", e))?);
+            daily.push(row?);
         }
     }
 
     let mut by_source = Vec::new();
     {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT ai_usage.source_id,
-                        s.owner || '/' || s.repo,
-                        s.source_type,
-                        COUNT(*), SUM(ai_usage.prompt_tokens), SUM(ai_usage.completion_tokens),
-                        SUM(ai_usage.cache_hit_tokens), SUM(ai_usage.cache_miss_tokens)
-                 FROM ai_usage LEFT JOIN sources s ON s.id = ai_usage.source_id
-                 {} GROUP BY ai_usage.source_id
-                 ORDER BY SUM(ai_usage.prompt_tokens + ai_usage.completion_tokens) DESC",
-                filtered_where()
-            ))
-            .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
-        let rows = stmt
-            .query_map(params![source_id, min_day], |r| {
-                Ok(AiUsageSourceRow {
-                    source_id: r.get(0)?,
-                    label: r.get(1)?,
-                    source_type: r.get(2)?,
-                    calls: r.get(3)?,
-                    prompt_tokens: r.get(4)?,
-                    completion_tokens: r.get(5)?,
-                    cache_hit_tokens: r.get(6)?,
-                    cache_miss_tokens: r.get(7)?,
-                })
+        let mut stmt = conn.prepare(&format!(
+            "SELECT ai_usage.source_id,
+                    s.owner || '/' || s.repo,
+                    s.source_type,
+                    COUNT(*), SUM(ai_usage.prompt_tokens), SUM(ai_usage.completion_tokens),
+                    SUM(ai_usage.cache_hit_tokens), SUM(ai_usage.cache_miss_tokens)
+             FROM ai_usage LEFT JOIN sources s ON s.id = ai_usage.source_id
+             {} GROUP BY ai_usage.source_id
+             ORDER BY SUM(ai_usage.prompt_tokens + ai_usage.completion_tokens) DESC",
+            filtered_where()
+        ))?;
+        let rows = stmt.query_map(params![source_id, min_day], |r| {
+            Ok(AiUsageSourceRow {
+                source_id: r.get(0)?,
+                label: r.get(1)?,
+                source_type: r.get(2)?,
+                calls: r.get(3)?,
+                prompt_tokens: r.get(4)?,
+                completion_tokens: r.get(5)?,
+                cache_hit_tokens: r.get(6)?,
+                cache_miss_tokens: r.get(7)?,
             })
-            .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
+        })?;
         for row in rows {
-            by_source.push(row.map_err(|e| format!("读取 AI 用量统计失败: {}", e))?);
+            by_source.push(row?);
         }
     }
 
     let mut by_action = Vec::new();
     {
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT action, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)
-                 FROM ai_usage {} GROUP BY action ORDER BY COUNT(*) DESC, action ASC",
-                filtered_where()
-            ))
-            .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
-        let rows = stmt
-            .query_map(params![source_id, min_day], |r| {
-                Ok(AiUsageActionRow {
-                    action: r.get(0)?,
-                    calls: r.get(1)?,
-                    prompt_tokens: r.get(2)?,
-                    completion_tokens: r.get(3)?,
-                })
+        let mut stmt = conn.prepare(&format!(
+            "SELECT action, COUNT(*), SUM(prompt_tokens), SUM(completion_tokens)
+             FROM ai_usage {} GROUP BY action ORDER BY COUNT(*) DESC, action ASC",
+            filtered_where()
+        ))?;
+        let rows = stmt.query_map(params![source_id, min_day], |r| {
+            Ok(AiUsageActionRow {
+                action: r.get(0)?,
+                calls: r.get(1)?,
+                prompt_tokens: r.get(2)?,
+                completion_tokens: r.get(3)?,
             })
-            .map_err(|e| format!("查询 AI 用量统计失败: {}", e))?;
+        })?;
         for row in rows {
-            by_action.push(row.map_err(|e| format!("读取 AI 用量统计失败: {}", e))?);
+            by_action.push(row?);
         }
     }
 

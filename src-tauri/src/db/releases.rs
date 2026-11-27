@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use specta::Type;
 
 use crate::db::settings::{get_setting_str, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE};
+use crate::domain::release_policy::{bump_between, importance_ge, is_release_due, parse_semver};
+use crate::error::{DbError, DbResult};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct ReleaseInfo {
@@ -34,11 +36,6 @@ pub struct ReleaseInfo {
 }
 
 #[allow(clippy::too_many_arguments)]
-/// 插入一条 release；已存在（UNIQUE(source_id, tag_name) 去重命中）返回 0。
-///
-/// releases 与 notification_state 两条写入必须在**同一事务**内完成：拆成两条独立语句时，
-/// 第二条失败会留下缺 state 行的 release（查询层靠 `COALESCE(ns.status, 'pending')`
-/// 兜底成 pending，但那是脏数据）。
 pub fn insert_release(
     conn: &Connection,
     source_id: i64,
@@ -48,20 +45,17 @@ pub fn insert_release(
     published_at: &str,
     prerelease: bool,
     body: Option<&str>,
-) -> Result<i64, String> {
+) -> DbResult<i64> {
     let now = chrono::Utc::now().to_rfc3339();
-    // conn 为 &Connection：用 unchecked_transaction（rusqlite 对 &self 的 safe 变体），
-    // 本函数内顺序执行、无并发借用，等价于独占事务。
-    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    // releases 与 notification_state 在同一事务内写入，避免遗留无状态行
+    let tx = conn.unchecked_transaction()?;
     tx.execute(
         "INSERT OR IGNORE INTO releases (source_id, tag_name, release_name, html_url, published_at, prerelease, body, detected_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![source_id, tag_name, release_name, html_url, published_at, prerelease as i64, body, now],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
 
     if tx.changes() == 0 {
-        // 去重命中：不提交（无事可写），返回 0
         return Ok(0);
     }
 
@@ -72,103 +66,22 @@ pub fn insert_release(
             "INSERT OR IGNORE INTO notification_state (release_id, status, created_at, updated_at)
              VALUES (?1, 'pending', ?2, ?2)",
             params![release_id, now],
-        )
-        .map_err(|e| e.to_string())?;
-        // version_bump 不在此处逐条全链重算：单条插入就拉全链 SELECT + 逐行 UPDATE
-        // 会让历史模式批量插入退化为 O(N²)，改由批量保存循环
-        // （save_entries_generic / insert_new_models）结束后统一重算一次。
+        )?;
     }
 
-    tx.commit().map_err(|e| e.to_string())?;
+    tx.commit()?;
     Ok(release_id)
 }
 
-/// 从 tag 中提取至少两段的数字序列组成 semver 三元组（缺段补 0）。
-///
-/// 例：`v1.16.0` → (1,16,0)；`release-1.2.3-beta.1` → (1,2,3)；`1.16` → (1,16,0)；
-/// 无数字段或仅单段数字（视频 id、B 站 BV 号、commit hash）→ None。
-/// 要求至少两段是刻意收紧：单段数字会让 "BV11xxx"/"BV12xxx" 这类编号被误读成版本。
-/// 刻意不引 regex 依赖；只取前三段，四段以上 tag（如 1.2.3.4）取 1.2.3。
-fn parse_semver(tag: &str) -> Option<(u64, u64, u64)> {
-    let bytes = tag.as_bytes();
-    let mut segs: Vec<u64> = Vec::with_capacity(3);
-    let mut i = 0;
-    while i < bytes.len() && segs.len() < 3 {
-        if bytes[i].is_ascii_digit() {
-            let start = i;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
-            }
-            // 段内位数过多视为非版本号（防御 u64 溢出与哈希类长数字串）
-            if i - start > 10 {
-                return None;
-            }
-            segs.push(tag[start..i].parse().ok()?);
-            // 下一段仅当「. + 数字」时继续（"1.2.3-beta.1" 在 -beta 处自然截断）
-            if segs.len() < 3
-                && i + 1 < bytes.len()
-                && bytes[i] == b'.'
-                && bytes[i + 1].is_ascii_digit()
-            {
-                i += 1;
-            } else {
-                break;
-            }
-        } else {
-            i += 1;
-        }
-    }
-    if segs.len() < 2 {
-        return None;
-    }
-    while segs.len() < 3 {
-        segs.push(0);
-    }
-    Some((segs[0], segs[1], segs[2]))
-}
-
-/// 前一版本 → 当前版本的 semver 变化类型；相等或版本回落返回 None（不算任何变化）。
-fn bump_between(prev: (u64, u64, u64), cur: (u64, u64, u64)) -> Option<&'static str> {
-    if cur.0 > prev.0 {
-        Some("major")
-    } else if cur.0 == prev.0 && cur.1 > prev.1 {
-        Some("minor")
-    } else if cur.0 == prev.0 && cur.1 == prev.1 && cur.2 > prev.2 {
-        Some("patch")
-    } else {
-        None
-    }
-}
-
-/// 重算指定 source 全部 release 的 version_bump（只写值发生变化的行：
-/// 增量插入时链上其余行新旧值相同，跳过写入，让「批量插入 → 一次全链重算」的
-/// 热路径只产生少量真实 UPDATE）。
-///
-/// **调用方契约**：insert_release 不再自动触发本函数（避免逐条全链重算 O(N²)）；
-/// 由批量保存入口负责在循环收尾时统一调用一次：
-/// - `db::save::save_entries_generic`（github/youtube/bilibili 共用）
-/// - `huggingface::insert_new_models`
-///
-/// 直接调用 insert_release 的代码（如测试/工具）若需 version_bump 正确，须自行收尾重算。
-///
-/// 规则：按 published_at 升序（同刻按 id），与**前一个能解析出 semver 的 tag** 比较：
-/// 主段变大 → major，次段 → minor，补丁段 → patch；tag 无 semver（视频/B 站等）不参与
-/// 比较也不写值。无 semver 的 source 全链为 NULL，代价仅一次 SELECT。
-pub fn recompute_version_bumps(conn: &Connection, source_id: i64) -> Result<(), String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT id, tag_name, version_bump FROM releases
-             WHERE source_id = ?1
-             ORDER BY published_at ASC, id ASC",
-        )
-        .map_err(|e| e.to_string())?;
+pub fn recompute_version_bumps(conn: &Connection, source_id: i64) -> DbResult<()> {
+    let mut stmt = conn.prepare(
+        "SELECT id, tag_name, version_bump FROM releases
+         WHERE source_id = ?1
+         ORDER BY published_at ASC, id ASC",
+    )?;
     let rows: Vec<(i64, String, Option<String>)> = stmt
-        .query_map(params![source_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map(params![source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
 
     let mut prev: Option<(u64, u64, u64)> = None;
@@ -182,10 +95,8 @@ pub fn recompute_version_bumps(conn: &Connection, source_id: i64) -> Result<(), 
             conn.execute(
                 "UPDATE releases SET version_bump = ?1 WHERE id = ?2",
                 params![bump, id],
-            )
-            .map_err(|e| e.to_string())?;
+            )?;
         }
-        // 仅能解析出 semver 的条目才推进比较基线
         if cur.is_some() {
             prev = cur;
         }
@@ -193,22 +104,26 @@ pub fn recompute_version_bumps(conn: &Connection, source_id: i64) -> Result<(), 
     Ok(())
 }
 
-/// 设置 release 的用户旗标：0 = 清除，1-6 = 预设颜色。
-pub fn set_release_flag(conn: &Connection, release_id: i64, flag: i64) -> Result<(), String> {
+pub fn set_release_flag(conn: &Connection, release_id: i64, flag: i64) -> DbResult<()> {
     if !(0..=6).contains(&flag) {
-        return Err(format!("err.release_flag_invalid|{}", flag));
+        return Err(DbError::validation_args(
+            "err.release_flag_invalid",
+            [flag.to_string()],
+        ));
     }
     conn.execute(
         "UPDATE releases SET flag = ?1 WHERE id = ?2",
         params![flag, release_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn batch_set_release_flag(conn: &Connection, release_ids: &[i64], flag: i64) -> Result<u32, String> {
+pub fn batch_set_release_flag(conn: &Connection, release_ids: &[i64], flag: i64) -> DbResult<u32> {
     if !(0..=6).contains(&flag) {
-        return Err(format!("err.release_flag_invalid|{}", flag));
+        return Err(DbError::validation_args(
+            "err.release_flag_invalid",
+            [flag.to_string()],
+        ));
     }
     let ids = super::dedup_ids(release_ids);
     if ids.is_empty() {
@@ -224,13 +139,11 @@ pub fn batch_set_release_flag(conn: &Connection, release_ids: &[i64], flag: i64)
             params_vec.push(Box::new(id));
         }
         let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
 
-/// 根据排除集合动态构建 `NOT IN (...)` 条件子句与参数。
-/// 排除集合为空时不附加条件（不排除任何源类型）。
 fn exclusion_clause<'a>(
     excluded_types: &'a [&'a str],
 ) -> (String, Vec<&'a dyn rusqlite::ToSql>) {
@@ -244,71 +157,53 @@ fn exclusion_clause<'a>(
     (sql, params)
 }
 
-/// 待生成 AI 摘要的 release (id, body) 列表（供轮询周期重试失败的摘要）。
-///
-/// `excluded_types`：不参与 AI 摘要的源类型集合（如 youtube/bilibili），
-/// 由 poll 编排层从 `list_adapters()` 的能力声明动态收集，
-/// 新增源类型声明 `ai_eligible=false` 后自动生效，不在此硬编码具体类型。
 pub fn get_releases_without_summary(
     conn: &Connection,
     excluded_types: &[&str],
-) -> Result<Vec<(i64, Option<String>)>, String> {
+) -> DbResult<Vec<(i64, Option<String>)>> {
     let (exclude_sql, params) = exclusion_clause(excluded_types);
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT r.id, r.body FROM releases r
-             JOIN sources s ON s.id = r.source_id
-             WHERE r.ai_summary IS NULL AND r.body IS NOT NULL AND r.body != ''
-               AND (r.retry_count IS NULL OR r.retry_count < 5){}",
-            exclude_sql
-        ))
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.body FROM releases r
+         JOIN sources s ON s.id = r.source_id
+         WHERE r.ai_summary IS NULL AND r.body IS NOT NULL AND r.body != ''
+           AND (r.retry_count IS NULL OR r.retry_count < 5){}",
+        exclude_sql
+    ))?;
 
     let releases = stmt
-        .query_map(rusqlite::params_from_iter(params), |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(releases)
 }
 
-/// 返回需要翻译但尚未翻译的 (id, body) 列表。
-/// 条件：body 非空、body_translated 为空、翻译重试次数 < 5。
-///
-/// `excluded_types`：不参与 AI 翻译的源类型集合（如 youtube/bilibili），
-/// 由 poll 编排层从 `list_adapters()` 的能力声明动态收集，与摘要路径共用同一份能力声明。
 pub fn get_releases_without_translation(
     conn: &Connection,
     excluded_types: &[&str],
-) -> Result<Vec<(i64, Option<String>)>, String> {
+) -> DbResult<Vec<(i64, Option<String>)>> {
     let (exclude_sql, params) = exclusion_clause(excluded_types);
-    let mut stmt = conn
-        .prepare(&format!(
-            "SELECT r.id, r.body FROM releases r
-             JOIN sources s ON s.id = r.source_id
-             WHERE r.body_translated IS NULL AND r.body IS NOT NULL AND r.body != ''
-               AND (r.translate_retry_count IS NULL OR r.translate_retry_count < 5){}",
-            exclude_sql
-        ))
-        .map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT r.id, r.body FROM releases r
+         JOIN sources s ON s.id = r.source_id
+         WHERE r.body_translated IS NULL AND r.body IS NOT NULL AND r.body != ''
+           AND (r.translate_retry_count IS NULL OR r.translate_retry_count < 5){}",
+        exclude_sql
+    ))?;
     let releases = stmt
-        .query_map(rusqlite::params_from_iter(params), |row| Ok((row.get(0)?, row.get(1)?)))
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map(rusqlite::params_from_iter(params), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(releases)
 }
 
-/// 返回给定 release id 中属于“不参与 AI 摘要/翻译”源类型（如 youtube）的 id 集合。
-///
-/// 类型集合由调用方（poll 编排层）从 `source::list_adapters()` 能力声明收集，
-/// 新增源类型声明 `ai_eligible=false` 后自动生效，此处不硬编码具体类型。
 pub fn ai_ineligible_release_ids(
     conn: &Connection,
     ids: &[i64],
     ineligible_types: &[&str],
-) -> Result<std::collections::HashSet<i64>, String> {
+) -> DbResult<std::collections::HashSet<i64>> {
     use std::collections::HashSet;
     if ids.is_empty() || ineligible_types.is_empty() {
         return Ok(HashSet::new());
@@ -323,73 +218,55 @@ pub fn ai_ineligible_release_ids(
     let mut params: Vec<&dyn rusqlite::ToSql> = Vec::new();
     params.extend(ineligible_types.iter().map(|t| t as &dyn rusqlite::ToSql));
     params.extend(ids.iter().map(|id| id as &dyn rusqlite::ToSql));
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(rusqlite::params_from_iter(params), |row| {
-            row.get::<_, i64>(0)
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<HashSet<_>, _>>()
-        .map_err(|e| e.to_string())
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(params), |row| row.get::<_, i64>(0))?;
+    Ok(rows.collect::<Result<HashSet<_>, _>>()?)
 }
 
 pub fn set_body_translated(
     conn: &Connection,
     release_id: i64,
     translated: &str,
-) -> Result<(), String> {
+) -> DbResult<()> {
     conn.execute(
         "UPDATE releases SET body_translated = ?1, translate_retry_count = 0 WHERE id = ?2",
         rusqlite::params![translated, release_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 设置 release 的 body 和 extra_metadata。
-///
-/// 用于 HuggingFace 源：insert_release 时 body 传空，插入成功后异步拉取 README
-/// 回填 body，同时写入模型元数据 JSON（pipeline_tag/downloads/likes 等）。
 pub fn set_release_body_and_metadata(
     conn: &Connection,
     release_id: i64,
     body: Option<&str>,
     extra_metadata: Option<&str>,
-) -> Result<(), String> {
+) -> DbResult<()> {
     conn.execute(
         "UPDATE releases SET body = ?1, extra_metadata = ?2 WHERE id = ?3",
         rusqlite::params![body, extra_metadata, release_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 更新已存在 release 的 body + extra_metadata（按 source_id + tag_name 定位）。
-///
-/// 用于视频源（YouTube/B 站）轮询去重命中时刷新封面/时长/播放量等元数据：
-/// insert_release 对已存在条目返回 0（拿不到 id），需按业务键定位更新；
-/// 新增条目仍走 set_release_body_and_metadata。
 pub fn update_release_metadata(
     conn: &Connection,
     source_id: i64,
     tag_name: &str,
     body: Option<&str>,
     extra_metadata: Option<&str>,
-) -> Result<(), String> {
+) -> DbResult<()> {
     conn.execute(
         "UPDATE releases SET body = ?1, extra_metadata = ?2 WHERE source_id = ?3 AND tag_name = ?4",
         rusqlite::params![body, extra_metadata, source_id, tag_name],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn increment_translate_retry_count(conn: &Connection, release_id: i64) -> Result<(), String> {
+pub fn increment_translate_retry_count(conn: &Connection, release_id: i64) -> DbResult<()> {
     conn.execute(
         "UPDATE releases SET translate_retry_count = COALESCE(translate_retry_count, 0) + 1 WHERE id = ?1",
         rusqlite::params![release_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
@@ -398,31 +275,28 @@ pub fn set_ai_summary(
     release_id: i64,
     summary: &str,
     importance: &str,
-) -> Result<(), String> {
+) -> DbResult<()> {
     conn.execute(
         "UPDATE releases SET ai_summary = ?1, ai_importance = ?2, retry_count = 0 WHERE id = ?3",
         rusqlite::params![summary, importance, release_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn increment_retry_count(conn: &Connection, release_id: i64) -> Result<(), String> {
+pub fn increment_retry_count(conn: &Connection, release_id: i64) -> DbResult<()> {
     conn.execute(
         "UPDATE releases SET retry_count = COALESCE(retry_count, 0) + 1 WHERE id = ?1",
         rusqlite::params![release_id],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-pub fn delete_release(conn: &Connection, release_id: i64) -> Result<(), String> {
-    conn.execute("DELETE FROM releases WHERE id = ?1", params![release_id])
-        .map_err(|e| e.to_string())?;
+pub fn delete_release(conn: &Connection, release_id: i64) -> DbResult<()> {
+    conn.execute("DELETE FROM releases WHERE id = ?1", params![release_id])?;
     Ok(())
 }
 
-pub fn batch_delete_releases(conn: &Connection, release_ids: &[i64]) -> Result<u32, String> {
+pub fn batch_delete_releases(conn: &Connection, release_ids: &[i64]) -> DbResult<u32> {
     let ids = super::dedup_ids(release_ids);
     if ids.is_empty() {
         return Ok(0);
@@ -433,7 +307,7 @@ pub fn batch_delete_releases(conn: &Connection, release_ids: &[i64]) -> Result<u
         let sql = format!("DELETE FROM releases WHERE id IN ({placeholders})");
         let params_ref: Vec<&dyn rusqlite::ToSql> =
             chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
@@ -443,10 +317,15 @@ pub fn set_notification_state(
     release_id: i64,
     status: &str,
     snooze_until: Option<&str>,
-) -> Result<(), String> {
+) -> DbResult<()> {
     match status {
         "pending" | "snoozed" | "clicked" | "ignored" => {}
-        _ => return Err(format!("err.invalid_notification_status|{}", status)),
+        _ => {
+            return Err(DbError::validation_args(
+                "err.invalid_notification_status",
+                [status],
+            ));
+        }
     }
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
@@ -457,8 +336,7 @@ pub fn set_notification_state(
            notify_failures = CASE WHEN ?2 IN ('snoozed', 'pending') THEN 0 ELSE notify_failures END,
            updated_at = ?4",
         params![release_id, status, snooze_until, now],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
@@ -467,10 +345,15 @@ pub fn batch_set_notification_state(
     release_ids: &[i64],
     status: &str,
     snooze_until: Option<&str>,
-) -> Result<u32, String> {
+) -> DbResult<u32> {
     match status {
         "pending" | "snoozed" | "clicked" | "ignored" => {}
-        _ => return Err(format!("err.invalid_notification_status|{}", status)),
+        _ => {
+            return Err(DbError::validation_args(
+                "err.invalid_notification_status",
+                [status],
+            ));
+        }
     }
     let ids = super::dedup_ids(release_ids);
     if ids.is_empty() {
@@ -480,7 +363,6 @@ pub fn batch_set_notification_state(
     let mut total = 0usize;
     for chunk in ids.chunks(super::BATCH_CHUNK_SIZE) {
         let placeholders = super::in_placeholders(chunk.len(), 4);
-        // Filter through releases table so non-existent IDs are ignored instead of failing FK constraints.
         let sql = format!(
             "INSERT INTO notification_state (release_id, status, snooze_until, created_at, updated_at)
              SELECT id, ?1, ?2, ?3, ?3 FROM releases WHERE id IN ({placeholders})
@@ -497,20 +379,18 @@ pub fn batch_set_notification_state(
             params_vec.push(Box::new(id));
         }
         let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
-        total += conn.execute(&sql, params_ref.as_slice()).map_err(|e| e.to_string())?;
+        total += conn.execute(&sql, params_ref.as_slice())?;
     }
     Ok(total as u32)
 }
 
-pub fn mark_source_releases_read(conn: &Connection, source_id: i64) -> Result<u32, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.id, COALESCE(ns.status, 'pending'), ns.snooze_until
-             FROM releases r
-             LEFT JOIN notification_state ns ON r.id = ns.release_id
-             WHERE r.source_id = ?1 AND COALESCE(ns.status, 'pending') IN ('pending', 'snoozed')",
-        )
-        .map_err(|e| e.to_string())?;
+pub fn mark_source_releases_read(conn: &Connection, source_id: i64) -> DbResult<u32> {
+    let mut stmt = conn.prepare(
+        "SELECT r.id, COALESCE(ns.status, 'pending'), ns.snooze_until
+         FROM releases r
+         LEFT JOIN notification_state ns ON r.id = ns.release_id
+         WHERE r.source_id = ?1 AND COALESCE(ns.status, 'pending') IN ('pending', 'snoozed')",
+    )?;
     let due_ids: Vec<i64> = stmt
         .query_map(params![source_id], |row| {
             Ok((
@@ -518,10 +398,8 @@ pub fn mark_source_releases_read(conn: &Connection, source_id: i64) -> Result<u3
                 row.get::<_, String>(1)?,
                 row.get::<_, Option<String>>(2)?,
             ))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?
+        })?
+        .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .filter(|(_, status, snooze_until)| is_release_due(status, snooze_until.as_deref()))
         .map(|(id, _, _)| id)
@@ -530,78 +408,62 @@ pub fn mark_source_releases_read(conn: &Connection, source_id: i64) -> Result<u3
     batch_set_notification_state(conn, &due_ids, "clicked", None)
 }
 
-/// 标记 release 已通知：**upsert**，不依赖 state 行已存在。
-///
-/// 若写成纯 UPDATE，state 行缺失（历史脏数据 / 插入失败遗留）时影响 0 行却返回 Ok，
-/// `get_pending_releases` 里 `last_notified_at IS NULL` 条件永远命中，release 每轮
-/// 都被重复通知。upsert 保证任何情况下都能落标记。
-pub fn set_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), String> {
+pub fn set_last_notified_at(conn: &Connection, release_id: i64) -> DbResult<()> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO notification_state (release_id, status, created_at, updated_at, last_notified_at)
          VALUES (?1, 'pending', ?2, ?2, ?2)
          ON CONFLICT(release_id) DO UPDATE SET last_notified_at = ?2, updated_at = ?2",
         rusqlite::params![release_id, now],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 记录一次桌面通知发送失败，返回累计失败次数（不清标记）。
-///
-/// 配合 [`clear_last_notified_at`] 构成「失败重试」闭环：`collect_pending_and_notify`
-/// 是**先批量标记、再派发**（批量标记只需一次取连接），所以发送失败时若不撤销标记，
-/// 该 release 的桌面通知就永久丢失：`get_pending_releases` 的 `last_notified_at IS NULL`
-/// 条件再也不会命中它。
-///
-/// 计数只增不减：达到上限后调用方不再清标记，重试自然停止，计数器也就没用了；
-/// 用户重新标记为待通知（`set_notification_state`）时归零，重发享有全新预算。
-pub fn record_notify_failure(conn: &Connection, release_id: i64) -> Result<i64, String> {
+pub fn record_notify_failure(conn: &Connection, release_id: i64) -> DbResult<i64> {
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO notification_state (release_id, status, created_at, updated_at, notify_failures)
          VALUES (?1, 'pending', ?2, ?2, 1)
          ON CONFLICT(release_id) DO UPDATE SET notify_failures = notify_failures + 1, updated_at = ?2",
         rusqlite::params![release_id, now],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.query_row(
+    )?;
+    Ok(conn.query_row(
         "SELECT notify_failures FROM notification_state WHERE release_id = ?1",
         rusqlite::params![release_id],
         |r| r.get(0),
-    )
-    .map_err(|e| e.to_string())
+    )?)
 }
 
-/// 撤销已通知标记（通知发送失败时调用）：让下一轮轮询重新拾起这条 release 重发。
-pub fn clear_last_notified_at(conn: &Connection, release_id: i64) -> Result<(), String> {
+pub fn clear_last_notified_at(conn: &Connection, release_id: i64) -> DbResult<()> {
     conn.execute(
         "UPDATE notification_state SET last_notified_at = NULL, updated_at = ?2 WHERE release_id = ?1",
         rusqlite::params![release_id, chrono::Utc::now().to_rfc3339()],
-    )
-    .map_err(|e| e.to_string())?;
+    )?;
     Ok(())
 }
 
-/// 检查某个 source 是否已有比指定 published_at 更新的版本。
-/// 用于判断新保存的版本是否真的是全局最新。
-///
-/// 必须用 `julianday()` 归一化后比较，不能直接比字符串：库里的 `published_at` 同时存在
-/// `2026-08-20T11:00:17Z`、`...17.565Z`、`...17+00:00` 三种写法（各适配器的格式化方式不同，
-/// 同一源在适配器调整后也会混用）。字典序会把「同一时刻的不同写法」判成不等，
-/// 于是 `mark_older_as_read` 可能把真正最新的版本标成已读（漏通知）或反之。
-/// 无法解析的时间戳 julianday 为 NULL，比较结果为 false（不视为更新）。
-pub fn has_newer_release(conn: &Connection, source_id: i64, published_at: &str) -> Result<bool, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT COUNT(*) FROM releases
-             WHERE source_id = ?1 AND julianday(published_at) > julianday(?2)",
-        )
-        .map_err(|e| e.to_string())?;
-    let count: i64 = stmt
-        .query_row(rusqlite::params![source_id, published_at], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
+/// 必须用 julianday() 归一化时间再比较：各适配器写入的 ISO-8601 后缀格式不统一，直接按字符串比较会误判。
+pub fn has_newer_release(conn: &Connection, source_id: i64, published_at: &str) -> DbResult<bool> {
+    let mut stmt = conn.prepare(
+        "SELECT COUNT(*) FROM releases
+         WHERE source_id = ?1 AND julianday(published_at) > julianday(?2)",
+    )?;
+    let count: i64 = stmt.query_row(rusqlite::params![source_id, published_at], |row| row.get(0))?;
     Ok(count > 0)
+}
+
+fn release_select_from(body_expr: &str, tr_expr: &str) -> String {
+    format!(
+        "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
+                r.tag_name, r.release_name, r.html_url, r.published_at,
+                r.prerelease, {body_expr} AS body, r.detected_at,
+                COALESCE(ns.status, 'pending'), ns.snooze_until,
+                r.ai_summary, r.ai_importance, {tr_expr} AS body_translated, r.extra_metadata,
+                s.description, r.flag, r.version_bump
+         FROM releases r
+         JOIN sources s ON r.source_id = s.id
+         LEFT JOIN notification_state ns ON r.id = ns.release_id"
+    )
 }
 
 fn row_to_release_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReleaseInfo> {
@@ -630,59 +492,30 @@ fn row_to_release_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReleaseInfo>
     })
 }
 
-pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, String> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
-                    r.tag_name, r.release_name, r.html_url, r.published_at,
-                    r.prerelease, r.body, r.detected_at,
-                    COALESCE(ns.status, 'pending'), ns.snooze_until,
-                    r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
-                s.description, r.flag, r.version_bump
-             FROM releases r
-             JOIN sources s ON r.source_id = s.id
-             LEFT JOIN notification_state ns ON r.id = ns.release_id
-             WHERE r.id = ?1",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let mut rows = stmt
-        .query_map(params![id], row_to_release_info)
-        .map_err(|e| e.to_string())?;
-
+pub fn get_release(conn: &Connection, id: i64) -> DbResult<Option<ReleaseInfo>> {
+    let sql = format!("{} WHERE r.id = ?1", release_select_from("r.body", "r.body_translated"));
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map(params![id], row_to_release_info)?;
     match rows.next() {
         Some(Ok(release)) => Ok(Some(release)),
-        Some(Err(e)) => Err(e.to_string()),
+        Some(Err(e)) => Err(e.into()),
         None => Ok(None),
     }
 }
 
-/// 目录（列表）查询中，长正文（Tier2）保留的预览字符数。
-///
-/// 卡片只渲染 3 行截断预览，全文由详情弹窗按需取（`get_release`）或由
-/// `get_release_search_bodies` 分块供全文搜索用。取 600 字对三行预览有充裕余量，
-/// 同时把列表载荷从「全库正文」压到「每条 ≤1.2K 字符」。
 pub const BODY_EXCERPT_CHARS: i64 = 600;
 
-/// 正文投影方式：决定 `body` / `body_translated` 两列回什么。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyProjection {
-    /// 全文（内部逻辑与测试用；目录/列表查询不要用，会把全库正文送进内存）。
     Full,
-    /// 目录用预览：Tier1 源（视频等，body 即内容载体）回全文，其余源回前 N 字符。
     Excerpt(i64),
 }
 
-/// 统一的 release 读取实现：`projection` 决定正文投影，**不得加 LIMIT**。
-///
-/// 列表分页不放 SQL：由 `get_release_catalog` 一次性下发全量目录，前端在全量数据上
-/// 筛选/聚合/日历。加了 LIMIT 会让越界的历史版本在应用内（列表、日历、聚合视图、
-/// 来源计数）完全不可见。
 fn query_releases(
     conn: &Connection,
     projection: BodyProjection,
     tier1_types: &[&str],
-) -> Result<Vec<ReleaseInfo>, String> {
+) -> DbResult<Vec<ReleaseInfo>> {
     let (body_expr, tr_expr, use_tier1) = match projection {
         BodyProjection::Full => ("r.body".to_string(), "r.body_translated".to_string(), false),
         BodyProjection::Excerpt(_) if tier1_types.is_empty() => (
@@ -703,19 +536,12 @@ fn query_releases(
     };
 
     let sql = format!(
-        "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
-                r.tag_name, r.release_name, r.html_url, r.published_at,
-                r.prerelease, {body_expr} AS body, r.detected_at,
-                COALESCE(ns.status, 'pending'), ns.snooze_until,
-                r.ai_summary, r.ai_importance, {tr_expr} AS body_translated, r.extra_metadata,
-            s.description, r.flag, r.version_bump
-         FROM releases r
-         JOIN sources s ON r.source_id = s.id
-         LEFT JOIN notification_state ns ON r.id = ns.release_id
+        "{}
          ORDER BY CASE
              WHEN r.published_at LIKE '1970%' THEN r.detected_at
              ELSE r.published_at
-         END DESC, r.id DESC"
+         END DESC, r.id DESC",
+        release_select_from(&body_expr, &tr_expr)
     );
 
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
@@ -735,33 +561,25 @@ fn query_releases(
     }
     let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql)?;
     let releases = stmt
-        .query_map(params_ref.as_slice(), row_to_release_info)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map(params_ref.as_slice(), row_to_release_info)?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(releases)
 }
 
-pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
+pub fn get_releases_with_state(conn: &Connection) -> DbResult<Vec<ReleaseInfo>> {
     query_releases(conn, BodyProjection::Full, &[])
 }
 
-/// 全库目录（无 LIMIT，正文为预览投影）：前端版本列表的唯一数据源。
-///
-/// `tier1_types` 指定正文即内容载体的源类型（由调用方从 `source::tier1_body_source_types()`
-/// 注入，避免 `db` 反向依赖 `source`）；命中该集合的源回全文，其余源回前
-/// `BODY_EXCERPT_CHARS` 字符（空切片表示全部按预览截断）。
 pub fn get_release_catalog(
     conn: &Connection,
     tier1_types: &[&str],
-) -> Result<Vec<ReleaseInfo>, String> {
+) -> DbResult<Vec<ReleaseInfo>> {
     query_releases(conn, BodyProjection::Excerpt(BODY_EXCERPT_CHARS), tier1_types)
 }
 
-/// 全文搜索索引用的正文分块。
 #[derive(Debug, Serialize, Deserialize, Clone, Type)]
 pub struct ReleaseSearchBody {
     pub id: i64,
@@ -769,17 +587,12 @@ pub struct ReleaseSearchBody {
     pub body_translated: Option<String>,
 }
 
-/// 按 id 游标从新到旧分块取正文（`id < before_id`），供前端构建全文搜索索引。
-///
-/// 契约不变量：
-/// - 跳过 `tier1_types`（其正文已在目录全量下发）及正文/译文皆空的行；
-/// - `max_chars` 为单次调用的字符预算，超预算即停，但**至少回一行**（防单条超大正文卡死游标）。
 pub fn get_release_search_bodies(
     conn: &Connection,
     before_id: i64,
     max_chars: i64,
     tier1_types: &[&str],
-) -> Result<Vec<ReleaseSearchBody>, String> {
+) -> DbResult<Vec<ReleaseSearchBody>> {
     let type_clause = if tier1_types.is_empty() {
         String::new()
     } else {
@@ -802,14 +615,14 @@ pub fn get_release_search_bodies(
     }
     let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let mut rows = stmt.query(params_ref.as_slice()).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query(params_ref.as_slice())?;
 
     let mut out: Vec<ReleaseSearchBody> = Vec::new();
     let mut used: i64 = 0;
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let body: Option<String> = row.get(1).map_err(|e| e.to_string())?;
-        let translated: Option<String> = row.get(2).map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next()? {
+        let body: Option<String> = row.get(1)?;
+        let translated: Option<String> = row.get(2)?;
         let cost = body.as_deref().map_or(0, |s| s.chars().count() as i64)
             + translated.as_deref().map_or(0, |s| s.chars().count() as i64);
         if !out.is_empty() && used + cost > max_chars {
@@ -817,7 +630,7 @@ pub fn get_release_search_bodies(
         }
         used += cost;
         out.push(ReleaseSearchBody {
-            id: row.get(0).map_err(|e| e.to_string())?,
+            id: row.get(0)?,
             body,
             body_translated: translated,
         });
@@ -828,12 +641,11 @@ pub fn get_release_search_bodies(
     Ok(out)
 }
 
-/// 按显式 id 批量取非 Tier1 正文，用于刷新索引里内容已变化的行（翻译落库 / README 回填）。
 pub fn get_release_bodies_by_ids(
     conn: &Connection,
     ids: &[i64],
     tier1_types: &[&str],
-) -> Result<Vec<ReleaseSearchBody>, String> {
+) -> DbResult<Vec<ReleaseSearchBody>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -862,7 +674,7 @@ pub fn get_release_bodies_by_ids(
     }
     let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(&sql)?;
     let rows = stmt
         .query_map(params_ref.as_slice(), |row| {
             Ok(ReleaseSearchBody {
@@ -870,68 +682,25 @@ pub fn get_release_bodies_by_ids(
                 body: row.get(1)?,
                 body_translated: row.get(2)?,
             })
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 
-/// 大→3, 中→2, 小→1. Returns true if `a` >= `b` in importance.
-/// Unknown/malformed values are treated as "小" (lowest).
-fn importance_ge(a: &str, b: &str) -> bool {
-    let a_val = match a {
-        "大" => 3,
-        "中" => 2,
-        _ => 1,
-    };
-    let b_val = match b {
-        "大" => 3,
-        "中" => 2,
-        _ => 1,
-    };
-    a_val >= b_val
-}
-
-fn is_release_due(status: &str, snooze_until: Option<&str>) -> bool {
-    if status == "snoozed" {
-        if let Some(until) = snooze_until {
-            if !until.is_empty() {
-                if let Ok(until_time) = chrono::DateTime::parse_from_rfc3339(until) {
-                    if until_time >= chrono::Utc::now() {
-                        return false;
-                    }
-                }
-            }
-        }
-    }
-    true
-}
-
-fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Result<Vec<ReleaseInfo>, String> {
+fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> DbResult<Vec<ReleaseInfo>> {
     let notified_filter = if only_notified_missing { " AND ns.last_notified_at IS NULL" } else { "" };
     let sql = format!(
-        "SELECT r.id, r.source_id, s.source_type, s.owner, s.repo,
-                r.tag_name, r.release_name, r.html_url, r.published_at,
-                r.prerelease, r.body, r.detected_at,
-                COALESCE(ns.status, 'pending'), ns.snooze_until,
-                r.ai_summary, r.ai_importance, r.body_translated, r.extra_metadata,
-                s.description, r.flag, r.version_bump
-         FROM releases r
-         JOIN sources s ON r.source_id = s.id
-         LEFT JOIN notification_state ns ON r.id = ns.release_id
+        "{}
          WHERE COALESCE(ns.status, 'pending') IN ('pending', 'snoozed'){}
          ORDER BY r.detected_at DESC",
+        release_select_from("r.body", "r.body_translated"),
         notified_filter,
     );
 
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-
+    let mut stmt = conn.prepare(&sql)?;
     let releases = stmt
-        .query_map([], row_to_release_info)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+        .query_map([], row_to_release_info)?
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(releases
         .into_iter()
@@ -939,7 +708,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
         .collect())
 }
 
-pub fn has_due_unread_release(conn: &Connection) -> Result<bool, String> {
+pub fn has_due_unread_release(conn: &Connection) -> DbResult<bool> {
     let has_pending: bool = conn
         .prepare(
             "SELECT 1
@@ -949,59 +718,52 @@ pub fn has_due_unread_release(conn: &Connection) -> Result<bool, String> {
              WHERE ns.status = 'pending'
                AND s.muted = 0
              LIMIT 1",
-        )
-        .map_err(|e| e.to_string())?
-        .exists([])
-        .map_err(|e| e.to_string())?;
+        )?
+        .exists([])?;
     if has_pending {
         return Ok(true);
     }
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT ns.snooze_until
-             FROM notification_state ns
-             JOIN releases r ON r.id = ns.release_id
-             JOIN sources s ON r.source_id = s.id
-             WHERE ns.status = 'snoozed'
-               AND s.muted = 0",
-        )
-        .map_err(|e| e.to_string())?;
-    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let snooze_until: Option<String> = row.get(0).map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT ns.snooze_until
+         FROM notification_state ns
+         JOIN releases r ON r.id = ns.release_id
+         JOIN sources s ON r.source_id = s.id
+         WHERE ns.status = 'snoozed'
+           AND s.muted = 0",
+    )?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let snooze_until: Option<String> = row.get(0)?;
         if is_release_due("snoozed", snooze_until.as_deref()) {
             return Ok(true);
         }
     }
 
-    // 兜底极罕见无 notification_state 行的孤儿 release（COALESCE 语义等价 pending）
-    conn.prepare(
-        "SELECT 1
-         FROM releases r
-         JOIN sources s ON r.source_id = s.id
-         WHERE s.muted = 0
-           AND NOT EXISTS (SELECT 1 FROM notification_state ns WHERE ns.release_id = r.id)
-         LIMIT 1",
-    )
-    .map_err(|e| e.to_string())?
-    .exists([])
-    .map_err(|e| e.to_string())
+    Ok(conn
+        .prepare(
+            "SELECT 1
+             FROM releases r
+             JOIN sources s ON r.source_id = s.id
+             WHERE s.muted = 0
+               AND NOT EXISTS (SELECT 1 FROM notification_state ns WHERE ns.release_id = r.id)
+             LIMIT 1",
+        )?
+        .exists([])?)
 }
 
 #[cfg(test)]
-pub fn get_unread_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
+pub fn get_unread_releases(conn: &Connection) -> DbResult<Vec<ReleaseInfo>> {
     query_unread_releases(conn, false)
 }
 
-pub fn get_pending_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
+pub fn get_pending_releases(conn: &Connection) -> DbResult<Vec<ReleaseInfo>> {
     let min_importance = get_setting_str(conn, KEY_DEEPSEEK_MIN_IMPORTANCE, DEFAULT_DEEPSEEK_MIN_IMPORTANCE)
         .unwrap_or_else(|_| DEFAULT_DEEPSEEK_MIN_IMPORTANCE.to_string());
 
     let pending: Vec<ReleaseInfo> = query_unread_releases(conn, true)?
         .into_iter()
         .filter(|r| {
-            // `ai_importance IS NULL` 始终通知
             if let Some(ref imp) = r.ai_importance {
                 if !importance_ge(imp, &min_importance) {
                     return false;

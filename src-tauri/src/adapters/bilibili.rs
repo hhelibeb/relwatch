@@ -1,19 +1,3 @@
-//! B 站 UP 主监控适配器（web-dynamic 动态接口 + WBI 签名，视频为主）。
-//!
-//! ## 数据源
-//! B 站没有官方 RSS、没有官方开放 API。本适配器走 WEB 端接口：
-//! - 匿名模式（默认）：访问主页 + `finger/spi` 初始化 `buvid3/buvid4/b_nut` cookie，
-//!   `nav` 接口取 WBI 签名密钥，带签名请求 `x/polymer/web-dynamic/v1/feed/space`
-//!   （用户空间动态），无需登录即可拉取 UP 主动态，过滤出视频（DYNAMIC_TYPE_AV）。
-//! - 登录模式（设置页配置 B 站 Cookie SESSDATA 后自动启用）：SESSDATA 拼入 cookie，
-//!   B 站风控对登录用户评分更低，显著降低 -352/-412 概率（RSSHub 等项目的标准做法）。
-//!
-//! ## 风控说明
-//! B 站 2025-05 起强制 WBI 签名、2025-06 起强制 buvid3；2026 年起对部分接口
-//! （arc/search、acc/info）升级设备指纹风控（-352 + v_voucher）。web-dynamic 动态
-//! 接口当前仅需 WBI 签名 + buvid cookie 即可访问，是匿名场景的可行入口。
-//! 触发风控时返回友好错误（err.bili_risk），提示配置 SESSDATA 或稍后重试。
-
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -23,67 +7,48 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::releases;
 use crate::db::sources::Source;
-use crate::source::SourceAdapter;
+use crate::error::{SourceError, SourceErrorKind};
+use crate::source::{FetchedRelease, SourceAdapter, SourceExtraMetadata};
 
 const BILI_API_BASE: &str = "https://api.bilibili.com";
 const BILI_HOME: &str = "https://www.bilibili.com/";
 const BILI_WATCH_BASE: &str = "https://www.bilibili.com/video";
 const BILI_SPACE_REFERER: &str = "https://space.bilibili.com/";
 
-/// 用户空间动态接口（新版，无需设备指纹；feed/all 需要登录，feed/space 匿名可用）。
 const BILI_DYNAMIC_PATH: &str = "/x/polymer/web-dynamic/v1/feed/space";
-/// WBI 签名密钥来源（未登录也返回 wbi_img）。
 const BILI_NAV_PATH: &str = "/x/web-interface/nav";
-/// buvid3/buvid4 生成接口。
 const BILI_SPI_PATH: &str = "/x/frontend/finger/spi";
 
-/// WBI 签名重排表：`img_key + sub_key` 按此表取字符，截前 32 位为 mixin_key。
-/// 见 bilibili-API-collect docs/misc/sign/wbi.md（社区 fork 镜像）。
 const MIXIN_KEY_ENC_TAB: [usize; 64] = [
     46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19,
     29, 28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
     22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ];
 
-/// 动态接口 features 参数（web 端功能开关，缺失可能返回空列表）。
 const BILI_DYNAMIC_FEATURES: &str =
     "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,decorationCard,noPcover";
 
-/// fetch_all 最大页数保护：`fetch_history_count=0`（全量拉取）时唯一终止条件是响应
-/// offset 为空，若 B 站异常重复返回同一非空 offset（风控页形态/接口 bug），
-/// 无上限会无限循环挂住轮询。
 const MAX_FETCH_ALL_PAGES: usize = 50;
-/// fetch_all 最大条目数兜底（正常 UP 主动态远小于此值）。
 const MAX_FETCH_ALL_ITEMS: usize = 2000;
 
-/// bili_ticket 获取接口（POST，存在可降低风控概率，3 天有效）。
-const BILI_TICKET_URL: &str = "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket";
+const BILI_TICKET_URL: &str =
+    "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket";
 
-/// 浏览器 UA：B 站风控对非浏览器 UA 敏感，单请求覆盖 client 级 UA。
-const BILI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
+pub(crate) const BILI_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 \
                        (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-/// 浏览器级请求头（B 站风控对缺头/异常头敏感，实测缺 Accept/Language 易触发 412/-352）。
 const BILI_ACCEPT: &str = "application/json, text/plain, */*";
 const BILI_ACCEPT_LANG: &str = "zh-CN,zh;q=0.9,en;q=0.8";
-/// bili_ticket 签名密钥（社区逆向，见 bilibili-API-collect bili_ticket.md）。
 const BILI_TICKET_KEY: &str = "XgwSnGZ1p";
 
-/// 动态条目（fetch 阶段产出，序列化为 JSON 传给 save）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct BiliEntry {
-    /// 视频 BVID（BV 开头，releases.tag_name 天然去重）。
     bvid: String,
     title: String,
-    /// RFC3339 格式发布时间（动态 pub_ts 转换）。
     published: String,
     description: String,
-    /// 封面 URL。
     thumbnail: String,
-    /// 时长文本（如 "12:34"）。
     duration: String,
-    /// 播放量（archive.stat.view）；字段缺失/异常时为 None，前端隐藏显示。
     view_count: Option<i64>,
-    /// UP 主昵称（module_author.name，用于 verify/刷新描述）。
     up_name: String,
 }
 
@@ -92,24 +57,26 @@ impl BiliEntry {
         format!("{}/{}", BILI_WATCH_BASE, self.bvid)
     }
 
-    /// 与 youtube.rs 对齐的 extra_metadata 结构（前端 youtubeLayout 复用解析）。
-    /// B 站 CDN 支持 https，封面强制升级为 https（WebView CSP 仅允许 https 图片，
-    /// 否则 http 封面被 img-src 'self' data: https: 拦截，列表不显示封面）。
-    fn metadata_json(&self) -> String {
-        let thumbnail = self
-            .thumbnail
-            .replacen("http://", "https://", 1);
-        serde_json::json!({
-            "kind": "video",
-            "thumbnail": thumbnail,
-            "duration": self.duration,
-            "view_count": self.view_count,
-        })
-        .to_string()
+    fn into_fetched_release(self) -> FetchedRelease {
+        let html_url = self.html_url();
+        let thumbnail = self.thumbnail.replacen("http://", "https://", 1);
+        FetchedRelease {
+            tag: self.bvid,
+            name: self.title,
+            html_url,
+            published: self.published,
+            prerelease: false,
+            body: Some(self.description),
+            extra: SourceExtraMetadata::Video {
+                kind: "video".to_string(),
+                thumbnail: Some(thumbnail),
+                duration: Some(self.duration),
+                view_count: self.view_count,
+            },
+        }
     }
 }
 
-/// WBI 签名密钥。
 #[derive(Debug, Clone)]
 struct WbiKeys {
     img_key: String,
@@ -117,7 +84,6 @@ struct WbiKeys {
 }
 
 impl WbiKeys {
-    /// mixin_key = 重排表取 `img_key + sub_key` 前 32 位。
     fn mixin_key(&self) -> String {
         let raw = format!("{}{}", self.img_key, self.sub_key);
         MIXIN_KEY_ENC_TAB
@@ -128,8 +94,6 @@ impl WbiKeys {
     }
 }
 
-/// encodeURIComponent 风格编码（大写 %XX、空格 %20），并过滤 `!'()*` 字符
-/// （WBI 签名要求；部分库按 form-urlencoded 编码空格为 `+` 会导致签名不匹配）。
 fn encode_wbi_component(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
@@ -137,7 +101,6 @@ fn encode_wbi_component(s: &str) -> String {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
                 out.push(b as char)
             }
-            // 过滤 "!'()*"（B 站签名约定剔除这些字符）
             0x21 | 0x27 | 0x28 | 0x29 | 0x2A => {}
             _ => out.push_str(&format!("%{:02X}", b)),
         }
@@ -145,8 +108,6 @@ fn encode_wbi_component(s: &str) -> String {
     out
 }
 
-/// WBI 签名：参数按 key 升序 → 逐项 encodeURIComponent 拼接 → 追加 wts →
-/// MD5(query + mixin_key) 得 w_rid。返回可直接拼到 URL 后的完整 query。
 fn sign_wbi_query(params: &HashMap<String, String>, mixin_key: &str, wts: i64) -> String {
     let mut kv: Vec<(String, String)> = params
         .iter()
@@ -159,20 +120,19 @@ fn sign_wbi_query(params: &HashMap<String, String>, mixin_key: &str, wts: i64) -
         .map(|(k, v)| format!("{}={}", encode_wbi_component(k), encode_wbi_component(v)))
         .collect();
     let base = base.join("&");
-    let w_rid = format!("{:x}", md5::Md5::digest(format!("{}{}", base, mixin_key).as_bytes()));
+    let w_rid = format!(
+        "{:x}",
+        md5::Md5::digest(format!("{}{}", base, mixin_key).as_bytes())
+    );
     format!("{}&w_rid={}", base, w_rid)
 }
 
-/// 带浏览器级请求头（UA/Referer/Accept/Accept-Language/Cookie）的 GET。
-/// 风控相关错误（412/403/429/400）不重试，其余（网络抖动、5xx）重试。
-/// `referer`：B 站校验 Referer 来源，动态接口应传具体用户空间页（`space.bilibili.com/{mid}`），
-/// 其它接口传 `https://www.bilibili.com/`（实测缺头/通用 Referer 易触发风控）。
 async fn bili_get(
     client: &reqwest::Client,
     url: &str,
     cookie: Option<&str>,
     referer: &str,
-) -> Result<String, (u16, String)> {
+) -> Result<String, SourceError> {
     crate::http::get_text_with_retry(
         client,
         url,
@@ -187,18 +147,21 @@ async fn bili_get(
                 None => req,
             }
         },
-        |e: &(u16, String)| {
-            // 风控/限流/参数错误不重试，其余（网络抖动、5xx）重试
-            if matches!(e.0, 412 | 429 | 400 | 403) {
+        |e: &SourceError| {
+            if matches!(e.status(), 412 | 429 | 400 | 403) {
                 return false;
             }
-            log::warn!("B 站请求失败(状态={}), 将重试: {}", e.0, e.1);
+            log::warn!("B 站请求失败(状态={}), 将重试: {}", e.status(), e);
             true
         },
         |status, _body| {
-            // 412 是 B 站 WAF 直接拦截（IP/指纹级风控）
             if status == 412 {
-                (412, "err.bili_risk|HTTP 412".to_string())
+                SourceError::new(
+                    412,
+                    SourceErrorKind::BiliRisk {
+                        detail: Some("HTTP 412".to_string()),
+                    },
+                )
             } else {
                 crate::http::default_api_error(status, _body)
             }
@@ -207,10 +170,9 @@ async fn bili_get(
     .await
 }
 
-/// 解析 B 站 API JSON：code != 0 时映射为 i18n 错误。
-fn parse_bili_json(body: &str) -> Result<serde_json::Value, (u16, String)> {
+fn parse_bili_json(body: &str) -> Result<serde_json::Value, SourceError> {
     let v: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+        .map_err(|e| SourceError::coded(0, "err.parse_failed", [e.to_string()]))?;
     let code = v.get("code").and_then(|c| c.as_i64()).unwrap_or(-1);
     if code != 0 {
         let msg = v
@@ -223,21 +185,16 @@ fn parse_bili_json(body: &str) -> Result<serde_json::Value, (u16, String)> {
     Ok(v)
 }
 
-/// B 站业务错误码 → i18n 错误串。
-fn map_bili_code(code: i64, msg: &str) -> (u16, String) {
+fn map_bili_code(code: i64, msg: &str) -> SourceError {
     match code {
-        // 风控校验失败（设备指纹/行为画像）
-        -352 => (403, "err.bili_risk".to_string()),
-        // 请求过于频繁（IP 级限流）
-        -799 => (429, "err.bili_rate_limit".to_string()),
-        // 用户不存在 / 空间被锁
-        -404 => (404, "err.bili_up_not_found".to_string()),
-        -400 => (400, format!("err.bili_invalid_params|{}", msg)),
-        _ => (0, format!("err.bili_api_error|{}|{}", code, msg)),
+        -352 => SourceError::new(403, SourceErrorKind::BiliRisk { detail: None }),
+        -799 => SourceError::new(429, SourceErrorKind::BiliRateLimit),
+        -404 => SourceError::key(404, "err.bili_up_not_found"),
+        -400 => SourceError::coded(400, "err.bili_invalid_params", [msg]),
+        _ => SourceError::coded(0, "err.bili_api_error", [code.to_string(), msg.to_string()]),
     }
 }
 
-/// HMAC-SHA256（bili_ticket 签名；用已有 sha2 手写，避免新增 hmac 依赖）。
 fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut k = key.to_vec();
@@ -261,7 +218,6 @@ fn hmac_sha256_hex(key: &[u8], msg: &[u8]) -> String {
     format!("{:x}", Sha256::digest(&outer))
 }
 
-/// 获取 bili_ticket（存在 cookie 中可降低风控概率，3 天有效；失败时静默降级）。
 async fn fetch_bili_ticket(client: &reqwest::Client) -> Option<String> {
     let ts = chrono::Utc::now().timestamp();
     let hexsign = hmac_sha256_hex(BILI_TICKET_KEY.as_bytes(), format!("ts{}", ts).as_bytes());
@@ -288,17 +244,11 @@ async fn fetch_bili_ticket(client: &reqwest::Client) -> Option<String> {
     Some(ticket)
 }
 
-// ── 会话缓存（buvid cookie / WBI keys 按 TTL 复用，避免每次检查都重新初始化） ──
-
-/// 匿名 cookie 缓存 TTL（bili_ticket 有效期 3 天，保守按 1 小时刷新）。
 const COOKIE_CACHE_TTL_SECS: i64 = 60 * 60;
-/// WBI 签名密钥缓存 TTL（密钥每日更替，保守按 6 小时刷新）。
 const WBI_CACHE_TTL_SECS: i64 = 6 * 60 * 60;
 
 struct CachedCookie {
-    /// 请求携带的完整 cookie 串（配置 SESSDATA 时含 SESSDATA）。
     value: String,
-    /// 该 cookie 对应的 SESSDATA（None = 匿名）；变化时缓存失效重新初始化。
     sessdata: Option<String>,
     expires_at: i64,
 }
@@ -314,7 +264,6 @@ struct BiliCookieCache {
 }
 
 impl BiliCookieCache {
-    /// cookie 缓存命中条件：未过期且登录态一致（SESSDATA 相同；空串等同匿名）。
     fn cookie_hit(&self, sessdata: Option<&str>, now: i64) -> Option<&str> {
         let sd = sessdata.filter(|s| !s.is_empty());
         self.cookie
@@ -331,7 +280,6 @@ struct BiliWbiCache {
 }
 
 impl BiliWbiCache {
-    /// WBI 密钥缓存命中条件：未过期。
     fn wbi_hit(&self, now: i64) -> Option<&WbiKeys> {
         self.wbi
             .as_ref()
@@ -340,35 +288,23 @@ impl BiliWbiCache {
     }
 }
 
-/// 全局 B 站 cookie 缓存。buvid cookie 与具体监控源无关，多个 bilibili 源、多次检查共享，
-/// 避免每次检查重复请求主页/spi/ticket。
-///
-/// cookie 与 WBI 密钥拆分为**两把独立锁**：cookie 初始化含主页 + spi + ticket 3 段网络
-/// 往返，若与 WBI 共用一把锁，一个源的 cookie 未命中会阻塞另一源纯缓存命中的 WBI 读取，
-/// 全局串行化。拆分后两个状态各自并发，跨 await 持锁仍保证 check-then-act 安全
-/// （防 thundering herd）。
 fn bili_cookie_cache() -> &'static tokio::sync::Mutex<BiliCookieCache> {
     static CACHE: OnceLock<tokio::sync::Mutex<BiliCookieCache>> = OnceLock::new();
     CACHE.get_or_init(|| tokio::sync::Mutex::new(BiliCookieCache::default()))
 }
 
-/// 全局 B 站 WBI 密钥缓存（与 cookie 缓存独立加锁，见 `bili_cookie_cache` 注释）。
 fn bili_wbi_cache() -> &'static tokio::sync::Mutex<BiliWbiCache> {
     static CACHE: OnceLock<tokio::sync::Mutex<BiliWbiCache>> = OnceLock::new();
     CACHE.get_or_init(|| tokio::sync::Mutex::new(BiliWbiCache::default()))
 }
 
-/// 匿名初始化 buvid cookie：主页 Set-Cookie 拿 buvid3/b_nut，finger/spi 拿 buvid4，
-/// 再补 bili_ticket（可选，降低风控）。失败时降级，不阻断后续拉取。
-async fn init_anonymous_cookie_via_client(
-    client: &reqwest::Client,
-) -> Result<String, (u16, String)> {
+async fn init_anonymous_cookie_via_client(client: &reqwest::Client) -> Result<String, SourceError> {
     let resp = client
         .get(BILI_HOME)
         .header("User-Agent", BILI_UA)
         .send()
         .await
-        .map_err(|e| (0, crate::http::describe_request_error(&e)))?;
+        .map_err(|e| crate::http::describe_request_source_error(&e))?;
     let mut cookies: Vec<(String, String)> = Vec::new();
     for header in resp.headers().get_all("set-cookie") {
         if let Ok(raw) = header.to_str() {
@@ -378,7 +314,6 @@ async fn init_anonymous_cookie_via_client(
             }
         }
     }
-    // finger/spi 补 buvid4（带浏览器头，独立于主页 cookie）
     if let Ok(spi) = client
         .get(format!("{}{}", BILI_API_BASE, BILI_SPI_PATH))
         .header("User-Agent", BILI_UA)
@@ -401,7 +336,6 @@ async fn init_anonymous_cookie_via_client(
             }
         }
     }
-    // bili_ticket 降风控（失败忽略）
     if let Some(t) = fetch_bili_ticket(client).await {
         cookies.push(("bili_ticket".to_string(), t));
     }
@@ -412,34 +346,44 @@ async fn init_anonymous_cookie_via_client(
         .join("; "))
 }
 
-/// 从 nav 响应体解析 WBI 签名密钥（未登录 code=-101 也返回 key，不视为错误）。
-fn parse_wbi_keys(body: &str) -> Result<WbiKeys, (u16, String)> {
+fn parse_wbi_keys(body: &str) -> Result<WbiKeys, SourceError> {
     let v: serde_json::Value = serde_json::from_str(body)
-        .map_err(|e| (0, format!("err.parse_failed|{}", e)))?;
+        .map_err(|e| SourceError::coded(0, "err.parse_failed", [e.to_string()]))?;
     let img_url = v["data"]["wbi_img"]["img_url"]
         .as_str()
-        .ok_or((0, "err.bili_wbi_keys|img".to_string()))?;
+        .ok_or_else(|| SourceError::coded(0, "err.bili_wbi_keys", ["img"]))?;
     let sub_url = v["data"]["wbi_img"]["sub_url"]
         .as_str()
-        .ok_or((0, "err.bili_wbi_keys|sub".to_string()))?;
-    let img_key = img_url.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("").to_string();
-    let sub_key = sub_url.rsplit('/').next().unwrap_or("").split('.').next().unwrap_or("").to_string();
+        .ok_or_else(|| SourceError::coded(0, "err.bili_wbi_keys", ["sub"]))?;
+    let img_key = img_url
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let sub_key = sub_url
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .to_string();
     if img_key.is_empty() || sub_key.is_empty() {
-        return Err((0, "err.bili_wbi_keys|empty".to_string()));
+        return Err(SourceError::coded(0, "err.bili_wbi_keys", ["empty"]));
     }
-    // mixin_key() 用重排表索引 img_key+sub_key 拼接串（最大下标 63）；
-    // key 短于预期时返回错误而非索引越界 panic。
     if img_key.len() + sub_key.len() < 64 {
-        return Err((0, "err.bili_wbi_keys|short".to_string()));
+        return Err(SourceError::coded(0, "err.bili_wbi_keys", ["short"]));
     }
     Ok(WbiKeys { img_key, sub_key })
 }
 
-/// 取 WBI 签名密钥（nav 接口，未登录也返回；密钥每日更替，按 TTL 缓存复用）。
 async fn fetch_wbi_keys(
     client: &reqwest::Client,
     cookie: Option<&str>,
-) -> Result<WbiKeys, (u16, String)> {
+) -> Result<WbiKeys, SourceError> {
     let now = chrono::Utc::now().timestamp();
     let mut cache = bili_wbi_cache().lock().await;
     if let Some(keys) = cache.wbi_hit(now) {
@@ -460,8 +404,6 @@ async fn fetch_wbi_keys(
     Ok(keys)
 }
 
-/// 解析 B 站 stat.play 展示文本为数字播放量（"23.4万" → 234000，"1.2亿" → 120000000）。
-/// 播放量被 UP 主隐藏（stat_hidden，play 为空/"--"）或格式异常时返回 None。
 fn parse_play_count(play: &str) -> Option<i64> {
     let s = play.trim();
     if s.is_empty() || s == "--" {
@@ -478,14 +420,13 @@ fn parse_play_count(play: &str) -> Option<i64> {
     (n > 0).then_some(n)
 }
 
-/// 拉取一页空间动态，返回（条目, 下一页 offset）。
 async fn fetch_dynamic_page(
     client: &reqwest::Client,
     mid: &str,
     offset: Option<&str>,
     cookie: Option<&str>,
     keys: &WbiKeys,
-) -> Result<(Vec<BiliEntry>, Option<String>), (u16, String)> {
+) -> Result<(Vec<BiliEntry>, Option<String>), SourceError> {
     let mut params = HashMap::new();
     params.insert("host_mid".to_string(), mid.to_string());
     params.insert("timezone_offset".to_string(), "-480".to_string());
@@ -495,10 +436,7 @@ async fn fetch_dynamic_page(
     }
     let wts = chrono::Utc::now().timestamp();
     let query = sign_wbi_query(&params, &keys.mixin_key(), wts);
-    let url = format!(
-        "{}{}?{}",
-        BILI_API_BASE, BILI_DYNAMIC_PATH, query
-    );
+    let url = format!("{}{}?{}", BILI_API_BASE, BILI_DYNAMIC_PATH, query);
     let body = bili_get(
         client,
         &url,
@@ -512,7 +450,6 @@ async fn fetch_dynamic_page(
     let next_offset = data["offset"].as_str().map(|s| s.to_string());
     let mut entries = Vec::new();
     for it in &items {
-        // 只取视频动态（DYNAMIC_TYPE_AV / MAJOR_TYPE_ARCHIVE）
         if it["type"].as_str() != Some("DYNAMIC_TYPE_AV") {
             continue;
         }
@@ -525,17 +462,11 @@ async fn fetch_dynamic_page(
         let description = archive["desc"].as_str().unwrap_or("").to_string();
         let thumbnail = archive["cover"].as_str().unwrap_or("").to_string();
         let duration = archive["duration_text"].as_str().unwrap_or("").to_string();
-        // 播放量：web-dynamic 接口无 stat.view，实际为 stat.play 展示文本
-        // （如 "23.4万"/"1.2亿"/"1000"）；stat_hidden 时 play 为空/"--"
-        let view_count = archive["stat"]["play"]
-            .as_str()
-            .and_then(parse_play_count);
+        let view_count = archive["stat"]["play"].as_str().and_then(parse_play_count);
         let up_name = it["modules"]["module_author"]["name"]
             .as_str()
             .unwrap_or("")
             .to_string();
-        // 动态发布时间即视频投稿时间；pub_ts 解析失败（字段缺失/类型异常）时以当前时间兜底，
-        // 杜绝 1970-01-01 脏数据（0 时间戳会让版本列表按时间排序被 LIMIT 截断而不可见）。
         let published = match parse_pub_ts(it) {
             Some(ts) => chrono::DateTime::from_timestamp(ts, 0)
                 .map(|d| d.to_rfc3339())
@@ -559,9 +490,6 @@ async fn fetch_dynamic_page(
     Ok((entries, next_offset))
 }
 
-/// 解析动态条目发布时间（秒级时间戳）。
-/// B 站接口 pub_ts 数字/字符串两种形态都出现过（风控降级时字段可能缺失），
-/// 返回 None 时由调用方以检测时间兜底，避免 0 时间戳（1970-01-01）污染 published_at。
 fn parse_pub_ts(item: &serde_json::Value) -> Option<i64> {
     let v = &item["modules"]["module_author"]["pub_ts"];
     v.as_i64()
@@ -569,39 +497,27 @@ fn parse_pub_ts(item: &serde_json::Value) -> Option<i64> {
         .filter(|&ts| ts > 0)
 }
 
-/// 解析用户输入为 UID：
-/// - 纯数字 UID（至多 16 位：旧式 6~10 位、新式 16 位均可）
-/// - `space.bilibili.com/{uid}` / `bilibili.com/space/{uid}` 链接
-/// - `bilibili.com/{uid}`（B 站新版空间跳转）
 fn extract_uid(input: &str) -> Option<String> {
     let input = input.trim();
     if input.is_empty() {
         return None;
     }
-    // 纯数字 UID（B 站新注册用户为 16 位新式 UID）
     if input.chars().all(|c| c.is_ascii_digit()) && input.len() <= 16 {
         return Some(input.to_string());
     }
     for pat in ["space.bilibili.com/", "bilibili.com/space/"] {
         if let Some(idx) = input.find(pat) {
             let rest = &input[idx + pat.len()..];
-            let uid: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
+            let uid: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if !uid.is_empty() {
                 return Some(uid);
             }
         }
     }
-    // https://bilibili.com/1234567 跳转形式
     if let Some(idx) = input.find("bilibili.com/") {
         let rest = &input[idx + "bilibili.com/".len()..];
         if !rest.starts_with("space") && !rest.starts_with("video") {
-            let uid: String = rest
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
+            let uid: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
             if !uid.is_empty() {
                 return Some(uid);
             }
@@ -610,12 +526,11 @@ fn extract_uid(input: &str) -> Option<String> {
     None
 }
 
-/// 拉取 UP 主真实昵称（动态接口 module_author.name，兜底空间页 og:title）。
 async fn fetch_up_name(
     client: &reqwest::Client,
     mid: &str,
     cookie: Option<&str>,
-) -> Result<String, (u16, String)> {
+) -> Result<String, SourceError> {
     let keys = fetch_wbi_keys(client, cookie).await?;
     let (entries, _) = fetch_dynamic_page(client, mid, None, cookie, &keys).await?;
     if let Some(e) = entries.first() {
@@ -623,67 +538,39 @@ async fn fetch_up_name(
             return Ok(e.up_name.clone());
         }
     }
-    // 兜底：空间页 og:title（CDN 层，正常网络可用）
     let page_url = format!("https://space.bilibili.com/{}", mid);
     if let Ok(body) = bili_get(client, &page_url, cookie, &page_url).await {
         if let Some(name) = extract_og_title(&body) {
             return Ok(name);
         }
     }
-    Err((404, format!("err.bili_up_not_found|{}", mid)))
+    Err(SourceError::coded(404, "err.bili_up_not_found", [mid]))
 }
 
 fn extract_og_title(html: &str) -> Option<String> {
     let name = crate::http::extract_og_title(html)?;
-    // B 站风控页 title 形如 "bili_xxxxxx的个人空间"
     if name.starts_with("bili_") {
         return None;
     }
     Some(name)
 }
 
-/// 条目列表 → 序列化 JSON（供 save 阶段反序列化 BiliEntry）。
-fn entries_to_json(entries: Vec<BiliEntry>) -> Vec<serde_json::Value> {
-    entries
-        .into_iter()
-        .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
-        .collect()
-}
-
-/// 保存视频条目到 releases 表（tag_name = bvid，天然去重）。
-///
-/// 行为收敛到 `db::save::save_entries_generic`（与 youtube 共用同一循环）：按 published
-/// 降序排列，max_count 只限本轮写入条数，扫描要到连续 KNOWN_HIT_STOP 条已入库命中才停止。
 pub fn save_entries(
     conn: &Connection,
     source_id: i64,
-    items: &[serde_json::Value],
+    items: &[FetchedRelease],
     max_count: usize,
 ) -> Vec<(i64, Option<String>)> {
     let entries: Vec<crate::db::save::SaveEntry> = items
         .iter()
-        .filter_map(|v| serde_json::from_value::<BiliEntry>(v.clone()).ok())
-        .filter(|e| !e.bvid.is_empty() && !e.published.is_empty())
-        .map(|e| {
-            let html_url = e.html_url();
-            let metadata = e.metadata_json();
-            crate::db::save::SaveEntry {
-                tag: e.bvid,
-                name: e.title,
-                html_url,
-                published: e.published,
-                prerelease: false,
-                body: Some(e.description),
-                metadata: Some(metadata),
-            }
-        })
+        .filter(|e| !e.tag.is_empty() && !e.published.is_empty())
+        .map(FetchedRelease::to_save_entry)
         .collect();
     crate::db::save::save_entries_generic(
         conn,
         source_id,
         &entries,
         max_count,
-        // 插入成功：写入正文与元数据
         |conn, id, entry| {
             let _ = releases::set_release_body_and_metadata(
                 conn,
@@ -692,7 +579,6 @@ pub fn save_entries(
                 entry.metadata.as_deref(),
             );
         },
-        // 去重命中：刷新元数据（播放量/封面/时长随轮询更新）
         |conn, source_id, entry| {
             let _ = releases::update_release_metadata(
                 conn,
@@ -705,9 +591,6 @@ pub fn save_entries(
     )
 }
 
-// ── SourceAdapter 实现 ─────────────────────────────────
-
-/// B 站 UP 主监控适配器。
 pub struct BilibiliAdapter;
 
 #[async_trait::async_trait]
@@ -720,12 +603,10 @@ impl SourceAdapter for BilibiliAdapter {
         crate::source::AuthKind::BilibiliCookie
     }
 
-    /// B 站视频不生成 AI 摘要/翻译（标题简介均为中文，与 youtube 一致）。
     fn ai_eligible(&self) -> bool {
         false
     }
 
-    /// 通知标题用 UP 主名（UID 无阅读意义）。
     fn notification_source_name(
         &self,
         owner: &str,
@@ -740,7 +621,6 @@ impl SourceAdapter for BilibiliAdapter {
         }
     }
 
-    /// 通知标题来源标签（与前端 i18n source.type_bilibili 中文文案一致）。
     fn notification_source_label(&self) -> Option<&'static str> {
         Some("哔哩哔哩")
     }
@@ -767,7 +647,6 @@ impl SourceAdapter for BilibiliAdapter {
         "视频简介"
     }
 
-    /// 检查成功后刷新 UP 主昵称（动态接口 module_author.name 才是真名）。
     fn refresh_description_after_check(&self) -> bool {
         true
     }
@@ -778,23 +657,16 @@ impl SourceAdapter for BilibiliAdapter {
         source: &Source,
         per_page: usize,
         token: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    ) -> Result<Vec<FetchedRelease>, SourceError> {
         let cookie = build_cookie(client, token).await?;
         let keys = fetch_wbi_keys(client, cookie.as_deref()).await?;
-        let (entries, _) = fetch_dynamic_page(
-            client,
-            &source.owner,
-            None,
-            cookie.as_deref(),
-            &keys,
-        )
-        .await?;
-        let out: Vec<serde_json::Value> = entries
+        let (entries, _) =
+            fetch_dynamic_page(client, &source.owner, None, cookie.as_deref(), &keys).await?;
+        Ok(entries
             .into_iter()
             .take(per_page)
-            .map(|e| serde_json::to_value(e).unwrap_or(serde_json::Value::Null))
-            .collect();
-        Ok(out)
+            .map(BiliEntry::into_fetched_release)
+            .collect())
     }
 
     async fn fetch_all(
@@ -803,16 +675,13 @@ impl SourceAdapter for BilibiliAdapter {
         source: &Source,
         max_count: Option<usize>,
         token: Option<&str>,
-    ) -> Result<Vec<serde_json::Value>, (u16, String)> {
+    ) -> Result<Vec<FetchedRelease>, SourceError> {
         let cookie = build_cookie(client, token).await?;
         let keys = fetch_wbi_keys(client, cookie.as_deref()).await?;
         let mut entries = Vec::new();
         let mut offset: Option<String> = None;
         let mut pages = 0usize;
         loop {
-            // 页数上限保护：max_count=None（fetch_history_count=0 全量拉取）时
-            // 唯一终止条件本是响应 offset 为空；若 B 站异常重复返回同一非空 offset，
-            // 这里强制在 MAX_FETCH_ALL_PAGES 页后停止，避免无限循环挂住轮询。
             if pages >= MAX_FETCH_ALL_PAGES {
                 log::warn!(
                     "bilibili {} 翻页达到上限 {} 页，停止拉取（已获 {} 条）",
@@ -846,26 +715,29 @@ impl SourceAdapter for BilibiliAdapter {
                 break;
             }
             match next {
-                // 防死循环：响应重复返回与当前相同的 offset（风控页形态）时停止
-                Some(o) if !o.is_empty() && Some(o.as_str()) != offset.as_deref() => offset = Some(o),
+                Some(o) if !o.is_empty() && Some(o.as_str()) != offset.as_deref() => {
+                    offset = Some(o)
+                }
                 _ => break,
             }
         }
         if let Some(limit) = max_count {
             entries.truncate(limit);
         }
-        Ok(entries_to_json(entries))
+        Ok(entries
+            .into_iter()
+            .map(BiliEntry::into_fetched_release)
+            .collect())
     }
 
     async fn save(
         &self,
         db: &r2d2::Pool<crate::db::SqliteConnectionManager>,
         source: &Source,
-        data: &[serde_json::Value],
+        data: &[FetchedRelease],
         max_count: usize,
         _client: &reqwest::Client,
     ) -> Vec<(i64, Option<String>)> {
-        // 同步入库，用 spawn_blocking 转包避免在 async 上下文阻塞（与 github/youtube 一致）。
         let db = db.clone();
         let source_id = source.id;
         let data = data.to_vec();
@@ -892,8 +764,7 @@ impl SourceAdapter for BilibiliAdapter {
         owner: &str,
         _repo: &str,
         token: Option<&str>,
-    ) -> Result<String, (u16, String)> {
-        // owner 此时已由 resolve_owner 归一化为 UID。
+    ) -> Result<String, SourceError> {
         let cookie = build_cookie(client, token).await?;
         fetch_up_name(client, owner, cookie.as_deref()).await
     }
@@ -903,21 +774,15 @@ impl SourceAdapter for BilibiliAdapter {
         _client: &reqwest::Client,
         owner: &str,
         _token: Option<&str>,
-    ) -> Result<String, (u16, String)> {
-        extract_uid(owner)
-            .ok_or((400, format!("err.bili_invalid_uid|{}", owner)))
+    ) -> Result<String, SourceError> {
+        extract_uid(owner).ok_or_else(|| SourceError::coded(400, "err.bili_invalid_uid", [owner]))
     }
 }
 
-/// 组装请求 cookie：匿名 buvid 初始化 + 可选 SESSDATA（登录模式，token 参数传入）。
-///
-/// 初始化结果按 TTL 缓存：TTL 内同一登录态（SESSDATA 未变化）直接复用，
-/// 避免每次检查都重复请求主页/spi/ticket；SESSDATA 变化或缓存过期时重新初始化。
-/// 只持有 cookie 专用锁（与 WBI 密钥锁拆分，见 `bili_cookie_cache`）。
 async fn build_cookie(
     client: &reqwest::Client,
     sessdata: Option<&str>,
-) -> Result<Option<String>, (u16, String)> {
+) -> Result<Option<String>, SourceError> {
     let sessdata = sessdata.filter(|s| !s.is_empty());
     let now = chrono::Utc::now().timestamp();
     let mut cache = bili_cookie_cache().lock().await;
@@ -950,8 +815,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    // ── WBI 签名（文档测试用例） ──
-
     #[test]
     fn test_mixin_key_from_doc_case() {
         let keys = WbiKeys {
@@ -975,20 +838,16 @@ mod tests {
 
     #[test]
     fn test_encode_wbi_component_filters_and_uppercase() {
-        // 中文按 UTF-8 大写 %XX 编码；空格 %20；!'()* 被剔除
         assert_eq!(encode_wbi_component("a b"), "a%20b");
         assert_eq!(encode_wbi_component("ab!c'd(e)f*g"), "abcdefg");
         assert_eq!(encode_wbi_component("视频"), "%E8%A7%86%E9%A2%91");
         assert_eq!(encode_wbi_component("one one four"), "one%20one%20four");
     }
 
-    // ── UID 解析 ──
-
     #[test]
     fn test_extract_uid_variants() {
         assert_eq!(extract_uid("12345678").as_deref(), Some("12345678"));
         assert_eq!(extract_uid(" 1234567 ").as_deref(), Some("1234567"));
-        // 16 位新式 UID（新注册用户，space.bilibili.com/{mid} 的 mid 即 UID）
         assert_eq!(
             extract_uid("1234567890123456").as_deref(),
             Some("1234567890123456")
@@ -1009,39 +868,23 @@ mod tests {
             extract_uid("https://bilibili.com/space/1234567").as_deref(),
             Some("1234567")
         );
-        // 非 UID 输入
         assert_eq!(extract_uid("@someuser"), None);
         assert_eq!(extract_uid("https://www.bilibili.com/video/BV1xx"), None);
         assert_eq!(extract_uid(""), None);
     }
-
-    // ── pub_ts 解析（数字/字符串/缺失兼容） ──
 
     #[test]
     fn test_parse_pub_ts_variants() {
         let mk = |v: serde_json::Value| {
             serde_json::json!({"type": "DYNAMIC_TYPE_AV", "modules": {"module_author": v}})
         };
-        // 数字形态（正常）
-        let item = mk(serde_json::json!({"pub_ts": 1746450829}));
-        assert_eq!(parse_pub_ts(&item), Some(1746450829));
-        // 字符串形态（B 站接口类型漂移）
-        let item = mk(serde_json::json!({"pub_ts": "1746450829"}));
-        assert_eq!(parse_pub_ts(&item), Some(1746450829));
-        // 缺失（风控降级形态）→ None，由调用方以当前时间兜底
-        let item = mk(serde_json::json!({}));
-        assert_eq!(parse_pub_ts(&item), None);
-        // 显式 null → None
-        let item = mk(serde_json::json!({"pub_ts": null}));
-        assert_eq!(parse_pub_ts(&item), None);
-        // 0 / 非法字符串 → None（避免 1970 脏数据）
-        let item = mk(serde_json::json!({"pub_ts": 0}));
-        assert_eq!(parse_pub_ts(&item), None);
-        let item = mk(serde_json::json!({"pub_ts": "abc"}));
-        assert_eq!(parse_pub_ts(&item), None);
+        assert_eq!(parse_pub_ts(&mk(serde_json::json!({"pub_ts": 1746450829}))), Some(1746450829));
+        assert_eq!(parse_pub_ts(&mk(serde_json::json!({"pub_ts": "1746450829"}))), Some(1746450829));
+        assert_eq!(parse_pub_ts(&mk(serde_json::json!({}))), None);
+        assert_eq!(parse_pub_ts(&mk(serde_json::json!({"pub_ts": null}))), None);
+        assert_eq!(parse_pub_ts(&mk(serde_json::json!({"pub_ts": 0}))), None);
+        assert_eq!(parse_pub_ts(&mk(serde_json::json!({"pub_ts": "abc"}))), None);
     }
-
-    // ── 动态解析 ──
 
     fn dynamic_item(bvid: &str, title: &str, pub_ts: i64, up_name: &str) -> serde_json::Value {
         serde_json::json!({
@@ -1085,7 +928,6 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&body).unwrap();
         let data = &v["data"];
         let items = data["items"].as_array().unwrap();
-        // 直接调解析逻辑
         let mut entries = Vec::new();
         for it in items {
             if it["type"].as_str() != Some("DYNAMIC_TYPE_AV") {
@@ -1094,7 +936,6 @@ mod tests {
             let archive = &it["modules"]["module_dynamic"]["major"]["archive"];
             let bvid = archive["bvid"].as_str().unwrap().to_string();
             let pub_ts = it["modules"]["module_author"]["pub_ts"].as_i64().unwrap();
-            // 与 fetch_dynamic_page 一致的 view_count 解析（stat.play 展示文本）
             let view_count = archive["stat"]["play"].as_str().and_then(parse_play_count);
             entries.push(BiliEntry {
                 bvid,
@@ -1109,45 +950,40 @@ mod tests {
                 up_name: it["modules"]["module_author"]["name"].as_str().unwrap().to_string(),
             });
         }
-        assert_eq!(entries.len(), 1, "只应解析出视频动态");
+        assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].bvid, "BV1a1b2c3d4e5f");
         assert_eq!(entries[0].up_name, "某UP主");
         assert!(entries[0].published.starts_with("2024-08-18"));
         assert_eq!(entries[0].html_url(), "https://www.bilibili.com/video/BV1a1b2c3d4e5f");
-        assert_eq!(entries[0].view_count, Some(234000), "stat.play \"23.4万\" → 234000");
+        assert_eq!(entries[0].view_count, Some(234000));
     }
-
-    // ── stat.play 播放量解析 ──
 
     #[test]
     fn test_parse_play_count_variants() {
-        // 纯数字
         assert_eq!(parse_play_count("1000"), Some(1000));
         assert_eq!(parse_play_count("999"), Some(999));
-        // 万 / 亿（B 站展示格式）
         assert_eq!(parse_play_count("23.4万"), Some(234000));
         assert_eq!(parse_play_count("1.2亿"), Some(120000000));
         assert_eq!(parse_play_count("1万"), Some(10000));
-        // 播放量隐藏（stat_hidden）
         assert_eq!(parse_play_count(""), None);
         assert_eq!(parse_play_count("--"), None);
-        // 非法格式
         assert_eq!(parse_play_count("abc"), None);
         assert_eq!(parse_play_count("万"), None);
     }
 
     #[test]
     fn test_map_bili_code() {
-        assert_eq!(map_bili_code(-352, "风控校验失败").0, 403);
-        assert!(map_bili_code(-352, "").1.contains("err.bili_risk"));
-        assert_eq!(map_bili_code(-799, "").0, 429);
-        assert_eq!(map_bili_code(-404, "").0, 404);
-        let (s, m) = map_bili_code(-123, "boom");
-        assert_eq!(s, 0);
-        assert!(m.contains("err.bili_api_error|-123|boom"));
+        let e = map_bili_code(-352, "风控校验失败");
+        assert_eq!(e.status(), 403);
+        assert!(e.to_ipc_string().contains("err.bili_risk"));
+        assert!(e.is_uncounted_failure());
+        assert_eq!(map_bili_code(-799, "").status(), 429);
+        assert!(map_bili_code(-799, "").is_uncounted_failure());
+        assert_eq!(map_bili_code(-404, "").status(), 404);
+        let e = map_bili_code(-123, "boom");
+        assert_eq!(e.status(), 0);
+        assert!(e.to_ipc_string().contains("err.bili_api_error|-123|boom"));
     }
-
-    // ── save 去重 ──
 
     #[test]
     fn test_save_entries_dedup() {
@@ -1163,13 +999,11 @@ mod tests {
             view_count: Some(123456),
             up_name: "UP".to_string(),
         };
-        let items = entries_to_json(vec![entry]);
+        let items = vec![entry.into_fetched_release()];
         let saved = save_entries(&conn, source_id, &items, 1);
         assert_eq!(saved.len(), 1);
-        // 再次保存同一 bvid → 去重，普通模式返回空
         let saved2 = save_entries(&conn, source_id, &items, 1);
         assert!(saved2.is_empty());
-        // 历史模式（max_count 大）跳过已存在，仍返回空
         let saved3 = save_entries(&conn, source_id, &items, 100);
         assert!(saved3.is_empty());
     }
@@ -1177,39 +1011,34 @@ mod tests {
     #[test]
     fn test_notification_source_name_uses_up_name() {
         let adapter = BilibiliAdapter;
-        // 有 description：通知标题用 UP 主名而非 UID
         assert_eq!(
             adapter.notification_source_name("123456", "", Some("某UP主")),
             "某UP主"
         );
-        // 无 description：回退 UID
         assert_eq!(adapter.notification_source_name("123456", "", None), "123456");
-        // description 为空白：同样回退
         assert_eq!(adapter.notification_source_name("123456", "", Some(" ")), "123456");
     }
 
     #[test]
     fn test_notification_show_tag_false_for_video() {
-        // bvid 对用户无意义，通知正文不显示 tag，只留视频标题
         assert!(!BilibiliAdapter.notification_show_tag());
     }
 
     #[test]
     fn test_notification_source_label() {
-        // 标题带来源标签：`哔哩哔哩 / UP主名`（与前端 i18n 中文文案一致）
         assert_eq!(BilibiliAdapter.notification_source_label(), Some("哔哩哔哩"));
     }
 
     #[test]
     fn test_parse_wbi_keys_accepts_unlogged_nav() {
-        // nav 未登录（code=-101）仍返回 wbi_img，不应视为错误
         let body = serde_json::json!({
             "code": -101, "message": "账号未登录", "ttl": 1,
             "data": {"wbi_img": {
                 "img_url": "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png", // gitleaks:allow WBI 文档测试用例示例密钥
                 "sub_url": "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png" // gitleaks:allow WBI 文档测试用例示例密钥
             }}
-        }).to_string();
+        })
+        .to_string();
         let keys = parse_wbi_keys(&body).unwrap();
         assert_eq!(keys.img_key, "7cd084941338484aae1ad9425b84077c"); // gitleaks:allow WBI 文档测试用例示例密钥
         assert_eq!(keys.sub_key, "4932caff0ff746eab6f01bf08b70ac45"); // gitleaks:allow WBI 文档测试用例示例密钥
@@ -1220,29 +1049,26 @@ mod tests {
     fn test_parse_wbi_keys_missing_fields() {
         let body = serde_json::json!({"code": 0, "data": {}}).to_string();
         let err = parse_wbi_keys(&body).unwrap_err();
-        assert!(err.1.contains("err.bili_wbi_keys"));
+        assert!(err.to_ipc_string().contains("err.bili_wbi_keys"));
     }
 
     #[test]
     fn test_parse_wbi_keys_rejects_short_keys() {
-        // key 短于 32 位（拼接 < 64）时返回错误，而非让 mixin_key() 索引越界 panic
         let body = serde_json::json!({
             "code": 0, "data": {"wbi_img": {
                 "img_url": "https://i0.hdslb.com/bfs/wbi/7cd08494133848.png",
                 "sub_url": "https://i0.hdslb.com/bfs/wbi/4932caff0ff746.png"
             }}
-        }).to_string();
+        })
+        .to_string();
         let err = parse_wbi_keys(&body).unwrap_err();
-        assert_eq!(err.1, "err.bili_wbi_keys|short");
+        assert_eq!(err.to_ipc_string(), "err.bili_wbi_keys|short");
     }
-
-    // ── 会话缓存命中规则（cookie 与 WBI 独立锁、独立结构）──
 
     #[test]
     fn test_bili_cache_cookie_hit_rules() {
         let now = 1_000_000i64;
         let mut cache = BiliCookieCache::default();
-        // 空缓存不命中
         assert!(cache.cookie_hit(None, now).is_none());
 
         cache.cookie = Some(CachedCookie {
@@ -1250,22 +1076,17 @@ mod tests {
             sessdata: None,
             expires_at: now + 10,
         });
-        // 匿名态命中；空串 SESSDATA 等同匿名
         assert_eq!(cache.cookie_hit(None, now), Some("buvid3=x; bili_ticket=t"));
         assert_eq!(cache.cookie_hit(Some(""), now), Some("buvid3=x; bili_ticket=t"));
-        // 过期不命中
         assert!(cache.cookie_hit(None, now + 10).is_none());
-        // 登录态变化（配置 SESSDATA）不命中，需重新初始化
         assert!(cache.cookie_hit(Some("sess"), now).is_none());
 
-        // 登录态一致则命中（SESSDATA 拼入 cookie 串）
         cache.cookie = Some(CachedCookie {
             value: "buvid3=x; SESSDATA=sess".to_string(),
             sessdata: Some("sess".to_string()),
             expires_at: now + 10,
         });
         assert_eq!(cache.cookie_hit(Some("sess"), now), Some("buvid3=x; SESSDATA=sess"));
-        // 换了一个 SESSDATA → 不命中
         assert!(cache.cookie_hit(Some("other"), now).is_none());
     }
 
@@ -1281,7 +1102,6 @@ mod tests {
             expires_at: 200,
         });
         assert!(cache.wbi_hit(199).is_some());
-        // 到期（expires_at 为开区间）不命中
         assert!(cache.wbi_hit(200).is_none());
     }
 
@@ -1303,7 +1123,6 @@ mod tests {
             .await;
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        // 直连 mock 的 nav 端点（绕过硬编码域名）：验证解析与容错
         let body = client
             .get(format!("{}/x/web-interface/nav", mock.uri()))
             .header("User-Agent", BILI_UA)
@@ -1318,28 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn test_entries_to_json_roundtrip() {
-        let e = BiliEntry {
-            bvid: "BV1xx".to_string(),
-            title: "t".to_string(),
-            published: "2024-01-01T00:00:00+00:00".to_string(),
-            description: "d".to_string(),
-            thumbnail: "https://x.jpg".to_string(),
-            duration: "10:00".to_string(),
-            view_count: Some(9999),
-            up_name: "up".to_string(),
-        };
-        let json = entries_to_json(vec![e.clone()]);
-        let back: BiliEntry = serde_json::from_value(json[0].clone()).unwrap();
-        assert_eq!(back.bvid, e.bvid);
-        assert_eq!(back.up_name, "up");
-        assert_eq!(back.view_count, Some(9999));
-    }
-
-    #[test]
     fn test_metadata_json_upgrades_http_thumbnail_to_https() {
-        // B 站 CDN 返回 http 封面，WebView CSP 仅允许 https 图片（img-src 'self' data: https:），
-        // 入库前必须升级协议，否则列表封面不显示。
         let e = BiliEntry {
             bvid: "BV1xx".to_string(),
             title: "t".to_string(),
@@ -1350,15 +1148,20 @@ mod tests {
             view_count: Some(123456),
             up_name: "up".to_string(),
         };
-        let meta: serde_json::Value = serde_json::from_str(&e.metadata_json()).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(
+            &e.clone().into_fetched_release().extra.to_metadata_json().unwrap(),
+        )
+        .unwrap();
         assert_eq!(meta["thumbnail"], "https://i0.hdslb.com/bfs/archive/abc.jpg");
         assert_eq!(meta["view_count"], 123456);
-        // 已是 https 的不重复处理
         let e2 = BiliEntry {
             thumbnail: "https://i0.hdslb.com/bfs/archive/def.jpg".to_string(),
             ..e
         };
-        let meta2: serde_json::Value = serde_json::from_str(&e2.metadata_json()).unwrap();
+        let meta2: serde_json::Value = serde_json::from_str(
+            &e2.into_fetched_release().extra.to_metadata_json().unwrap(),
+        )
+        .unwrap();
         assert_eq!(meta2["thumbnail"], "https://i0.hdslb.com/bfs/archive/def.jpg");
     }
 }

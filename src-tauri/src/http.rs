@@ -1,3 +1,5 @@
+use crate::error::SourceError;
+
 /// HTTP 客户端构建配置。
 pub struct HttpClientConfig<'a> {
     pub proxy_url: &'a str,
@@ -151,7 +153,7 @@ async fn fetch_page(
     client: &reqwest::Client,
     url: &str,
     token: Option<&str>,
-) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
+) -> Result<(Vec<serde_json::Value>, Option<String>), SourceError> {
     let mut req = client.get(url);
     if let Some(t) = token {
         req = req.bearer_auth(t);
@@ -159,14 +161,14 @@ async fn fetch_page(
     let resp = req
         .send()
         .await
-        .map_err(|e| (0, describe_request_error(&e)))?;
+        .map_err(|e| describe_request_source_error(&e))?;
     let status = resp.status().as_u16();
     if !resp.status().is_success() {
         if let Some(limited) = rate_limit_error(status, resp.headers()) {
             return Err(limited);
         }
         let reason = resp.status().canonical_reason().unwrap_or("").to_string();
-        return Err((status, format!("err.api_error|{}|{}", status, reason)));
+        return Err(SourceError::api_error(status, reason));
     }
 
     let next_url = resp
@@ -177,25 +179,14 @@ async fn fetch_page(
 
     let items: Vec<serde_json::Value> = read_json_limited(resp, MAX_JSON_BYTES)
         .await
-        .map_err(|e| (status, e))?;
+        .map_err(|e| SourceError::raw(status, e))?;
 
     Ok((items, next_url))
 }
 
-/// 从状态码 + 响应头识别「上游速率限制 / 凭据失效」，产出可分类的错误键。
-///
-/// 判据取头不取 body：GitHub 主限流是 `403 + x-ratelimit-remaining: 0`、次级限流与通用
-/// 限流是 429（常带 `retry-after`），body 文案会变且要先读完才知道。
-///
-/// 这些键进 `poll::UNCOUNTED_FAILURE_PREFIXES`——它们一次命中全部共用凭据/出口 IP 的源，
-/// 且限流解除或用户改配置后即自愈，照旧累加会把断路器变成「集体禁用」；
-/// 带等待窗口的 `err.rate_limit_reset` 还被 [`default_should_retry`] 排除重试（退避的
-/// 秒级远短于限流的分钟级，重试只是白耗配额）。
-/// 无这些头的 403（私有仓库、被封）不在此列，仍按真实故障计入断路器。
-fn rate_limit_error(status: u16, headers: &reqwest::header::HeaderMap) -> Option<(u16, String)> {
-    // 带失效 Authorization 头时 GitHub 主限流会返回 401（而非 403），凭据问题同为全局性
+fn rate_limit_error(status: u16, headers: &reqwest::header::HeaderMap) -> Option<SourceError> {
     if status == 401 {
-        return Some((status, "err.credential_invalid".to_string()));
+        return Some(SourceError::credential_invalid(status));
     }
     let rate_limited = status == 429
         || (status == 403
@@ -207,7 +198,6 @@ fn rate_limit_error(status: u16, headers: &reqwest::header::HeaderMap) -> Option
     if !rate_limited {
         return None;
     }
-    // 等待提示优先 retry-after（相对秒），否则用 x-ratelimit-reset（epoch 秒）折算
     let wait_secs = headers
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
@@ -221,36 +211,28 @@ fn rate_limit_error(status: u16, headers: &reqwest::header::HeaderMap) -> Option
         })
         .filter(|secs| *secs > 0);
     Some(match wait_secs {
-        Some(secs) => (status, format!("err.rate_limit_reset|{}", secs)),
-        None => (status, "err.rate_limit".to_string()),
+        Some(secs) => SourceError::rate_limit_reset(status, secs),
+        None => SourceError::rate_limit(status),
     })
 }
 
-/// 重试包装：`should_retry` 返回 false 的错误不重试，其他可重试错误最多重试 3 次。
-/// `should_retry` 由调用方传入，保留 source 间差异（如 403 不重试规则）。
 async fn with_retry<T, F, Fut>(
-    should_retry: impl Fn(&(u16, String)) -> bool,
+    should_retry: impl Fn(&SourceError) -> bool,
     f: F,
-) -> Result<T, (u16, String)>
+) -> Result<T, SourceError>
 where
     F: Fn() -> Fut,
-    Fut: std::future::Future<Output = Result<T, (u16, String)>>,
+    Fut: std::future::Future<Output = Result<T, SourceError>>,
 {
     let config = crate::retry::RetryConfig::default();
     crate::retry::retry_with_backoff(&config, should_retry, f).await
 }
 
-/// 把 reqwest 的发送错误细分为可分辨的诊断串。
-///
-/// reqwest 对 send 失败的 `Display` 只输出 `error sending request for url (...)`、
-/// **不含根因**，单看它无法区分 DNS / TLS / 代理 / 连接重置 / 超时。这里：
-/// - 按 `is_timeout()` / `is_connect()` 分出超时与连接失败（语义键不同，文案不同）；
-/// - 追加 `source()` 首层的 Display（如 `dns error: failed to lookup address` /
-///   `tcp connect error: connection refused`），根因直接出现在日志行里。
-///
-/// 错误文本可能回显带凭据的 URL（代理 / API key）——脱敏由日志出口
-/// （`redact::redact`）统一负责，此处不做处理。
 pub fn describe_request_error(e: &reqwest::Error) -> String {
+    describe_request_source_error(e).to_ipc_string()
+}
+
+pub fn describe_request_source_error(e: &reqwest::Error) -> SourceError {
     let key = if e.is_timeout() {
         "err.request_timeout"
     } else if e.is_connect() {
@@ -258,55 +240,45 @@ pub fn describe_request_error(e: &reqwest::Error) -> String {
     } else {
         "err.request_failed"
     };
-    match std::error::Error::source(e) {
-        Some(cause) if !cause.to_string().is_empty() => format!("{}|{} ({})", key, e, cause),
-        _ => format!("{}|{}", key, e),
-    }
+    let detail = match std::error::Error::source(e) {
+        Some(cause) if !cause.to_string().is_empty() => format!("{} ({})", e, cause),
+        _ => e.to_string(),
+    };
+    SourceError::coded(0, key, [detail])
 }
 
-/// 默认重试判断：403 不重试（source 拒绝访问）；已知等待窗口的限流与凭据失效也不重试
-/// ——退避间隔（秒级）远小于限流窗口（分钟级），重试只是在已耗尽的配额上继续请求。
-/// 不带任何等待提示的 429（`err.rate_limit`）仍按普通错误重试：它可能只是瞬时抖动，
-/// 且重试成本是一次请求，而放弃成本的整轮无数据。
-fn default_should_retry(e: &(u16, String)) -> bool {
-    if e.0 == 403 {
+fn default_should_retry(e: &SourceError) -> bool {
+    if !e.should_retry_http() {
+        if e.status() != 403 {
+            log::warn!("请求失败(状态={}), 上游限流/凭据问题, 不重试: {}", e.status(), e);
+        }
         return false;
     }
-    if e.1.starts_with("err.rate_limit_reset") || e.1 == "err.credential_invalid" {
-        log::warn!("请求失败(状态={}), 上游限流/凭据问题, 不重试: {}", e.0, e.1);
-        return false;
-    }
-    log::warn!("请求失败(状态={}), 将重试: {}", e.0, e.1);
+    log::warn!("请求失败(状态={}), 将重试: {}", e.status(), e);
     true
 }
 
-/// 默认非 2xx 错误映射：`err.api_error|status|reason`。
-/// `body` 仅在自定义映射（如解析 API 错误 JSON）时使用，默认映射忽略。
-pub fn default_api_error(status: u16, _body: &str) -> (u16, String) {
+pub fn default_api_error(status: u16, _body: &str) -> SourceError {
     let reason = reqwest::StatusCode::from_u16(status)
         .map(|s| s.canonical_reason().unwrap_or("").to_string())
         .unwrap_or_default();
-    (status, format!("err.api_error|{}|{}", status, reason))
+    SourceError::api_error(status, reason)
 }
 
-/// GET 并取文本（无重试）：XML / HTML / JSON 各路径共用的
-/// 「send → 状态映射 → text」原语。`build_req` 注入自定义 header
-/// （Cookie/UA/Referer 等），`map_err` 做 source 特定错误映射（如 B 站 412、
-/// YouTube key/配额）。非 2xx 时先取 body 再映射，供需要解析错误体的映射器。
 pub async fn get_text<B, M>(
     client: &reqwest::Client,
     url: &str,
     build_req: B,
     map_err: M,
-) -> Result<String, (u16, String)>
+) -> Result<String, SourceError>
 where
     B: Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
-    M: Fn(u16, &str) -> (u16, String),
+    M: Fn(u16, &str) -> SourceError,
 {
     let resp = build_req(client.get(url))
         .send()
         .await
-        .map_err(|e| (0, describe_request_error(&e)))?;
+        .map_err(|e| describe_request_source_error(&e))?;
     let status = resp.status();
     let text = read_text_limited(resp, MAX_TEXT_BYTES).await?;
     if !status.is_success() {
@@ -368,33 +340,33 @@ pub async fn read_body_limited(
 async fn read_text_limited(
     resp: reqwest::Response,
     max_bytes: usize,
-) -> Result<String, (u16, String)> {
+) -> Result<String, SourceError> {
     let status = resp.status();
     match read_body_limited(resp, max_bytes).await {
         Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
         Err(BodyReadError::Overflow(_)) if !status.is_success() => {
             Ok("<body too large>".to_string())
         }
-        Err(BodyReadError::Overflow(n)) => Err((
+        Err(BodyReadError::Overflow(n)) => Err(SourceError::coded(
             0,
-            format!("err.parse_failed|body too large (exceeded {} bytes)", n),
+            "err.parse_failed",
+            [format!("body too large (exceeded {} bytes)", n)],
         )),
-        Err(BodyReadError::Transport(e)) => Err((0, e)),
+        Err(BodyReadError::Transport(e)) => Err(SourceError::raw(0, e)),
     }
 }
 
-/// 带重试的 `get_text`：XML/HTML/JSON 路径统一复用重试骨架与错误格式化。
 pub async fn get_text_with_retry<B, M, R>(
     client: &reqwest::Client,
     url: &str,
     build_req: B,
     should_retry: R,
     map_err: M,
-) -> Result<String, (u16, String)>
+) -> Result<String, SourceError>
 where
     B: Fn(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
-    M: Fn(u16, &str) -> (u16, String),
-    R: Fn(&(u16, String)) -> bool,
+    M: Fn(u16, &str) -> SourceError,
+    R: Fn(&SourceError) -> bool,
 {
     with_retry(should_retry, || async {
         get_text(client, url, &build_req, &map_err).await
@@ -402,49 +374,37 @@ where
     .await
 }
 
-/// 便捷版 `get_text`：默认请求（无额外 header）、默认错误映射。
 pub async fn fetch_text(
     client: &reqwest::Client,
     url: &str,
-) -> Result<String, (u16, String)> {
+) -> Result<String, SourceError> {
     get_text(client, url, |r| r, default_api_error).await
 }
 
-/// 便捷版 `get_text_with_retry`：默认 header、默认重试规则（403 不重试）、默认错误映射。
 pub async fn fetch_text_with_retry(
     client: &reqwest::Client,
     url: &str,
-) -> Result<String, (u16, String)> {
+) -> Result<String, SourceError> {
     get_text_with_retry(client, url, |r| r, default_should_retry, default_api_error).await
 }
 
-/// 单页拉取 + 默认重试。返回 (items, 下一页 URL)。
-/// `token` 为 `Some` 时仅对本次请求 URL 设置 Authorization（见 `fetch_page`）。
 pub async fn fetch_page_with_retry(
     client: &reqwest::Client,
     url: &str,
     token: Option<&str>,
-) -> Result<(Vec<serde_json::Value>, Option<String>), (u16, String)> {
+) -> Result<(Vec<serde_json::Value>, Option<String>), SourceError> {
     with_retry(default_should_retry, || async { fetch_page(client, url, token).await }).await
 }
 
-/// 翻页拉取直到满足 `max_count` 或无下一页。复用 `fetch_page_with_retry`。
-/// - `None` = 不设上限（拉取全部）
-/// - `Some(n)` = 拉取至少 n 条后停止
-///
-/// `token` 同 `fetch_page_with_retry`，按请求设置，避免泄露给无关域名。
 pub async fn paginated_fetch(
     client: &reqwest::Client,
     first_url: String,
     max_count: Option<usize>,
     token: Option<&str>,
-) -> Result<Vec<serde_json::Value>, (u16, String)> {
+) -> Result<Vec<serde_json::Value>, SourceError> {
     let mut all = Vec::new();
     let mut url = first_url;
 
-    // 翻页安全：记录首请求的 host，后续 next_url 必须与之同 host。
-    // 防止服务器返回的 Link header 把携带 token 的请求导向任意域名
-    // （见 fetch_page 的按请求 bearer_auth 注入机制）。
     let first_host = reqwest::Url::parse(&url)
         .ok()
         .and_then(|u| u.host_str().map(|s| s.to_string()));
@@ -469,8 +429,6 @@ pub async fn paginated_fetch(
 
         match next_url {
             Some(next) => {
-                // 校验 next_url 与首请求同 host；不一致视为不可信（被篡改/恶意
-                // Link header），fail-closed 中断翻页，避免 token 发往无关域名。
                 let same_host = match (&first_host, reqwest::Url::parse(&next).ok()) {
                     (Some(fh), Some(nu)) => nu.host_str() == Some(fh.as_str()),
                     _ => false,
@@ -481,7 +439,7 @@ pub async fn paginated_fetch(
                         first_host,
                         next
                     );
-                    return Err((0, "err.invalid_next_url".to_string()));
+                    return Err(SourceError::key(0, "err.invalid_next_url"));
                 }
                 url = next;
             }
@@ -923,23 +881,20 @@ mod tests {
 
     #[test]
     fn test_rate_limit_error_classification() {
-        // GitHub 主限流：403 + 配额归零，无等待提示 → 通用限流键
         let e = rate_limit_error(403, &hdrs(&[("x-ratelimit-remaining", "0")])).unwrap();
-        assert_eq!((e.0, e.1.as_str()), (403, "err.rate_limit"));
+        assert_eq!((e.status(), e.to_ipc_string().as_str()), (403, "err.rate_limit"));
 
-        // 次级限流：retry-after 直接给出秒数
         let e = rate_limit_error(
             403,
             &hdrs(&[("x-ratelimit-remaining", "0"), ("retry-after", "120")]),
         )
         .unwrap();
-        assert_eq!(e.1, "err.rate_limit_reset|120");
+        assert_eq!(e.to_ipc_string(), "err.rate_limit_reset|120");
 
-        // 429 按头判定，不依赖 body 文案；reset 为 epoch 时折算成剩余秒
         let reset = chrono::Utc::now().timestamp() + 3600;
         let e = rate_limit_error(429, &hdrs(&[("x-ratelimit-reset", &reset.to_string())])).unwrap();
         let secs: i64 = e
-            .1
+            .to_ipc_string()
             .strip_prefix("err.rate_limit_reset|")
             .unwrap_or("0")
             .parse()
@@ -950,41 +905,24 @@ mod tests {
             secs
         );
 
-        // 配额未耗尽的 403（私有仓库、被封）与 404 不属限流：仍按真实故障计入断路器
         assert!(rate_limit_error(403, &hdrs(&[("x-ratelimit-remaining", "4999")])).is_none());
         assert!(rate_limit_error(403, &hdrs(&[])).is_none());
         assert!(rate_limit_error(404, &hdrs(&[])).is_none());
 
-        // 带失效凭据时 GitHub 以 401 回，属全局凭据问题（用户改配置即自愈）
         assert_eq!(
-            rate_limit_error(401, &hdrs(&[])).unwrap().1,
+            rate_limit_error(401, &hdrs(&[])).unwrap().to_ipc_string(),
             "err.credential_invalid"
         );
     }
 
     #[test]
     fn test_rate_limit_errors_are_not_retried() {
-        // 已知等待窗口的限流：退避（秒级）远短于窗口（分钟级），重试只是白耗配额
-        assert!(!default_should_retry(&(
-            429,
-            "err.rate_limit_reset|120".to_string()
-        )));
-        assert!(!default_should_retry(&(
-            401,
-            "err.credential_invalid".to_string()
-        )));
-        // 403 一律不重试（无论是限流还是拒绝访问）
-        assert!(!default_should_retry(&(403, "err.rate_limit".to_string())));
-        assert!(!default_should_retry(&(
-            403,
-            "err.api_error|403|Forbidden".to_string()
-        )));
-        // 无等待提示的 429 无法判断窗口，按普通错误重试
-        assert!(default_should_retry(&(429, "err.rate_limit".to_string())));
-        assert!(default_should_retry(&(
-            429,
-            "err.api_error|429|Too Many Requests".to_string()
-        )));
+        assert!(!default_should_retry(&SourceError::rate_limit_reset(429, 120)));
+        assert!(!default_should_retry(&SourceError::credential_invalid(401)));
+        assert!(!default_should_retry(&SourceError::rate_limit(403)));
+        assert!(!default_should_retry(&SourceError::api_error(403, "Forbidden")));
+        assert!(default_should_retry(&SourceError::rate_limit(429)));
+        assert!(default_should_retry(&SourceError::api_error(429, "Too Many Requests")));
     }
 
     #[tokio::test]
@@ -1004,11 +942,10 @@ mod tests {
 
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
         let url = format!("{}/repos/o/r/releases", mock.uri());
-        let (_, msg) = fetch_page_with_retry(&client, &url, Some("t"))
+        let err = fetch_page_with_retry(&client, &url, Some("t"))
             .await
             .expect_err("限流响应应为 Err");
-        // 分类正确 + 全程只请求一次（不重试）
-        assert_eq!(msg, "err.rate_limit_reset|1800");
+        assert_eq!(err.to_ipc_string(), "err.rate_limit_reset|1800");
     }
 
     #[tokio::test]
