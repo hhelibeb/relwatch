@@ -273,23 +273,34 @@ pub const SETTING_SPECS: &[SettingSpec] = &[
 /// 而非“第一个变更项”是否为轮询周期：否则调用方把 poll_interval 放在数组后面时，
 /// 任何其它项同时变更都会把轮询周期变更吞掉，导致不重算 next_poll_at。
 pub fn apply_settings(
-    conn: &Connection,
+    conn: &mut Connection,
     items: &[(&str, &str, &str, &str)],
 ) -> Result<(bool, Vec<String>), String> {
     let mut interval_changed = false;
     let mut changes: Vec<String> = Vec::new();
+    let changed_items: Vec<(&str, &str, &str)> = items
+        .iter()
+        .filter(|&&(_, old_val, new_val, _)| old_val != new_val)
+        .map(|&(key, _, new_val, label)| (key, new_val, label))
+        .collect();
 
-    for &(key, old_val, new_val, label) in items {
-        if old_val != new_val {
-            set_setting(conn, key, new_val)?;
-            if key == KEY_POLL_INTERVAL {
-                interval_changed = true;
-            }
-            if !label.is_empty() {
-                changes.push(format!("{}→{}", label, new_val));
-            }
+    if changed_items.is_empty() {
+        return Ok((false, changes));
+    }
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    for (key, new_val, label) in changed_items {
+        set_setting(&tx, key, new_val)?;
+        if key == KEY_POLL_INTERVAL {
+            interval_changed = true;
+        }
+        if !label.is_empty() {
+            changes.push(format!("{}→{}", label, new_val));
         }
     }
+    tx.commit().map_err(|e| e.to_string())?;
 
     Ok((interval_changed, changes))
 }
@@ -388,12 +399,12 @@ mod tests {
 
     #[test]
     fn test_apply_settings_no_changes() {
-        let conn = init_memory_db().unwrap();
+        let mut conn = init_memory_db().unwrap();
         set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
 
         let old = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let (changed, changes) = apply_settings(
-            &conn,
+            &mut conn,
             &[(KEY_POLL_INTERVAL, &old, "30", "setting.poll_interval")],
         ).unwrap();
 
@@ -403,12 +414,12 @@ mod tests {
 
     #[test]
     fn test_apply_settings_first_item_triggers_flag() {
-        let conn = init_memory_db().unwrap();
+        let mut conn = init_memory_db().unwrap();
         set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
 
         let old = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let (changed, changes) = apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_POLL_INTERVAL, &old, "60", "setting.poll_interval"),
             ],
@@ -422,7 +433,7 @@ mod tests {
     /// （只看“第一个变更项”会把被前面其它项掩盖的 poll_interval 变更吞掉）。
     #[test]
     fn test_apply_settings_interval_not_first_still_triggers_flag() {
-        let conn = init_memory_db().unwrap();
+        let mut conn = init_memory_db().unwrap();
         set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         set_setting(&conn, KEY_PROXY_URL, "old").unwrap();
 
@@ -431,7 +442,7 @@ mod tests {
         // proxy_url 放在 poll_interval 之前且也变更：只看“第一个变更项”会错报
         // interval_changed=false。
         let (changed, changes) = apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_PROXY_URL, &old_proxy, "new", "setting.proxy_url"),
                 (KEY_POLL_INTERVAL, &old_interval, "60", "setting.poll_interval"),

@@ -633,19 +633,13 @@ async fn fetch_up_name(
     Err((404, format!("err.bili_up_not_found|{}", mid)))
 }
 
-/// 从 HTML 提取 og:title（空间页 UP 主昵称）。
 fn extract_og_title(html: &str) -> Option<String> {
-    let needle = "<meta property=\"og:title\" content=\"";
-    let idx = html.find(needle)?;
-    let rest = &html[idx + needle.len()..];
-    let end = rest.find('"')?;
-    let raw = &rest[..end];
-    let name = raw.trim();
-    // B 站风控页 title 形如 "bili_xxxxxx的个人空间"，og:title 可能不存在；空/风控形态视为失败
-    if name.is_empty() || name.starts_with("bili_") {
+    let name = crate::http::extract_og_title(html)?;
+    // B 站风控页 title 形如 "bili_xxxxxx的个人空间"
+    if name.starts_with("bili_") {
         return None;
     }
-    Some(quick_xml::escape::unescape(name).ok()?.into_owned())
+    Some(name)
 }
 
 /// 条目列表 → 序列化 JSON（供 save 阶段反序列化 BiliEntry）。
@@ -751,9 +745,26 @@ impl SourceAdapter for BilibiliAdapter {
         Some("哔哩哔哩")
     }
 
-    /// 视频标题在通知正文的 name 位，tag（bvid）无意义，不显示。
     fn notification_show_tag(&self) -> bool {
         false
+    }
+
+    fn log_source_ident(
+        &self,
+        owner: &str,
+        _repo: &str,
+        description: Option<&str>,
+    ) -> (String, String) {
+        let name = description.filter(|d| !d.is_empty()).unwrap_or(owner);
+        (name.to_string(), String::new())
+    }
+
+    fn log_release_tag<'a>(&self, _tag_name: &'a str, release_name: &'a str) -> &'a str {
+        release_name
+    }
+
+    fn release_body_label(&self) -> &'static str {
+        "视频简介"
     }
 
     /// 检查成功后刷新 UP 主昵称（动态接口 module_author.name 才是真名）。

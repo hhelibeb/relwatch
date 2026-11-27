@@ -21,11 +21,10 @@ use super::settings::{
     KEY_AGENT_WORKING_DIR, KEY_AGENT_WS_WIDTH,
 };
 
-/// Agent 并发上限默认值：3（1 个常驻进程 + 最多 2 个临时进程）。
 pub const DEFAULT_AGENT_MAX_CONCURRENCY: i64 = 3;
-/// Agent 并发上限硬上限：每个并发位对应一个 pi（Node）进程，再高只是把内存压力
-/// 从「排队」换成「任务管理器里更多 node.exe」，边际收益为负。
 pub const MAX_AGENT_CONCURRENCY: i64 = 8;
+pub const MIN_AGENT_TIMEOUT_SECONDS: i64 = 10;
+pub const MAX_AGENT_TIMEOUT_SECONDS: i64 = 3600;
 
 /// 全局 Agent 配置（设置页「Agent」分区读写）。
 #[derive(Debug, Serialize, Deserialize, Clone, Type, PartialEq)]
@@ -105,17 +104,15 @@ pub fn load_agent_config(conn: &Connection) -> Result<AgentConfig, String> {
         model: non_empty(get_setting_str(conn, KEY_AGENT_MODEL, "")?),
         working_dir: non_empty(get_setting_str(conn, KEY_AGENT_WORKING_DIR, "")?),
         prompt_suffix: non_empty(get_setting_str(conn, KEY_AGENT_PROMPT_SUFFIX, "")?),
-        timeout_seconds: get_setting_i64(conn, KEY_AGENT_TIMEOUT_SECONDS, 300)?.max(1),
+        timeout_seconds: get_setting_i64(conn, KEY_AGENT_TIMEOUT_SECONDS, 300)?
+            .clamp(MIN_AGENT_TIMEOUT_SECONDS, MAX_AGENT_TIMEOUT_SECONDS),
         max_concurrency: get_setting_i64(conn, KEY_AGENT_MAX_CONCURRENCY, DEFAULT_AGENT_MAX_CONCURRENCY)?
             .clamp(1, MAX_AGENT_CONCURRENCY),
         skills,
     })
 }
 
-/// 保存全局 Agent 配置（skills 去重、trim；空串可选字段归一为 None）。
-/// agent_type 必须为受支持类型（与 agent::executor_for 登记集合同步），
-/// 保存时即拒绝未知类型，避免运行时才报错。
-pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), String> {
+pub fn save_agent_config(conn: &mut Connection, cfg: &AgentConfig) -> Result<(), String> {
     match cfg.agent_type.as_str() {
         "pi" => {}
         other => return Err(format!("err.agent.unsupported_type|{}", other)),
@@ -128,19 +125,24 @@ pub fn save_agent_config(conn: &Connection, cfg: &AgentConfig) -> Result<(), Str
         }
     }
     let skills_json = serde_json::to_string(&skills).map_err(|e| e.to_string())?;
-    set_setting(conn, KEY_AGENT_ENABLED, &cfg.enabled.to_string())?;
-    set_setting(conn, KEY_AGENT_TYPE, &cfg.agent_type)?;
-    set_setting(conn, KEY_AGENT_BINARY, cfg.binary.as_deref().unwrap_or(""))?;
-    set_setting(conn, KEY_AGENT_MODEL, cfg.model.as_deref().unwrap_or(""))?;
-    set_setting(conn, KEY_AGENT_WORKING_DIR, cfg.working_dir.as_deref().unwrap_or(""))?;
-    set_setting(conn, KEY_AGENT_PROMPT_SUFFIX, cfg.prompt_suffix.as_deref().unwrap_or(""))?;
-    set_setting(conn, KEY_AGENT_TIMEOUT_SECONDS, &cfg.timeout_seconds.max(1).to_string())?;
-    set_setting(
-        conn,
-        KEY_AGENT_MAX_CONCURRENCY,
-        &cfg.max_concurrency.clamp(1, MAX_AGENT_CONCURRENCY).to_string(),
-    )?;
-    set_setting(conn, KEY_AGENT_SKILLS, &skills_json)?;
+    let timeout = cfg
+        .timeout_seconds
+        .clamp(MIN_AGENT_TIMEOUT_SECONDS, MAX_AGENT_TIMEOUT_SECONDS);
+    let max_concurrency = cfg.max_concurrency.clamp(1, MAX_AGENT_CONCURRENCY);
+
+    let tx = conn
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    set_setting(&tx, KEY_AGENT_ENABLED, &cfg.enabled.to_string())?;
+    set_setting(&tx, KEY_AGENT_TYPE, &cfg.agent_type)?;
+    set_setting(&tx, KEY_AGENT_BINARY, cfg.binary.as_deref().unwrap_or(""))?;
+    set_setting(&tx, KEY_AGENT_MODEL, cfg.model.as_deref().unwrap_or(""))?;
+    set_setting(&tx, KEY_AGENT_WORKING_DIR, cfg.working_dir.as_deref().unwrap_or(""))?;
+    set_setting(&tx, KEY_AGENT_PROMPT_SUFFIX, cfg.prompt_suffix.as_deref().unwrap_or(""))?;
+    set_setting(&tx, KEY_AGENT_TIMEOUT_SECONDS, &timeout.to_string())?;
+    set_setting(&tx, KEY_AGENT_MAX_CONCURRENCY, &max_concurrency.to_string())?;
+    set_setting(&tx, KEY_AGENT_SKILLS, &skills_json)?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -658,7 +660,7 @@ mod tests {
 
     #[test]
     fn config_round_trip_and_defaults() {
-        let conn = init_memory_db().unwrap();
+        let mut conn = init_memory_db().unwrap();
         // 默认值
         let cfg = load_agent_config(&conn).unwrap();
         assert!(!cfg.enabled);
@@ -670,7 +672,7 @@ mod tests {
 
         // 保存（含重复/空 skill 归一化）
         save_agent_config(
-            &conn,
+            &mut conn,
             &AgentConfig {
                 enabled: true,
                 agent_type: "pi".into(),
@@ -785,37 +787,58 @@ mod tests {
         assert!(active_runs_for_session(&conn, "ws-a").unwrap().is_empty());
     }
 
-    /// 并发上限的存储边界：写侧 clamp 到 [1, MAX]，读侧同样 clamp。
-    /// 上游（前端输入框 / 脏数据）给越界值时不该让调度层拿到 0（永久排队）或超大值。
     #[test]
     fn max_concurrency_clamped_on_save_and_load() {
-        let conn = init_memory_db().unwrap();
+        let mut conn = init_memory_db().unwrap();
         let mut cfg = load_agent_config(&conn).unwrap();
 
         cfg.max_concurrency = 0;
-        save_agent_config(&conn, &cfg).unwrap();
+        save_agent_config(&mut conn, &cfg).unwrap();
         assert_eq!(load_agent_config(&conn).unwrap().max_concurrency, 1);
 
         cfg.max_concurrency = 999;
-        save_agent_config(&conn, &cfg).unwrap();
+        save_agent_config(&mut conn, &cfg).unwrap();
         assert_eq!(
             load_agent_config(&conn).unwrap().max_concurrency,
             MAX_AGENT_CONCURRENCY
         );
 
-        // 直接写脏值（绕过 save 的 clamp）→ 读侧仍收敛到合法区间
         set_setting(&conn, KEY_AGENT_MAX_CONCURRENCY, "-5").unwrap();
         assert_eq!(load_agent_config(&conn).unwrap().max_concurrency, 1);
     }
 
-    /// 队列状态暴露并发上限：max_concurrency 透传配置值，running_count 统计全局
-    /// running（含本会话）—— 前端据此区分「真排队（已达上限）」与「只是别的会话在并行」。
+    #[test]
+    fn timeout_seconds_clamped_on_save_and_load() {
+        let mut conn = init_memory_db().unwrap();
+        let mut cfg = load_agent_config(&conn).unwrap();
+
+        cfg.timeout_seconds = 1;
+        save_agent_config(&mut conn, &cfg).unwrap();
+        assert_eq!(
+            load_agent_config(&conn).unwrap().timeout_seconds,
+            MIN_AGENT_TIMEOUT_SECONDS
+        );
+
+        cfg.timeout_seconds = 99999;
+        save_agent_config(&mut conn, &cfg).unwrap();
+        assert_eq!(
+            load_agent_config(&conn).unwrap().timeout_seconds,
+            MAX_AGENT_TIMEOUT_SECONDS
+        );
+
+        set_setting(&conn, KEY_AGENT_TIMEOUT_SECONDS, "0").unwrap();
+        assert_eq!(
+            load_agent_config(&conn).unwrap().timeout_seconds,
+            MIN_AGENT_TIMEOUT_SECONDS
+        );
+    }
+
     #[test]
     fn queue_status_exposes_concurrency_limit() {
-        let conn = init_memory_db().unwrap();
+        let mut conn = init_memory_db().unwrap();
         let mut cfg = load_agent_config(&conn).unwrap();
         cfg.max_concurrency = 3;
-        save_agent_config(&conn, &cfg).unwrap();
+        save_agent_config(&mut conn, &cfg).unwrap();
 
         let ra = create_run(&conn, &NewRun { session_key: "ws-a", skill_path: None, entities: &[], instruction: "A", model: None, session_path: None, files: None }).unwrap();
         mark_run_started(&conn, ra).unwrap();

@@ -796,6 +796,18 @@ async fn read_limited_body(
     Ok((bytes, content_type))
 }
 
+pub fn extract_og_title(html: &str) -> Option<String> {
+    let needle = "<meta property=\"og:title\" content=\"";
+    let idx = html.find(needle)?;
+    let rest = &html[idx + needle.len()..];
+    let end = rest.find('"')?;
+    let raw = rest[..end].trim();
+    if raw.is_empty() {
+        return None;
+    }
+    quick_xml::escape::unescape(raw).ok().map(|s| s.into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1428,5 +1440,18 @@ mod tests {
             .expect("请求应命中被固定的 127.0.0.1，而不是重新解析 DNS");
         assert_eq!(resp.status().as_u16(), 200);
         assert_eq!(resp.text().await.unwrap(), "pinned");
+    }
+
+    #[test]
+    fn test_extract_og_title_trims_unescapes_and_handles_missing() {
+        assert_eq!(
+            extract_og_title(r#"<meta property="og:title" content="  A &amp; B  ">"#).as_deref(),
+            Some("A & B")
+        );
+        assert_eq!(
+            extract_og_title(r#"<meta property="og:title" content="   ">"#),
+            None
+        );
+        assert_eq!(extract_og_title("<html><title>no og</title></html>"), None);
     }
 }

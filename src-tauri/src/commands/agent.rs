@@ -51,26 +51,25 @@ pub async fn save_agent_config(
             return Err("err.agent.working_dir_not_found".to_string());
         }
     }
-    let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    let old = agent::load_agent_config(&conn)?;
-    agent::save_agent_config(&conn, &config)?;
-    logs::write_log_key(
-        &conn,
-        "INFO",
-        "agent.config_saved",
-        &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
-    );
-    // 并发上限变更：就地调整闸门（仅改这一个字段无需重启进程池，进程模型自适应池容量）。
-    // 压低上限时执行位不是就地收回，而是等当前 run 收尾归还（见 agent_gate.rs）。
+    let old = {
+        let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        let old = agent::load_agent_config(&conn)?;
+        agent::save_agent_config(&mut conn, &config)?;
+        logs::write_log_key(
+            &conn,
+            "INFO",
+            "agent.config_saved",
+            &serde_json::json!({"enabled": config.enabled, "skills": config.skills.len()}).to_string(),
+        );
+        old
+    };
     let old_max = old.max_concurrency;
     let new_max = state.agent_gate.set_limit(config.max_concurrency);
     if new_max != old_max {
         log::info!("agent concurrency limit changed: {} -> {}", old_max, new_max);
     }
     if agent_process_level_changed(&old, &config) {
-        // 不直接 kill——正在生成的 run 会被 rpc_exited 中断、记 failed 且 token 作废；
-        // request_restart 带忙进程守卫：池空闲立即重启生效，
-        // 有 run 在跑时延迟到收尾点（dispatch_run 的 restart_if_pending）。
+        // 不直接 kill：正在生成的 run 会被中断并浪费词元，改为有活跃 run 时延迟到收尾后重建
         state.agent_rpc.request_restart().await;
     }
     Ok(())
@@ -134,56 +133,63 @@ pub async fn run_agent_job(
         return Err("err.agent.invalid_session".to_string());
     }
     let instruction = input.instruction.trim().to_string();
-    // 实体去重 + 存在性校验（引用解析后 id 必须有效）
-    let mut entities: Vec<AgentEntityRef> = Vec::new();
-    let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
-    let config = agent::load_agent_config(&conn)?;
-    if !config.enabled {
-        return Err("err.agent.disabled".to_string());
-    }
-    for r in &input.entities {
-        if entities.iter().any(|e| e.kind == r.kind && e.id == r.id) {
-            continue;
+    let (entities, skill_path, session_path) = {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        let config = agent::load_agent_config(&conn)?;
+        if !config.enabled {
+            return Err("err.agent.disabled".to_string());
         }
-        let exists = match r.kind.as_str() {
-            // 注意：get_source 返回 Result<Option<_>>，已删除的源是 Ok(None)，
-            // 必须用 is_some() 判定存在（is_ok() 会把已删除实体误判为存在）
-            "source" => crate::db::sources::get_source(&conn, r.id)?.is_some(),
-            "release" => crate::db::releases::get_release(&conn, r.id)?.is_some(),
-            _ => false,
-        };
-        if !exists {
-            return Err("err.agent.entity_missing".to_string());
-        }
-        entities.push(r.clone());
-    }
-    // skill：指定时必须在全局列表（`@` 菜单数据源即全局列表）
-    let skill_path = match input.skill_path.as_deref().map(|s| s.trim().to_string()) {
-        Some(p) if !p.is_empty() => {
-            if !config.skills.contains(&p) {
-                return Err("err.agent.skill_not_configured".to_string());
+        let mut entities: Vec<AgentEntityRef> = Vec::new();
+        for r in &input.entities {
+            if entities.iter().any(|e| e.kind == r.kind && e.id == r.id) {
+                continue;
             }
-            Some(p)
+            let exists = match r.kind.as_str() {
+                "source" => crate::db::sources::get_source(&conn, r.id)?.is_some(),
+                "release" => crate::db::releases::get_release(&conn, r.id)?.is_some(),
+                _ => false,
+            };
+            if !exists {
+                return Err("err.agent.entity_missing".to_string());
+            }
+            entities.push(r.clone());
         }
-        _ => None,
+        let skill_path = match input.skill_path.as_deref().map(|s| s.trim().to_string()) {
+            Some(p) if !p.is_empty() => {
+                if !config.skills.contains(&p) {
+                    return Err("err.agent.skill_not_configured".to_string());
+                }
+                Some(p)
+            }
+            _ => None,
+        };
+        let existing_session_path = match agent::get_session_path(&conn, &session_key)? {
+            Some(p) if is_safe_session_path(&p) => Some(p),
+            _ => None,
+        };
+        (entities, skill_path, existing_session_path)
     };
 
-    // 本地文件附件：存在性 / 类型 / 大小 / 数量校验（提交前即拒绝，不占队列位）
     let files = validate_attached_files(input.files.as_ref())?;
 
-    // 空提交判定以清洗后的输入为准（指令 / 实体 / 附件三者皆空才拒绝）：
-    // 只附加文件、不写指令也算有效提交——「看看这个日志」的意图已由附件承载，
-    // 前端空校验同口径放行（见 AgentWorkspace.handleSubmit），后端必须一致，
-    // 否则附件-only 提交会在这里被 err.agent.empty_job 打回。
     if instruction.is_empty() && entities.is_empty() && files.is_empty() {
         return Err("err.agent.empty_job".to_string());
     }
 
-    // 会话文件：历史提交已有则复用（pi --session 继续），否则新建。
-    // 历史路径须通过目录前缀校验，防脏数据路径穿越。
-    let session_path = match agent::get_session_path(&conn, &session_key)? {
-        Some(p) if is_safe_session_path(&p) => Some(p),
-        _ => {
+    let model_json: Option<String> = input
+        .model
+        .as_ref()
+        .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
+        .transpose()?;
+
+    // 显式指定模型需在入队前预检（避免排队后才报泛化错误）；None 跟随 pi 当前默认模型跳过预检
+    if let Some(m) = &input.model {
+        verify_model_available(&state, m).await?;
+    }
+
+    let session_path = match session_path {
+        Some(p) => Some(p),
+        None => {
             let path = session_path_for_key(&session_key);
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
@@ -192,41 +198,25 @@ pub async fn run_agent_job(
         }
     };
 
-    let model_json: Option<String> = input
-        .model
-        .as_ref()
-        .map(|m| serde_json::to_string(m).map_err(|e| e.to_string()))
-        .transpose()?;
-
-    // 提交前模型预检：显式选择的模型若不在 pi 当前可用列表里
-    // （provider 未配置鉴权 / 在 pi 侧被 /scoped-models 禁用 / 进程重启后配置变了），
-    // 直接拒绝——否则要等排队、启动、set_model、发 prompt 之后才以
-    // err.agent.model_error 失败，用户白等一轮且拿到的还是泛化报错。
-    // 「默认」（model = None）不预检：那是跟随进程现状，pi 侧自会兜底。
-    if let Some(m) = &input.model {
-        verify_model_available(&state, m).await?;
-    }
-
-    // 同会话守卫 + 建 run 放进 BEGIN IMMEDIATE 事务：
-    // count 检查与 INSERT 之间若不加锁，两个并发提交可同时读到 0 再各自插入
-    // （TOCTOU）——前端 submitting 锁挡住了 UI 途径，但 DevTools / 未来多客户端
-    // 直接调命令仍可触发。BEGIN IMMEDIATE 立即拿写锁，并发请求串行化：
-    // 先到者 check+insert+commit，后到者等锁后 count=1 被拒。
-    // 前端在会话有活跃 run 时按钮即「停止」、Enter 被拒（canStop），
-    // 该守卫把同一语义落到后端，正常 UI 流程下永不触发。
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    if agent::active_run_count_for_session(&tx, &session_key)? > 0 {
-        return Err("err.agent.session_busy".to_string());
-    }
     let files_json: Option<String> = if files.is_empty() {
         None
     } else {
         Some(serde_json::to_string(&files).map_err(|e| e.to_string())?)
     };
-    let run_id = agent::create_run(&tx, &NewRun { session_key: &session_key, skill_path: skill_path.as_deref(), entities: &entities, instruction: &instruction, model: model_json.as_deref(), session_path: session_path.as_deref(), files: files_json.as_deref() })?;
-    tx.commit().map_err(|e| e.to_string())?;
+
+    // BEGIN IMMEDIATE 串行化同会话并发提交，防止 check 与 insert 间的 TOCTOU。
+    let run_id = {
+        let mut conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        if agent::active_run_count_for_session(&tx, &session_key)? > 0 {
+            return Err("err.agent.session_busy".to_string());
+        }
+        let run_id = agent::create_run(&tx, &NewRun { session_key: &session_key, skill_path: skill_path.as_deref(), entities: &entities, instruction: &instruction, model: model_json.as_deref(), session_path: session_path.as_deref(), files: files_json.as_deref() })?;
+        tx.commit().map_err(|e| e.to_string())?;
+        run_id
+    };
 
     let ctx = agent_runner::dispatch_ctx_from_app(&app);
     tauri::async_runtime::spawn(async move {

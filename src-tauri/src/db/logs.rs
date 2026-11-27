@@ -86,63 +86,12 @@ pub struct LogEntry {
     pub rendered_message: Option<String>,
 }
 
-/// 日志展示标识：YouTube 源用频道名（description）替代 channel_id，repo 置空；
-/// 其余源保持 owner/repo 原样（GitHub 的 `{owner}/{repo}` 模板才能正常渲染）。
-pub fn source_log_ident(
-    source_type: &str,
-    owner: &str,
-    repo: &str,
-    description: Option<&str>,
-) -> (String, String) {
-    if source_type == "youtube" {
-        let name = description.filter(|d| !d.is_empty()).unwrap_or(owner);
-        (name.to_string(), String::new())
+pub fn failure_log_level(status: u16) -> &'static str {
+    if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
+        "WARN"
     } else {
-        (owner.to_string(), repo.to_string())
+        "ERROR"
     }
-}
-
-/// release 级日志展示标识：YouTube 源额外用视频标题（release_name）替代 video_id。
-/// 返回 (owner, repo, tag) 三元组，供 `{owner}/{repo} {tag}` 类模板渲染。
-pub fn release_log_ident(r: &crate::db::releases::ReleaseInfo) -> (String, String, String) {
-    if r.source_type == "youtube" {
-        let owner = r
-            .source_description
-            .clone()
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| r.owner.clone());
-        (owner, String::new(), r.release_name.clone())
-    } else {
-        (r.owner.clone(), r.repo.clone(), r.tag_name.clone())
-    }
-}
-
-pub fn write_release_log(
-    conn: &Connection,
-    release: Option<&crate::db::releases::ReleaseInfo>,
-    release_id: i64,
-    key: &str,
-    unknown_key: &str,
-    extra: Option<serde_json::Map<String, serde_json::Value>>,
-) {
-    let mut args = extra.unwrap_or_default();
-    args.insert("id".to_string(), serde_json::json!(release_id));
-    let log_key = match release {
-        Some(r) => {
-            let (log_owner, log_repo, log_tag) = release_log_ident(r);
-            args.insert("owner".to_string(), serde_json::json!(log_owner));
-            args.insert("repo".to_string(), serde_json::json!(log_repo));
-            args.insert("tag".to_string(), serde_json::json!(log_tag));
-            key
-        }
-        None => unknown_key,
-    };
-    write_log_key(
-        conn,
-        "INFO",
-        log_key,
-        &serde_json::Value::Object(args).to_string(),
-    );
 }
 
 pub fn write_log(conn: &Connection, level: &str, message: &str) {
@@ -491,48 +440,22 @@ mod tests {
         assert!(errors[0].rendered_message.as_deref().unwrap().contains("timeout"));
     }
 
-    // ── 错误状态码 → 日志级别映射矩阵 ─────────────────────
-    //
-    // poll.rs 中 check 失败时的日志级别判定（内联在 `Err((status, msg))` 分支）：
-    //     let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
-    //         "WARN"
-    //     } else {
-    //         "ERROR"
-    //     };
-    //
-    // 语义：临时性错误（网络 0、认证 401、限流 429、5xx 服务端）记 WARN，
-    //       永久性错误（404 不存在、422 参数等 4xx）记 ERROR。
-    // 该判定内联、无法直接测试，这里把规则作为不变量复刻并锁住，
-    // 重构时若改动判定逻辑，此处必须同步——否则用户可见的日志级别会变。
-
-    /// 复刻 poll.rs 中的状态码→级别判定。保持同步。
-    fn check_failure_log_level(status: u16) -> &'static str {
-        if matches!(status, 0 | 401 | 403 | 429) || status >= 500 {
-            "WARN"
-        } else {
-            "ERROR"
-        }
-    }
-
     #[test]
     fn test_failure_log_level_matrix() {
-        // 临时性错误 → WARN
-        assert_eq!(check_failure_log_level(0), "WARN", "网络错误(0) 应 WARN");
-        assert_eq!(check_failure_log_level(401), "WARN", "未授权(401) 应 WARN");
-        assert_eq!(check_failure_log_level(403), "WARN", "禁止访问(403) 应 WARN");
-        assert_eq!(check_failure_log_level(429), "WARN", "限流(429) 应 WARN");
-        assert_eq!(check_failure_log_level(500), "WARN", "服务端错误(500) 应 WARN");
-        assert_eq!(check_failure_log_level(502), "WARN", "网关错误(502) 应 WARN");
-        assert_eq!(check_failure_log_level(503), "WARN", "服务不可用(503) 应 WARN");
+        assert_eq!(failure_log_level(0), "WARN", "网络错误(0) 应 WARN");
+        assert_eq!(failure_log_level(401), "WARN", "未授权(401) 应 WARN");
+        assert_eq!(failure_log_level(403), "WARN", "禁止访问(403) 应 WARN");
+        assert_eq!(failure_log_level(429), "WARN", "限流(429) 应 WARN");
+        assert_eq!(failure_log_level(500), "WARN", "服务端错误(500) 应 WARN");
+        assert_eq!(failure_log_level(502), "WARN", "网关错误(502) 应 WARN");
+        assert_eq!(failure_log_level(503), "WARN", "服务不可用(503) 应 WARN");
 
-        // 永久性错误 → ERROR
-        assert_eq!(check_failure_log_level(400), "ERROR", "请求错误(400) 应 ERROR");
-        assert_eq!(check_failure_log_level(404), "ERROR", "仓库不存在(404) 应 ERROR");
-        assert_eq!(check_failure_log_level(422), "ERROR", "参数错误(422) 应 ERROR");
+        assert_eq!(failure_log_level(400), "ERROR", "请求错误(400) 应 ERROR");
+        assert_eq!(failure_log_level(404), "ERROR", "仓库不存在(404) 应 ERROR");
+        assert_eq!(failure_log_level(422), "ERROR", "参数错误(422) 应 ERROR");
 
-        // 边界：499（最后一个 4xx）应 ERROR，500（第一个 5xx）应 WARN
-        assert_eq!(check_failure_log_level(499), "ERROR");
-        assert_eq!(check_failure_log_level(500), "WARN");
+        assert_eq!(failure_log_level(499), "ERROR");
+        assert_eq!(failure_log_level(500), "WARN");
     }
 
     // ── 日志写入静默失败 → 降级写文件 ─────────────────────
@@ -701,7 +624,7 @@ mod tests {
             (429, "WARN"),
         ];
         for (status, expected_level) in cases {
-            let level = check_failure_log_level(status);
+            let level = failure_log_level(status);
             assert_eq!(level, expected_level, "status {} 级别判定", status);
             write_log_key(
                 &conn,
@@ -715,69 +638,5 @@ mod tests {
         assert_eq!(warns.len(), 2, "503 和 429 应各产生 1 条 WARN，共 2 条");
         let (errors, _) = search_logs(&conn, "", Some("ERROR"), 1, 10).unwrap();
         assert_eq!(errors.len(), 1, "404 应产生 1 条 ERROR");
-    }
-
-    #[test]
-    fn test_write_release_log_uses_ident_and_handles_unknown_and_extra() {
-        let conn = init_memory_db().unwrap();
-        let sid = crate::db::sources::add_source(
-            &conn,
-            "youtube",
-            "UC_test_channel",
-            "",
-            "Test Channel",
-        )
-        .unwrap();
-        let rid = crate::db::releases::insert_release(
-            &conn,
-            sid,
-            "vid_abc",
-            "Episode 1",
-            "https://youtu.be/vid_abc",
-            "2026-01-01T00:00:00Z",
-            false,
-            None,
-        )
-        .unwrap();
-        let rel = crate::db::releases::get_release(&conn, rid).unwrap();
-
-        let mut extra = serde_json::Map::new();
-        extra.insert("action".to_string(), serde_json::json!("clicked"));
-        write_release_log(
-            &conn,
-            rel.as_ref(),
-            rid,
-            "release.status_changed",
-            "release.status_changed_unknown",
-            Some(extra),
-        );
-        write_release_log(
-            &conn,
-            None,
-            9999,
-            "release.deleted",
-            "release.deleted_unknown",
-            None,
-        );
-
-        let logs = get_logs(&conn, 10).unwrap();
-        let known = logs
-            .iter()
-            .find(|l| l.message_key.as_deref() == Some("release.status_changed"))
-            .unwrap();
-        let known_args: serde_json::Value =
-            serde_json::from_str(known.message_args.as_deref().unwrap()).unwrap();
-        assert_eq!(known_args["owner"], "Test Channel");
-        assert_eq!(known_args["repo"], "");
-        assert_eq!(known_args["tag"], "Episode 1");
-        assert_eq!(known_args["action"], "clicked");
-
-        let unknown = logs
-            .iter()
-            .find(|l| l.message_key.as_deref() == Some("release.deleted_unknown"))
-            .unwrap();
-        let unknown_args: serde_json::Value =
-            serde_json::from_str(unknown.message_args.as_deref().unwrap()).unwrap();
-        assert_eq!(unknown_args["id"], 9999);
     }
 }

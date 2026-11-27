@@ -44,74 +44,74 @@ pub struct SourceTypeInfo {
     repo: String,
     config: Option<String>,
 ) -> Result<i64, String> {
-    let description: String;
-    let resolved_owner: String;
-    {
+    let log_add_failed = |level: &str, err: &str| {
+        if let Ok(conn) = state.db.get() {
+            db::logs::write_log_key(
+                &conn,
+                level,
+                "source.add_failed",
+                &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": err}).to_string(),
+            );
+        }
+    };
+
+    let adapter = match source::get_adapter(&source_type) {
+        Ok(a) => a,
+        Err((_, msg)) => {
+            log_add_failed("ERROR", &msg);
+            return Err(msg);
+        }
+    };
+
+    let (proxy, token) = {
         let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         let proxy = db::settings::load_proxy_config(&conn)?;
-        // client 不携带 default Authorization——github token 由 adapter 按请求设置，
-        // 避免 HF 请求泄露 GitHub Token
-        let client = match http::build_http_client(http::HttpClientConfig {
-            proxy_url: &proxy.url,
-            proxy_mode: &proxy.mode,
-            bearer_token: None,
-            ..Default::default()
-        }) {
-            Ok(c) => c,
-            Err(e) => {
-                db::logs::write_log_key(
-                    &conn, "ERROR", "source.add_failed",
-                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &e}).to_string(),
-                );
-                return Err(e);
-            }
-        };
-        // source 分发走 trait 调用，新增源类型只需注册适配器
-        let adapter = match source::get_adapter(&source_type) {
-            Ok(a) => a,
-            Err((_, msg)) => {
-                db::logs::write_log_key(
-                    &conn, "ERROR", "source.add_failed",
-                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
-                );
-                return Err(msg);
-            }
-        };
         let token = source::SourceCredentials::load_for(&conn, adapter.as_ref());
-        // 先把用户输入归一化为标准 owner（YouTube：@handle/链接 → channel_id），
-        // 再查重与验证，保证去重与 RSS 拉取都基于统一的 channel_id。
-        resolved_owner = match adapter
-            .resolve_owner(&client, &owner, token.as_deref())
-            .await
-        {
-            Ok(o) => o,
-            Err((status, msg)) => {
-                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-                db::logs::write_log_key(
-                    &conn, level, "source.add_failed",
-                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
-                );
-                return Err(msg);
-            }
-        };
+        (proxy, token)
+    };
+
+    let client = match http::build_http_client(http::HttpClientConfig {
+        proxy_url: &proxy.url,
+        proxy_mode: &proxy.mode,
+        bearer_token: None,
+        ..Default::default()
+    }) {
+        Ok(c) => c,
+        Err(e) => {
+            log_add_failed("ERROR", &e);
+            return Err(e);
+        }
+    };
+
+    let resolved_owner = match adapter
+        .resolve_owner(&client, &owner, token.as_deref())
+        .await
+    {
+        Ok(o) => o,
+        Err((status, msg)) => {
+            log_add_failed(db::logs::failure_log_level(status), &msg);
+            return Err(msg);
+        }
+    };
+
+    {
+        let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
         if db::sources::source_exists(&conn, &source_type, &resolved_owner, &repo)? {
             return Ok(0);
         }
-        description = match adapter
-            .verify_and_describe(&client, &resolved_owner, &repo, token.as_deref())
-            .await
-        {
-            Ok(d) => d,
-            Err((status, msg)) => {
-                let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
-                db::logs::write_log_key(
-                    &conn, level, "source.add_failed",
-                    &json!({"source_type": &source_type, "owner": &owner, "repo": &repo, "error": &msg}).to_string(),
-                );
-                return Err(msg);
-            }
-        };
     }
+
+    let description = match adapter
+        .verify_and_describe(&client, &resolved_owner, &repo, token.as_deref())
+        .await
+    {
+        Ok(d) => d,
+        Err((status, msg)) => {
+            log_add_failed(db::logs::failure_log_level(status), &msg);
+            return Err(msg);
+        }
+    };
+
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
     let id = db::sources::add_source_with_config(
         &conn, &source_type, &resolved_owner, &repo, &description, config.as_deref(),
@@ -119,7 +119,7 @@ pub struct SourceTypeInfo {
     if id == 0 {
         return Ok(0);
     }
-    let (log_owner, log_repo) = db::logs::source_log_ident(&source_type, &resolved_owner, &repo, Some(&description));
+    let (log_owner, log_repo) = source::source_log_ident(&source_type, &resolved_owner, &repo, Some(&description));
     db::logs::write_log_key(
         &conn,
         "INFO",
@@ -137,7 +137,7 @@ pub struct SourceTypeInfo {
     db::sources::remove_source(&conn, id)?;
     match source {
         Some(s) => {
-            let (log_owner, log_repo) = db::logs::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
+            let (log_owner, log_repo) = source::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
             db::logs::write_log_key(&conn, "INFO", "source.removed", &json!({"owner": &log_owner, "repo": &log_repo, "id": id}).to_string())
         }
         None => db::logs::write_log_key(&conn, "INFO", "source.removed_unknown", &json!({"id": id}).to_string()),
@@ -227,7 +227,7 @@ fn update_source_core<E: BadgeEventEmitter>(
         Some(s) => {
             let mut logged = false;
 
-            let (log_owner, log_repo) = db::logs::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
+            let (log_owner, log_repo) = source::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
 
             // enabled 变化 → 暂停/恢复
             if old_enabled != Some(enabled) {

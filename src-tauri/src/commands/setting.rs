@@ -114,7 +114,7 @@ fn sanitize_settings(payload: AppSettings) -> AppSettings {
     let next_poll_at = state.next_poll_at.clone();
 
     tokio::task::spawn_blocking(move || -> Result<(), String> {
-        let conn = pool.get().map_err(|e| e.to_string())?;
+        let mut conn = pool.get().map_err(|e| e.to_string())?;
 
         // 注册表驱动：payload 序列化为 (字段名 → JSON 值) 映射，字段名与 DB key 同名
         // （snake_case）；按 SETTING_SPECS 统一「读旧值 → 比较 → 写入」。
@@ -152,7 +152,7 @@ fn sanitize_settings(payload: AppSettings) -> AppSettings {
         let auto_start_changed =
             old_values[auto_start_idx] != new_values[auto_start_idx];
 
-        let (interval_changed, changes) = settings::apply_settings(&conn, &items)?;
+        let (interval_changed, changes) = settings::apply_settings(&mut conn, &items)?;
 
         if changes.is_empty() {
             return Ok(());
@@ -357,7 +357,7 @@ mod tests {
             settings::set_setting(&conn, KEY_LOG_RETENTION, "7").unwrap();
         }
 
-        let conn = state.db.get().unwrap();
+        let mut conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
@@ -378,7 +378,7 @@ mod tests {
 
         // 仅改 log_retention_days 7→14
         let (_, changes) = settings::apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
                 (KEY_AUTO_START, &old_auto_start, "false", ""),
@@ -420,7 +420,7 @@ mod tests {
             settings::set_setting(&conn, KEY_MINIMIZE_TO_TRAY, "true").unwrap();
         }
 
-        let conn = state.db.get().unwrap();
+        let mut conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
@@ -440,7 +440,7 @@ mod tests {
         let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
         let (interval_changed, changes) = settings::apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "30", ""),
                 (KEY_AUTO_START, &old_auto_start, "false", ""),
@@ -475,7 +475,7 @@ mod tests {
             settings::set_setting(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         }
 
-        let conn = state.db.get().unwrap();
+        let mut conn = state.db.get().unwrap();
         let old_interval = get_setting_str(&conn, KEY_POLL_INTERVAL, "30").unwrap();
         let old_proxy = get_setting_str(&conn, KEY_PROXY_URL, "").unwrap();
         let old_proxy_mode = get_setting_str(&conn, KEY_PROXY_MODE, "none").unwrap();
@@ -495,7 +495,7 @@ mod tests {
         let old_theme = get_setting_str(&conn, KEY_THEME, DEFAULT_THEME).unwrap();
 
         let (interval_changed, changes) = settings::apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_POLL_INTERVAL, &old_interval, "60", "setting.poll_interval"),
                 (KEY_AUTO_START, &old_auto_start, "false", ""),
@@ -528,7 +528,7 @@ mod tests {
     #[test]
     fn test_apply_settings_covers_all_keys() {
         let state = test_state();
-        let conn = state.db.get().unwrap();
+        let mut conn = state.db.get().unwrap();
 
         // 为所有可更新设置写入旧值
         let old_values = [
@@ -592,7 +592,7 @@ mod tests {
             .map(|(&(key, old), &(_, new))| (key, old, new, ""))
             .collect();
 
-        let (interval_changed, _) = settings::apply_settings(&conn, &items).unwrap();
+        let (interval_changed, _) = settings::apply_settings(&mut conn, &items).unwrap();
 
         assert!(interval_changed, "first key should be poll_interval_minutes");
         assert_eq!(items.len(), 23,
@@ -675,7 +675,7 @@ mod tests {
     #[test]
     fn test_deepseek_proxy_bypass_apply_and_readback() {
         let state = test_state();
-        let conn = state.db.get().unwrap();
+        let mut conn = state.db.get().unwrap();
 
         // 初始默认值应为 false
         assert!(!get_setting_bool(&conn, KEY_DEEPSEEK_PROXY_BYPASS, false).unwrap());
@@ -683,7 +683,7 @@ mod tests {
         // 模拟 update_settings 流程：从 false 改为 true
         let old = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
         let (_, changes) = settings::apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_DEEPSEEK_PROXY_BYPASS, &old, "true", "setting.deepseek_proxy_bypass"),
             ],
@@ -697,7 +697,7 @@ mod tests {
         // 再次模拟 update_settings：改回 false
         let old = get_setting_str(&conn, KEY_DEEPSEEK_PROXY_BYPASS, DEFAULT_DEEPSEEK_PROXY_BYPASS).unwrap();
         let (_, changes) = settings::apply_settings(
-            &conn,
+            &mut conn,
             &[
                 (KEY_DEEPSEEK_PROXY_BYPASS, &old, "false", "setting.deepseek_proxy_bypass"),
             ],

@@ -205,7 +205,7 @@ async fn do_poll_async(app: tauri::AppHandle) {
             for source in &sources {
                 if source.enabled && source.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     let _ = db::sources::update_source(&conn, source.id, false, source.poll_interval_minutes);
-                    let (log_owner, log_repo) = db::logs::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
+                    let (log_owner, log_repo) = crate::source::source_log_ident(&source.source_type, &source.owner, &source.repo, source.description.as_deref());
                     db::logs::write_log_key(
                         &conn,
                         "WARN",

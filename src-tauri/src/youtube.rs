@@ -463,17 +463,8 @@ async fn verify_and_describe_channel(
     Ok(parsed.channel_title)
 }
 
-/// 从 HTML 提取 og:title（频道页的真实频道名）。
 fn extract_og_title(html: &str) -> Option<String> {
-    let needle = "<meta property=\"og:title\" content=\"";
-    let idx = html.find(needle)?;
-    let rest = &html[idx + needle.len()..];
-    let end = rest.find('"')?;
-    let raw = &rest[..end];
-    if raw.is_empty() {
-        return None;
-    }
-    quick_xml::escape::unescape(raw).ok().map(|s| s.into_owned())
+    crate::http::extract_og_title(html)
 }
 
 /// 拉取 URL 原始文本（带重试，仅限 HTML 页面等文本内容）。
@@ -1045,9 +1036,26 @@ impl SourceAdapter for YoutubeAdapter {
         Some("YouTube")
     }
 
-    /// 视频标题在通知正文的 name 位，tag（videoId）无意义，不显示。
     fn notification_show_tag(&self) -> bool {
         false
+    }
+
+    fn log_source_ident(
+        &self,
+        owner: &str,
+        _repo: &str,
+        description: Option<&str>,
+    ) -> (String, String) {
+        let name = description.filter(|d| !d.is_empty()).unwrap_or(owner);
+        (name.to_string(), String::new())
+    }
+
+    fn log_release_tag<'a>(&self, _tag_name: &'a str, release_name: &'a str) -> &'a str {
+        release_name
+    }
+
+    fn release_body_label(&self) -> &'static str {
+        "视频简介"
     }
 
     /// 手动检查后刷新真实频道名（RSS 标题是播放列表名，频道页 og:title 才是真名）。

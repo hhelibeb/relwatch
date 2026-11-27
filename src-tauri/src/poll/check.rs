@@ -81,7 +81,7 @@ pub(super) async fn check_one_source(ctx: &CheckCtx<'_>, source: &db::sources::S
     let is_first_query = source.last_checked_at.is_none()
         || source.last_checked_at.as_deref() == Some("");
     // 日志展示标识：YouTube 源用频道名替代 channel_id（repo 置空），避免 `owner/` 残废格式
-    let (log_owner, log_repo) = db::logs::source_log_ident(
+    let (log_owner, log_repo) = source::source_log_ident(
         &source.source_type,
         &source.owner,
         &source.repo,
@@ -236,7 +236,7 @@ pub(super) async fn record_check_failure(
     msg: &str,
 ) -> String {
     let msg = crate::redact::redact(msg);
-    let level = if matches!(status, 0 | 401 | 403 | 429) || status >= 500 { "WARN" } else { "ERROR" };
+    let level = db::logs::failure_log_level(status);
     // 上游配额/限流/保存超时这类环境故障不计入断路器（见 is_uncounted_failure）
     let uncounted = is_uncounted_failure(&msg);
     let log_key_failed = if uncounted { "check.failed_uncounted" } else { "check.failed" };
@@ -278,7 +278,7 @@ pub async fn check_single_source(app: tauri::AppHandle, id: i64) -> Result<PollR
     }
 
     // 日志展示标识：YouTube 源用频道名替代 channel_id（repo 置空），避免 `owner/` 残废格式
-    let (log_owner, log_repo) = db::logs::source_log_ident(
+    let (log_owner, log_repo) = source::source_log_ident(
         &source_obj.source_type,
         &source_obj.owner,
         &source_obj.repo,

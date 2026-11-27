@@ -604,6 +604,32 @@ pub fn has_newer_release(conn: &Connection, source_id: i64, published_at: &str) 
     Ok(count > 0)
 }
 
+fn row_to_release_info(row: &rusqlite::Row<'_>) -> rusqlite::Result<ReleaseInfo> {
+    Ok(ReleaseInfo {
+        id: row.get(0)?,
+        source_id: row.get(1)?,
+        source_type: row.get(2)?,
+        owner: row.get(3)?,
+        repo: row.get(4)?,
+        tag_name: row.get(5)?,
+        release_name: row.get(6)?,
+        html_url: row.get(7)?,
+        published_at: row.get(8)?,
+        prerelease: row.get::<_, i64>(9)? != 0,
+        body: row.get(10)?,
+        detected_at: row.get(11)?,
+        notification_status: row.get(12)?,
+        snooze_until: row.get(13)?,
+        ai_summary: row.get(14)?,
+        ai_importance: row.get(15)?,
+        body_translated: row.get(16)?,
+        extra_metadata: row.get(17)?,
+        source_description: row.get(18)?,
+        flag: row.get(19)?,
+        version_bump: row.get(20)?,
+    })
+}
+
 pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, String> {
     let mut stmt = conn
         .prepare(
@@ -621,31 +647,7 @@ pub fn get_release(conn: &Connection, id: i64) -> Result<Option<ReleaseInfo>, St
         .map_err(|e| e.to_string())?;
 
     let mut rows = stmt
-        .query_map(params![id], |row| {
-            Ok(ReleaseInfo {
-                id: row.get(0)?,
-                source_id: row.get(1)?,
-                source_type: row.get(2)?,
-                owner: row.get(3)?,
-                repo: row.get(4)?,
-                tag_name: row.get(5)?,
-                release_name: row.get(6)?,
-                html_url: row.get(7)?,
-                published_at: row.get(8)?,
-                prerelease: row.get::<_, i64>(9)? != 0,
-                body: row.get(10)?,
-                detected_at: row.get(11)?,
-                notification_status: row.get(12)?,
-                snooze_until: row.get(13)?,
-                ai_summary: row.get(14)?,
-                ai_importance: row.get(15)?,
-                body_translated: row.get(16)?,
-                extra_metadata: row.get(17)?,
-                source_description: row.get(18)?,
-                flag: row.get(19)?,
-                version_bump: row.get(20)?,
-            })
-        })
+        .query_map(params![id], row_to_release_info)
         .map_err(|e| e.to_string())?;
 
     match rows.next() {
@@ -676,21 +678,27 @@ pub enum BodyProjection {
 /// 列表分页不放 SQL：由 `get_release_catalog` 一次性下发全量目录，前端在全量数据上
 /// 筛选/聚合/日历。加了 LIMIT 会让越界的历史版本在应用内（列表、日历、聚合视图、
 /// 来源计数）完全不可见。
-fn query_releases(conn: &Connection, projection: BodyProjection) -> Result<Vec<ReleaseInfo>, String> {
-    // 正文投影：Tier1 源类型集合来自适配器能力位（source::tier1_body_source_types），
-    // 与前端 isSummaryBodySource 同源，避免两边判据漂移。
-    let (body_expr, tr_expr, tier1_types) = match projection {
-        BodyProjection::Full => ("r.body".to_string(), "r.body_translated".to_string(), Vec::new()),
+fn query_releases(
+    conn: &Connection,
+    projection: BodyProjection,
+    tier1_types: &[&str],
+) -> Result<Vec<ReleaseInfo>, String> {
+    let (body_expr, tr_expr, use_tier1) = match projection {
+        BodyProjection::Full => ("r.body".to_string(), "r.body_translated".to_string(), false),
+        BodyProjection::Excerpt(_) if tier1_types.is_empty() => (
+            "substr(r.body, 1, ?)".to_string(),
+            "substr(r.body_translated, 1, ?)".to_string(),
+            false,
+        ),
         BodyProjection::Excerpt(_) => {
-            let types = crate::source::tier1_body_source_types();
-            let placeholders = vec!["?"; types.len()].join(", ");
+            let placeholders = vec!["?"; tier1_types.len()].join(", ");
             let expr = format!(
                 "CASE WHEN s.source_type IN ({placeholders}) THEN r.body ELSE substr(r.body, 1, ?) END"
             );
             let tr = format!(
                 "CASE WHEN s.source_type IN ({placeholders}) THEN r.body_translated ELSE substr(r.body_translated, 1, ?) END"
             );
-            (expr, tr, types)
+            (expr, tr, true)
         }
     };
 
@@ -705,22 +713,23 @@ fn query_releases(conn: &Connection, projection: BodyProjection) -> Result<Vec<R
          JOIN sources s ON r.source_id = s.id
          LEFT JOIN notification_state ns ON r.id = ns.release_id
          ORDER BY CASE
-             -- published_at 异常（0 时间戳/1970 脏数据）时按检测时间兜底排序，
-             -- 否则它们会沉到列表最底部（如 bilibili pub_ts 解析失败的历史数据）
              WHEN r.published_at LIKE '1970%' THEN r.detected_at
              ELSE r.published_at
          END DESC, r.id DESC"
     );
 
-    // 参数顺序：CASE 里的 tier1 类型 → 预览长度 → （第二个 CASE）类型 → 预览长度
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
     if let BodyProjection::Excerpt(n) = projection {
-        for t in &tier1_types {
-            params_vec.push(Box::new(t.to_string()));
+        if use_tier1 {
+            for t in tier1_types {
+                params_vec.push(Box::new((*t).to_string()));
+            }
         }
         params_vec.push(Box::new(n));
-        for t in &tier1_types {
-            params_vec.push(Box::new(t.to_string()));
+        if use_tier1 {
+            for t in tier1_types {
+                params_vec.push(Box::new((*t).to_string()));
+            }
         }
         params_vec.push(Box::new(n));
     }
@@ -728,31 +737,7 @@ fn query_releases(conn: &Connection, projection: BodyProjection) -> Result<Vec<R
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let releases = stmt
-        .query_map(params_ref.as_slice(), |row| {
-            Ok(ReleaseInfo {
-                id: row.get(0)?,
-                source_id: row.get(1)?,
-                source_type: row.get(2)?,
-                owner: row.get(3)?,
-                repo: row.get(4)?,
-                tag_name: row.get(5)?,
-                release_name: row.get(6)?,
-                html_url: row.get(7)?,
-                published_at: row.get(8)?,
-                prerelease: row.get::<_, i64>(9)? != 0,
-                body: row.get(10)?,
-                detected_at: row.get(11)?,
-                notification_status: row.get(12)?,
-                snooze_until: row.get(13)?,
-                ai_summary: row.get(14)?,
-                ai_importance: row.get(15)?,
-                body_translated: row.get(16)?,
-                extra_metadata: row.get(17)?,
-                source_description: row.get(18)?,
-                flag: row.get(19)?,
-                version_bump: row.get(20)?,
-            })
-        })
+        .query_map(params_ref.as_slice(), row_to_release_info)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -760,18 +745,20 @@ fn query_releases(conn: &Connection, projection: BodyProjection) -> Result<Vec<R
     Ok(releases)
 }
 
-/// 全库 release（正文全文投影）。内部逻辑与测试读数据用。
 pub fn get_releases_with_state(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
-    query_releases(conn, BodyProjection::Full)
+    query_releases(conn, BodyProjection::Full, &[])
 }
 
-/// 全库目录（正文为预览投影）：前端版本列表的唯一数据源。
+/// 全库目录（无 LIMIT，正文为预览投影）：前端版本列表的唯一数据源。
 ///
-/// 契约：`body` / `body_translated` 在目录里**不是全文** —— Tier1 源（视频等）为全文，
-/// 其余源为前 `BODY_EXCERPT_CHARS` 字符。全文只在两处出现：
-/// `get_release(id)`（详情弹窗）与 `get_release_search_bodies`（全文搜索索引）。
-pub fn get_release_catalog(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
-    query_releases(conn, BodyProjection::Excerpt(BODY_EXCERPT_CHARS))
+/// `tier1_types` 指定正文即内容载体的源类型（由调用方从 `source::tier1_body_source_types()`
+/// 注入，避免 `db` 反向依赖 `source`）；命中该集合的源回全文，其余源回前
+/// `BODY_EXCERPT_CHARS` 字符（空切片表示全部按预览截断）。
+pub fn get_release_catalog(
+    conn: &Connection,
+    tier1_types: &[&str],
+) -> Result<Vec<ReleaseInfo>, String> {
+    query_releases(conn, BodyProjection::Excerpt(BODY_EXCERPT_CHARS), tier1_types)
 }
 
 /// 全文搜索索引用的正文分块。
@@ -782,37 +769,36 @@ pub struct ReleaseSearchBody {
     pub body_translated: Option<String>,
 }
 
-/// 按 id 游标取一块正文（供前端构建全文搜索索引），**从新到旧**。
+/// 按 id 游标从新到旧分块取正文（`id < before_id`），供前端构建全文搜索索引。
 ///
-/// - `before_id` 是排他上界：只回 `id < before_id` 的行。前端首次调用传一个大于任何
-///   真实 release id 的值（`Number.MAX_SAFE_INTEGER`），之后把上一块返回的**最小** id
-///   当新游标 —— 方向向下，故游标必然前进；
-/// - 方向是刻意的：前端水位（字符上界）只装得下最近的一段正文，越界时被挡在门外的
-///   必须是**更早**的内容。若从旧到新填充，被挡住的恰是用户最常搜的新版本；
-/// - 只取 Tier2 源（Tier1 源的 body 已在目录里，重复下发纯属浪费）；
-/// - `max_chars` 是**单次调用的字符预算**，跨行累加，超预算即停；
-///   但保证至少回一行，否则单条超预算的大正文会让游标永远无法前进；
-/// - 调用方（前端）按自己的水位决定取几块，服务端不持有水位状态。
+/// 契约不变量：
+/// - 跳过 `tier1_types`（其正文已在目录全量下发）及正文/译文皆空的行；
+/// - `max_chars` 为单次调用的字符预算，超预算即停，但**至少回一行**（防单条超大正文卡死游标）。
 pub fn get_release_search_bodies(
     conn: &Connection,
     before_id: i64,
     max_chars: i64,
+    tier1_types: &[&str],
 ) -> Result<Vec<ReleaseSearchBody>, String> {
-    let types = crate::source::tier1_body_source_types();
-    let placeholders = vec!["?"; types.len()].join(", ");
+    let type_clause = if tier1_types.is_empty() {
+        String::new()
+    } else {
+        let placeholders = vec!["?"; tier1_types.len()].join(", ");
+        format!("AND s.source_type NOT IN ({placeholders})")
+    };
     let sql = format!(
         "SELECT r.id, r.body, r.body_translated
          FROM releases r
          JOIN sources s ON s.id = r.source_id
          WHERE r.id < ?
-           AND s.source_type NOT IN ({placeholders})
+           {type_clause}
            AND (COALESCE(r.body, '') <> '' OR COALESCE(r.body_translated, '') <> '')
          ORDER BY r.id DESC"
     );
 
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(before_id)];
-    for t in &types {
-        params_vec.push(Box::new(t.to_string()));
+    for t in tier1_types {
+        params_vec.push(Box::new((*t).to_string()));
     }
     let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
@@ -826,7 +812,6 @@ pub fn get_release_search_bodies(
         let translated: Option<String> = row.get(2).map_err(|e| e.to_string())?;
         let cost = body.as_deref().map_or(0, |s| s.chars().count() as i64)
             + translated.as_deref().map_or(0, |s| s.chars().count() as i64);
-        // 至少回一行：单条正文超过预算时也要放行，否则游标无法前进
         if !out.is_empty() && used + cost > max_chars {
             break;
         }
@@ -843,27 +828,28 @@ pub fn get_release_search_bodies(
     Ok(out)
 }
 
-/// 按显式 id 批量取正文。
-///
-/// 游标分块（`get_release_search_bodies`）只能覆盖"新增的行"；已存在的行内容也会变
-/// （翻译落库填 `body_translated`、HF README 回填 `body`），此时需要用 id 精确定位刷新，
-/// 否则全文搜索会一直用旧文本。
+/// 按显式 id 批量取非 Tier1 正文，用于刷新索引里内容已变化的行（翻译落库 / README 回填）。
 pub fn get_release_bodies_by_ids(
     conn: &Connection,
     ids: &[i64],
+    tier1_types: &[&str],
 ) -> Result<Vec<ReleaseSearchBody>, String> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let types = crate::source::tier1_body_source_types();
     let id_ph = vec!["?"; ids.len()].join(", ");
-    let type_ph = vec!["?"; types.len()].join(", ");
+    let type_clause = if tier1_types.is_empty() {
+        String::new()
+    } else {
+        let type_ph = vec!["?"; tier1_types.len()].join(", ");
+        format!("AND s.source_type NOT IN ({type_ph})")
+    };
     let sql = format!(
         "SELECT r.id, r.body, r.body_translated
          FROM releases r
          JOIN sources s ON s.id = r.source_id
          WHERE r.id IN ({id_ph})
-           AND s.source_type NOT IN ({type_ph})
+           {type_clause}
          ORDER BY r.id ASC"
     );
 
@@ -871,8 +857,8 @@ pub fn get_release_bodies_by_ids(
     for id in ids {
         params_vec.push(Box::new(*id));
     }
-    for t in &types {
-        params_vec.push(Box::new(t.to_string()));
+    for t in tier1_types {
+        params_vec.push(Box::new((*t).to_string()));
     }
     let params_ref: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|b| b.as_ref()).collect();
 
@@ -942,31 +928,7 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
 
     let releases = stmt
-        .query_map([], |row| {
-            Ok(ReleaseInfo {
-                id: row.get(0)?,
-                source_id: row.get(1)?,
-                source_type: row.get(2)?,
-                owner: row.get(3)?,
-                repo: row.get(4)?,
-                tag_name: row.get(5)?,
-                release_name: row.get(6)?,
-                html_url: row.get(7)?,
-                published_at: row.get(8)?,
-                prerelease: row.get::<_, i64>(9)? != 0,
-                body: row.get(10)?,
-                detected_at: row.get(11)?,
-                notification_status: row.get(12)?,
-                snooze_until: row.get(13)?,
-                ai_summary: row.get(14)?,
-                ai_importance: row.get(15)?,
-                body_translated: row.get(16)?,
-                extra_metadata: row.get(17)?,
-                source_description: row.get(18)?,
-                flag: row.get(19)?,
-                version_bump: row.get(20)?,
-            })
-        })
+        .query_map([], row_to_release_info)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
@@ -977,10 +939,6 @@ fn query_unread_releases(conn: &Connection, only_notified_missing: bool) -> Resu
         .collect())
 }
 
-/// 返回当前仍处于未读状态的版本。
-///
-/// 该查询用于 UI/托盘红点等“未读”语义：只看通知状态是否仍为 pending，
-/// 或 snoozed 且已到提醒时间；不会因为已经发送过系统通知而排除。
 pub fn get_unread_releases(conn: &Connection) -> Result<Vec<ReleaseInfo>, String> {
     query_unread_releases(conn, false)
 }
@@ -1730,7 +1688,7 @@ mod tests {
             )
             .unwrap();
         }
-        let catalog = get_release_catalog(&conn).unwrap();
+        let catalog = get_release_catalog(&conn, &["youtube", "bilibili"]).unwrap();
         assert_eq!(catalog.len(), 250, "目录必须回全库，不再截断到 200");
     }
 
@@ -1746,7 +1704,7 @@ mod tests {
         insert_release(&conn, gh, "v1.0.0", "R", "https://x", "2024-01-01T00:00:00Z", false, Some(&long_zh)).unwrap();
         insert_release(&conn, yt, "vid1", "V", "https://y", "2024-01-02T00:00:00Z", false, Some(&long_zh)).unwrap();
 
-        let catalog = get_release_catalog(&conn).unwrap();
+        let catalog = get_release_catalog(&conn, &["youtube", "bilibili"]).unwrap();
         let gh_row = catalog.iter().find(|r| r.source_type == "github").unwrap();
         let yt_row = catalog.iter().find(|r| r.source_type == "youtube").unwrap();
 
@@ -1782,13 +1740,13 @@ mod tests {
         let b = insert_release(&conn, gh, "v3", "R", "u", "2024-01-04T00:00:00Z", false, Some(&body(100))).unwrap();
 
         // 首次调用用「大于任何真实 id」的游标：先回最新的 b
-        let first = get_release_search_bodies(&conn, i64::MAX, 150).unwrap();
+        let first = get_release_search_bodies(&conn, i64::MAX, 150, &["youtube", "bilibili"]).unwrap();
         assert_eq!(first.iter().map(|r| r.id).collect::<Vec<_>>(), vec![b], "预算 150 只装得下最新一条");
 
-        let rest = get_release_search_bodies(&conn, b, 10_000).unwrap();
+        let rest = get_release_search_bodies(&conn, b, 10_000, &["youtube", "bilibili"]).unwrap();
         assert_eq!(rest.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a], "游标向下跳过无正文与 Tier1 条目");
 
-        assert!(get_release_search_bodies(&conn, a, 10_000).unwrap().is_empty());
+        assert!(get_release_search_bodies(&conn, a, 10_000, &["youtube", "bilibili"]).unwrap().is_empty());
     }
 
     /// 方向回归：水位装不下的必须是更早的正文（新版本优先入索引）。
@@ -1802,7 +1760,7 @@ mod tests {
         let newest = insert_release(&conn, gh, "v3", "R", "u", "2024-01-03T00:00:00Z", false, Some(&body(100))).unwrap();
 
         // 预算只够一条：必须是 id 最大（最新入库）的那条
-        let chunk = get_release_search_bodies(&conn, i64::MAX, 120).unwrap();
+        let chunk = get_release_search_bodies(&conn, i64::MAX, 120, &["youtube", "bilibili"]).unwrap();
         assert_eq!(chunk.iter().map(|r| r.id).collect::<Vec<_>>(), vec![newest]);
         assert!(newest > new && new > old);
     }
@@ -1815,7 +1773,7 @@ mod tests {
         let big = "y".repeat(5000);
         let rid = insert_release(&conn, gh, "v1", "R", "u", "2024-01-01T00:00:00Z", false, Some(&big)).unwrap();
 
-        let chunk = get_release_search_bodies(&conn, i64::MAX, 100).unwrap();
+        let chunk = get_release_search_bodies(&conn, i64::MAX, 100, &["youtube", "bilibili"]).unwrap();
         assert_eq!(chunk.len(), 1);
         assert_eq!(chunk[0].id, rid);
         assert_eq!(chunk[0].body.as_deref().map(|s| s.len()), Some(5000));
@@ -1831,15 +1789,15 @@ mod tests {
         let b = insert_release(&conn, gh, "v2", "R", "u", "2024-01-02T00:00:00Z", false, Some("body b")).unwrap();
         let v = insert_release(&conn, yt, "vid", "V", "u", "2024-01-03T00:00:00Z", false, Some("video")).unwrap();
 
-        assert!(get_release_bodies_by_ids(&conn, &[]).unwrap().is_empty());
+        assert!(get_release_bodies_by_ids(&conn, &[], &["youtube", "bilibili"]).unwrap().is_empty());
 
         // 乱序传入也按 id 升序返回；Tier1 源被排除
-        let got = get_release_bodies_by_ids(&conn, &[b, v, a]).unwrap();
+        let got = get_release_bodies_by_ids(&conn, &[b, v, a], &["youtube", "bilibili"]).unwrap();
         assert_eq!(got.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a, b]);
 
         // 翻译落库后按 id 重取能拿到新文本
         set_body_translated(&conn, a, "译文 a").unwrap();
-        let refreshed = get_release_bodies_by_ids(&conn, &[a]).unwrap();
+        let refreshed = get_release_bodies_by_ids(&conn, &[a], &["youtube", "bilibili"]).unwrap();
         assert_eq!(refreshed[0].body_translated.as_deref(), Some("译文 a"));
     }
 

@@ -195,10 +195,25 @@ pub trait SourceAdapter: Send + Sync {
         None
     }
 
-    /// 通知正文是否显示 tag（版本标识）。YouTube videoId / B 站 bvid 对用户无意义，
-    /// 覆写为 false 后正文只显示视频标题。默认 true。
     fn notification_show_tag(&self) -> bool {
         true
+    }
+
+    fn log_source_ident(
+        &self,
+        owner: &str,
+        repo: &str,
+        _description: Option<&str>,
+    ) -> (String, String) {
+        (owner.to_string(), repo.to_string())
+    }
+
+    fn log_release_tag<'a>(&self, tag_name: &'a str, _release_name: &'a str) -> &'a str {
+        tag_name
+    }
+
+    fn release_body_label(&self) -> &'static str {
+        "Release Notes"
     }
 
     /// 单页拉取（非翻页模式）。`token` 为该 source 对应的鉴权 token（可忽略）。
@@ -265,6 +280,60 @@ pub fn get_adapter(source_type: &str) -> Result<Box<dyn SourceAdapter>, (u16, St
         .find(|(t, _)| *t == source_type)
         .map(|(_, factory)| factory())
         .ok_or_else(|| (0, format!("err.unsupported_source|{}", source_type)))
+}
+
+pub fn source_log_ident(
+    source_type: &str,
+    owner: &str,
+    repo: &str,
+    description: Option<&str>,
+) -> (String, String) {
+    match get_adapter(source_type) {
+        Ok(adapter) => adapter.log_source_ident(owner, repo, description),
+        Err(_) => (owner.to_string(), repo.to_string()),
+    }
+}
+
+pub fn release_log_ident(r: &crate::db::releases::ReleaseInfo) -> (String, String, String) {
+    match get_adapter(&r.source_type) {
+        Ok(adapter) => {
+            let (owner, repo) =
+                adapter.log_source_ident(&r.owner, &r.repo, r.source_description.as_deref());
+            let tag = adapter
+                .log_release_tag(&r.tag_name, &r.release_name)
+                .to_string();
+            (owner, repo, tag)
+        }
+        Err(_) => (r.owner.clone(), r.repo.clone(), r.tag_name.clone()),
+    }
+}
+
+pub fn write_release_log(
+    conn: &rusqlite::Connection,
+    release: Option<&crate::db::releases::ReleaseInfo>,
+    release_id: i64,
+    key: &str,
+    unknown_key: &str,
+    extra: Option<serde_json::Map<String, serde_json::Value>>,
+) {
+    let mut args = extra.unwrap_or_default();
+    args.insert("id".to_string(), serde_json::json!(release_id));
+    let log_key = match release {
+        Some(r) => {
+            let (log_owner, log_repo, log_tag) = release_log_ident(r);
+            args.insert("owner".to_string(), serde_json::json!(log_owner));
+            args.insert("repo".to_string(), serde_json::json!(log_repo));
+            args.insert("tag".to_string(), serde_json::json!(log_tag));
+            key
+        }
+        None => unknown_key,
+    };
+    crate::db::logs::write_log_key(
+        conn,
+        "INFO",
+        log_key,
+        &serde_json::Value::Object(args).to_string(),
+    );
 }
 
 #[cfg(test)]
@@ -374,5 +443,108 @@ mod tests {
             "某UP主"
         );
         assert_eq!(bili_adapter.notification_source_label(), Some("哔哩哔哩"));
+    }
+
+    #[test]
+    fn test_bilibili_log_ident_uses_up_name_and_video_title() {
+        assert_eq!(
+            source_log_ident("bilibili", "123456", "", Some("测试UP主")),
+            ("测试UP主".to_string(), String::new())
+        );
+        assert_eq!(
+            source_log_ident("bilibili", "123456", "", None),
+            ("123456".to_string(), String::new())
+        );
+        let rel = crate::db::releases::ReleaseInfo {
+            id: 1,
+            source_id: 1,
+            source_type: "bilibili".to_string(),
+            owner: "123456".to_string(),
+            repo: String::new(),
+            tag_name: "BV1xx411c7mD".to_string(),
+            release_name: "视频标题".to_string(),
+            html_url: "https://www.bilibili.com/video/BV1xx411c7mD".to_string(),
+            published_at: "2026-01-01T00:00:00Z".to_string(),
+            prerelease: false,
+            body: None,
+            detected_at: "2026-01-01T00:00:00Z".to_string(),
+            notification_status: "pending".to_string(),
+            snooze_until: None,
+            ai_summary: None,
+            ai_importance: None,
+            body_translated: None,
+            extra_metadata: None,
+            source_description: Some("测试UP主".to_string()),
+            flag: 0,
+            version_bump: None,
+        };
+        assert_eq!(
+            release_log_ident(&rel),
+            ("测试UP主".to_string(), String::new(), "视频标题".to_string())
+        );
+    }
+
+    #[test]
+    fn test_write_release_log_uses_ident_and_handles_unknown_and_extra() {
+        let conn = crate::db::init::init_memory_db().unwrap();
+        let sid = crate::db::sources::add_source(
+            &conn,
+            "youtube",
+            "UC_test_channel",
+            "",
+            "Test Channel",
+        )
+        .unwrap();
+        let rid = crate::db::releases::insert_release(
+            &conn,
+            sid,
+            "vid_abc",
+            "Episode 1",
+            "https://youtu.be/vid_abc",
+            "2026-01-01T00:00:00Z",
+            false,
+            None,
+        )
+        .unwrap();
+        let rel = crate::db::releases::get_release(&conn, rid).unwrap();
+
+        let mut extra = serde_json::Map::new();
+        extra.insert("action".to_string(), serde_json::json!("clicked"));
+        write_release_log(
+            &conn,
+            rel.as_ref(),
+            rid,
+            "release.status_changed",
+            "release.status_changed_unknown",
+            Some(extra),
+        );
+        write_release_log(
+            &conn,
+            None,
+            9999,
+            "release.deleted",
+            "release.deleted_unknown",
+            None,
+        );
+
+        let logs = crate::db::logs::get_logs(&conn, 10).unwrap();
+        let known = logs
+            .iter()
+            .find(|l| l.message_key.as_deref() == Some("release.status_changed"))
+            .unwrap();
+        let known_args: serde_json::Value =
+            serde_json::from_str(known.message_args.as_deref().unwrap()).unwrap();
+        assert_eq!(known_args["owner"], "Test Channel");
+        assert_eq!(known_args["repo"], "");
+        assert_eq!(known_args["tag"], "Episode 1");
+        assert_eq!(known_args["action"], "clicked");
+
+        let unknown = logs
+            .iter()
+            .find(|l| l.message_key.as_deref() == Some("release.deleted_unknown"))
+            .unwrap();
+        let unknown_args: serde_json::Value =
+            serde_json::from_str(unknown.message_args.as_deref().unwrap()).unwrap();
+        assert_eq!(unknown_args["id"], 9999);
     }
 }

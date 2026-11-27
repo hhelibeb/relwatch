@@ -42,7 +42,7 @@ pub(crate) fn activate_main_window(app: &AppHandle, release_id: i64) {
         let rel = crate::db::releases::get_release(&conn, release_id)
             .ok()
             .flatten();
-        crate::db::logs::write_release_log(
+        crate::source::write_release_log(
             &conn,
             rel.as_ref(),
             release_id,
@@ -179,7 +179,7 @@ pub(crate) fn handle_notification_action(
             status,
             snooze_until.as_deref(),
         );
-        crate::db::logs::write_release_log(
+        crate::source::write_release_log(
             &conn,
             rel.as_ref(),
             release_id,
@@ -490,7 +490,8 @@ pub fn send_test_notification(app: &tauri::AppHandle) {
         }
     };
     // 用目录投影（正文为预览）而非全量：这里只要第一条，没必要把全库正文读进内存
-    let releases = crate::db::releases::get_release_catalog(&conn).unwrap_or_default();
+    let tier1 = crate::source::tier1_body_source_types();
+    let releases = crate::db::releases::get_release_catalog(&conn, &tier1).unwrap_or_default();
     let Some(r) = releases.into_iter().next() else {
         log::warn!("测试通知：库中暂无 release，无法发送");
         return;

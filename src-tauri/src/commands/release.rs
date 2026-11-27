@@ -16,9 +16,10 @@ use serde_json::json;
     // 同步 SQLite I/O 放进 spawn_blocking，避免在 Tauri 主线程冻结 UI
     // （池连接在轮询高峰期可能被占用， pool.get() 会等待最多 acquire_timeout）
     let pool = state.db.clone();
+    let tier1 = crate::source::tier1_body_source_types();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        db::releases::get_release_catalog(&conn)
+        db::releases::get_release_catalog(&conn, &tier1)
     })
     .await
     .map_err(|e| format!("err.task_failed|get_release_catalog|{}", e))?
@@ -51,12 +52,12 @@ use serde_json::json;
     before_id: i64,
     max_chars: i64,
 ) -> Result<Vec<db::releases::ReleaseSearchBody>, String> {
-    // 单次预算 clamp：过小会让超大正文条目撑爆调用次数，过大则失去分块的意义
     let max_chars = max_chars.clamp(64 * 1024, 4 * 1024 * 1024);
     let pool = state.db.clone();
+    let tier1 = crate::source::tier1_body_source_types();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        db::releases::get_release_search_bodies(&conn, before_id, max_chars)
+        db::releases::get_release_search_bodies(&conn, before_id, max_chars, &tier1)
     })
     .await
     .map_err(|e| format!("err.task_failed|get_release_search_bodies|{}", e))?
@@ -70,12 +71,12 @@ use serde_json::json;
     state: tauri::State<'_, AppState>,
     ids: Vec<i64>,
 ) -> Result<Vec<db::releases::ReleaseSearchBody>, String> {
-    // 上限保护：一次至多 500 条，避免超长 IN 子句与超大响应
     let ids: Vec<i64> = ids.into_iter().take(500).collect();
     let pool = state.db.clone();
+    let tier1 = crate::source::tier1_body_source_types();
     tokio::task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| format!("err.db_connect|{}", e))?;
-        db::releases::get_release_bodies_by_ids(&conn, &ids)
+        db::releases::get_release_bodies_by_ids(&conn, &ids, &tier1)
     })
     .await
     .map_err(|e| format!("err.task_failed|get_release_search_bodies_by_ids|{}", e))?
@@ -103,7 +104,7 @@ use serde_json::json;
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
     let mut extra = serde_json::Map::new();
     extra.insert("action".to_string(), json!(&status));
-    db::logs::write_release_log(
+    crate::source::write_release_log(
         &conn,
         rel.as_ref(),
         release_id,
@@ -127,7 +128,7 @@ use serde_json::json;
     let conn = state.db.get().map_err(|e| format!("err.db_connect|{}", e))?;
 
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
-    db::logs::write_release_log(
+    crate::source::write_release_log(
         &conn,
         rel.as_ref(),
         release_id,
@@ -158,7 +159,7 @@ use serde_json::json;
     let rel = db::releases::get_release(&conn, release_id).ok().flatten();
     let mut extra = serde_json::Map::new();
     extra.insert("flag".to_string(), json!(flag));
-    db::logs::write_release_log(
+    crate::source::write_release_log(
         &conn,
         rel.as_ref(),
         release_id,
@@ -312,7 +313,7 @@ fn mark_source_releases_read_core(
     if updated > 0 {
         if let Some(s) = source {
             let (log_owner, log_repo) =
-                db::logs::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
+                crate::source::source_log_ident(&s.source_type, &s.owner, &s.repo, s.description.as_deref());
             db::logs::write_log_key(
                 &tx,
                 "INFO",

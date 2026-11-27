@@ -379,14 +379,10 @@ pub fn render_source_entity(source: &Source) -> String {
     )
 }
 
-/// 正文标签：B 站 / YouTube 源正文为视频简介，其余为 Release Notes。
-/// （正文来源不同：GitHub/HuggingFace 是发布说明，B 站/YouTube 是视频简介，
-/// 但都属于外部数据，统一受 build_prompt 的不可信声明约束。）
 fn release_body_label(source_type: &str) -> &'static str {
-    match source_type {
-        "bilibili" | "youtube" => "视频简介",
-        _ => "Release Notes",
-    }
+    crate::source::get_adapter(source_type)
+        .map(|a| a.release_body_label())
+        .unwrap_or("Release Notes")
 }
 
 /// 正文截断上限（字符）：防巨型正文撑爆模型上下文，同时收窄注入面。
@@ -1256,8 +1252,8 @@ mod tests {
     async fn dispatch_run_transitions_to_success_with_entities() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
             crate::db::sources::add_source(&conn, "github", "owner1", "repo", "desc").unwrap();
         }
         // 带实体引用的提交：实体渲染后传入执行器
@@ -1288,8 +1284,8 @@ mod tests {
     async fn dispatch_run_marks_failure_with_error() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1311,8 +1307,8 @@ mod tests {
     async fn dispatch_run_keeps_partial_output_on_failure() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1335,8 +1331,8 @@ mod tests {
         // 重复提交（重复烧词元 / 重复副作用），故单列 unknown 终态。
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1358,8 +1354,8 @@ mod tests {
         // 本地文件附件：run.files（JSON）解析后原样交给执行器，进 prompt 的权威指令区
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1390,8 +1386,8 @@ mod tests {
         // files 列是防御性解析：脏数据不应阻塞提交（按无附件处理）
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1417,8 +1413,8 @@ mod tests {
     async fn dispatch_run_aborts_when_agent_disabled() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &AgentConfig { enabled: false, ..sample_config() }).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &AgentConfig { enabled: false, ..sample_config() }).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1443,8 +1439,8 @@ mod tests {
         // 未 @ 选择 skill 时：不携带 skill 运行，也不要求全局列表非空
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &AgentConfig { skills: vec![], ..sample_config() }).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &AgentConfig { skills: vec![], ..sample_config() }).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1468,8 +1464,8 @@ mod tests {
     async fn dispatch_run_cancelled_before_spawn_marks_cancelled() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1494,8 +1490,8 @@ mod tests {
     async fn dispatch_run_cancelled_after_run_marks_cancelled() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
@@ -1515,8 +1511,8 @@ mod tests {
     async fn dispatch_run_with_skill_passes_skill_to_executor() {
         let pool = init_memory_pool().unwrap();
         {
-            let conn = pool.get().unwrap();
-            save_agent_config(&conn, &sample_config()).unwrap();
+            let mut conn = pool.get().unwrap();
+            save_agent_config(&mut conn, &sample_config()).unwrap();
         }
         let run_id = {
             let conn = pool.get().unwrap();
