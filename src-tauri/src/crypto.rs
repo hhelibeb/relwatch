@@ -133,7 +133,8 @@ mod platform {
 
         fn CredWriteW(credential: *const CREDENTIALW, flags: u32) -> i32;
 
-        fn CredFree(buffer: *mut core::ffi::c_void) -> i32;
+        // Win32 原型是 `VOID CredFree(PVOID)`，不能声明成返回 i32
+        fn CredFree(buffer: *mut core::ffi::c_void);
 
         fn GetLastError() -> u32;
     }
@@ -179,6 +180,17 @@ mod platform {
         OsStr::new(s).encode_wide().chain(Some(0)).collect()
     }
 
+    /// `CredReadW` 分配的缓冲区必须由 `CredFree` 释放；用守卫保证所有提前返回都不漏。
+    struct CredentialGuard(*mut CREDENTIALW);
+
+    impl Drop for CredentialGuard {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                unsafe { CredFree(self.0 as *mut core::ffi::c_void) }
+            }
+        }
+    }
+
     fn read_credential(target: &str) -> Result<Option<String>, String> {
         let target_wide = to_wide(target);
         unsafe {
@@ -189,29 +201,36 @@ mod platform {
                 0,
                 &mut p_cred,
             );
-            if ret != 0 {
-                // 成功读取
-                let blob = std::slice::from_raw_parts(
-                    (*p_cred).credential_blob,
-                    (*p_cred).credential_blob_size as usize,
-                );
-                let value =
-                    String::from_utf8(blob.to_vec()).map_err(|_| {
-                        "Windows credential data is not valid UTF-8".to_string()
-                    })?;
-                CredFree(p_cred as *mut core::ffi::c_void);
-                Ok(Some(value))
-            } else {
+            if ret == 0 {
                 let err = GetLastError();
-                if err == ERROR_NOT_FOUND {
+                return if err == ERROR_NOT_FOUND {
                     Ok(None)
                 } else {
                     Err(format!(
                         "Failed to read Windows credential (error code: {})",
                         err
                     ))
-                }
+                };
             }
+            let _guard = CredentialGuard(p_cred);
+            if p_cred.is_null() {
+                return Ok(None);
+            }
+            let blob_ptr = (*p_cred).credential_blob;
+            let blob_size = (*p_cred).credential_blob_size as usize;
+            // 空 blob 不能交给 slice::from_raw_parts（NULL + 0 也是 UB）
+            if blob_ptr.is_null() || blob_size == 0 {
+                return Err(
+                    "Stored master key in Windows Credential Manager is empty. \
+                     Please delete the 'RelWatch_MasterKey' entry from your \
+                     Windows Credential Manager and restart."
+                        .to_string(),
+                );
+            }
+            let blob = std::slice::from_raw_parts(blob_ptr, blob_size);
+            String::from_utf8(blob.to_vec())
+                .map(Some)
+                .map_err(|_| "Windows credential data is not valid UTF-8".to_string())
         }
     }
 

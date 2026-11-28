@@ -229,20 +229,34 @@ mod inner {
 
     /// 每个线程独立的 COM 守卫。
     /// 首次在线程上访问时调用 CoInitializeEx，线程退出时自动调用 CoUninitialize。
-    struct ComGuard;
+    struct ComGuard {
+        /// 本线程是否真的持有 COM 引用（仅 S_OK / S_FALSE 才算）
+        owned: bool,
+    }
+
     impl ComGuard {
         fn new() -> Self {
-            let _result = unsafe {
+            // 返回值不能忽略：线程若已被其他组件以 MTA 初始化，这里会得到
+            // RPC_E_CHANGED_MODE（windows-rs 映射为 Err）——此时本线程未增加 COM
+            // 引用计数，再配对 CoUninitialize 会偷走别处的引用。
+            let init = unsafe {
                 windows::Win32::System::Com::CoInitializeEx(
                     None,
                     windows::Win32::System::Com::COINIT_APARTMENTTHREADED,
                 )
             };
-            ComGuard
+            if init.is_err() {
+                log::warn!("CoInitializeEx 失败（{:?}），本线程不接管 COM 生命周期", init);
+            }
+            ComGuard { owned: init.is_ok() }
         }
     }
+
     impl Drop for ComGuard {
         fn drop(&mut self) {
+            if !self.owned {
+                return;
+            }
             unsafe {
                 windows::Win32::System::Com::CoUninitialize();
             }
