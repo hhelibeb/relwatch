@@ -64,8 +64,15 @@ pub fn parse_session_file(path: &Path) -> Result<Vec<AgentChatMessage>, String> 
 /// 解析会话 JSONL 文本（公开以便单测）。损坏/半行容忍：解析失败的行跳过，
 /// 下轮轮询读到完整行后自然补齐（pi 整行 append，读取瞬间可能截半）。
 pub fn parse_session_jsonl(content: &str) -> Result<Vec<AgentChatMessage>, String> {
-    // id → (parentId, 消息)；保留文件顺序
-    let mut entries: Vec<(String, Option<String>, AgentChatMessage)> = Vec::new();
+    // pi v3 的树由**所有**带 id 的条目串联：除首行 `type:"session"` 外，
+    // model_change / thinking_level_change / compaction / context_edit / usage /
+    // label / custom 都带 id+parentId 且站在消息链中间。若只为 message 建索引，
+    // 回溯一旦撞上这些条目就断层——切模型或压缩之后的历史会在界面上整段消失。
+    let mut parent_by_id: std::collections::HashMap<String, Option<String>> =
+        std::collections::HashMap::new();
+    // 只有 message 条目进消息表：其余条目是树节点而非可见消息。
+    let mut message_by_id: std::collections::HashMap<String, AgentChatMessage> =
+        std::collections::HashMap::new();
     let mut last_id: Option<String> = None;
     for line in content.lines() {
         let trimmed = line.trim();
@@ -76,59 +83,60 @@ pub fn parse_session_jsonl(content: &str) -> Result<Vec<AgentChatMessage>, Strin
             Ok(v) => v,
             Err(_) => continue, // 半行写入 / 未知扩展行，容忍
         };
-        if value.get("type").and_then(|t| t.as_str()) != Some("message") {
+        let Some(id) = value.get("id").and_then(|x| x.as_str()) else {
+            continue; // 无 id 的条目不属于树
+        };
+        if id.is_empty() {
             continue;
         }
-        let id = value
-            .get("id")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        if id.is_empty() {
+        let is_message = value.get("type").and_then(|t| t.as_str()) == Some("message");
+        // 树节点判定：消息条目（容忍老格式缺 parentId 键）或显式带 parentId 键的条目。
+        // 首行 session header 自带 id（会话 UUID）却无 parentId 键；若拿它当 leaf，
+        // 回溯第一步就中断，整份历史会解析成空列表。
+        if !is_message && value.get("parentId").is_none() {
             continue;
         }
         let parent = value
             .get("parentId")
             .and_then(|x| x.as_str())
             .map(|s| s.to_string());
-        let timestamp = value
-            .get("timestamp")
-            .and_then(|x| x.as_str())
-            .unwrap_or("")
-            .to_string();
-        let msg = value.get("message").cloned().unwrap_or(serde_json::Value::Null);
-        last_id = Some(id.clone());
-        entries.push((id, parent, convert_message(&msg, &timestamp)));
+        // 重复 id 时保留首次出现的定义（与旧实现 or_insert 语义一致）
+        parent_by_id.entry(id.to_string()).or_insert(parent);
+        if is_message {
+            let timestamp = value
+                .get("timestamp")
+                .and_then(|x| x.as_str())
+                .unwrap_or("")
+                .to_string();
+            let msg = value.get("message").cloned().unwrap_or(serde_json::Value::Null);
+            message_by_id
+                .entry(id.to_string())
+                .or_insert_with(|| convert_message(&msg, &timestamp));
+        }
+        // leaf = 文件最后一条树节点（带 id 且属于树），可能是非 message（如末尾刚切完模型）
+        last_id = Some(id.to_string());
     }
 
-    // 重复 id 时保留首次出现，与原 iter().find() 语义一致。
-    let mut index_by_id: std::collections::HashMap<String, usize> =
-        std::collections::HashMap::with_capacity(entries.len());
-    for (i, (id, _, _)) in entries.iter().enumerate() {
-        index_by_id.entry(id.clone()).or_insert(i);
-    }
-
-    let mut chain_indices: Vec<usize> = Vec::new();
+    let mut chain: Vec<AgentChatMessage> = Vec::new();
     let mut cur = last_id;
-    let mut visited: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let max_depth = entries.len().max(1) * 2 + 1000;
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let max_depth = parent_by_id.len().max(1) * 2 + 1000;
+    let mut depth = 0usize;
     while let Some(c) = cur {
-        let Some(&idx) = index_by_id.get(&c) else {
-            break;
-        };
-        if !visited.insert(idx) || chain_indices.len() >= max_depth {
+        if !visited.insert(c.clone()) || depth >= max_depth {
             break;
         }
-        chain_indices.push(idx);
-        cur = entries[idx].1.clone();
+        depth += 1;
+        if let Some(msg) = message_by_id.get(&c) {
+            chain.push(msg.clone());
+        }
+        cur = match parent_by_id.get(&c) {
+            Some(parent) => parent.clone(),
+            None => break,
+        };
     }
-    chain_indices.reverse();
-
-    let mut out = Vec::with_capacity(chain_indices.len());
-    for idx in chain_indices {
-        out.push(entries[idx].2.clone());
-    }
-    Ok(out)
+    chain.reverse();
+    Ok(chain)
 }
 
 fn convert_message(msg: &serde_json::Value, timestamp: &str) -> AgentChatMessage {
@@ -1078,6 +1086,126 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, vec!["问题一".to_string(), "回答二".to_string(), "追问二".to_string()]);
+    }
+
+    /// 构造一条非 message 的树节点行（model_change / compaction / context_edit 等）。
+    fn tree_entry(id: &str, parent: Option<&str>, kind: &str) -> String {
+        let parent = match parent {
+            Some(p) => format!("\"parentId\":\"{}\"", p),
+            None => "\"parentId\":null".to_string(),
+        };
+        format!(
+            "{{\"type\":\"{}\",\"id\":\"{}\",{},\"timestamp\":\"2025-01-01T00:00:00.000Z\"}}",
+            kind, id, parent
+        )
+    }
+
+    fn text_of(messages: &[AgentChatMessage]) -> Vec<String> {
+        messages
+            .iter()
+            .flat_map(|m| m.blocks.iter())
+            .filter_map(|b| match b {
+                AgentChatBlock::Text { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn chain_passes_through_non_message_entries() {
+        // 真实会话形状：切模型 / 压缩 / 上下文编辑节点插在消息链中间
+        let content = [
+            entry("a", None, user_msg("第一轮")),
+            tree_entry("m1", Some("a"), "model_change"),
+            entry(
+                "b",
+                Some("m1"),
+                assistant_msg(serde_json::json!([{ "type": "text", "text": "切模型前" }])),
+            ),
+            tree_entry("c1", Some("b"), "compaction"),
+            entry("c", Some("c1"), user_msg("压缩后追问")),
+            tree_entry("e1", Some("c"), "context_edit"),
+            entry(
+                "d",
+                Some("e1"),
+                assistant_msg(serde_json::json!([{ "type": "text", "text": "压缩后回答" }])),
+            ),
+        ]
+        .join("\n");
+
+        let messages = parse_session_jsonl(&content).unwrap();
+        assert_eq!(
+            text_of(&messages),
+            vec!["第一轮", "切模型前", "压缩后追问", "压缩后回答"],
+            "链上的非 message 节点不能截断历史"
+        );
+        // 非 message 节点本身不进入渲染流
+        assert_eq!(messages.len(), 4);
+    }
+
+    #[test]
+    fn chain_rooted_at_model_change_keeps_full_history() {
+        // 首行 session 之后紧接 model_change（无 parentId → 根），再 thinking_level_change，
+        // 然后才是消息：这是本机真实会话文件最常见的开头
+        let content = [
+            r#"{"type":"session","version":3,"id":"uuid","timestamp":"2025-01-01T00:00:00.000Z","cwd":"/work"}"#.to_string(),
+            tree_entry("m0", None, "model_change"),
+            tree_entry("t0", Some("m0"), "thinking_level_change"),
+            entry("a", Some("t0"), user_msg("总结这个版本")),
+            entry(
+                "b",
+                Some("a"),
+                assistant_msg(serde_json::json!([{ "type": "text", "text": "好的" }])),
+            ),
+        ]
+        .join("\n");
+
+        let messages = parse_session_jsonl(&content).unwrap();
+        assert_eq!(text_of(&messages), vec!["总结这个版本", "好的"]);
+    }
+
+    #[test]
+    fn leaf_may_be_non_message_entry() {
+        // 末尾刚切完模型（还没说话）：leaf 是 model_change，历史仍完整
+        let content = [
+            entry("a", None, user_msg("旧问题")),
+            entry(
+                "b",
+                Some("a"),
+                assistant_msg(serde_json::json!([{ "type": "text", "text": "旧回答" }])),
+            ),
+            tree_entry("m1", Some("b"), "model_change"),
+        ]
+        .join("\n");
+
+        let messages = parse_session_jsonl(&content).unwrap();
+        assert_eq!(text_of(&messages), vec!["旧问题", "旧回答"]);
+    }
+
+    #[test]
+    fn trailing_entry_without_parent_does_not_truncate() {
+        // 末尾追加了一条自带 id 但不属于树的元信息（如 session header 变体）：
+        // 不能把它当 leaf，否则回溯第一步就中断
+        let content = [
+            r#"{"type":"session","version":3,"id":"uuid","timestamp":"2025-01-01T00:00:00.000Z"}"#.to_string(),
+            entry("a", None, user_msg("历史问题")),
+            entry(
+                "b",
+                Some("a"),
+                assistant_msg(serde_json::json!([{ "type": "text", "text": "历史回答" }])),
+            ),
+            r#"{"type":"session_info","id":"meta","timestamp":"2025-01-01T00:00:02.000Z","name":"重命名"}"#.to_string(),
+        ]
+        .join("\n");
+
+        let messages = parse_session_jsonl(&content).unwrap();
+        assert_eq!(text_of(&messages), vec!["历史问题", "历史回答"]);
+    }
+
+    #[test]
+    fn session_header_alone_yields_no_messages() {
+        let content = r#"{"type":"session","version":3,"id":"uuid","timestamp":"2025-01-01T00:00:00.000Z"}"#;
+        assert!(parse_session_jsonl(content).unwrap().is_empty());
     }
 
     #[test]
