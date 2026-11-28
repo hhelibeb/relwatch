@@ -194,10 +194,15 @@ pub(crate) fn handle_notification_action(
     }
 
     if action == NotificationAction::Go && !go_url.is_empty() {
-        if let Err(e) = app.opener().open_url(go_url, None::<&str>) {
-            log::error!("打开浏览器失败: {}", e);
-        } else {
-            log::info!("打开浏览器: {}", go_url);
+        match crate::url_guard::web_url_for_open(go_url) {
+            Some(url) => {
+                if let Err(e) = app.opener().open_url(url.as_str(), None::<&str>) {
+                    log::error!("打开浏览器失败: {}", e);
+                } else {
+                    log::info!("打开浏览器: {}", url);
+                }
+            }
+            None => log::warn!("通知链接协议不在白名单，已拦截: {}", go_url),
         }
     }
 }

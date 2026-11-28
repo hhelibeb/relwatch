@@ -21,6 +21,7 @@ mod retry;
 mod net;
 mod media;
 mod redact;
+mod url_guard;
 pub mod agent;
 pub mod agent_context;
 pub mod agent_gate;

@@ -20,6 +20,19 @@ pub const BILI_LOGIN_WINDOW_LABEL: &str = "bilibili-login";
 /// 登录窗口独立 WebView2 数据目录：避免与主窗口的代理启动参数冲突导致创建静默失败。
 pub const BILI_LOGIN_DATA_DIR: &str = "bilibili-login";
 
+/// 只放行 B 站的 https 域：host 白名单挡第三方页面，scheme 白名单挡 http 降级与
+/// `media://bilibili.com/...` 这类借 host 混过检查的自定义协议。
+fn is_allowed_login_navigation(url: &tauri::Url) -> bool {
+    if !crate::url_guard::is_https_url(url.as_str()) {
+        return false;
+    }
+    let host = url.host_str().unwrap_or_default();
+    host == "bilibili.com"
+        || host.ends_with(".bilibili.com")
+        || host == "hdslb.com"
+        || host.ends_with(".hdslb.com")
+}
+
 fn require_login_window_label(window_label: &str) -> Result<(), String> {
     if window_label != BILI_LOGIN_WINDOW_LABEL {
         log::warn!(
@@ -104,13 +117,8 @@ pub async fn open_bilibili_login_window(
         .inner_size(BILI_LOGIN_WIDTH, BILI_LOGIN_HEIGHT)
         .center()
         .resizable(false)
-        // 只放行 B 站域，防止第三方页面跳转到本地 media 协议源获得 IPC 能力
         .on_navigation(|url| {
-            let host = url.host_str().unwrap_or_default();
-            let ok = host == "bilibili.com"
-                || host.ends_with(".bilibili.com")
-                || host == "hdslb.com"
-                || host.ends_with(".hdslb.com");
+            let ok = is_allowed_login_navigation(url);
             if !ok {
                 log::warn!("已拦截 B 站登录窗口的非白名单导航: {}", url);
             }
@@ -161,6 +169,50 @@ mod tests {
     #[test]
     fn test_require_login_window_label_constant_is_stable() {
         assert_eq!(BILI_LOGIN_WINDOW_LABEL, "bilibili-login");
+    }
+
+    #[test]
+    fn test_login_navigation_allows_bilibili_https_domains() {
+        for raw in [
+            "https://passport.bilibili.com/login",
+            "https://www.bilibili.com/",
+            "https://bilibili.com/",
+            "https://i0.hdslb.com/bfs/face/a.jpg",
+        ] {
+            let url = tauri::Url::from_str(raw).unwrap();
+            assert!(is_allowed_login_navigation(&url), "raw={:?}", raw);
+        }
+    }
+
+    #[test]
+    fn test_login_navigation_rejects_http_downgrade() {
+        let url = tauri::Url::from_str("http://passport.bilibili.com/login").unwrap();
+        assert!(!is_allowed_login_navigation(&url));
+    }
+
+    #[test]
+    fn test_login_navigation_rejects_custom_scheme_with_bilibili_host() {
+        for raw in [
+            "media://bilibili.com/https://evil.example/a.png",
+            "tauri://bilibili.com/",
+            "file://bilibili.com/C:/Windows/System32/calc.exe",
+        ] {
+            let url = tauri::Url::from_str(raw).unwrap();
+            assert!(!is_allowed_login_navigation(&url), "raw={:?}", raw);
+        }
+    }
+
+    #[test]
+    fn test_login_navigation_rejects_non_bilibili_hosts() {
+        for raw in [
+            "https://evil.example/",
+            "https://bilibili.com.evil.example/",
+            "https://evilbilibili.com/",
+            "https://bilibili.com@evil.example/",
+        ] {
+            let url = tauri::Url::from_str(raw).unwrap();
+            assert!(!is_allowed_login_navigation(&url), "raw={:?}", raw);
+        }
     }
 
     #[test]
