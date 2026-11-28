@@ -1307,7 +1307,7 @@ describe('App.vue — Agent 工作区窗口尺寸（L / R / W 三个宽度的账
     expect(ws().props('width')).toBe(440)
 
     await wrapper.find('.agent-divider').trigger('mousedown', { clientX: 900 })
-    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 950 })) // 向右拖 50
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 950, buttons: 1 })) // 向右拖 50
     await wrapper.vm.$nextTick()
     expect(ws().props('width')).toBe(390) // 主界面 1280→1330，面板 440→390
 
@@ -1323,6 +1323,30 @@ describe('App.vue — Agent 工作区窗口尺寸（L / R / W 三个宽度的账
     // 松开后的 mousemove 不再生效
     document.dispatchEvent(new MouseEvent('mousemove', { clientX: 1200 }))
     await wrapper.vm.$nextTick()
+    expect(ws().props('width')).toBe(390)
+    wrapper.unmount()
+  })
+
+  it('分隔条拖拽兜底：在窗口外松手收不到 mouseup 时，按键已抬起即结束拖拽', async () => {
+    setInnerWidth(1280)
+    trackWindow({ width: 1280, height: 900 })
+
+    const wrapper = await mountRealApp()
+    await wrapper.find('.release-agent-btn').trigger('click')
+    await flushPromises()
+    const ws = () => wrapper.findComponent({ name: 'AgentWorkspace' })
+
+    await wrapper.find('.agent-divider').trigger('mousedown', { clientX: 900 })
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 950, buttons: 1 }))
+    await wrapper.vm.$nextTick()
+    expect(document.body.classList.contains('agent-resizing')).toBe(true)
+    expect(ws().props('width')).toBe(390)
+
+    // 收不到 mouseup（窗口外松开 / 被别的应用抢走输入）：buttons=0 的 move 即结束，
+    // 不再跟着光标跑，也不再留着 col-resize 光标
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 1300, buttons: 0 }))
+    await wrapper.vm.$nextTick()
+    expect(document.body.classList.contains('agent-resizing')).toBe(false)
     expect(ws().props('width')).toBe(390)
     wrapper.unmount()
   })
@@ -1501,7 +1525,7 @@ describe('App.vue — Agent 工作区窗口尺寸（L / R / W 三个宽度的账
 
     // 3. 拖分隔条右移 100：L 1280→1380、R 740→640，两边都变
     await wrapper.find('.agent-divider').trigger('mousedown', { clientX: 1300 })
-    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 1400 }))
+    document.dispatchEvent(new MouseEvent('mousemove', { clientX: 1400, buttons: 1 }))
     await wrapper.vm.$nextTick()
     expect(ws().props('width')).toBe(640)
     document.dispatchEvent(new MouseEvent('mouseup'))

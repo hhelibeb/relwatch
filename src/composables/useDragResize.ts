@@ -162,6 +162,9 @@ export function useDragResize(target: Ref<HTMLElement | null>, options: DragResi
   function clampIntoViewport() {
     const el = target.value
     if (!el) return
+    // 最小化/隐藏时 WebView 报 0：按 0 锤会把已调大小的弹窗写成 0px，且
+    // Math.min(0, 真实宽) 永远回不来（只能靠重开弹窗从持久化恢复）
+    if (window.innerWidth <= 0 || window.innerHeight <= 0) return
     let rect = el.getBoundingClientRect()
     if (sized) {
       const w = Math.min(rect.width, window.innerWidth)

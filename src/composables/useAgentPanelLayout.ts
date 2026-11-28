@@ -61,7 +61,12 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
   }
 
   function onViewportResize() {
-    viewportWidth.value = window.innerWidth
+    const w = window.innerWidth
+    // 窗口最小化/隐藏到托盘时 WebView 会报 0：直接写回会把面板宽度算成最小值并
+    // 防抖落库（下次打开永远 280px）；面板关闭态下还会把 mainWidth 写成 0，
+    // 恢复后反向算出超宽面板。尺寸不可信时直接忽略这次 resize。
+    if (w <= 0) return
+    viewportWidth.value = w
     if (panelBusy) return
     if (!agentPanelOpen.value) {
       mainWidth.value = viewportWidth.value
@@ -74,8 +79,25 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
   let dividerStartX = 0
   let dividerStartMainWidth = 0
 
+  function endDividerDrag() {
+    if (!dividerDragging) return
+    dividerDragging = false
+    document.removeEventListener('mousemove', onDividerMouseMove)
+    document.removeEventListener('mouseup', onDividerMouseUp)
+    window.removeEventListener('blur', endDividerDrag)
+    document.body.classList.remove('agent-resizing')
+    schedulePanelWidthSave()
+    syncWindowMinWidth()
+  }
+
   function onDividerMouseMove(e: MouseEvent) {
     if (!dividerDragging) return
+    // 指针在窗口外松开 / 被其它应用抢走输入时收不到 mouseup，靠按键已抬起兜底，
+    // 否则 col-resize 光标与拖拽态会永久卡死
+    if ((e.buttons & 1) === 0) {
+      endDividerDrag()
+      return
+    }
     mainWidth.value = clampMainWidth(
       dividerStartMainWidth + (e.clientX - dividerStartX),
       viewportWidth.value,
@@ -83,16 +105,11 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
   }
 
   function onDividerMouseUp() {
-    if (!dividerDragging) return
-    dividerDragging = false
-    document.removeEventListener('mousemove', onDividerMouseMove)
-    document.removeEventListener('mouseup', onDividerMouseUp)
-    document.body.classList.remove('agent-resizing')
-    schedulePanelWidthSave()
-    syncWindowMinWidth()
+    endDividerDrag()
   }
 
   function onDividerMouseDown(e: MouseEvent) {
+    if (e.button !== 0) return
     e.preventDefault()
     dividerDragging = true
     dividerStartX = e.clientX
@@ -100,6 +117,7 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
     mainWidth.value = dividerStartMainWidth
     document.addEventListener('mousemove', onDividerMouseMove)
     document.addEventListener('mouseup', onDividerMouseUp)
+    window.addEventListener('blur', endDividerDrag)
     document.body.classList.add('agent-resizing')
   }
 
@@ -232,6 +250,7 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
       dividerDragging = false
       document.removeEventListener('mousemove', onDividerMouseMove)
       document.removeEventListener('mouseup', onDividerMouseUp)
+      window.removeEventListener('blur', endDividerDrag)
       document.body.classList.remove('agent-resizing')
     }
   })

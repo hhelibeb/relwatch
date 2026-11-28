@@ -108,7 +108,11 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
             {
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
+                    // 最小化到任务栏的窗口仍 `is_visible() == true`：只看可见性的话，
+                    // 左键点托盘反而会把窗口 hide() 掉，用户必须再点一次才能唤出。
+                    let visible = window.is_visible().unwrap_or(false);
+                    let minimized = window.is_minimized().unwrap_or(false);
+                    if visible && !minimized {
                         let _ = window.hide();
                     } else {
                         // 托盘点击的输入归属 explorer.exe，SetForegroundWindow 会被系统
