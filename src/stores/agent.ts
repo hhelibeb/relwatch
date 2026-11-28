@@ -28,7 +28,7 @@ import { useAgentSessions, type SessionSwitchMode } from '../components/agent/us
 import { useAgentUsage } from '../components/agent/useAgentUsage'
 import { useAgentModels } from '../components/agent/useAgentModels'
 import { useAgentRpc } from '../components/agent/useAgentRpc'
-import { createSessionCache } from '../components/agent/agentSessionCache'
+import { createSessionCache, type SessionChatState } from '../components/agent/agentSessionCache'
 import { createRpcStreamBatcher, type RpcStreamPayload } from '../components/agent/agentRpcStream'
 import {
   buildUserRunMap,
@@ -268,6 +268,7 @@ export const useAgentStore = defineStore('agent', () => {
       if (currentChatEpoch(key) !== epoch) return
       st.submittedRunId = null
       const hasActive = st.runs.some((r) => r.status === 'running' || r.status === 'pending')
+      if (!hasActive) st.activeStreamRunId = null
       if (hasActive && st.liveMessages.length === 0) {
         st.historySnapshot = [...st.messages]
       }
@@ -415,15 +416,28 @@ export const useAgentStore = defineStore('agent', () => {
     discardPendingRpcEvents,
   })
 
-  async function onRunFinished(sessionKey: string): Promise<void> {
+  /**
+   * 迟到的旧 run 终态：它已经被更新的 run 取代，只能刷新运行记录，
+   * 不能清流式缓冲（那会把新 run 正在输出的回答抹掉）。
+   */
+  function isStaleRunFinished(st: SessionChatState, runId: number): boolean {
+    return st.activeStreamRunId !== null && runId < st.activeStreamRunId
+  }
+
+  async function onRunFinished(sessionKey: string, runId?: number): Promise<void> {
     const st = sessionCache.getState(sessionKey)
     if (st) {
-      if (sessionKey === sessionsApi.activeKey.value) stopPolling()
-      st.cancelling = false
-      discardPendingRpcEvents(sessionKey)
-      st.liveMessages = []
-      st.historySnapshot = []
-      await loadChatFor(sessionKey)
+      if (runId !== undefined && isStaleRunFinished(st, runId)) {
+        await loadRuns(sessionKey, currentChatEpoch(sessionKey))
+      } else {
+        if (sessionKey === sessionsApi.activeKey.value) stopPolling()
+        st.cancelling = false
+        discardPendingRpcEvents(sessionKey)
+        st.activeStreamRunId = null
+        st.liveMessages = []
+        st.historySnapshot = []
+        await loadChatFor(sessionKey)
+      }
     }
     await loadQueue()
     if (sessionCache.hasState(sessionsApi.activeKey.value)) await loadQueueInfo(sessionsApi.activeKey.value)

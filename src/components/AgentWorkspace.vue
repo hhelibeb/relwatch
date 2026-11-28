@@ -97,7 +97,7 @@ onMounted(async () => {
   if (!isEventBridgeMounted()) {
     const offs = await Promise.all([
       events.agentRunFinished.listen((e) => {
-        void agent.onRunFinished(e.payload.session_key)
+        void agent.onRunFinished(e.payload.session_key, e.payload.run_id)
       }),
       events.agentRpcStream.listen((e) => {
         agent.handleRpcStream(e.payload)

@@ -131,7 +131,7 @@ export async function mountEventBridge(): Promise<() => void> {
 
     await register(
       events.agentRunFinished.listen((event) => {
-        void agent.onRunFinished(event.payload.session_key)
+        void agent.onRunFinished(event.payload.session_key, event.payload.run_id)
       }),
     )
 

@@ -13,6 +13,7 @@ import { skillShortName } from '../../utils'
 import { track } from '../../composables/useUsageTracking'
 import { extractErrorMessage } from '../../services/feedback'
 import { escapeRegExp, runEntities, runFiles, runModel } from './agentChatUtils'
+import { claimStreamRun } from './agentRpcStream'
 import type { SessionChatState } from './agentSessionCache'
 
 export function parseInlineRefs(
@@ -94,6 +95,11 @@ export function createAgentRunActions(deps: {
       return
     }
     st.submitting = true
+    // 模型必须在 await 前快照：提交在途切走会话时，selectedModel 已指向新会话
+    const modelToPersist = deps.selectedModel.value
+    // 旧 run 已入队未 flush 的 delta 携带的是旧 run_id，此刻 activeStreamRunId 还是旧值，
+    // 一旦放行就会被拼进新气泡；旧 run 的流式内容对本次提交无用，先丢掉
+    deps.discardPendingRpcEvents(key)
     try {
       st.historySnapshot = [...st.messages]
       st.liveMessages = [
@@ -113,9 +119,9 @@ export function createAgentRunActions(deps: {
         files: deps.files.value.length > 0 ? [...deps.files.value] : null,
       })
       st.submittedRunId = runId
+      claimStreamRun(st, runId)
       track('agent.submit')
       const title = cleaned.trim() ? [...cleaned.trim()].slice(0, 40).join('') : deps.sessionTitle.value
-      const modelToPersist = deps.selectedModel.value
       if (deps.activeKey.value === key) {
         deps.instruction.value = ''
         deps.oneShotModel.value = null
@@ -125,9 +131,10 @@ export function createAgentRunActions(deps: {
         deps.skillPath.value = null
         deps.persistSessionMeta(key, title, modelToPersist)
         await deps.loadChat()
-        deps.startPolling()
+        // 快速失败的 run 不会再收到终态事件，此时启动轮询只会空转 120s
+        if (st.runs.some((r) => r.status === 'running' || r.status === 'pending')) deps.startPolling()
       } else {
-        deps.persistSessionMeta(key, title, null)
+        deps.persistSessionMeta(key, title, modelToPersist)
       }
     } catch (e) {
       deps.showToast(extractErrorMessage(e))

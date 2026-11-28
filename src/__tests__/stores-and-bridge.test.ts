@@ -310,8 +310,9 @@ describe('mountEventBridge', () => {
     })
     expect(toastSpy).toHaveBeenCalledWith(expect.stringContaining('org/app'))
 
-    eventListeners.get('agentRunFinished')?.({ payload: { session_key: 's1' } })
-    expect(onRunFinishedSpy).toHaveBeenCalledWith('s1')
+    // run_id 一并转发：终态事件需按 run 归属判断是否已过期
+    eventListeners.get('agentRunFinished')?.({ payload: { session_key: 's1', run_id: 7 } })
+    expect(onRunFinishedSpy).toHaveBeenCalledWith('s1', 7)
 
     eventListeners.get('agentRpcStream')?.({ payload: { session_key: 's1', raw: '{}' } })
     expect(handleRpcStreamSpy).toHaveBeenCalledWith({ session_key: 's1', raw: '{}' })

@@ -174,6 +174,52 @@ describe('agentRpcStream — 50ms 合帧与协议解析', () => {
   })
 })
 
+describe('agentRpcStream — run 归属过滤', () => {
+  it('旧 run 的迟滞 delta / agent_settled 被丢弃，不污染新 run', () => {
+    vi.useFakeTimers()
+    const cache = createSessionCache(ref('s1'))
+    const onSettled = vi.fn()
+    const batcher = createRpcStreamBatcher({
+      stateOf: cache.stateOf,
+      onSettled,
+      onBatchFlushed: vi.fn(),
+    })
+    const delta = (text: string) =>
+      ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } })
+
+    // 新 run（id 更大）先声明归属
+    batcher.enqueue({ session_key: 's1', run_id: 12, event: delta('新回答') })
+    // 已取消的旧 run 残余：文本尾巴 + settled
+    batcher.enqueue({ session_key: 's1', run_id: 11, event: delta('旧尾巴') })
+    batcher.enqueue({ session_key: 's1', run_id: 11, event: ev({ type: 'agent_settled' }) })
+    vi.advanceTimersByTime(50)
+
+    const st = cache.stateOf('s1')
+    expect(st.liveMessages).toHaveLength(1)
+    expect(st.liveMessages[0].blocks).toEqual([{ kind: 'text', text: '新回答' }])
+    expect(onSettled).not.toHaveBeenCalled()
+    expect(st.activeStreamRunId).toBe(12)
+  })
+
+  it('首个事件声明归属，之后同一 run 的事件照常接收', () => {
+    vi.useFakeTimers()
+    const cache = createSessionCache(ref('s1'))
+    const batcher = createRpcStreamBatcher({
+      stateOf: cache.stateOf,
+      onSettled: vi.fn(),
+      onBatchFlushed: vi.fn(),
+    })
+    const delta = (text: string) =>
+      ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: text } })
+
+    batcher.enqueue({ session_key: 's1', run_id: 7, event: delta('第一') })
+    batcher.enqueue({ session_key: 's1', run_id: 7, event: delta('第二') })
+    vi.advanceTimersByTime(50)
+
+    expect(cache.stateOf('s1').liveMessages[0].blocks).toEqual([{ kind: 'text', text: '第一第二' }])
+  })
+})
+
 describe('agentMessageDecorate & parseInlineRefs', () => {
   it('按 run_id 直连优先、时间窗兜底对位 user 消息，并生成失败备注', () => {
     const r1 = makeRun({ id: 10, status: 'timeout', error: 'err.agent.timeout|300', entities: '[{"kind":"source","id":1}]' })
@@ -301,6 +347,128 @@ describe('useAgentStore — 提交、停止、重试与排队状态', () => {
     expect(store.liveMessages).toEqual([])
     expect(store.historySnapshot).toEqual([])
     expect(store.messages).toHaveLength(1)
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('旧 run 的终态晚到：不清空新 run 的流式输出，仅刷新运行记录', async () => {
+    vi.useFakeTimers()
+    const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    const key = store.activeKey
+
+    // 取消旧任务后立即提交新任务：新 run 已在流式输出
+    store.handleRpcStream({
+      session_key: key,
+      run_id: 20,
+      event: ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '新回答' } }),
+    })
+    vi.advanceTimersByTime(50)
+    expect(store.liveMessages).toHaveLength(1)
+
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 20, session_key: key, status: 'running' })])
+    vi.mocked(getAgentQueue).mockResolvedValueOnce([])
+    vi.mocked(getAgentQueueStatus).mockResolvedValueOnce(null as never)
+    vi.mocked(getAgentRpcStatus).mockResolvedValueOnce({ running: true, pid: 1, process_count: 1, restart_pending: false })
+
+    // 旧 run（id 更小）的终态事件晚到
+    await store.onRunFinished(key, 19)
+    expect(store.liveMessages).toHaveLength(1)
+    expect(vi.mocked(listAgentMessages)).not.toHaveBeenCalled()
+
+    // 当前 run 自己的终态照旧收尾
+    vi.mocked(listAgentMessages).mockResolvedValueOnce([])
+    vi.mocked(getAgentQueueStatus).mockResolvedValueOnce(null as never)
+    vi.mocked(getAgentQueue).mockResolvedValueOnce([])
+    vi.mocked(getAgentRpcStatus).mockResolvedValueOnce({ running: false, pid: null, process_count: 0, restart_pending: false })
+    vi.mocked(listAgentRuns).mockResolvedValueOnce([makeRun({ id: 20, session_key: key, status: 'success' })])
+    await store.onRunFinished(key, 20)
+    expect(store.liveMessages).toEqual([])
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('提交前丢弃旧 run 的在途合帧事件，旧尾巴不会拼进新气泡', async () => {
+    vi.useFakeTimers()
+    const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    const key = store.activeKey
+
+    // 旧 run 的 delta 已入合帧队列（50ms 窗口）尚未 flush
+    store.handleRpcStream({
+      session_key: key,
+      run_id: 5,
+      event: ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '旧尾巴' } }),
+    })
+
+    let resolveJob: (runId: number) => void = () => {}
+    vi.mocked(runAgentJob).mockImplementationOnce(
+      () => new Promise<number>((resolve) => { resolveJob = resolve }),
+    )
+    store.instruction = '新问题'
+    const pending = store.handleSubmit()
+    await nextTick()
+
+    // 提交在途（新 run 尚未声明归属）时旧事件到点 flush
+    vi.advanceTimersByTime(50)
+    resolveJob(30)
+    await pending
+
+    expect(store.liveMessages).toHaveLength(1)
+    expect(store.liveMessages[0].role).toBe('user')
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('迟到的旧 run 终态不会清掉新 run 的取消中状态', async () => {
+    const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    const key = store.activeKey
+
+    vi.mocked(listAgentRuns).mockResolvedValueOnce([makeRun({ id: 40, session_key: key, status: 'running' })])
+    store.handleRpcStream({
+      session_key: key,
+      run_id: 40,
+      event: ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '新回答' } }),
+    })
+    await store.loadChat()
+    await new Promise((r) => setTimeout(r, 60))
+    await store.handleCancel()
+    expect(store.cancelling).toBe(true)
+
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 40, session_key: key, status: 'running' })])
+    vi.mocked(getAgentQueue).mockResolvedValueOnce([])
+    vi.mocked(getAgentQueueStatus).mockResolvedValueOnce(null as never)
+    vi.mocked(getAgentRpcStatus).mockResolvedValueOnce({ running: true, pid: 1, process_count: 1, restart_pending: false })
+
+    // 旧 run（id 更小）的终态晚到：不能抹掉「取消中」
+    await store.onRunFinished(key, 39)
+    expect(store.cancelling).toBe(true)
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('提交在途切走会话：原会话仍记住提交时选定的模型', async () => {
+    const store = useAgentStore()
+    const key = store.activeKey
+    store.selectedModel = { provider: 'openai', model_id: 'gpt-4' }
+    store.instruction = '分析这个版本'
+
+    let resolveJob: (runId: number) => void = () => {}
+    vi.mocked(runAgentJob).mockImplementationOnce(
+      () => new Promise<number>((resolve) => { resolveJob = resolve }),
+    )
+
+    const pending = store.handleSubmit()
+    await nextTick()
+    // 提交还没返回时切到另一个会话（selectedModel 随之重置）
+    store.switchSession('another-session')
+    expect(store.selectedModel).toBeNull()
+
+    resolveJob(30)
+    await pending
+
+    const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1')!) as Array<{
+      key: string
+      model?: { provider: string; model_id: string } | null
+    }>
+    expect(stored.find((s) => s.key === key)?.model).toEqual({ provider: 'openai', model_id: 'gpt-4' })
     store.cleanupWorkspaceRuntime()
   })
 

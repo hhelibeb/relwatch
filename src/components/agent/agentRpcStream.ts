@@ -37,11 +37,30 @@ function ensureLiveAssistant(st: SessionChatState): AgentChatMessage {
   return msg
 }
 
+/**
+ * run 归属仲裁：run id 由 SQLite 自增分配，「更大」即「更新」。
+ *
+ * 同一 session_key 上取消旧任务后立即提交新任务时，旧 run 的残余 delta /
+ * agent_settled 仍会推送过来；不按 run 归属过滤就会把旧回答的尾巴拼进新回答，
+ * 或被旧 run 的 settled 清空当前流式内容。
+ *
+ * 返回 false = 迟到事件，调用方必须丢弃。
+ */
+export function claimStreamRun(st: SessionChatState, runId: number): boolean {
+  if (st.activeStreamRunId === null || runId > st.activeStreamRunId) {
+    st.activeStreamRunId = runId
+    return true
+  }
+  return runId === st.activeStreamRunId
+}
+
 export function applyRpcEventToState(
   st: SessionChatState,
   payload: RpcStreamPayload,
   onSettled: (sessionKey: string) => void,
 ): void {
+  if (typeof payload.run_id === 'number' && !claimStreamRun(st, payload.run_id)) return
+
   const ev = parseRpcEvent(payload.event)
   if (!ev) return
 

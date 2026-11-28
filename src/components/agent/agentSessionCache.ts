@@ -10,6 +10,12 @@ export interface SessionChatState {
   liveMessages: AgentChatMessage[]
   historySnapshot: AgentChatMessage[]
   submittedRunId: number | null
+  /**
+   * 当前接收流式事件的 run。取消/重新提交后，旧 run 的残余 delta 与
+   * agent_settled 仍会送到同一个 session_key，必须按 run 归属过滤，
+   * 否则会混进新 run 的流式缓冲或被旧终态清空。
+   */
+  activeStreamRunId: number | null
   cancelling: boolean
 }
 
@@ -25,6 +31,7 @@ export function createEmptySessionState(): SessionChatState {
     liveMessages: [],
     historySnapshot: [],
     submittedRunId: null,
+    activeStreamRunId: null,
     cancelling: false,
   }
 }
@@ -63,6 +70,7 @@ export function createSessionCache(activeKey: Ref<string>, maxStates = MAX_SESSI
   function resetState(key: string): void {
     const st = stateOf(key)
     st.submittedRunId = null
+    st.activeStreamRunId = null
     st.cancelling = false
     st.liveMessages = []
     st.historySnapshot = []
