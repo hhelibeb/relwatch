@@ -219,7 +219,29 @@ where
             return Err(e);
         }
     }
+    // 各 kind 是独立 feed，拼起来只是「kind 顺序 + 各自时间序」；调用方会按条数截断
+    // （增量轮询 per_page=10），不排序就会让后一个 kind（直播）被前一个 kind 撑满而永远
+    // 进不了窗口。按 published 降序，保证截断留下的是全局最新的那些。
+    out.sort_by(|a, b| published_desc(&a.published, &b.published));
     Ok(out)
+}
+
+/// YouTube feed 的 `published` 固定为同一格式的 RFC3339，正常数据只会进第一个分支。
+///
+/// 四个分支必须把「可解析」与「不可解析」分成两组：带不同时区偏移的真实时间若与
+/// 无法解析的脏值混用两种口径比较（时间 vs 字符串），会破坏传递性，
+/// Rust 1.81+ 的 `sort_by` 会对非全序比较器直接 panic。
+fn published_desc(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (
+        chrono::DateTime::parse_from_rfc3339(a),
+        chrono::DateTime::parse_from_rfc3339(b),
+    ) {
+        (Ok(x), Ok(y)) => y.cmp(&x),
+        (Ok(_), Err(_)) => Ordering::Less,
+        (Err(_), Ok(_)) => Ordering::Greater,
+        (Err(_), Err(_)) => b.cmp(a),
+    }
 }
 
 #[cfg(test)]
@@ -314,6 +336,80 @@ mod tests {
         let entries = result.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].video_id, "v1");
+    }
+
+    #[tokio::test]
+    async fn test_aggregate_kinds_sorts_by_published_desc_across_kinds() {
+        // 各 kind 拼接后必须全局按发布时间降序：调用方会 take(per_page) 截断，
+        // 不排序就会让排在后面的直播条目永远进不了窗口。
+        fn entry(id: &str, published: &str, kind: FeedKind) -> FeedEntry {
+            FeedEntry {
+                video_id: id.into(),
+                title: id.into(),
+                published: published.into(),
+                description: None,
+                thumbnail: None,
+                kind,
+                duration: None,
+                view_count: None,
+            }
+        }
+        let kinds = vec![FeedKind::Video, FeedKind::Live];
+        let entries = aggregate_kinds(&kinds, |kind| async move {
+            Ok(match kind {
+                FeedKind::Video => vec![
+                    entry("v-new", "2024-01-10T00:00:00+00:00", kind),
+                    entry("v-old", "2024-01-01T00:00:00+00:00", kind),
+                ],
+                FeedKind::Live => vec![entry("live", "2024-01-05T00:00:00+00:00", kind)],
+            })
+        })
+        .await
+        .unwrap();
+        let ids: Vec<&str> = entries.iter().map(|e| e.video_id.as_str()).collect();
+        assert_eq!(ids, vec!["v-new", "live", "v-old"]);
+        // 截断到 2 条时直播条目必须在窗口内
+        let kept: Vec<&str> = entries.iter().take(2).map(|e| e.video_id.as_str()).collect();
+        assert!(kept.contains(&"live"));
+    }
+
+    /// 比较器必须是严格全序：带不同时区偏移的真实时间与无法解析的脏值混用时，
+    /// 若「时间」与「字符串」两套口径交叉比较会破坏传递性，`sort_by` 在 Rust 1.81+ 直接 panic。
+    #[test]
+    fn test_published_desc_is_total_order() {
+        use std::cmp::Ordering::{Greater, Less};
+
+        let samples = [
+            "2026-01-01T10:00:00+02:00", // 08:00Z
+            "2026-01-01T09:00:00Z",      // 09:00Z
+            "2026-01-01T11:00:00+00:00", // 11:00Z
+            "2026-01-01T08:00:00-05:00", // 13:00Z
+            "2026-01-01T09:30:00",       // 无法解析
+            "bad",                       // 无法解析
+        ];
+        for &a in &samples {
+            for &b in &samples {
+                assert_eq!(
+                    published_desc(a, b),
+                    published_desc(b, a).reverse(),
+                    "反对称性破坏: {a} / {b}"
+                );
+                for &c in &samples {
+                    if published_desc(a, b) == Less && published_desc(b, c) == Less {
+                        assert_eq!(published_desc(a, c), Less, "传递性破坏: {a} < {b} < {c}");
+                    }
+                }
+                // 可解析的一律排在无法解析的前面（两组分开，不交叉用两套口径）
+                let a_ok = chrono::DateTime::parse_from_rfc3339(a).is_ok();
+                let b_ok = chrono::DateTime::parse_from_rfc3339(b).is_ok();
+                if a_ok && !b_ok {
+                    assert_eq!(published_desc(a, b), Less);
+                }
+                if !a_ok && b_ok {
+                    assert_eq!(published_desc(a, b), Greater);
+                }
+            }
+        }
     }
 
     #[tokio::test]
