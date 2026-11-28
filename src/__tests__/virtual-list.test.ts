@@ -320,3 +320,67 @@ describe('VirtualList.vue — v-show 隐藏容器显示后行高重测', () => {
     expect(wrapper.find('.virtual-list').attributes('style')).toContain('38760px')
   })
 })
+
+describe('VirtualList.vue — 行内高度变化重测', () => {
+  // 卡片内部重渲染（截断排版完成 / 翻译提示出现 / 图片到达）改变高度时父级不会重发
+  // :ref，必须靠逐行 ResizeObserver 回写缓存，否则绝对定位的卡片会互相压住或留空。
+  const originalDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')!
+  const originalRO = (globalThis as any).ResizeObserver
+  let roInstances: { cb: ResizeObserverCallback; targets: Element[] }[] = []
+  const heights = new Map<string, number>()
+
+  beforeEach(() => {
+    roInstances = []
+    heights.clear()
+    class MockResizeObserver {
+      cb: ResizeObserverCallback
+      targets: Element[] = []
+      constructor(cb: ResizeObserverCallback) {
+        this.cb = cb
+        roInstances.push(this)
+      }
+      observe(target: Element) { this.targets.push(target) }
+      unobserve() {}
+      disconnect() {}
+    }
+    ;(globalThis as any).ResizeObserver = MockResizeObserver
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() {
+        const key = (this as HTMLElement).getAttribute?.('data-vkey')
+        return key ? (heights.get(key) ?? 120) : 0
+      },
+    })
+  })
+
+  afterEach(() => {
+    if (originalRO) (globalThis as any).ResizeObserver = originalRO
+    else delete (globalThis as any).ResizeObserver
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalDescriptor)
+  })
+
+  it('行变高后由行级 ResizeObserver 回写，后续行跟着下移', async () => {
+    const wrapper = mount(VirtualList as any, {
+      props: {
+        items: makeItems(300),
+        itemKey: (item: TestItem) => item.id,
+        estimatedHeight: 120,
+        gap: 8,
+      },
+      slots: { default: `<div class="row">{{ item.id }}</div>` },
+    })
+    await flushPromises()
+
+    const tops = () => wrapper.findAll('.virtual-item').map((w) => w.attributes('style'))
+    expect(tops()[1]).toContain('128px')
+
+    // 首行内容变高（120 → 300）：列表自身不重渲染，只能靠行级 RO 发现
+    heights.set('1', 300)
+    const rowRo = roInstances.find((inst) => inst.targets.some((t) => t.hasAttribute('data-vkey')))!
+    const firstRow = rowRo.targets.find((t) => (t as HTMLElement).dataset.vkey === '1')!
+    rowRo.cb([{ target: firstRow } as unknown as ResizeObserverEntry], rowRo as unknown as ResizeObserver)
+    await flushPromises()
+
+    expect(tops()[1]).toContain('308px')
+  })
+})

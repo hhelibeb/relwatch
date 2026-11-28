@@ -1109,6 +1109,135 @@ describe('ReleaseItem.vue — 摘要截断测量（窗口缩放回归）', () =>
       vi.restoreAllMocks()
     }
   })
+
+  it('4 行以上摘要：截断点必须落在第 3 行内（「阅读全文」不再压住第三行）', async () => {
+    // 回归点：真实浏览器里被 -webkit-line-clamp 裁掉的行仍会出现在 range.getClientRects()
+    // 中，且第 4 行行首宽度会回落到 ~0。二分的上界不夹在第 3 行内时，谓词不再单调，
+    // 截断点会落到第 4 行以后——渲染成 3 行满行文本 + 悬浮按钮压在第三行末尾。
+    // 这里用「无行数上限」的伪布局模拟真实浏览器的测量结果。
+    let roCallback: (() => void) | null = null
+    class FakeResizeObserver {
+      constructor(cb: () => void) { roCallback = cb }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    vi.spyOn(document, 'createRange').mockImplementation((() => {
+      let start = 0
+      let end = 0
+      let len = 0
+      return {
+        setStart(_node: Node, offset: number) { start = offset },
+        setEnd(node: Node, offset: number) {
+          len = node.textContent?.length ?? 0
+          if (offset > len) throw new DOMException('out of bounds', 'IndexSizeError')
+          end = offset
+        },
+        getClientRects() {
+          if (end <= start) return []
+          const rects: { width: number }[] = []
+          const firstLine = Math.floor(start / CHARS_PER_LINE)
+          const lastLine = Math.floor((end - 1) / CHARS_PER_LINE)
+          for (let line = firstLine; line <= lastLine; line++) {
+            const from = Math.max(start, line * CHARS_PER_LINE)
+            const to = Math.min(end, (line + 1) * CHARS_PER_LINE)
+            rects.push({ width: (to - from) * CHAR_W })
+          }
+          return rects
+        },
+      }
+    }) as unknown as () => Range)
+
+    try {
+      // 60 字符 → 伪布局下 6 行；行宽 100、按钮 62 → 第三行可用宽 30
+      const wrapper = mountRelease(createRelease({ ai_summary: 'a'.repeat(60), body: '## Body' }))
+      await nextTick()
+      const textEl = wrapper.find('.release-summary-text').element as HTMLElement
+      Object.defineProperty(wrapper.find('.release-expand-btn').element, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ width: BTN_W }),
+      })
+
+      setClientWidth(textEl, 100)
+      roCallback!()
+      await nextTick()
+
+      const shown = textEl.textContent ?? ''
+      expect(shown.endsWith('…')).toBe(true)
+      // 含省略号的显示文本不得超出 3 行（每行 10 字符）；旧实现会切到 54 字符（6 行）
+      expect(shown.length).toBeLessThanOrEqual(MAX_LINES * CHARS_PER_LINE)
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('4 行以上且第三行很短（硬换行 / 长 token 折行）时仍要截断，不能误判「无需截断」', async () => {
+    // 回归点：早退分支是「第三行就是全文末尾且放得下」。只看宽度不看 rect 数时，
+    // 「第三行很短但后面还有第 4/5 行」会被当成无需截断 —— 此时 hasThirdLine 已为 true、
+    // 按钮已悬浮在第三行右侧，却没有对应的截断文本。
+    const LINE_ENDS = [10, 20, 23, 33, 43]
+
+    function fakeRects(start: number, end: number) {
+      if (end <= start) return []
+      const rects: { width: number }[] = []
+      let lineStart = 0
+      for (const lineEnd of LINE_ENDS) {
+        const from = Math.max(start, lineStart)
+        const to = Math.min(end, lineEnd)
+        if (to > from) rects.push({ width: (to - from) * CHAR_W })
+        lineStart = lineEnd
+        if (lineStart >= end) break
+      }
+      return rects
+    }
+
+    let roCallback: (() => void) | null = null
+    class FakeResizeObserver {
+      constructor(cb: () => void) { roCallback = cb }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
+    vi.spyOn(document, 'createRange').mockImplementation((() => {
+      let start = 0
+      let end = 0
+      let len = 0
+      return {
+        setStart(_node: Node, offset: number) { start = offset },
+        setEnd(node: Node, offset: number) {
+          len = node.textContent?.length ?? 0
+          if (offset > len) throw new DOMException('out of bounds', 'IndexSizeError')
+          end = offset
+        },
+        getClientRects() { return fakeRects(start, end) },
+      }
+    }) as unknown as () => Range)
+
+    try {
+      const wrapper = mountRelease(createRelease({ ai_summary: 'a'.repeat(43), body: '## Body' }))
+      await nextTick()
+      const textEl = wrapper.find('.release-summary-text').element as HTMLElement
+      Object.defineProperty(wrapper.find('.release-expand-btn').element, 'getBoundingClientRect', {
+        configurable: true,
+        value: () => ({ width: BTN_W }),
+      })
+
+      setClientWidth(textEl, 100) // avail = 100 - 62 - 8 = 30，恰好等于第三行宽度
+      roCallback!()
+      await nextTick()
+
+      // 第三行宽 30px 恰好放得下，但后面还有两行：必须仍有手动截断（3 行内 + 省略号）
+      const shown = textEl.textContent ?? ''
+      expect(shown.endsWith('…')).toBe(true)
+      expect(shown.length).toBeLessThanOrEqual(LINE_ENDS[2] + 1) // 3 行字符 + 省略号
+    } finally {
+      vi.unstubAllGlobals()
+      vi.restoreAllMocks()
+    }
+  })
 })
 
 describe('ReleaseItem.vue — 旗标操作', () => {

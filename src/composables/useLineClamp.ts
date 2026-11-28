@@ -38,13 +38,13 @@ export function useLineClamp(opts: {
     return range.getClientRects().length
   }
 
-  // 第 3 行起始字符：text[0..i] 恰好排满两行的最小 i
-  function findThirdLineStart(node: Node, text: string): number {
+  // 第 line 行起始字符：text[0..i] 恰好排满 line-1 行的最小 i（行数不足时返回 text.length + 1）
+  function findLineStart(node: Node, text: string, line: number): number {
     let lo = 0
-    let hi = text.length
+    let hi = text.length + 1
     while (lo < hi) {
       const mid = (lo + hi) >> 1
-      if (rangeLineCount(node, mid) >= 3) hi = mid
+      if (rangeLineCount(node, mid) >= line) hi = mid
       else lo = mid + 1
     }
     return lo
@@ -69,14 +69,17 @@ export function useLineClamp(opts: {
       display.value = null
       return
     }
-    // 用隐藏克隆测量完整文本，不干扰显示。两个关键点：
+    // 用隐藏克隆测量完整文本，不干扰显示。三个关键点：
     // 1) 克隆后必须重写为完整文本——cloneNode 会带走当前渲染的截断文本，
     //    后续 range.setEnd(node, text.length) 越界抛 IndexSizeError，状态被 catch 重置，
     //    与 ResizeObserver 形成「截断 ↔ 重置」振荡（窗口缩窄时按钮闪烁、跳动、盖住文字）。
     // 2) 克隆挂到同一父节点下，保证字体/行高等继承的排版上下文与真实元素一致。
+    // 3) 必须关掉克隆上的 line-clamp 与 -webkit-box：带 clamp 时 getClientRects 会为被
+    //    裁掉的行补出占位 rect（第 3 行整行时就已经是 4 个 rect），行数不再等于文本真实
+    //    行数，findLineStart / totalLines 全会失真。
     const clone = el.cloneNode(true) as HTMLElement
     clone.textContent = text
-    clone.style.cssText = `position:absolute;visibility:hidden;left:0;top:0;width:${el.clientWidth}px;pointer-events:none`
+    clone.style.cssText = `position:absolute;visibility:hidden;left:0;top:0;width:${el.clientWidth}px;pointer-events:none;display:block;-webkit-line-clamp:none;overflow:visible`
     ;(el.parentElement ?? document.body).appendChild(clone)
     try {
       const node = clone.firstChild
@@ -102,7 +105,7 @@ export function useLineClamp(opts: {
         return
       }
       hasThirdLine.value = true
-      const start = findThirdLineStart(node, text)
+      const start = findLineStart(node, text, 3)
       // 第三行剩余文字是否超出可用区：未超出则自然结束（省略号由 line-clamp 生成），无需截断。
       // 注意从 start-1 开始：start 是「text[0..i] 达到 3 行」的最小偏移，第三行首字符是 start-1
       const thirdRange = document.createRange()
@@ -110,15 +113,24 @@ export function useLineClamp(opts: {
       thirdRange.setEnd(node, text.length)
       const thirdRects = thirdRange.getClientRects()
       const thirdWidth = thirdRects.length ? thirdRects[0].width : 0
-      if (thirdWidth <= avail) {
+      // `length === 1` 必不可少：这个早退分支意味着「第三行就是全文末尾且放得下」。
+      // 而 4 行以上文本的 thirdRange 必然跨多行（>= 2 个 rect）；若第三行本身很短
+      // （硬换行、长 token 折到第 4 行），只看宽度会误判成「无需截断」——hasThirdLine
+      // 已经为 true、按钮已悬浮在第三行右侧，却没有对应的截断文本。
+      if (thirdRects.length === 1 && thirdWidth <= avail) {
         display.value = null
         return
       }
-      // 二分找最大 end：slice(0, end) + '…' 的最后一行宽度 <= 可用宽
+      // 二分找最大 end：slice(0, end) + '…' 的最后一行宽度 <= 可用宽。
+      // 上界必须夹在第 3 行内：只有「同一行内」行宽才随 end 单调递增，一旦二分越过第 3 行，
+      // 最后一行宽度会随换行回落到零（14px 起步），谓词失去单调性 → 结果落进第 4 行以后，
+      // 渲染成 3 行满行文本 + 悬浮按钮压在第三行末尾（「阅读全文」盖字）。
       const ellipsis = '…'
       const ellipsisW = measureTextWidth(getComputedStyle(el).font, ellipsis)
+      const fourthLineStart = findLineStart(node, text, 4)
       let lo = start
-      let hi = text.length
+      let hi = Math.min(text.length, fourthLineStart - 1)
+      if (hi < lo) hi = lo
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2)
         const r = document.createRange()
@@ -130,7 +142,8 @@ export function useLineClamp(opts: {
         else hi = mid - 1
       }
       let end = lo
-      // 尽量在词边界截断（英文场景），中文不受影响
+      // lo 初值就是 start，而词边界回退只在 ws > start 时生效，故 end >= start：
+      // 至少保留第三行首字符，永远不会把截断点压回第二行
       if (end < text.length) {
         const ws = text.lastIndexOf(' ', end - 1)
         if (ws > start) end = ws

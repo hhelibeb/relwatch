@@ -44,20 +44,23 @@ function itemHeight(key: string): number {
 
 const measured = computed(() => {
   const offsets: number[] = []
+  const sizes: number[] = []
   let acc = 0
   for (let i = 0; i < props.items.length; i++) {
     offsets.push(acc)
-    acc += itemHeight(keyOf(props.items[i], i))
+    const size = itemHeight(keyOf(props.items[i], i))
+    sizes.push(size)
+    acc += size
   }
-  return { offsets, total: acc }
+  return { offsets, sizes, total: acc }
 })
 
-function lowerBound(offsets: number[], target: number): number {
+function lowerBound(offsets: number[], sizes: number[], target: number): number {
   let lo = 0
   let hi = offsets.length
   while (lo < hi) {
     const mid = (lo + hi) >> 1
-    if (offsets[mid] + props.estimatedHeight <= target) lo = mid + 1
+    if (offsets[mid] + sizes[mid] <= target) lo = mid + 1
     else hi = mid
   }
   return lo
@@ -66,27 +69,61 @@ function lowerBound(offsets: number[], target: number): number {
 const visibleRows = computed(() => {
   const items = props.items
   if (!virtualizing.value || items.length === 0) return []
-  const { offsets } = measured.value
+  const { offsets, sizes } = measured.value
   const start = scrollTop.value - props.overscan
   const end = scrollTop.value + viewport.value + props.overscan
   const rows: { item: T; index: number; top: number }[] = []
-  for (let i = lowerBound(offsets, start); i < items.length; i++) {
+  for (let i = lowerBound(offsets, sizes, start); i < items.length; i++) {
     if (offsets[i] > end) break
     rows.push({ item: items[i], index: i, top: offsets[i] })
   }
   return rows
 })
 
-// 可见行渲染后经 :ref 回调测量真实高度（每个 key 只测一次）。
+// 可见行渲染后经 :ref 回调测量真实高度（同一 key 只在高度变化时重写缓存）。
 // 行挂载时同步读取 offsetHeight 并写回 heights，触发 measured/visibleRows 重排收敛；
 // 行被滚动卸载再回来时复用缓存，无需重复测量。
-function recordRow(row: { item: T; index: number }, el: unknown) {
-  if (!el) return
-  const key = keyOf(row.item, row.index)
-  const h = (el as HTMLElement).offsetHeight
+//
+// 但 :ref 回调只覆盖「列表自身重渲染」：卡片内部重渲染（截断排版完成、翻译提示出现、
+// 图片到达）改变高度时父级不会重发 ref，绝对定位的 .virtual-item 仍按旧高度摆位，
+// 高了就压住下一张、矮了就留空。故每行另挂一个 ResizeObserver，高度一变就回写缓存。
+const observedRows = new Map<string, HTMLElement>()
+let itemRo: ResizeObserver | null = null
+
+function writeHeight(key: string, h: number): void {
   if (h > 0 && heights.value.get(key) !== h) {
     heights.value = new Map(heights.value).set(key, h)
   }
+}
+
+function ensureItemRo(): ResizeObserver | null {
+  if (typeof ResizeObserver === 'undefined') return null
+  if (!itemRo) {
+    itemRo = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const node = entry.target as HTMLElement
+        const key = node.dataset.vkey
+        if (key) writeHeight(key, node.offsetHeight)
+      }
+    })
+  }
+  return itemRo
+}
+
+function recordRow(row: { item: T; index: number }, el: unknown) {
+  const key = keyOf(row.item, row.index)
+  if (!el) {
+    const prev = observedRows.get(key)
+    if (prev) {
+      itemRo?.unobserve(prev)
+      observedRows.delete(key)
+    }
+    return
+  }
+  const node = el as HTMLElement
+  observedRows.set(key, node)
+  ensureItemRo()?.observe(node)
+  writeHeight(key, node.offsetHeight)
 }
 
 // v-show 场景：容器被隐藏（display:none）时挂载的行 offsetHeight 恒为 0，
@@ -98,11 +135,7 @@ function remeasureVisibleRows() {
   if (!root || root.offsetHeight === 0) return
   for (const el of root.querySelectorAll<HTMLElement>('.virtual-item')) {
     const key = el.dataset.vkey
-    if (!key) continue
-    const h = el.offsetHeight
-    if (h > 0 && heights.value.get(key) !== h) {
-      heights.value = new Map(heights.value).set(key, h)
-    }
+    if (key) writeHeight(key, el.offsetHeight)
   }
 }
 
@@ -122,6 +155,9 @@ function onScroll() {
 
 async function setupScroll() {
   await nextTick()
+  // 等 nextTick 期间列表可能已跌破阈值（筛选把上千条缩到几十条）：此刻 watch 已经
+  // teardown 过一轮，若不复查就继续挂监听，这堆 scroll / ResizeObserver 再无人回收。
+  if (!virtualizing.value) return
   const root = containerEl.value
   if (!root || scrollParent) return
   const parent = findScrollParent(root)
@@ -150,6 +186,9 @@ function teardownScroll() {
   ro = null
   roSelf?.disconnect()
   roSelf = null
+  itemRo?.disconnect()
+  itemRo = null
+  observedRows.clear()
 }
 
 /** 滚动容器内吸附在顶部的元素（sticky 搜索/筛选栏）在视口顶部占住的高度。
