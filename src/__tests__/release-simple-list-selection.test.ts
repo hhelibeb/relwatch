@@ -11,7 +11,7 @@ const ReleaseItemStub = defineComponent({
   props: ['release', 'highlighted', 'selected'],
   emits: ['update', 'open-detail'],
   template:
-    '<div class="stub-item" :class="{ sel: selected }" @click="$emit(\'open-detail\', release)">{{ release.tag_name }}</div>',
+    '<div class="stub-item" :class="{ sel: selected, hl: highlighted }" @click="$emit(\'open-detail\', release)">{{ release.tag_name }}</div>',
 })
 
 function mountList(releases: ReleaseInfo[]): VueWrapper {
@@ -35,6 +35,7 @@ function handle(wrapper: VueWrapper) {
     moveSelection: (delta: number) => void
     selectFirst: () => boolean
     openSelected: () => void
+    focusReleaseId: (id: number) => boolean
   }
 }
 
@@ -179,5 +180,32 @@ describe('ReleaseSimpleList.vue — j/k 光标', () => {
     const events = wrapper.emitted('open-detail')!
     expect((events[0][0] as ReleaseInfo).tag_name).toBe('v2')
     expect((events[0][1] as ReleaseInfo[]).map(r => r.id)).toEqual([3, 2, 1])
+  })
+})
+
+describe('ReleaseSimpleList.vue — 定位高亮与鼠标', () => {
+  it('通知定位只给短暂高亮，不留下键盘光标', async () => {
+    const wrapper = mountList(threeReleases())
+
+    expect(handle(wrapper).focusReleaseId(2)).toBe(true)
+    await nextTick()
+
+    expect(wrapper.findAll('.stub-item.hl').map(n => n.text())).toEqual(['v2'])
+    expect(selectedTags(wrapper)).toEqual([])
+  })
+
+  it('鼠标点击后光标与高亮一并清除', async () => {
+    const wrapper = mountList(threeReleases())
+    handle(wrapper).moveSelection(1)
+    expect(handle(wrapper).focusReleaseId(1)).toBe(true)
+    await nextTick()
+    expect(selectedTags(wrapper)).toEqual(['v3'])
+    expect(wrapper.findAll('.stub-item.hl')).toHaveLength(1)
+
+    document.dispatchEvent(new Event('pointerdown'))
+    await nextTick()
+
+    expect(selectedTags(wrapper)).toEqual([])
+    expect(wrapper.findAll('.stub-item.hl')).toHaveLength(0)
   })
 })

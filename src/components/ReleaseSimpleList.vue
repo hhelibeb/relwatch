@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { ReleaseInfo } from '../api/releases'
 import type { BodyIndex } from '../utils'
 import { t } from '../i18n'
@@ -65,27 +65,24 @@ let highlightTimer: ReturnType<typeof setTimeout> | null = null
 
 // 卸载时清掉挂起的高亮定时器，避免对已卸载实例继续写状态
 onUnmounted(() => {
+  clearHighlight()
+})
+
+function clearHighlight() {
   if (highlightTimer) clearTimeout(highlightTimer)
   highlightTimer = null
-})
+  highlightId.value = null
+}
 
 /** 定位到指定 release：滚动使其可见并短暂高亮。返回是否找到。 */
 function focusReleaseId(id: number): boolean {
   const index = sortedReleases.value.findIndex(r => r.id === id)
   if (index < 0) return false
-  selectedId.value = id
-  // 先滚动到目标（虚拟列表会确保对应行渲染），滚动完成后再置高亮并等待元素挂载
+  // 通知定位是鼠标驱动的跳转，不设键盘光标：否则选中框会一直挂在被跳到的条目上
   virtualList.value?.scrollToIndex(index)
-  const clearTimer = () => {
-    if (highlightTimer) clearTimeout(highlightTimer)
-    highlightTimer = null
-  }
-  clearTimer()
+  clearHighlight()
   highlightId.value = id
-  highlightTimer = setTimeout(() => {
-    highlightId.value = null
-    highlightTimer = null
-  }, 2600)
+  highlightTimer = setTimeout(clearHighlight, 2600)
   return true
 }
 
@@ -94,6 +91,15 @@ function focusReleaseId(id: number): boolean {
 // 选中项被筛掉时下标算 -1，下一次移动按「首次」重新落位；筛回来则光标回到原条目。
 const selectedId = ref<number | null>(null)
 const selectedIndex = computed(() => sortedReleases.value.findIndex(r => r.id === selectedId.value))
+
+// 光标/高亮都只为键盘与定位服务：一旦改用鼠标，它们就是纯干扰
+function clearTransientMarks() {
+  selectedId.value = null
+  clearHighlight()
+}
+
+onMounted(() => document.addEventListener('pointerdown', clearTransientMarks))
+onUnmounted(() => document.removeEventListener('pointerdown', clearTransientMarks))
 
 function moveSelection(delta: number) {
   const n = sortedReleases.value.length
