@@ -148,6 +148,7 @@ describe('ReleaseTab — 批量操作与全部标为已读', () => {
     localStorage.setItem('relwatch.release.view', JSON.stringify({ viewMode: 'aggregated' }))
     const { wrapper } = mountReleaseTab()
     await nextTick()
+    expect(wrapper.findAll('.repo-group').length).toBe(2)
 
     const repoReadBtns = wrapper.findAll('.repo-mark-read-btn')
     // Only vuejs/core has unread releases; microsoft/vscode has 0 unread
@@ -161,6 +162,25 @@ describe('ReleaseTab — 批量操作与全部标为已读', () => {
       expect.any(Object),
     )
     expect(batchStatusMock).toHaveBeenCalledWith([1, 2], 'clicked')
+  })
+
+  it('聚合视图：全选与 Shift 连选只看已展开分组内的版本', async () => {
+    localStorage.setItem('relwatch.release.view', JSON.stringify({ viewMode: 'aggregated' }))
+    const { wrapper } = mountReleaseTab()
+    await nextTick()
+
+    // 组按最新版本降序：只展开 vuejs/core（版本 1、2），microsoft/vscode 保持折叠
+    await wrapper.findAll('.repo-group-toggle')[0].trigger('click')
+    await wrapper.get('.select-mode-btn').trigger('click')
+    expect(wrapper.findAll('.release-select-box')).toHaveLength(2)
+
+    await wrapper.findAll('.bulk-link-btn')[0].trigger('click')
+    expect(wrapper.get('.bulk-count').text()).toBe(t('release.bulk_count', '2'))
+
+    // 折叠该分组后，已选项随之剪枝（折叠的版本不属可见范围）
+    await wrapper.findAll('.repo-group-toggle')[0].trigger('click')
+    await nextTick()
+    expect(wrapper.get('.bulk-count').text()).toBe(t('release.bulk_count', '0'))
   })
 
   it('Shift + 点击支持区间连续勾选，且单次点击后不残留 shift 状态', async () => {
@@ -209,3 +229,4 @@ describe('ReleaseTab — 批量操作与全部标为已读', () => {
     expect(wrapper.find('.select-mode-btn').exists()).toBe(false)
   })
 })
+

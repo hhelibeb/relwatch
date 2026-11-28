@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
+import { storeToRefs } from 'pinia'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import type { ReleaseInfo } from '../api/releases'
 import type { BodyIndex } from '../utils'
@@ -8,7 +9,8 @@ import { useContextMenu } from '../composables/useContextMenu'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 import { formatDate, isUnreadStatus } from '../utils'
-import { loadExpandedRepos, saveExpandedRepos } from '../utils/releaseViewStorage'
+import { groupReleasesByRepo } from '../utils/releaseGroup'
+import { useReleaseFilterStore } from '../stores/releaseFilter'
 import { openReleaseUrl } from '../api/client'
 import { getSourceTypeDef, sourceRepoKey } from '../api/source-registry'
 import EmptyState from './common/EmptyState.vue'
@@ -67,27 +69,12 @@ function forwardOpenDetail(release: ReleaseInfo) {
   emit('open-detail', release, group ? group.releases : [release])
 }
 
-const expandedRepos = ref<Set<string>>(loadExpandedRepos())
-watch(expandedRepos, (keys) => saveExpandedRepos(keys))
+// 展开状态归口到 releaseFilter store：批量选择的「可见项」也依赖它，
+// 组件内再存一份副本会让选择范围与界面显示不同步
+const filterStore = useReleaseFilterStore()
+const { expandedRepos } = storeToRefs(filterStore)
 
-const repoGroups = computed(() => {
-  const map = new Map<string, ReleaseInfo[]>()
-  for (const release of props.releases) {
-    // 分组键含 source_type，避免不同类型同 owner/repo 串源
-    const key = sourceRepoKey(release.source_type, release.owner, release.repo)
-    if (!map.has(key)) map.set(key, [])
-    map.get(key)!.push(release)
-  }
-
-  const groups: RepoGroup[] = []
-  for (const [key, releases] of map) {
-    releases.sort((a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime())
-    groups.push({ key, releases })
-  }
-
-  groups.sort((a, b) => new Date(b.releases[0].published_at).getTime() - new Date(a.releases[0].published_at).getTime())
-  return groups
-})
+const repoGroups = computed(() => groupReleasesByRepo(props.releases))
 
 const allExpanded = computed(() => {
   if (repoGroups.value.length === 0) return false
@@ -96,20 +83,17 @@ const allExpanded = computed(() => {
 
 function toggleRepo(key: string) {
   track('aggregated.toggle_repo')
-  const next = new Set(expandedRepos.value)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
-  expandedRepos.value = next
+  filterStore.toggleExpandedRepo(key)
 }
 
 function expandAll() {
-  expandedRepos.value = new Set(repoGroups.value.map(group => group.key))
+  filterStore.replaceExpandedRepos(repoGroups.value.map(group => group.key))
 }
 
 function toggleAllRepos() {
   track('aggregated.expand_all')
   if (allExpanded.value) {
-    expandedRepos.value = new Set()
+    filterStore.replaceExpandedRepos([])
   } else {
     expandAll()
   }

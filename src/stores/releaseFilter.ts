@@ -92,6 +92,13 @@ export const useReleaseFilterStore = defineStore('releaseFilter', () => {
     saveExpandedRepos(next)
   }
 
+  /** 整批替换展开集合（全展开 / 全折叠）：逐项 toggle 会反复落盘。 */
+  function replaceExpandedRepos(keys: Iterable<string>): void {
+    const next = new Set(keys)
+    expandedRepos.value = next
+    saveExpandedRepos(next)
+  }
+
   function openSourceReleases(query: string): void {
     search.value = query
     statusFilter.value = 'all'
@@ -136,6 +143,7 @@ export const useReleaseFilterStore = defineStore('releaseFilter', () => {
     persistViewState,
     toggleExpandedRepo,
     setExpandedRepo,
+    replaceExpandedRepos,
     openSourceReleases,
     openSourceUnreadReleases,
     focusReleaseById,

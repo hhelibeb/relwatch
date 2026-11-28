@@ -17,6 +17,7 @@ import ReleaseSimpleList from './ReleaseSimpleList.vue'
 import type { ReleaseStatusFilter } from './releaseTypes'
 import { FLAG_ITEMS, flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { clampCalendarMonth, toDateKey } from '../utils/dateKey'
+import { visibleGroupedReleases } from '../utils/releaseGroup'
 import { useBulkSelection } from '../composables/useBulkSelection'
 import { useReleaseDeepSearch } from '../composables/useReleaseDeepSearch'
 import { useReleaseDetailNav } from '../composables/useReleaseDetailNav'
@@ -77,6 +78,7 @@ const {
   sourceFilter,
   flagFilter,
   versionFilter,
+  expandedRepos,
 } = storeToRefs(filterStore)
 
 const selectedDate = ref<string | null>(null)
@@ -317,7 +319,9 @@ const visibleSelectionReleases = computed<ReleaseInfo[]>(() => {
       (a, b) => new Date(b.published_at).getTime() - new Date(a.published_at).getTime(),
     )
   }
-  return filteredReleases.value
+  // 聚合视图：只有已展开分组里的版本是可见的。若把折叠分组的版本也算进来，
+  // Shift 连选与「全选」会把界面根本看不到的版本一并选中。
+  return visibleGroupedReleases(filteredReleases.value, expandedRepos.value)
 })
 
 const unreadInViewIds = computed(() =>
