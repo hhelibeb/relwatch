@@ -249,6 +249,36 @@ pub(super) async fn run_single_summary_batch(
     }
     log::info!("后台摘要补全批: {} 条待补全", saved.len());
     deepseek::generate_summaries_for_new(db_pool, deepseek_semaphore, &saved).await;
+
+    // 落库结果回查（与翻译批同一套做法）：已带摘要 = 成功，逐条 emit 刷新前端。
+    // 本批是 fire-and-forget，发起它的那轮轮询早已 emit 过 poll-completed；不在这里
+    // 通知的话，新生成的摘要要等用户手动刷新/下一轮轮询才会出现在卡片上。
+    let pool = db_pool.clone();
+    let ok_ids: Vec<i64> = tokio::task::spawn_blocking(move || {
+        let conn = match pool.get() {
+            Ok(c) => c,
+            Err(_) => return Vec::new(),
+        };
+        saved
+            .iter()
+            .filter(|(id, _)| {
+                db::releases::get_release(&conn, *id)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.ai_summary.is_some())
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| *id)
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    if !ok_ids.is_empty() {
+        log::info!("后台摘要补全批完成，{} 条已落库", ok_ids.len());
+        for id in ok_ids {
+            emitter.emit_release_state_changed(id);
+        }
+    }
     // 与翻译批同理：无论成败都写了日志，收尾时通知前端刷新日志 tab
     emitter.emit_log_appended();
 }

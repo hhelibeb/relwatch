@@ -1413,7 +1413,7 @@ fn setup_summary_pool(base_url: &str) -> r2d2::Pool<crate::db::SqliteConnectionM
 }
 
 /// 后台摘要补全成功路径：mock 摘要 200 → schedule → 等待落库 → 断言 ai_summary
-/// 已写入（摘要补全不触发 emit——旧 release 无新通知）。
+/// 已写入，且逐条 emit release-state-changed（否则卡片要等用户手动刷新才看到新摘要）。
 #[tokio::test]
 async fn test_schedule_summaries_background_backfills() {
     use wiremock::matchers::{method, path};
@@ -1461,6 +1461,22 @@ async fn test_schedule_summaries_background_backfills() {
     let rel = db::releases::get_release(&conn, id).unwrap().unwrap();
     assert_eq!(rel.ai_summary.as_deref(), Some("测试摘要"));
     assert_eq!(rel.ai_importance.as_deref(), Some("中"));
+    drop(conn);
+
+    // emit 在落库回查之后，与 ai_summary 写入不同步，单独等一小会儿
+    let mut emitted = false;
+    for _ in 0..20 {
+        if noop.state_changed_ids().contains(&id) {
+            emitted = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        emitted,
+        "后台摘要落库后应 emit release-state-changed，实际: {:?}",
+        noop.state_changed_ids()
+    );
 }
 
 /// 门控语义：上一批在跑（flag=true）时本轮**直接跳过**——不派发、不发请求、
