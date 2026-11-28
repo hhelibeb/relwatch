@@ -3,6 +3,7 @@ import { storeToRefs } from 'pinia'
 import { t } from '../../i18n'
 import { formatDate, skillShortName } from '../../utils'
 import { useAgentStore } from '../../stores/agent'
+import { useOverlayEscape } from '../../composables/useOverlayEscape'
 import AppIcon from '../ui/AppIcon.vue'
 
 const agent = useAgentStore()
@@ -39,6 +40,19 @@ const {
   usageEstimated,
   usageHint,
 } = storeToRefs(agent)
+
+// 模型 / Skill / 实体三个菜单都是自绘浮层。打开期间必须向覆盖层总线登记：
+// useEscapeToTray 靠 hasActiveOverlay() 判定「有浮层，Esc 不该退应用」，漏登记时
+// Esc 会直接落到最后一层 hideToTray（把整个窗口最小化到托盘）。
+useOverlayEscape({
+  active: () => showModelMenu.value || showSkillMenu.value || showEntityMenu.value,
+  preventDefault: true,
+  onEscape: () => {
+    showModelMenu.value = false
+    showSkillMenu.value = false
+    showEntityMenu.value = false
+  },
+})
 </script>
 
 <template>

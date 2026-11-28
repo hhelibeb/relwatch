@@ -40,6 +40,13 @@ function toolArgsSummary(args: string): string {
   if (!t0) return t0
   return t0.length > 120 ? t0.slice(0, 120) + '…' : t0
 }
+
+/** 流式 bash 块的正文（命令可能比输出晚到，缺谁省谁）。 */
+function bashLiveText(block: { command: string; output: string }): string {
+  return [block.command ? `$ ${block.command}` : '', block.output]
+    .filter((s) => s.trim())
+    .join('\n')
+}
 </script>
 
 <template>
@@ -135,6 +142,16 @@ function toolArgsSummary(args: string): string {
                 <summary>{{ t('agent.tool_args') }}</summary>
                 <pre class="agent-ws-fold-body">{{ toolArgsSummary(block.kind === 'toolCall' ? block.args : '') }}</pre>
               </details>
+            </div>
+            <!-- 流式 bash：pi 把命令输入推成 assistant 消息里的 bash 块，这里必须直接渲染。
+                 漏掉这一支时命令输出只在整轮结束后重读 JSONL（role='bash'）才出现。 -->
+            <div v-else-if="block.kind === 'bash'" class="agent-ws-tool-card">
+              <div class="agent-ws-tool-head">
+                <svg class="agent-ws-tool-icon"><use href="/icons.svg#terminal-icon" /></svg>
+                <span class="agent-ws-tool-name">bash</span>
+                <span class="agent-ws-tool-tag">exit {{ block.kind === 'bash' ? (block.exit_code ?? '…') : '' }}</span>
+              </div>
+              <pre class="agent-ws-fold-body agent-ws-bash-live">{{ bashLiveText(block) }}</pre>
             </div>
           </template>
         </div>
@@ -357,6 +374,12 @@ function toolArgsSummary(args: string): string {
   overflow-y: auto;
   background: var(--bg);
   border-radius: 0 0 var(--radius) var(--radius);
+}
+
+/* 流式 bash 输出直接铺开（不折叠）：折叠态下「命令正在跑」时气泡里空无一物，
+   用户看不到任何进展。限高滚动，避免长输出把整轮对话顶出视口。 */
+.agent-ws-bash-live {
+  max-height: 200px;
 }
 
 /* 工具卡片（toolCall / toolResult / bash） */

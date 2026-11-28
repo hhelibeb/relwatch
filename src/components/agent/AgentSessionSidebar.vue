@@ -17,6 +17,24 @@ const {
   openMenuKey,
   sessionMenuStyle,
 } = storeToRefs(agent)
+
+/** 重命名输入框的回车确认。
+ *  必须放过输入法组合中的回车（中文选词确认）：此刻 v-model 还没拿到候选词，
+ *  直接提交会把组合前的旧文本存下并关掉输入框。Vue 的 @keydown.enter 不过滤组合态。 */
+function onRenameEnter(e: KeyboardEvent): void {
+  if (e.isComposing) return
+  e.preventDefault()
+  agent.commitRename()
+}
+
+/** 重命名输入框的 Esc 取消。
+ *  组词中的 Esc 属于输入法（取消候选框），不该顺手退出重命名——与 useEscapeToTray
+ *  第 1 层（isComposing 直接放过）保持同一口径。 */
+function onRenameEscape(e: KeyboardEvent): void {
+  if (e.isComposing) return
+  e.preventDefault()
+  agent.cancelRename()
+}
 </script>
 
 <template>
@@ -49,8 +67,8 @@ const {
           data-esc-local
           :placeholder="t('agent.session_rename_placeholder')"
           @click.stop
-          @keydown.enter.prevent="agent.commitRename()"
-          @keydown.esc.prevent="agent.cancelRename()"
+          @keydown.enter="onRenameEnter"
+          @keydown.esc="onRenameEscape"
           @blur="agent.commitRename()"
         />
         <template v-else>

@@ -679,17 +679,127 @@ describe('useAgentStore — 提交、停止、重试与排队状态', () => {
     store.cleanupWorkspaceRuntime()
   })
 
-  it('startPolling 在 120s 截止后自动停止轮询', async () => {
+  it('兜底轮询：run 全部终态后自行停止，不再空跑到截止时间', async () => {
     vi.useFakeTimers()
     const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 7, session_key: store.activeKey, status: 'running' })])
 
     store.startPolling()
-    await vi.advanceTimersByTimeAsync(125_000)
-    const callsAtDeadline = vi.mocked(getAgentQueue).mock.calls.length
-    expect(callsAtDeadline).toBeGreaterThan(0)
+    await vi.advanceTimersByTimeAsync(1600)
+    const callsWhileRunning = vi.mocked(getAgentQueue).mock.calls.length
+    expect(callsWhileRunning).toBeGreaterThan(0)
+
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 7, session_key: store.activeKey, status: 'success' })])
+    await vi.advanceTimersByTimeAsync(1600)
+    const callsAfterDone = vi.mocked(getAgentQueue).mock.calls.length
 
     await vi.advanceTimersByTimeAsync(10_000)
-    expect(vi.mocked(getAgentQueue).mock.calls.length).toBe(callsAtDeadline)
+    expect(vi.mocked(getAgentQueue).mock.calls.length).toBe(callsAfterDone)
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('轮询截止时间盖住配置的单次超时（默认 300s → 330s 才自杀）', async () => {
+    vi.useFakeTimers()
+    const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 9, session_key: store.activeKey, status: 'running' })])
+
+    store.startPolling()
+    await vi.advanceTimersByTimeAsync(320_000)
+    // 旧实现 120s 就自杀了，能跑过 320s 说明截止时间已盖住默认 300s 超时
+    expect(vi.mocked(getAgentQueue).mock.calls.length).toBeGreaterThan(0)
+
+    await vi.advanceTimersByTimeAsync(60_000)
+    const callsAfterDeadline = vi.mocked(getAgentQueue).mock.calls.length
+
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(vi.mocked(getAgentQueue).mock.calls.length).toBe(callsAfterDeadline)
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('切回仍在运行的会话时自动重启兜底轮询', async () => {
+    vi.useFakeTimers()
+    const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    const key = store.activeKey
+    vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ id: 3, session_key: key, status: 'running' })])
+
+    store.startPolling()
+    store.switchSession('other-session')
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(store.activeKey).toBe('other-session')
+
+    // 切回仍在跑的会话：loadChat 到达后应自启轮询，不靠「恰好收到终态事件」
+    store.switchSession(key)
+    await vi.advanceTimersByTimeAsync(10)
+    const before = vi.mocked(getAgentQueue).mock.calls.length
+    await vi.advanceTimersByTimeAsync(1600)
+    expect(vi.mocked(getAgentQueue).mock.calls.length).toBeGreaterThan(before)
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('后台会话流式输出不劫持前台看的位置（只跟随激活会话）', async () => {
+    vi.useFakeTimers()
+    const store = useAgentStore()
+    store.mountWorkspaceRuntime()
+    const el = document.createElement('div')
+    Object.defineProperty(el, 'scrollHeight', { configurable: true, value: 1000 })
+    Object.defineProperty(el, 'clientHeight', { configurable: true, value: 100 })
+    let scrollTop = 950
+    const writes: number[] = []
+    Object.defineProperty(el, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v
+        writes.push(v)
+      },
+    })
+    store.bindChatScrollEl(el)
+
+    const key = store.activeKey
+    // 激活会话流式输出：贴近底部 → 照旧跟随
+    store.handleRpcStream(rpc(key, ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '自己' } })))
+    vi.advanceTimersByTime(50)
+    await nextTick()
+    expect(writes.length).toBeGreaterThan(0)
+
+    // 后台会话流式输出：不得把前台拽回底部
+    writes.length = 0
+    store.handleRpcStream(rpc('bg-session', ev({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: '后台' } })))
+    vi.advanceTimersByTime(50)
+    await nextTick()
+    expect(writes).toEqual([])
+    store.cleanupWorkspaceRuntime()
+  })
+
+  it('启动时把当前会话持久化的模型恢复进 selectedModel', () => {
+    localStorage.setItem('relwatch.agent.sessions.v1', JSON.stringify([
+      { key: 'k1', title: '带模型的会话', updatedAt: Date.now(), model: { provider: 'anthropic', model_id: 'claude' } },
+    ]))
+
+    const store = useAgentStore()
+    expect(store.activeKey).toBe('k1')
+    // 漏恢复的话：UI 显示「默认」，且首次提交会把 meta.model 覆写成 null
+    expect(store.selectedModel).toEqual({ provider: 'anthropic', model_id: 'claude' })
+  })
+
+  it('模型菜单为空时：Esc 能关掉菜单，Enter 不被静默吞掉', () => {
+    const store = useAgentStore()
+    store.availableModels = []
+
+    store.showModelMenu = true
+    const esc = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true })
+    store.handleComposerKeydown(esc)
+    expect(store.showModelMenu).toBe(false)
+
+    // 只有「默认」一项时不再抢按键：Enter 回到发送路径（空指令 → 提示而不是无声无息）
+    store.showModelMenu = true
+    const enter = new KeyboardEvent('keydown', { key: 'Enter', cancelable: true })
+    store.handleComposerKeydown(enter)
+    expect(store.showModelMenu).toBe(false)
+    expect(enter.defaultPrevented).toBe(true)
   })
 
   it('queueHint / queueOccupiedBy 覆盖单并发占用、多并发未满/跑满与本会话占用全部分支', () => {

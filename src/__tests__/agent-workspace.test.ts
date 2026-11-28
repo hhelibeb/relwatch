@@ -282,6 +282,28 @@ describe('AgentWorkspace 冒烟', () => {
     wrapper.unmount()
   })
 
+  it('assistant 消息里的 bash 块直接渲染输出（流式命令输出不再等整轮结束）', async () => {
+    vi.mocked(listAgentMessages).mockResolvedValue([
+      {
+        role: 'assistant',
+        timestamp: '2025-01-01T00:00:01.000Z',
+        model: 'claude',
+        blocks: [
+          { kind: 'text', text: '跑一下' },
+          { kind: 'bash', command: 'ls -1', output: 'src\nnode_modules', exit_code: 0, truncated: false },
+        ],
+      },
+    ] as never)
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    const live = wrapper.find('.agent-ws-bash-live')
+    expect(live.exists()).toBe(true)
+    expect(live.text()).toContain('$ ls -1')
+    expect(live.text()).toContain('node_modules')
+    wrapper.unmount()
+  })
+
   it('seed 预置实体显示为引用 chip', async () => {
     const seed: { entities: AgentEntityRefSeed[] } = { entities: [{ kind: 'release', id: 7 }] }
     const wrapper = mount(AgentWorkspace, {
@@ -1376,6 +1398,49 @@ describe('AgentWorkspace P2 打磨', () => {
     wrapper.unmount()
   })
 
+  it('重命名输入框：输入法组合中的回车不提交（中文选词回车）', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-session-item')[1].find('.agent-ws-session-more').trigger('click')
+    await findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')[0].trigger('click')
+    const editor = wrapper.find('.agent-ws-rename-input')
+    await editor.setValue('vue 3.5 迁移清单')
+
+    editor.element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+
+    // 仍在编辑态，且索引里的标题没被组合前的旧文本覆盖
+    expect(wrapper.find('.agent-ws-rename-input').exists()).toBe(true)
+    const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as Array<{ key: string; title: string }>
+    expect(stored.find((s) => s.key === 's1')?.title).toBe('分析 B 站 up 主的更新规律')
+    wrapper.unmount()
+  })
+
+  it('重命名 Esc：输入法组合中的 Esc 不退出重命名（取消候选框）', async () => {
+    seedSessions()
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    await wrapper.findAll('.agent-ws-session-item')[1].find('.agent-ws-session-more').trigger('click')
+    await findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')[0].trigger('click')
+    const editor = wrapper.find('.agent-ws-rename-input')
+    expect(editor.exists()).toBe(true)
+
+    editor.element.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Escape', isComposing: true, bubbles: true, cancelable: true }),
+    )
+    await flushPromises()
+    expect(wrapper.find('.agent-ws-rename-input').exists()).toBe(true)
+
+    // 组合结束后的 Esc 仍然正常取消
+    editor.element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await flushPromises()
+    expect(wrapper.find('.agent-ws-rename-input').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('重命名 Esc 取消：标题不变', async () => {
     seedSessions()
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
@@ -1710,6 +1775,41 @@ describe('AgentWorkspace P2 打磨', () => {
     await flushPromises()
     const stored = JSON.parse(localStorage.getItem('relwatch.agent.sessions.v1') ?? '[]') as Array<{ key: string; model?: { model_id: string } }>
     expect(stored.find((s) => s.key === 'test-session')?.model?.model_id).toBe('deepseek-v4-flash')
+    wrapper.unmount()
+  })
+
+  it('重启后会话持久化的模型恢复为当前选择（不再静默回落到默认）', async () => {
+    localStorage.setItem(
+      'relwatch.agent.sessions.v1',
+      JSON.stringify([
+        {
+          key: 'test-session',
+          title: 't',
+          updatedAt: Date.now(),
+          model: { provider: 'deepseek', model_id: 'deepseek-v4-flash' },
+        },
+      ]),
+    )
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+
+    expect(wrapper.find('.agent-ws-model-label').text()).toBe('DeepSeek V4 Flash')
+    wrapper.unmount()
+  })
+
+  it('模型菜单打开期间属于覆盖层：Esc 只关菜单，不落到最小化到托盘', async () => {
+    const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
+    await flushPromises()
+    expect(hasActiveOverlay()).toBe(false)
+
+    await wrapper.find('.agent-ws-model-btn').trigger('click')
+    await nextTick()
+    expect(hasActiveOverlay()).toBe(true)
+
+    document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
+    await nextTick()
+    expect(wrapper.find('.agent-ws-menu-model').exists()).toBe(false)
+    expect(hasActiveOverlay()).toBe(false)
     wrapper.unmount()
   })
 

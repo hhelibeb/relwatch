@@ -111,7 +111,8 @@ export function applyRpcEventToState(
 export function createRpcStreamBatcher(opts: {
   stateOf: (sessionKey: string) => SessionChatState
   onSettled: (sessionKey: string) => void
-  onBatchFlushed: () => void
+  /** 合帧完成：回调里带本批涉及的会话 key（含后台会话），调用方据此只对激活会话做 UI 跟进。 */
+  onBatchFlushed: (sessionKeys: string[]) => void
   flushMs?: number
 }) {
   const flushMs = opts.flushMs ?? RPC_FLUSH_MS
@@ -149,7 +150,7 @@ export function createRpcStreamBatcher(opts: {
         // 单事件异常不影响同批其余事件
       }
     }
-    opts.onBatchFlushed()
+    opts.onBatchFlushed([...new Set(batch.map((p) => p.session_key))])
   }
 
   function enqueue(payload: RpcStreamPayload): void {

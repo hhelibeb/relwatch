@@ -124,6 +124,15 @@ export const useAgentStore = defineStore('agent', () => {
     },
   })
 
+  // 启动时把当前会话持久化的模型选择同步进 selectedModel。
+  // 漏这一步的话重启后 UI 显示「默认」且 selectedModel 为 null，而首次提交会用
+  // selectedModel 去 persistSessionMeta（agentRunActions 的 modelToPersist）——
+  // 不仅错用默认模型，还会把原会话的 model 覆写成 null，配置永久丢失。
+  modelsApi.resetForSessionSwitch(
+    'switch',
+    sessionsApi.sessions.value.find((s) => s.key === sessionsApi.activeKey.value)?.model ?? null,
+  )
+
   // ── RPC 进程状态 ──
   const rpcApi = useAgentRpc({
     showToast: (msg) => ui.showToast(msg),
@@ -187,7 +196,9 @@ export const useAgentStore = defineStore('agent', () => {
   function scrollToBottomIfNear(): void {
     const el = scrollRef.value
     if (!el) return
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 160
+    // 吸附阈值必须小于一格滚轮（Windows 默认 ~100px）：阈值大于一格时，用户往上翻一
+    // 格仍落在阈值内，下一批流式输出又把他拉回底部，表现为「滚不动」。
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 48
     if (nearBottom) scrollToBottom()
   }
 
@@ -272,6 +283,9 @@ export const useAgentStore = defineStore('agent', () => {
       if (hasActive && st.liveMessages.length === 0) {
         st.historySnapshot = [...st.messages]
       }
+      // 回到一个还在跑的会话（切回/删后切回）且手上没有任何轮询时重启兜底轮询：
+      // 只在提交/取消时启动的话，切回已丢失终态事件的会话就永远停在 running。
+      if (isActive && hasActive && pollTimer === undefined) startPolling()
     } finally {
       if (currentChatEpoch(key) === epoch) {
         st.messagesLoading = false
@@ -299,15 +313,23 @@ export const useAgentStore = defineStore('agent', () => {
 
   function startPolling(): void {
     stopPolling()
-    pollDeadline = Date.now() + 120_000
+    // 兜底轮询只在「漏掉终态事件」时救场，截止时间必须盖住配置的单次超时：
+    // 否则默认 300s 的 run 还没跑完，120s 的轮询就先自杀了，UI 永远停在 running。
+    pollDeadline = Date.now() + Math.max(120_000, timeoutSecs.value * 1000 + 30_000)
     pollTimer = setInterval(async () => {
       if (pollDeadline && Date.now() > pollDeadline) {
         stopPolling()
         return
       }
-      const tasks: Promise<void>[] = [loadQueue()]
+      // runs 必须一起刷：只刷消息不刷 run 记录时，丢掉的终态事件永远补不回来
+      // （按钮一直停在「停止」、队列提示一直显示排队中）。
+      const tasks: Promise<void>[] = [loadQueue(), loadRuns()]
       if (liveMessages.value.length === 0) tasks.push(loadMessages())
       await Promise.all(tasks)
+      if (!runs.value.some((r) => r.status === 'running' || r.status === 'pending')) {
+        stopPolling()
+        return
+      }
       scrollToBottomIfNear()
     }, 1500)
     void rpcApi.loadRpcStatus()
@@ -319,7 +341,10 @@ export const useAgentStore = defineStore('agent', () => {
       if (sessionKey === sessionsApi.activeKey.value) stopPolling()
       void loadChatFor(sessionKey)
     },
-    onBatchFlushed: () => scrollToBottomIfNear(),
+    // 只对激活会话的批次跟进滚动：后台会话的流式输出不该抢走前台正在读的位置
+    onBatchFlushed: (sessionKeys) => {
+      if (sessionKeys.includes(sessionsApi.activeKey.value)) scrollToBottomIfNear()
+    },
   })
 
   const workspaceMounted = ref(false)
@@ -575,9 +600,27 @@ export const useAgentStore = defineStore('agent', () => {
   }
 
   function handleMenuKeydown(e: KeyboardEvent): void {
+    // Esc 在菜单里的语义永远是「关掉菜单」，与菜单有没有选项无关：
+    // 空菜单不处理 Esc 时按键会冒到全局逐层退出链，直接把窗口最小化到托盘。
+    if (e.key === 'Escape') {
+      if (
+        modelsApi.showModelMenu.value
+        || composer.showSkillMenu.value
+        || composer.showEntityMenu.value
+      ) {
+        e.preventDefault()
+        modelsApi.showModelMenu.value = false
+        composer.showSkillMenu.value = false
+        composer.showEntityMenu.value = false
+        return
+      }
+    }
     if (modelsApi.showModelMenu.value) {
       const total = 1 + modelsApi.availableModels.value.length
-      if (total > 1) {
+      if (total <= 1) {
+        // 只有「默认」一项（模型列表未拉到）：不吞按键，关掉菜单让 Enter 正常发送
+        modelsApi.showModelMenu.value = false
+      } else {
         if (e.key === 'ArrowDown') {
           e.preventDefault()
           modelsApi.modelMenuIndex.value = (modelsApi.modelMenuIndex.value + 1) % total
@@ -592,16 +635,16 @@ export const useAgentStore = defineStore('agent', () => {
             const m = modelsApi.availableModels.value[modelsApi.modelMenuIndex.value - 1]
             if (m) modelsApi.pickModel(m)
           }
-        } else if (e.key === 'Escape') {
-          e.preventDefault()
-          modelsApi.showModelMenu.value = false
         }
+        return
       }
-      return
     }
     if (composer.showSkillMenu.value) {
       const total = composer.filteredSkills.value.length
-      if (total === 0) return
+      if (total === 0) {
+        composer.showSkillMenu.value = false
+        return
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         composer.skillMenuIndex.value = (composer.skillMenuIndex.value + 1) % total
@@ -612,15 +655,15 @@ export const useAgentStore = defineStore('agent', () => {
         e.preventDefault()
         const s = composer.filteredSkills.value[composer.skillMenuIndex.value]
         if (s) composer.pickSkill(s)
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        composer.showSkillMenu.value = false
       }
       return
     }
     if (composer.showEntityMenu.value) {
       const total = composer.filteredSourcesCount.value + composer.filteredReleasesCount.value
-      if (total === 0) return
+      if (total === 0) {
+        composer.showEntityMenu.value = false
+        return
+      }
       if (e.key === 'ArrowDown') {
         e.preventDefault()
         composer.entityMenuIndex.value = (composer.entityMenuIndex.value + 1) % total
@@ -638,18 +681,28 @@ export const useAgentStore = defineStore('agent', () => {
           const rel = composer.filteredReleases.value[i - s]
           if (rel) composer.pickEntity('release', rel.id)
         }
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        composer.showEntityMenu.value = false
       }
     }
+  }
+
+  /** 当前打开的菜单里是否有可选中的项。
+   *  模型列表未拉到 / skill 与实体筛选无匹配时菜单是空的，此时按键不该被吞。 */
+  function openMenuHasNoItems(): boolean {
+    if (modelsApi.showModelMenu.value) return 1 + modelsApi.availableModels.value.length <= 1
+    if (composer.showSkillMenu.value) return composer.filteredSkills.value.length === 0
+    if (composer.showEntityMenu.value) {
+      return composer.filteredSourcesCount.value + composer.filteredReleasesCount.value === 0
+    }
+    return false
   }
 
   function handleComposerKeydown(e: KeyboardEvent): void {
     if (e.isComposing) return
     if (composer.showSkillMenu.value || composer.showEntityMenu.value || modelsApi.showModelMenu.value) {
+      const noItems = openMenuHasNoItems()
       handleMenuKeydown(e)
-      return
+      // 空菜单只负责「把自己关掉」，按键继续走正常路径（Enter 照旧发送）
+      if (!noItems) return
     }
     if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       e.preventDefault()
