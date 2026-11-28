@@ -54,7 +54,9 @@ pub fn create_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Err
     let menu = menu.separator().item(&test_notification);
     let menu = menu.separator().item(&quit).build()?;
 
-    let icon = app.default_window_icon().cloned().ok_or("no icon")?;
+    let icon = cached_tray_icon(false)
+        .or_else(|| app.default_window_icon().cloned())
+        .ok_or("no icon")?;
 
     let _tray = TrayIconBuilder::with_id("main-tray")
         .icon(icon)

@@ -39,8 +39,13 @@ const showUpdateDownloadPage = computed(() => updateErrorKind.value !== 'unsuppo
 <template>
   <div class="settings-form">
     <div class="about-header">
-      <div class="about-app-name">{{ t('about.app_name') }}</div>
-      <div class="about-version">{{ t('about.version') }} v{{ version }}</div>
+      <div class="about-brand">
+        <img class="about-app-icon" src="/favicon.svg" :alt="t('about.app_name')" width="72" height="72" />
+        <div class="about-brand-meta">
+          <div class="about-app-name">{{ t('about.app_name') }}</div>
+          <div class="about-version">{{ t('about.version') }} v{{ version }}</div>
+        </div>
+      </div>
       <p class="setting-section-desc">{{ t('about.app_desc') }}</p>
       <div class="setting-row">
         <a class="setting-link" href="https://github.com/hhelibeb/relwatch">{{ t('about.github') }}: github.com/hhelibeb/relwatch</a>
@@ -102,13 +107,35 @@ const showUpdateDownloadPage = computed(() => updateErrorKind.value !== 'unsuppo
 .about-header {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   padding: 4px 0 8px;
+}
+
+.about-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.about-app-icon {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  display: block;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.about-brand-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .about-app-name {
   font-size: var(--fs-display);
   font-weight: 700;
+  line-height: 1.2;
 }
 
 .about-version {

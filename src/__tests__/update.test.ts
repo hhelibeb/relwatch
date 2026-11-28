@@ -525,6 +525,9 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
 
   it('关于页展示应用信息与软件更新分组标题', async () => {
     const wrapper = await mountSettingsTabOnAbout()
+    const icon = wrapper.find('.about-app-icon')
+    expect(icon.exists()).toBe(true)
+    expect(icon.attributes('src')).toBe('/favicon.svg')
     expect(wrapper.text()).toContain(t('about.app_name'))
     expect(wrapper.text()).toContain(t('about.version'))
     expect(wrapper.text()).toContain(t('update.section_title'))

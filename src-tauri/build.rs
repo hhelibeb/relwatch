@@ -2,6 +2,16 @@ use std::fs;
 use std::path::Path;
 
 fn main() {
+  for icon in [
+    "icons/icon.ico",
+    "icons/icon.png",
+    "icons/32x32.png",
+    "icons/128x128.png",
+    "icons/128x128@2x.png",
+  ] {
+    println!("cargo:rerun-if-changed={icon}");
+  }
+
   // 禁用 tauri-build 的默认 app manifest（common-controls v6），
   // 改由下方统一通过链接参数嵌入，确保 bin 与测试目标行为一致。
   tauri_build::try_build(
