@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -7,7 +8,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{broadcast, oneshot, Mutex, Notify};
 
 use crate::db::agent::{load_agent_config, AgentConfig, MAX_AGENT_CONCURRENCY};
-use super::discovery::{ensure_supported_type, read_scoped_model_patterns, resolve_agent_binary};
+use super::discovery::{
+    ensure_supported_type, normalize_path, read_scoped_model_patterns, resolve_agent_binary,
+};
 use super::os::{self, ProcessScope};
 use super::process::{ProcessLease, RpcProcess, EVENT_CAPACITY};
 use super::RpcAvailableModel;
@@ -308,7 +311,9 @@ impl RpcManager {
 
     async fn permanent(&self) -> Result<Arc<RpcProcess>, String> {
         loop {
-            let notified = {
+            let notified = self.pool_notify.notified();
+            tokio::pin!(notified);
+            let must_wait = {
                 let mut pool = self.pool.lock().await;
                 if let Some(p) = pool.permanent.as_ref() {
                     if !p.is_dead() {
@@ -317,14 +322,17 @@ impl RpcManager {
                     pool.permanent = None;
                 }
                 if pool.spawning_permanent {
-                    Some(self.pool_notify.notified())
+                    // 必须在持锁时就注册等待者：notify_waiters() 不存 permit，
+                    // 解锁到首次 poll 之间触发的通知会永久丢失（随后无限等待）。
+                    notified.as_mut().enable();
+                    true
                 } else {
                     pool.spawning_permanent = true;
-                    None
+                    false
                 }
             };
-            if let Some(wait) = notified {
-                wait.await;
+            if must_wait {
+                notified.await;
                 continue;
             }
 
@@ -428,6 +436,26 @@ impl RpcManager {
         if proc.command(json!({"type": "abort"})).await.is_err() {
             log::warn!("agent rpc abort 无响应，强杀进程树 (run={})", run_id);
             self.kill_process(&proc).await;
+        }
+    }
+
+    /// 会话文件被删除后清掉进程里的 session 缓存。
+    ///
+    /// `ensure_session` 以缓存判断是否需要 `switch_session`：不清缓存时，删掉文件的会话
+    /// 下一次提交会因缓存命中而跳过切换，让 pi 继续往已删除的路径写。
+    pub async fn forget_session_path(&self, session_path: &Path) {
+        let target = normalize_path(&session_path.to_string_lossy());
+        let pool = self.pool.lock().await;
+        for proc in pool.permanent.iter().chain(pool.temps.iter()) {
+            let mut cached = proc.session.lock().unwrap();
+            if cached
+                .as_deref()
+                .map(normalize_path)
+                .as_deref()
+                == Some(target.as_str())
+            {
+                *cached = None;
+            }
         }
     }
 
@@ -712,6 +740,49 @@ rl.on('line', (line) => {
         assert!(!rpc.restart_pending());
         rpc.restart_if_pending().await;
         assert!(!rpc.restart_pending());
+    }
+
+    #[tokio::test]
+    async fn concurrent_model_queries_share_one_permanent_process() {
+        if !node_available() {
+            return;
+        }
+        // 并发进 permanent() 时后一个会进 waiting 分支：等待者必须在持锁时就注册，
+        // 否则 notify_waiters() 会在解锁到首次 poll 之间丢掉唤醒而永久挂起。
+        let rpc = Arc::new(RpcManager::with_test_spawn(
+            Arc::new(StaticConfigProvider(default_test_config())),
+            |_| fake_rpc_command(FAKE_RPC_SCRIPT),
+        ));
+        let (a, b) = tokio::join!(rpc.get_available_models(), rpc.get_available_models());
+        assert_eq!(a.unwrap().len(), 1);
+        assert_eq!(b.unwrap().len(), 1);
+        assert_eq!(rpc.process_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn forget_session_path_clears_cached_session() {
+        if !node_available() {
+            return;
+        }
+        let rpc = Arc::new(RpcManager::with_test_spawn(
+            Arc::new(StaticConfigProvider(default_test_config())),
+            |_| fake_rpc_command(FAKE_RPC_SCRIPT),
+        ));
+        let lease = rpc.acquire(301).await.unwrap();
+        lease.ensure_session("E:/tmp/ws-a.jsonl").await.unwrap();
+        assert_eq!(lease.cached_session().as_deref(), Some("E:/tmp/ws-a.jsonl"));
+
+        rpc.forget_session_path(Path::new("E:/tmp/ws-a.jsonl")).await;
+        assert_eq!(
+            lease.cached_session(),
+            None,
+            "会话文件被删后缓存必须清掉，否则 pi 会继续往已删除的路径写"
+        );
+
+        // 清缓存后同一路径再次使用时必须重新下发 switch_session
+        lease.ensure_session("E:/tmp/ws-a.jsonl").await.unwrap();
+        assert_eq!(lease.cached_session().as_deref(), Some("E:/tmp/ws-a.jsonl"));
+        lease.release().await;
     }
 
     #[tokio::test]

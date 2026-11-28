@@ -56,6 +56,11 @@ impl ProcessLease {
         self.is_temp
     }
 
+    #[cfg(test)]
+    pub(crate) fn cached_session(&self) -> Option<String> {
+        self.proc.session.lock().unwrap().clone()
+    }
+
     pub async fn ensure_session(&self, session_path: &str) -> Result<(), String> {
         let current = self
             .proc
@@ -106,6 +111,15 @@ impl ProcessLease {
             self.mgr.release_permanent(&self.proc).await;
         }
     }
+
+    /// 弃用整个进程：既脱离池，也杀掉进程树。
+    ///
+    /// 当租约不能确认事件流已归零（未收到 `agent_settled`）时必须走这里：
+    /// 把仍有残留事件的进程还给池，下一个任务会收到上一轮的迟到事件。
+    pub async fn destroy(mut self) {
+        self.released = true;
+        self.mgr.kill_process(&self.proc).await;
+    }
 }
 
 impl Drop for ProcessLease {
@@ -117,7 +131,7 @@ impl Drop for ProcessLease {
             "agent lease dropped without release (run={}); retiring its process",
             self.proc.busy_run.load(Ordering::SeqCst)
         );
-        self.proc.kill_sync();
+        self.proc.kill_detached();
         self.proc.clear_busy();
     }
 }
@@ -210,12 +224,20 @@ impl RpcProcess {
         }
     }
 
-    pub(super) fn kill_sync(&self) {
-        if let Some(pid) = self._child.id() {
-            os::kill_process_tree(pid);
-        }
+    /// 不在当前线程上同步跑 `taskkill`/`kill`：Drop 常落在 Tokio worker 上，
+    /// 外部命令（尤其是 `Command::output()`）会阻塞整个 worker。
+    pub(super) fn kill_detached(&self) {
         self.dead.store(true, Ordering::SeqCst);
         self.exited.notify_waiters();
+        let Some(pid) = self._child.id() else {
+            return;
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.spawn_blocking(move || os::kill_process_tree(pid));
+            }
+            Err(_) => os::kill_process_tree(pid),
+        }
     }
 
     pub(super) async fn kill(&self) {

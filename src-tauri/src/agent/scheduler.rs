@@ -166,6 +166,11 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
         }
     });
 
+    let cancel_probe = {
+        let cancelled = ctx.cancelled.clone();
+        move || cancelled.lock().unwrap().contains(&run_id)
+    };
+
     let outcome = executor
         .execute(&AgentContext {
             run_id,
@@ -181,6 +186,7 @@ pub async fn dispatch_run(ctx: &AgentDispatchCtx, run_id: i64) {
             on_stream: stream_target
                 .as_ref()
                 .map(|f| f as &(dyn Fn(&serde_json::Value) + Send + Sync)),
+            is_cancelled: Some(&cancel_probe),
         })
         .await;
 

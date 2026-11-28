@@ -28,6 +28,11 @@ pub struct AgentContext<'a> {
     pub first_turn: bool,
     pub timeout_seconds: u64,
     pub on_stream: Option<&'a (dyn Fn(&serde_json::Value) + Send + Sync)>,
+    /// 查询该 run 是否已被用户取消。
+    ///
+    /// 调度前查过一次，但那次检查到真正发出 prompt 之间取消可能才落下，
+    /// 那时 abort 会因为 run 尚未占用进程而空转，所以 executor 需要在拿到租约后自行复查。
+    pub is_cancelled: Option<&'a (dyn Fn() -> bool + Send + Sync)>,
 }
 
 pub struct AgentOutcome {

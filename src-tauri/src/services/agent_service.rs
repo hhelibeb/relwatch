@@ -400,25 +400,14 @@ pub async fn cancel_run(
     if run.status != "pending" && run.status != "running" {
         return Ok(());
     }
-    let was_running = run.status == "running";
 
     // 必须先插取消标记再 abort：pi 的 abort 响应晚于 agent_end，避免 dispatch 误记 failed
     agent_cancelled.lock().unwrap().insert(run_id);
 
-    if was_running {
-        let still_running = db::run_blocking(pool, move |conn| {
-            Ok(db_agent::get_run(conn, run_id)
-                .ok()
-                .flatten()
-                .map(|r| r.status == "running")
-                .unwrap_or(false))
-        })
-        .await
-        .unwrap_or(false);
-        if still_running {
-            agent_rpc.abort_run(run_id).await;
-        }
-    }
+    // 非终态一律尝试 abort：首次读到的 pending 不代表没有宿主进程（dispatch 可能刚好在
+    // 这一瞬租到进程并标成 running），按 was_running 门控会漏发 abort、让任务照样跑完。
+    // 对本就无宿主进程的 run，abort_run 自身是 no-op。
+    agent_rpc.abort_run(run_id).await;
 
     let finished = db::run_blocking(pool, move |conn| {
         Ok(db_agent::get_run(conn, run_id)
@@ -451,6 +440,48 @@ pub async fn cancel_runs_best_effort(
     Ok(())
 }
 
+/// 删除会话前等待在跑 run 落定的上限（略高于 executor 的 agent_settled 收尾预算）。
+const SESSION_SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+const SESSION_SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// 会话文件路径：与 `remove_session_file_in` 同一套命名，测试里也能指向临时目录。
+fn session_file_path(dir: &Path, session_key: &str) -> PathBuf {
+    dir.join(format!("ws-{}.jsonl", session_key))
+}
+
+/// 等「正在跑」的 run 落定。
+///
+/// 删会话文件前必须确认没有 pi 进程还在 append 这个 jsonl：Windows 上会直接删失败，
+/// 其他平台会写完一个已删除的「幽灵会话」。只等 running：pending 的 run 还没起进程，
+/// dispatch 在起进程前会先吃掉取消标记。
+async fn wait_running_runs_settle(pool: &DbPool, run_ids: &[i64]) {
+    let deadline = tokio::time::Instant::now() + SESSION_SETTLE_BUDGET;
+    loop {
+        let ids = run_ids.to_vec();
+        let running = db::run_blocking(pool, move |conn| {
+            let mut running: Vec<i64> = Vec::new();
+            for id in ids {
+                if let Ok(Some(run)) = db_agent::get_run(conn, id) {
+                    if run.status == "running" {
+                        running.push(id);
+                    }
+                }
+            }
+            Ok(running)
+        })
+        .await
+        .unwrap_or_default();
+        if running.is_empty() {
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            log::warn!("会话删除等待超时，仍有 run 在运行: {:?}", running);
+            return;
+        }
+        tokio::time::sleep(SESSION_SETTLE_POLL).await;
+    }
+}
+
 pub async fn delete_agent_session(
     pool: &DbPool,
     agent_rpc: &RpcManager,
@@ -475,7 +506,16 @@ async fn delete_agent_session_in(
     let active_ids =
         db::run_blocking(pool, move |conn| Ok(db_agent::active_runs_for_session(conn, &sk)?))
             .await?;
-    cancel_runs_best_effort(pool, agent_rpc, agent_cancelled, active_ids).await?;
+    if !active_ids.is_empty() {
+        cancel_runs_best_effort(pool, agent_rpc, agent_cancelled, active_ids.clone()).await?;
+        wait_running_runs_settle(pool, &active_ids).await;
+    }
+
+    // 必须在删文件之前清缓存：ensure_session 靠它判断是否需要 switch_session，
+    // 残留的缓存会让下一次提交直接跳转切会话、继续往已删除的路径写。
+    agent_rpc
+        .forget_session_path(&session_file_path(&sessions_dir, &session_key))
+        .await;
 
     db::run_blocking(pool, move |conn| {
         remove_session_file_in(&sessions_dir, &session_key)
@@ -522,7 +562,15 @@ async fn prune_agent_sessions_in(
         Ok(db_agent::batch_active_runs_for_sessions(conn, &vk)?)
     })
     .await?;
-    cancel_runs_best_effort(pool, agent_rpc, agent_cancelled, active_run_ids).await?;
+    if !active_run_ids.is_empty() {
+        cancel_runs_best_effort(pool, agent_rpc, agent_cancelled, active_run_ids.clone()).await?;
+        wait_running_runs_settle(pool, &active_run_ids).await;
+    }
+    for key in &valid_keys {
+        agent_rpc
+            .forget_session_path(&session_file_path(&sessions_dir, key))
+            .await;
+    }
 
     db::run_blocking_mut(pool, move |conn| {
         prune_session_files_and_db(conn, &sessions_dir, valid_keys, invalid_keys)
