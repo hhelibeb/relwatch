@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-11-28
+
+### Added
+- 版本列表支持批量选择与一键全部标为已读，常用状态操作可一次处理多条。(`4c7bc62`)
+- 监控源批量操作改为单条命令执行，中途失败不再留下半完成状态；新增按源全部标为已读。(`665f695`)
+- 图片查看器支持旋转与 R 快捷键。(`e77b978`)
+- 版本卡片封面改走内置查看器，低清封面自动升级为高清。(`248f53f`)
+- 重绘应用图标，托盘与关于页统一使用新品牌图。(`b744d73`)
+
+### Changed
+- GitHub 源开放预发布版本开关。(`4bb3653`)
+- 依赖升级（`vite`、`vue`、`marked`、`@tauri-apps/cli` 等 patch / minor 版本）。(`f2f349e`)
+
+### Fixed
+- 修复通知定位留下键盘选中框、鼠标操作光标不消失的问题。(`c49d1c4`)
+- 修复后台生成的摘要要等手动刷新或下一轮轮询才显示在卡片上的问题。(`e9a9f54`)
+- 修复窗口最小化后面板宽度被写成最小值、分隔条拖拽卡住、托盘点击反而隐藏窗口的问题。(`b95188c`)
+- 修复 Agent 流式命令输出不显示、重启后模型配置丢失、后台消息拽走阅读位置、轮询卡死及菜单 Esc 误最小化窗口的问题。(`b553258`, `414e343`)
+- 修复版本摘要截断位置错误、虚拟列表行高不更新导致卡片重叠的问题。(`da8a51e`)
+- 修复聚合视图批量选择误伤未展开分组版本的问题。(`fb2b46e`)
+- 修复旧运行事件污染新回答、会话历史在切换模型或压缩后丢失的问题。(`579c912`, `768c80b`)
+- 修复 YouTube 直播更新被视频挤出抓取窗口、封面取不到高清档位的问题。(`8df742a`, `777b69d`)
+- 修复 Agent 取消或删除会话时残留事件影响下一次任务的问题。(`321e8c5`)
+- 修复 Windows 凭据读取空数据、通知线程 COM 初始化不配对的问题。(`96e4a97`)
+
+### Security
+- 通知外链与 B 站登录窗口补齐 URL 协议白名单，堵住协议降级与伪造 host。(`1b2dda2`)
+- 收口 SSRF 豁免、分页同源校验、命令行注入与会话路径穿越等安全边界。(`308bfd5`)
+
 ## [1.22.0] - 2026-11-26
 
 ### Added
@@ -575,7 +604,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - Tab styling optimization and spacing unification.
 
-[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.22.0...HEAD
+[Unreleased]: https://github.com/hhelibeb/relwatch/compare/v1.23.0...HEAD
+[1.23.0]: https://github.com/hhelibeb/relwatch/compare/v1.22.0...v1.23.0
 [1.22.0]: https://github.com/hhelibeb/relwatch/compare/v1.21.0...v1.22.0
 [1.21.0]: https://github.com/hhelibeb/relwatch/compare/v1.20.0...v1.21.0
 [1.20.0]: https://github.com/hhelibeb/relwatch/compare/v1.19.1...v1.20.0
