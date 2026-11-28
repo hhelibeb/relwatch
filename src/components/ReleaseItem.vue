@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, inject, nextTick, onMounted, onUnmounted, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type ComponentPublicInstance } from 'vue'
+import { storeToRefs } from 'pinia'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import ImageLightbox from './common/ImageLightbox.vue'
-import MarkdownContent from './common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
+import BaseTooltip from './ui/BaseTooltip.vue'
+import ReleaseVideoCardBody from './release/ReleaseVideoCardBody.vue'
+import ReleaseStandardCardBody from './release/ReleaseStandardCardBody.vue'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { t, getLocale } from '../i18n'
-import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel, tokenizeQuery, SNOOZE_MINUTES, type BodyIndex, type AutoReadDetailMode } from '../utils'
+import { formatDate, formatDateNoSeconds, formatDateShort, isReadStatus, isUnreadStatus, statusClass, statusLabel, tokenizeQuery, SNOOZE_MINUTES, type BodyIndex } from '../utils'
 import { collectQueryRanges, registerHighlightRanges, unregisterHighlightOwner, searchHighlightSupported, extractBodySnippet } from '../utils/searchHighlight'
 import { releaseDisplayTitle, releaseImportanceText, releaseImportanceClass, canTranslateRelease, releaseTitleRedundant } from '../utils/releaseDisplay'
 import { FLAG_ITEMS } from '../utils/releaseFlag'
@@ -19,6 +21,11 @@ import { useLineClamp } from '../composables/useLineClamp'
 import { useReleaseActions } from '../composables/useReleaseActions'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
 import { getSourceTypeDef, type HfMetaView } from '../api/source-registry'
+import { extractErrorMessage } from '../services/feedback'
+import { useUiStore } from '../stores/ui'
+import { useSettingsStore } from '../stores/settings'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
 const props = defineProps<{
@@ -30,23 +37,23 @@ const props = defineProps<{
   searchQuery?: string
   bodyIndex?: BodyIndex | null
 }>()
+
 const emit = defineEmits<{
   update: []
   'open-detail': [release: ReleaseInfo]
   'toggle-select': [releaseId: number, shiftKey: boolean]
 }>()
-const showToast = inject(ShowToastKey, () => {})
-const aiEnabledRef = inject(AiEnabledKey, ref(false))
-const showImportance = inject(ShowImportanceKey, ref(false))
-const agentEnabledRef = inject(AgentEnabledKey, ref(false))
-const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
-// 工作区打开状态：拖拽落点存在时才启用卡片拖拽，否则恢复文本选择（拖动选字不被拖拽劫持）
-const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
-// 自动标为已读档位：跳发布页也读同一档位，关掉后不能再有旁路默默消未读
-const autoReadDetail = inject(AutoReadDetailKey, ref<AutoReadDetailMode>('off'))
 
-const aiEnabled = computed(() => aiEnabledRef.value)
-const agentEnabled = computed(() => agentEnabledRef.value)
+const ui = useUiStore()
+const settingsStore = useSettingsStore()
+const catalog = useCatalogStore()
+const agentStore = useAgentStore()
+
+const { aiEnabled, showImportance, autoReadDetail } = storeToRefs(settingsStore)
+const { agentEnabled } = storeToRefs(catalog)
+const { panelOpen: agentPanelOpen } = storeToRefs(agentStore)
+
+const showToast = (msg: string) => ui.showToast(msg)
 
 const {
   isUpdating,
@@ -60,36 +67,22 @@ const {
 } = useReleaseActions({
   release: () => props.release,
   showToast,
-  openAgentWorkspace,
+  openAgentWorkspace: (seed) => agentStore.openWorkspace(seed),
   onUpdated: () => emit('update'),
   onBeforeAction: () => closeMenus(),
 })
-let pendingShiftSelect = false
 
 function onSelectCheckboxClick(e: MouseEvent) {
-  pendingShiftSelect = e.shiftKey
-  queueMicrotask(() => { pendingShiftSelect = false })
+  emit('toggle-select', props.release.id, e.shiftKey)
 }
 
-function onSelectCheckboxChange() {
-  const shift = pendingShiftSelect
-  pendingShiftSelect = false
-  emit('toggle-select', props.release.id, shift)
-}
-
-// ========== 卡片内容预览：摘要 > 译文 > 原文 ==========
-// 摘要/译文/原文的切换集中在详情弹窗内进行，
-// 点击正文预览或「阅读全文」按钮一步直达弹窗阅读全文。
 const { translating, handleTranslateRelease } = useReleaseTranslate({
   release: () => props.release,
   showToast,
-  // 翻译开始前关闭右键菜单，避免菜单残留
   onStart: () => { summaryContextMenu.value = null },
   onSuccess: () => emit('update'),
 })
 
-// 卡片只展示一种内容：摘要是概览的首选；无摘要时回退到译文/原文截断预览
-// （HuggingFace 源的 body 是模型 README，作为“原文”展示）
 const previewKind = computed<'summary' | 'body' | null>(() => {
   if (props.release.ai_summary) return 'summary'
   if (props.release.body_translated || props.release.body) return 'body'
@@ -104,8 +97,6 @@ const previewContent = computed<string | null>(() => {
   }
 })
 
-// 只要有正文或译文可看，就提供「阅读全文」入口（按钮 + 右键菜单），
-// 短内容也可能需要在弹窗中聚焦阅读、复制或逐版本导航
 const canOpenDetail = computed(() => !!(props.release.body || props.release.body_translated))
 
 function openDetail() {
@@ -114,56 +105,7 @@ function openDetail() {
   emit('open-detail', props.release)
 }
 
-// ========== 摘要悬浮提示 ==========
-const summaryTooltip = ref<{ x: number; y: number; text: string } | null>(null)
-
-function isSummaryTruncated(el: HTMLElement): boolean {
-  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1
-}
-
-function placeSummaryTooltip(x: number, y: number, text: string) {
-  const maxWidth = 520
-  const margin = 16
-  const left = Math.max(margin, Math.min(x + 12, window.innerWidth - maxWidth - margin))
-  summaryTooltip.value = { x: left, y: y + 12, text }
-}
-
-function handleSummaryEnter(e: MouseEvent, summary: string | null) {
-  if (!summary) return
-  // 窗口刚隐藏/失焦回来时为失效期：此时到达的 hover 事件可能是 Chromium 用旧坐标
-  // 重放出来的，不是用户真的把鼠标移上来了（详见 contextMenuBus 的失效期说明）
-  if (isTransientUiInvalidated()) return
-  const el = e.currentTarget as HTMLElement
-  // 手动截断（summaryDisplay 非空）或 line-clamp 截断时都提供全文悬浮提示
-  if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
-  placeSummaryTooltip(e.clientX, e.clientY, summary)
-}
-
-function handleSummaryMove(e: MouseEvent) {
-  if (!summaryTooltip.value) return
-  placeSummaryTooltip(e.clientX, e.clientY, summaryTooltip.value.text)
-}
-
-function handleSummaryFocus(e: FocusEvent, summary: string | null) {
-  if (!summary) return
-  // 隐藏到托盘时 Chromium 不补 mouseleave，却会在窗口重新显示时给"隐藏前获得焦点的
-  // 元素"重放一次 focus（实测：SW_HIDE → SW_SHOW 后收到 WINDOW focus + target focus，
-  // 无任何鼠标事件）。不拦的话就是"鼠标早就不在卡片上、提示自己冒出来"。
-  if (isTransientUiInvalidated()) return
-  const el = e.currentTarget as HTMLElement
-  if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
-  const rect = el.getBoundingClientRect()
-  placeSummaryTooltip(rect.left, rect.bottom, summary)
-}
-
-function hideSummaryTooltip() {
-  summaryTooltip.value = null
-}
-
-// ========== 摘要行级截断与按钮定位 ==========
-// 摘要超过两行时：前两行满行，第三行在按钮左侧精确截断（自带省略号），按钮悬浮其右侧，
-// 两者不重叠（截断仅作用于显示层，tooltip/右键菜单仍用完整摘要）；
-// 不足两行时按钮独立成行，避免悬浮遮挡正文。
+// ── 摘要行级截断 ──
 const {
   textRef: summaryTextRef,
   display: summaryDisplay,
@@ -173,12 +115,50 @@ const {
   expandBtnSelector: '.release-expand-btn',
 })
 
-// ========== 右键菜单 ==========
-// onCover：右键落点是否为视频封面——封面专属操作（复制封面图片等）只在这种情况下进菜单
+function bindSummaryTextEl(el: Element | ComponentPublicInstance | null) {
+  summaryTextRef.value = el as HTMLElement | null
+}
+
+// ── 悬浮提示（均交由 BaseTooltip 防溢出与失效守卫）──
+const summaryTooltip = ref<{ x: number; y: number; text: string } | null>(null)
+const hfHoverTooltip = ref<{ visible: boolean; x: number; y: number } | null>(null)
+
+function isSummaryTruncated(el: HTMLElement): boolean {
+  return el.scrollHeight > el.clientHeight + 1 || el.scrollWidth > el.clientWidth + 1
+}
+
+function handleSummaryEnter(e: MouseEvent, summary: string | null) {
+  if (!summary || isTransientUiInvalidated()) return
+  const el = e.currentTarget as HTMLElement
+  if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
+  summaryTooltip.value = { x: e.clientX, y: e.clientY, text: summary }
+}
+
+function handleSummaryMove(e: MouseEvent) {
+  if (!summaryTooltip.value) return
+  summaryTooltip.value = { x: e.clientX, y: e.clientY, text: summaryTooltip.value.text }
+}
+
+function handleSummaryFocus(e: FocusEvent, summary: string | null) {
+  if (!summary || isTransientUiInvalidated()) return
+  const el = e.currentTarget as HTMLElement
+  if (summaryDisplay.value === null && !isSummaryTruncated(el)) return
+  const rect = el.getBoundingClientRect()
+  summaryTooltip.value = { x: rect.left, y: rect.bottom, text: summary }
+}
+
+function hideSummaryTooltip() {
+  summaryTooltip.value = null
+}
+
+// ── 右键菜单与旗标菜单 ──
 const contextMenu = ref<{ x: number; y: number; url: string; releaseId: number; onCover?: boolean } | null>(null)
+const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
+const flagMenu = ref<{ x: number; y: number } | null>(null)
+const flagButtonRef = ref<HTMLButtonElement | null>(null)
+let flagMenuKeyboardOpened = false
 
 function closeMenus() {
-  // 键盘唤出的旗标菜单关闭后焦点会落回 body，交还按钮以保住键盘位置
   if (flagMenu.value && flagMenuKeyboardOpened) {
     flagMenuKeyboardOpened = false
     void nextTick(() => flagButtonRef.value?.focus())
@@ -187,29 +167,21 @@ function closeMenus() {
   flagMenu.value = null
   summaryContextMenu.value = null
   summaryTooltip.value = null
-  // HF 元数据提示也是瞬态层：漏清会在窗口重新显示时原地复活
   hfHoverTooltip.value = null
 }
 
-const summaryContextMenu = ref<{ x: number; y: number; text: string } | null>(null)
-// 「翻译」选项仅在：有原文、无译文、源类型支持 AI（视频源除外）、AI 已启用 时出现
 const canTranslate = computed(() => canTranslateRelease(props.release, aiEnabled.value))
-// 「发送到 Agent」：Agent 启用时唤起工作区并预置当前版本引用
+
 function sendToAgentItem(): ContextMenuItem | null {
   if (!agentEnabled.value) return null
   return { id: 'sendToAgent', label: t('agent.send_to') }
 }
 
-// 使用 computed 保证语言切换后右键菜单 label 实时更新
 const summaryMenuItems = computed<ContextMenuItem[]>(() => {
   const items: ContextMenuItem[] = []
-  if (canOpenDetail.value) {
-    items.push({ id: 'readFull', label: t('release.read_full') })
-  }
+  if (canOpenDetail.value) items.push({ id: 'readFull', label: t('release.read_full') })
   items.push({ id: 'copyContent', label: t('context.copy_content') })
-  if (canTranslate.value) {
-    items.push({ id: 'translate', label: t('context.translate') })
-  }
+  if (canTranslate.value) items.push({ id: 'translate', label: t('context.translate') })
   const agentItem = sendToAgentItem()
   if (agentItem) items.push(agentItem)
   return items
@@ -218,12 +190,10 @@ const summaryMenuItems = computed<ContextMenuItem[]>(() => {
 const DEFAULT_FLAG = 1
 
 const releaseMenuItems = computed<ContextMenuItem[]>(() => {
-  // 此处仅保留链接与通用操作；旗标颜色选择在旗标按钮的右键专属菜单（flagMenuItems）
   const items: ContextMenuItem[] = [
     { id: 'openLink', label: t('context.open') },
     { id: 'copyLink', label: t('context.copy_link') },
   ]
-  // 封面专属操作：仅右键封面时出现（卡片其它位置的右键不改变现有菜单形态）
   if (contextMenu.value?.onCover && coverSourceUrl.value) {
     items.push({ id: 'copyCoverImage', label: t('context.copy_cover_image') })
     items.push({ id: 'copyCoverLink', label: t('context.copy_cover_image_link') })
@@ -248,21 +218,16 @@ async function handleCopySummary() {
   try {
     await copyTextToClipboard(summaryContextMenu.value.text)
   } catch (e: unknown) {
-    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.copy_failed') + extractErrorMessage(e))
   }
   summaryContextMenu.value = null
 }
 
 function handleSummaryMenuAction(actionId: string) {
-  if (actionId === 'readFull') {
-    openDetail()
-  } else if (actionId === 'copyContent') {
-    handleCopySummary()
-  } else if (actionId === 'translate') {
-    handleTranslateRelease()
-  } else if (actionId === 'sendToAgent') {
-    handleSendToAgent()
-  }
+  if (actionId === 'readFull') openDetail()
+  else if (actionId === 'copyContent') void handleCopySummary()
+  else if (actionId === 'translate') void handleTranslateRelease()
+  else if (actionId === 'sendToAgent') handleSendToAgent()
 }
 
 async function handleDeleteRelease() {
@@ -273,67 +238,39 @@ async function handleDeleteRelease() {
   isUpdating.value = true
   try {
     await deleteRelease(releaseId)
-    showToast?.(t('release.deleted_toast'))
+    showToast(t('release.deleted_toast'))
     emit('update')
   } catch (e: unknown) {
-    showToast?.(t('release.delete_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.delete_failed') + extractErrorMessage(e))
   } finally {
     isUpdating.value = false
   }
 }
 
 async function handleReleaseMenuAction(actionId: string) {
-  if (actionId === 'openLink') {
-    handleOpenLink()
-  } else if (actionId === 'copyLink') {
-    handleCopyLink()
-  } else if (actionId === 'copyCoverImage') {
-    void handleCopyCoverImage()
-  } else if (actionId === 'copyCoverLink') {
-    void handleCopyCoverLink()
-  } else if (actionId === 'openCoverImage') {
-    handleOpenCoverImage()
-  } else if (actionId === 'sendToAgent') {
-    handleSendToAgent()
-  } else if (actionId === 'deleteRelease') {
-    handleDeleteRelease()
-  }
+  if (actionId === 'openLink') handleOpenLink()
+  else if (actionId === 'copyLink') void handleCopyLink()
+  else if (actionId === 'copyCoverImage') void handleCopyCoverImage()
+  else if (actionId === 'copyCoverLink') void handleCopyCoverLink()
+  else if (actionId === 'openCoverImage') handleOpenCoverImage()
+  else if (actionId === 'sendToAgent') handleSendToAgent()
+  else if (actionId === 'deleteRelease') void handleDeleteRelease()
 }
 
 function toggleFlag() {
   void applyFlag(flagged.value ? 0 : DEFAULT_FLAG)
 }
 
-// ---- 拖拽：把版本作为实体拖入 Agent 工作区 ----
 function handleDragStart(e: DragEvent) {
   if (!agentEnabled.value || !agentPanelOpen.value) return
-  const data = JSON.stringify({ kind: 'release', id: props.release.id })
-  e.dataTransfer?.setData(ENTITY_DRAG_MIME, data)
+  e.dataTransfer?.setData(ENTITY_DRAG_MIME, JSON.stringify({ kind: 'release', id: props.release.id }))
   if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
 }
-onMounted(() => {
-  registerCloser(closeMenus)
-  document.addEventListener('click', closeMenus)
-})
-onUnmounted(() => {
-  unregisterCloser(closeMenus)
-  document.removeEventListener('click', closeMenus)
-  unregisterHighlightOwner(highlightOwner)
-})
 
 function releaseContextMenu(e: MouseEvent, url: string, onCover = false) {
   closeAllContextMenus()
-  const releaseId = props.release.id
-  contextMenu.value = { x: e.clientX, y: e.clientY, url, releaseId, onCover }
+  contextMenu.value = { x: e.clientX, y: e.clientY, url, releaseId: props.release.id, onCover }
 }
-
-// ========== 旗标按钮专属颜色菜单 ==========
-// 呼出方式：右键，或聚焦按钮后按 ArrowDown / 应用键 / Shift+F10（触屏与纯键盘操作的等价入口）。
-// 绝不做 hover 触发（卡片常被划过）；左键 = 打默认红/清除，见 toggleFlag。
-const flagMenu = ref<{ x: number; y: number } | null>(null)
-const flagButtonRef = ref<HTMLButtonElement | null>(null)
-// 仅键盘唤出的菜单在关闭后把焦点交还按钮：鼠标选择或点击外部关闭时不抢焦点
-let flagMenuKeyboardOpened = false
 
 function openFlagMenuAt(x: number, y: number, byKeyboard = false) {
   closeAllContextMenus()
@@ -345,7 +282,6 @@ function openFlagMenu(e: MouseEvent) {
   openFlagMenuAt(e.clientX, e.clientY)
 }
 
-/** 键盘唤出：无鼠标坐标可用，锚到按钮左下角；展开后的方向键导航/Esc 由 ContextMenu 接管 */
 function handleFlagTriggerKeydown(e: KeyboardEvent) {
   if (e.key !== 'ArrowDown' && e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return
   e.preventDefault()
@@ -355,25 +291,20 @@ function handleFlagTriggerKeydown(e: KeyboardEvent) {
 }
 
 const flagMenuItems = computed<ContextMenuItem[]>(() => {
-  const items: ContextMenuItem[] = FLAG_ITEMS.map(f => ({
+  const items: ContextMenuItem[] = FLAG_ITEMS.map((f) => ({
     id: `flag-${f.value}`,
     label: t(f.labelKey),
     iconHref: '/icons.svg#flag-tag-icon',
     color: f.color,
     checked: props.release.flag === f.value,
   }))
-  if (flagged.value) {
-    items.push({ id: 'flag-clear', label: t('release.flag_clear') })
-  }
+  if (flagged.value) items.push({ id: 'flag-clear', label: t('release.flag_clear') })
   return items
 })
 
 function handleFlagMenuAction(actionId: string) {
-  if (actionId === 'flag-clear') {
-    void applyFlag(0)
-  } else if (actionId.startsWith('flag-')) {
-    void applyFlag(Number(actionId.slice(5)))
-  }
+  if (actionId === 'flag-clear') void applyFlag(0)
+  else if (actionId.startsWith('flag-')) void applyFlag(Number(actionId.slice(5)))
 }
 
 async function handleCopyLink() {
@@ -381,19 +312,16 @@ async function handleCopyLink() {
   try {
     await copyTextToClipboard(contextMenu.value!.url)
   } catch (e: unknown) {
-    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.copy_failed') + extractErrorMessage(e))
   }
   closeMenus()
 }
 
 function handleOpenLink() {
-  openReleaseUrl(contextMenu.value!.url)
+  void openReleaseUrl(contextMenu.value!.url)
   closeMenus()
 }
 
-// ---- 封面专属操作：复制封面图片 / 复制封面图片链接 / 打开封面图片 ----
-// 封面原图 URL 先取出再关菜单（关菜单会清空 contextMenu，且复制过程中菜单可能被外部点击关闭）。
-// 一律用未过 media 网关的原始地址：网关地址只是给 <img> 绕过 CSP 用的，不是可分享的图片地址。
 async function handleCopyCoverImage() {
   const url = coverSourceUrl.value
   closeMenus()
@@ -408,14 +336,11 @@ async function handleCopyCoverLink() {
   try {
     await copyTextToClipboard(url)
   } catch (e: unknown) {
-    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.copy_failed') + extractErrorMessage(e))
   }
 }
 
-// 封面灯箱：<img> 走 media 网关（CSP 只放行 media.localhost），「打开原图」用未经网关的原始地址。
-// 卡片右键「打开封面图片」走内置查看器，不再丢给系统浏览器。
 const coverLightbox = ref<{ src: string; originalUrl: string } | null>(null)
-
 function handleOpenCoverImage() {
   const originalUrl = coverSourceUrl.value
   const src = youtubeThumb.value
@@ -432,32 +357,26 @@ async function updateReleaseStatus(_release: ReleaseInfo, status: NotificationSt
 async function handleGoRelease(release: ReleaseInfo) {
   track('release.open')
   if (isReadStatus(release.notification_status) || autoReadDetail.value === 'off') {
-    openReleaseUrl(release.html_url)
+    void openReleaseUrl(release.html_url)
     return
   }
   isUpdating.value = true
   try {
-    // 先标记已读再打开链接：保证状态与 UI 一致。若标记失败则不打开链接，
-    // 避免出现“链接已打开但列表仍显示未读”的不同步状态。
     await setNotificationState(release.id, 'clicked')
     emit('update')
-    openReleaseUrl(release.html_url)
+    void openReleaseUrl(release.html_url)
   } catch (e: unknown) {
-    showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.status_failed') + extractErrorMessage(e))
   } finally {
     isUpdating.value = false
   }
 }
 
-// ========== HuggingFace 模型元数据 ==========
-// HF 源的 release.extra_metadata 存储模型元数据 JSON（pipeline_tag/downloads/likes/gated/tags）
-// body 列存模型 README（人类可读内容）；解析逻辑收敛在 source-registry 的 renderMeta。
-
+// ── HuggingFace 元数据 ──
 const hfMeta = computed<HfMetaView | null>(() =>
-  getSourceTypeDef(props.release.source_type)?.renderMeta?.(props.release) ?? null
+  getSourceTypeDef(props.release.source_type)?.renderMeta?.(props.release) ?? null,
 )
 
-// HF 源 tooltip 内容：pipeline_tag / downloads / likes / gated
 const hfTooltip = computed<string | null>(() => {
   if (!hfMeta.value) return null
   const parts: string[] = []
@@ -468,34 +387,23 @@ const hfTooltip = computed<string | null>(() => {
   return parts.length ? parts.join('  ·  ') : null
 })
 
-const hfHoverTooltip = ref<{ visible: boolean; x: number; y: number } | null>(null)
-
 function showHfTooltip(e: MouseEvent) {
-  if (!hfTooltip.value) return
-  hfHoverTooltip.value = { visible: true, x: e.clientX + 10, y: e.clientY + 10 }
+  if (!hfTooltip.value || isTransientUiInvalidated()) return
+  hfHoverTooltip.value = { visible: true, x: e.clientX, y: e.clientY }
 }
-
 function moveHfTooltip(e: MouseEvent) {
   if (!hfHoverTooltip.value) return
-  hfHoverTooltip.value.x = e.clientX + 10
-  hfHoverTooltip.value.y = e.clientY + 10
+  hfHoverTooltip.value.x = e.clientX
+  hfHoverTooltip.value.y = e.clientY
 }
-
 function hideHfTooltip() {
   hfHoverTooltip.value = null
 }
 
-// 展示行为按源类型注册表能力决定（github 显示 owner/repo 前缀；HF/YT 隐藏）
+// ── 源布局与视频元数据 ──
 const showReleaseRepo = computed(() => getSourceTypeDef(props.release.source_type)?.showRepoPrefix === true)
-
-// YouTube 源：channel_id 无展示意义，tag_name（videoId）同样隐藏；
-// 显示真实频道名（source_description，兼容旧版 "YouTube channel: " 前缀）
 const isYoutube = computed(() => getSourceTypeDef(props.release.source_type)?.youtubeLayout === true)
 const showReleaseTag = computed(() => getSourceTypeDef(props.release.source_type)?.showTag !== false)
-
-// 通用布局的第二行标题：与版本号只是换种写法时不渲染（v3.6.0 vs v3.6.0 "Vapor"）。
-// YouTube/B 站走 yt-layout 分支，那里的 release_name 是视频标题、tag 是 videoId，
-// 两者语义不同，不能套用这条删减规则。
 const cardTitle = computed(() => {
   if (isYoutube.value) return ''
   return releaseTitleRedundant(props.release) ? '' : releaseDisplayTitle(props.release)
@@ -505,25 +413,16 @@ const youtubeChannelName = computed(() => {
   return def?.displayName?.(props.release.owner, props.release.repo, props.release.source_description)
     ?? `${props.release.owner}/${props.release.repo}`
 })
-
 const youtubeMeta = computed<VideoMeta | null>(() =>
-  isYoutube.value ? parseVideoMeta(props.release.extra_metadata) : null
+  isYoutube.value ? parseVideoMeta(props.release.extra_metadata) : null,
 )
 
-// 封面清晰度：RSS 只给 hqdefault（480×360）、Data API 早期只取 medium（320×180），
-// 卡片里看不清视频内容；而 YouTube 封面的可取值完全由 videoId 决定，低清档位一律升级到
-// maxresdefault（1280×720）。入库已是 standard/maxres 档（后端已选最高档）时信任后端，
-// 否则会为一张不存在的 maxres 多打一次 404，还被网关降级回 hqdefault（反而更糊）。
-// 高清图缺失时由 media 网关逐级回退 sddefault → hqdefault，不会破图。
 const LOW_TIER_THUMB = /\/vi\/[^/]+\/(?:default|mqdefault|hqdefault)\.jpg$/i
-
 const maxresCoverUrl = computed<string | null>(() => {
   if (props.release.source_type !== 'youtube') return null
   const id = (props.release.tag_name ?? '').trim()
   return /^[A-Za-z0-9_-]{6,32}$/.test(id) ? `https://i.ytimg.com/vi/${id}/maxresdefault.jpg` : null
 })
-
-// 展示用封面（未经 media 网关改写）：低清档升级，高清档信任入库值
 const coverDisplayUrl = computed<string | null>(() => {
   const stored = youtubeMeta.value?.thumbnail ?? null
   const upgraded = maxresCoverUrl.value
@@ -531,35 +430,23 @@ const coverDisplayUrl = computed<string | null>(() => {
   if (stored && !LOW_TIER_THUMB.test(stored)) return stored
   return upgraded
 })
-
-// 封面走 media 网关（mediaUrlOrEmpty：null → '' 兼容模板 v-if；远程 URL 改写为
-// http://media.localhost/<原图>，由 Rust 按代理设置下载；data:/相对路径原样保留）
 const youtubeThumb = computed(() => mediaUrlOrEmpty(coverDisplayUrl.value))
-// 可分享的封面地址：优先源站给出的真实地址，缺失时退回按 videoId 推导的地址。
-// 与“封面是否可见”保持同一来源，避免看得见图但右键没有封面菜单。
 const coverSourceUrl = computed(() => youtubeMeta.value?.thumbnail ?? maxresCoverUrl.value)
 const youtubeIsLive = computed(() => youtubeMeta.value?.kind === 'live')
-
 const youtubeDuration = computed(() => formatVideoDuration(youtubeMeta.value?.duration ?? null))
-
 const youtubeViewCount = computed(() => youtubeMeta.value?.viewCount ?? null)
-// 播放量文案（如“123.4万次播放”）；无数据（YouTube RSS 模式）返回 null 整行隐藏
 const youtubeViewText = computed(() => {
   const n = youtubeViewCount.value
   if (n == null) return null
   return t('release.yt_views', formatViewCount(n, getLocale()))
 })
-// 悬浮提示显示精确数字（格式化后的 123.4万 不便精确阅读）
 const youtubeViewTitle = computed(() =>
-  youtubeViewCount.value != null ? String(youtubeViewCount.value) : ''
+  youtubeViewCount.value != null ? String(youtubeViewCount.value) : '',
 )
 
-// ========== 搜索命中 ==========
-// 高亮走 CSS Custom Highlight API（零 DOM 改动）：摘要的行级截断测量依赖
-// 单一文本节点，插 <mark> 会让 useLineClamp 的 range 越界。
+// ── 搜索命中高亮 ──
 const cardEl = ref<HTMLElement | null>(null)
 const highlightOwner = {}
-// 按钮/时间/状态等 chrome 文本不参与命中高亮；片段自带 <mark>、代码语言标签也排除
 const HIGHLIGHT_SKIP = 'button, time, .status-inline, .release-importance-chip, .release-flag-chip, .release-header-right, .release-hit-snippet, .md-code-lang'
 
 function applySearchHighlight() {
@@ -568,7 +455,6 @@ function applySearchHighlight() {
     unregisterHighlightOwner(highlightOwner)
     return
   }
-  // 等子组件（MarkdownContent 的代码块增强）落定后再收集文本区间
   void nextTick(() => {
     const el = cardEl.value
     if (!el) return
@@ -577,26 +463,29 @@ function applySearchHighlight() {
 }
 
 watch(
-  [() => props.searchQuery, previewContent, summaryDisplay, cardTitle, youtubeChannelName,
-    () => props.release.tag_name, () => props.release.owner, () => props.release.repo],
+  [
+    () => props.searchQuery,
+    previewContent,
+    summaryDisplay,
+    cardTitle,
+    youtubeChannelName,
+    () => props.release.tag_name,
+    () => props.release.owner,
+    () => props.release.repo,
+  ],
   applySearchHighlight,
   { immediate: true },
 )
 
-// 卡片实际渲染出的预览文本：摘要超过两行时会被 summaryDisplay 截断，
-// 截断段的命中在卡片上完全看不到（DOM 里只有截断后的文本），必须算作「不可见」。
-// Markdown 正文预览是 CSS 高度裁切，渲染文本仍完整，这里按完整文本判断。
-const renderedPreview = computed(() => previewKind.value === 'summary'
-  ? (summaryDisplay.value ?? previewContent.value)
-  : previewContent.value)
+const renderedPreview = computed(() =>
+  previewKind.value === 'summary' ? (summaryDisplay.value ?? previewContent.value) : previewContent.value,
+)
 
-// 可见字段不含全部命中词时（深度搜索命中正文深处），给出命中上下文片段
 const bodyHitSnippet = computed(() => {
   const q = props.searchQuery ?? ''
   if (!q.trim()) return null
   const visible = `${props.release.owner}/${props.release.repo} ${props.release.tag_name} ${cardTitle.value} ${youtubeChannelName.value} ${renderedPreview.value ?? ''}`
   const indexed = props.bodyIndex?.get(props.release.id)
-  // 完整摘要兜底：命中只落在摘要折叠区时，正文候选里不一定有它
   const fullSummary = previewKind.value === 'summary' ? previewContent.value : null
   return extractBodySnippet(
     visible,
@@ -604,14 +493,34 @@ const bodyHitSnippet = computed(() => {
     q,
   )
 })
+
+onMounted(() => {
+  registerCloser(closeMenus)
+  document.addEventListener('click', closeMenus)
+})
+onUnmounted(() => {
+  unregisterCloser(closeMenus)
+  document.removeEventListener('click', closeMenus)
+  unregisterHighlightOwner(highlightOwner)
+})
 </script>
 
 <template>
-  <div class="release-item"
+  <div
     ref="cardEl"
-    :class="[{ 'is-prerelease': release.prerelease, 'release-highlight': props.highlighted, 'release-selected': props.selected, 'release-checked': props.selectable && props.checked }, showImportance ? releaseImportanceClass(release) : '']"
+    class="release-item"
+    :class="[
+      {
+        'is-prerelease': release.prerelease,
+        'release-highlight': props.highlighted,
+        'release-selected': props.selected,
+        'release-checked': props.selectable && props.checked,
+      },
+      showImportance ? releaseImportanceClass(release) : '',
+    ]"
     :draggable="agentEnabled && agentPanelOpen && !props.selectable"
-    @dragstart="handleDragStart">
+    @dragstart="handleDragStart"
+  >
     <div class="release-header">
       <div class="release-heading">
         <label v-if="props.selectable" class="release-select-box" @click.stop>
@@ -620,36 +529,69 @@ const bodyHitSnippet = computed(() => {
             :checked="props.checked"
             :aria-label="`${release.owner}/${release.repo} ${release.tag_name}`"
             @click="onSelectCheckboxClick"
-            @change="onSelectCheckboxChange"
           />
         </label>
         <span v-if="showReleaseRepo" class="release-repo" :title="`${release.owner}/${release.repo}`">{{ release.owner }}/{{ release.repo }}</span>
         <span v-else-if="isYoutube" class="release-repo release-repo-yt" :title="youtubeChannelName">{{ youtubeChannelName }}</span>
-        <!-- 版本号过长时与仓库名等权收缩（见样式 min-width:0 + 省略号）；完整值用原生 title 兜底。
-             HF 源自带的元数据 tooltip 也挂在 mouseenter 上，两者同时出现会叠成两层，
-             故有自定义 tooltip 时不绑 title（undefined 不落属性）。 -->
-        <span v-if="showReleaseTag" class="release-tag" :class="{ 'release-tag-hf': !showReleaseRepo }" :title="hfTooltip ? undefined : release.tag_name" @mouseenter="showHfTooltip($event)" @mousemove="moveHfTooltip($event)" @mouseleave="hideHfTooltip">{{ release.tag_name }}</span>
-        <!-- 用户旗标（Outlook 式贴纸）贴在版本号后：不打断「仓库名 + 版本号」的连贯语义，颜色即语义 -->
-        <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
-        <!-- 版本固有属性：只追加重要性提示（预发布由版本号自身（-rc/-beta/-alpha）表达）；
-             状态（圆点+文字）跟在后面自成一体，避免圆点被误读为重要性指示 -->
-        <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-        <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
+        <span
+          v-if="showReleaseTag"
+          class="release-tag"
+          :class="{ 'release-tag-hf': !showReleaseRepo }"
+          :title="hfTooltip ? undefined : release.tag_name"
+          @mouseenter="showHfTooltip($event)"
+          @mousemove="moveHfTooltip($event)"
+          @mouseleave="hideHfTooltip"
+        >{{ release.tag_name }}</span>
+        <span v-if="flagColor" class="release-flag-chip" :style="{ color: flagColor }" :title="flagTitle">
+          <svg><use href="/icons.svg#flag-tag-icon" /></svg>
+        </span>
+        <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">
+          {{ releaseImportanceText(release) }}
+        </span>
+        <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">
+          {{ statusLabel(release.notification_status, release.snooze_until) }}
+        </span>
       </div>
       <div class="release-header-right">
-        <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">{{ t('release.snooze_until', formatDate(release.snooze_until)) }}</span>
-        <button class="btn-sm release-snooze-btn" v-if="isReadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'snoozed', SNOOZE_MINUTES)">{{ t('release.snooze') }}</button>
-        <button class="btn-sm btn-danger-soft" v-if="isUnreadStatus(release.notification_status)" :disabled="isUpdating" @click="updateReleaseStatus(release, 'ignored')">{{ t('release.ignore') }}</button>
-        <button ref="flagButtonRef" class="btn-icon-link release-flag-action" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :disabled="isUpdating" :title="flagTitle" aria-haspopup="menu" :aria-expanded="flagMenu !== null" @click="toggleFlag" @contextmenu.prevent.stop="openFlagMenu" @keydown="handleFlagTriggerKeydown">
-          <svg><use href="/icons.svg#flag-tag-icon"/></svg>
+        <span v-if="release.notification_status === 'snoozed' && release.snooze_until" class="release-status-meta">
+          {{ t('release.snooze_until', formatDate(release.snooze_until)) }}
+        </span>
+        <button
+          v-if="isReadStatus(release.notification_status)"
+          class="btn-sm release-snooze-btn"
+          :disabled="isUpdating"
+          @click="updateReleaseStatus(release, 'snoozed', SNOOZE_MINUTES)"
+        >{{ t('release.snooze') }}</button>
+        <button
+          v-if="isUnreadStatus(release.notification_status)"
+          class="btn-sm btn-danger-soft"
+          :disabled="isUpdating"
+          @click="updateReleaseStatus(release, 'ignored')"
+        >{{ t('release.ignore') }}</button>
+        <button
+          ref="flagButtonRef"
+          class="btn-icon-link release-flag-action"
+          :class="{ flagged }"
+          :style="flagColor ? { color: flagColor } : undefined"
+          :disabled="isUpdating"
+          :title="flagTitle"
+          aria-haspopup="menu"
+          :aria-expanded="flagMenu !== null"
+          @click="toggleFlag"
+          @contextmenu.prevent.stop="openFlagMenu"
+          @keydown="handleFlagTriggerKeydown"
+        >
+          <svg><use href="/icons.svg#flag-tag-icon" /></svg>
         </button>
-        <button class="btn-icon-link release-link-action" :disabled="isUpdating" @click="handleGoRelease(release)" @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)" :title="t('release.open_link')">
-          <svg><use href="/icons.svg#link-icon"/></svg>
+        <button
+          class="btn-icon-link release-link-action"
+          :disabled="isUpdating"
+          :title="t('release.open_link')"
+          @click="handleGoRelease(release)"
+          @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url)"
+        >
+          <svg><use href="/icons.svg#link-icon" /></svg>
         </button>
-        <!-- 发布时间：按卡片实宽分三档精度（见样式里的 @container）——宽则完整
-             「发布时间: 2026/9/24 22:10:21」，中等则「2026/9/24 22:10」（保住年份），
-             最窄才降到「9/24 22:10」。三种形态都带 title 指向完整值，datetime
-             属性保证机器可读语义不随显示精度变化。 -->
         <time class="release-date" :datetime="release.published_at" :title="t('release.published_at', formatDate(release.published_at))">
           <span class="release-date-full">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
           <span class="release-date-mid">{{ formatDateNoSeconds(release.published_at) }}</span>
@@ -657,82 +599,43 @@ const bodyHitSnippet = computed(() => {
         </time>
       </div>
     </div>
-    <!-- YouTube：B 站风格（左封面 + 右标题/简介），阅读全文进详情弹窗 -->
-    <div v-if="isYoutube" class="yt-layout">
-      <button
-        class="yt-thumb-btn"
-        :disabled="isUpdating"
-        :title="t('release.open_link')"
-        @click="handleGoRelease(release)"
-        @contextmenu.prevent.stop="releaseContextMenu($event, release.html_url, true)"
-      >
-        <img v-if="youtubeThumb" class="yt-thumb" :src="youtubeThumb" alt="" loading="lazy" referrerpolicy="no-referrer" />
-        <span v-if="youtubeDuration" class="yt-duration-badge">{{ youtubeDuration }}</span>
-        <span v-if="youtubeIsLive" class="yt-live-badge">{{ t('release.yt_live') }}</span>
-      </button>
-      <div class="yt-info">
-        <div v-if="releaseDisplayTitle(release)" class="release-title release-title-yt">{{ releaseDisplayTitle(release) }}</div>
-        <div
-          v-if="previewContent"
-          class="yt-desc"
-          :title="t('release.read_full')"
-          @click="openDetail"
-          @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
-        >
-          <MarkdownContent :content="previewContent" />
-        </div>
-        <!-- 底部行：播放量（左）+ 阅读全文（右），复用按钮行不额外占高 -->
-        <div v-if="youtubeViewText || canOpenDetail" class="yt-footer-row">
-          <span v-if="youtubeViewText" class="yt-view-count" :title="youtubeViewTitle">
-            <svg><use href="/icons.svg#play-icon"/></svg>{{ youtubeViewText }}
-          </span>
-          <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
-            {{ t('release.read_full') }}
-          </button>
-        </div>
-      </div>
-    </div>
-    <!-- 其它源：标题 + 摘要/原文预览 -->
-    <template v-else>
-      <div v-if="cardTitle" class="release-title">{{ cardTitle }}</div>
-      <div v-if="previewContent" class="release-content">
-        <!-- 摘要：3 行 clamp + 悬浮提示；前两行满行，阅读全文按钮悬浮第三行右侧（不足两行时独立成行） -->
-        <div v-if="previewKind === 'summary'" class="release-summary-line" :class="{ 'has-third-line': summaryHasThirdLine }">
-          <span
-            ref="summaryTextRef"
-            class="release-summary-text"
-            tabindex="0"
-            @mouseenter="handleSummaryEnter($event, previewContent)"
-            @mousemove="handleSummaryMove"
-            @mouseleave="hideSummaryTooltip"
-            @focus="handleSummaryFocus($event, previewContent)"
-            @blur="hideSummaryTooltip"
-            @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
-          >{{ summaryDisplay ?? previewContent }}</span>
-          <button v-if="canOpenDetail" class="btn-sm release-expand-btn" @click="openDetail">
-            {{ t('release.read_full') }}
-          </button>
-        </div>
-        <!-- 译文 / 原文：Markdown 截断预览，点击打开详情弹窗阅读全文 -->
-        <div
-          v-else
-          class="release-body-text"
-          :title="t('release.read_full')"
-          @click="openDetail"
-          @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
-        >
-          <MarkdownContent :content="previewContent" />
-        </div>
-        <!-- 翻译中提示：内容保持显示，不打断阅读 -->
-        <div v-if="translating" class="release-translating-hint">
-          {{ t('release.translating_hint') }}
-        </div>
-        <button v-if="canOpenDetail && previewKind !== 'summary'" class="btn-sm release-expand-btn" @click="openDetail">
-          {{ t('release.read_full') }}
-        </button>
-      </div>
-    </template>
-    <!-- 深度搜索命中正文深处：可见预览里没有命中词时，展示命中上下文 -->
+
+    <ReleaseVideoCardBody
+      v-if="isYoutube"
+      :title="releaseDisplayTitle(release)"
+      :preview-content="previewContent"
+      :thumb-src="youtubeThumb"
+      :duration="youtubeDuration"
+      :is-live="youtubeIsLive"
+      :view-text="youtubeViewText"
+      :view-title="youtubeViewTitle"
+      :can-open-detail="canOpenDetail"
+      :is-updating="isUpdating"
+      @open-link="handleGoRelease(release)"
+      @cover-context-menu="releaseContextMenu($event, release.html_url, true)"
+      @open-detail="openDetail"
+      @summary-context-menu="handleSummaryContextMenu"
+    />
+
+    <ReleaseStandardCardBody
+      v-else
+      :card-title="cardTitle"
+      :preview-kind="previewKind"
+      :preview-content="previewContent"
+      :summary-display="summaryDisplay"
+      :summary-has-third-line="summaryHasThirdLine"
+      :translating="translating"
+      :can-open-detail="canOpenDetail"
+      :bind-summary-text-el="bindSummaryTextEl"
+      @summary-enter="handleSummaryEnter"
+      @summary-move="handleSummaryMove"
+      @summary-leave="hideSummaryTooltip"
+      @summary-focus="handleSummaryFocus"
+      @summary-blur="hideSummaryTooltip"
+      @summary-context-menu="handleSummaryContextMenu"
+      @open-detail="openDetail"
+    />
+
     <div
       v-if="bodyHitSnippet && canOpenDetail"
       class="release-hit-snippet"
@@ -740,7 +643,7 @@ const bodyHitSnippet = computed(() => {
       @click="openDetail"
       @contextmenu.prevent.stop="handleSummaryContextMenu($event, previewContent)"
     >
-      <svg class="release-hit-snippet-icon"><use href="/icons.svg#search-icon"/></svg>
+      <svg class="release-hit-snippet-icon"><use href="/icons.svg#search-icon" /></svg>
       <span class="release-hit-snippet-label">{{ t('release.search_hit_body') }}</span>
       <span class="release-hit-snippet-text">
         <template v-for="(seg, i) in bodyHitSnippet" :key="i"><mark v-if="seg.hit" class="search-hit">{{ seg.text }}</mark><template v-else>{{ seg.text }}</template></template>
@@ -759,22 +662,25 @@ const bodyHitSnippet = computed(() => {
     @close="coverLightbox = null"
   />
 
-  <div
-    v-if="summaryTooltip"
-    class="release-summary-tooltip"
-    :style="{ left: summaryTooltip.x + 'px', top: summaryTooltip.y + 'px' }"
-  >
-    {{ summaryTooltip.text }}
-  </div>
+  <BaseTooltip
+    :visible="summaryTooltip !== null"
+    :x="summaryTooltip?.x"
+    :y="summaryTooltip?.y"
+    :max-width="520"
+    tooltip-class="release-summary-tooltip"
+    :text="summaryTooltip?.text ?? ''"
+  />
 
-  <div
-    v-if="hfHoverTooltip?.visible && hfTooltip"
-    class="release-summary-tooltip release-hf-tooltip"
-    :style="{ left: hfHoverTooltip.x + 'px', top: hfHoverTooltip.y + 'px' }"
-  >
-    {{ hfTooltip }}
-  </div>
+  <BaseTooltip
+    :visible="Boolean(hfHoverTooltip?.visible && hfTooltip)"
+    :x="hfHoverTooltip?.x"
+    :y="hfHoverTooltip?.y"
+    :max-width="520"
+    tooltip-class="release-summary-tooltip release-hf-tooltip"
+    :text="hfTooltip ?? ''"
+  />
 </template>
+
 <style scoped>
 .release-item {
   position: relative;
@@ -782,15 +688,7 @@ const bodyHitSnippet = computed(() => {
   background: var(--surface);
   border-radius: var(--radius);
   border: 1px solid var(--border);
-  /* hover 只抬背景、不动边框：与源列表 / 日志行同一套反馈语言。
-     边框留给静态分组，不再兼任交互态（它也是 highlight 强调边框的专用属性）。 */
   transition: background-color var(--dur-hover) var(--ease-out);
-  /* 头部信息密度按「卡片实宽」分级，而不是视口宽：同一个卡片在简单列表、
-     聚合视图（内缩进 + 更小 padding）、日历日期详情里的宽度各不相同，
-     媒体查询会判错（见下方 @container）。
-     container-type 会带来 inline-size 包含：卡片宽度不再由内容决定。
-     本组件三个入口都是块级拉伸/列向 flex 拉伸（宽度完全由父级给出），
-     因此安全；若将来出现按内容自适应的卡片容器，这行需重新评估。 */
   container-type: inline-size;
 }
 
@@ -798,14 +696,12 @@ const bodyHitSnippet = computed(() => {
   background: var(--hover-surface);
 }
 
-/* 通知定位高亮：短暂呼吸动画后停留在强调边框，不抢焦点、不影响布局 */
 .release-item.release-highlight {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
   animation: release-focus-pulse 1.2s ease-out 2;
 }
 
-/* j/k 键盘光标：与通知定位同一套强调边框，但常驻、无动画 */
 .release-item.release-selected {
   border-color: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 25%, transparent);
@@ -859,10 +755,6 @@ const bodyHitSnippet = computed(() => {
   flex: 1;
 }
 
-/* 仓库名：宽度不足时与版本号等权收缩（谁长谁让得多），完整值靠 title。
-   刻意不设 min-width 保底：flex 里 min-width 是「实际尺寸」而非「收缩下限」，
-   会把短内容反而撑宽（实测：短频道名被 12ch 撑到 87px，后面凭空多出一片空白），
-   已踩过这个坑。省略号已足够表达「被截断」。 */
 .release-repo {
   font-size: var(--fs-body);
   font-weight: 600;
@@ -873,8 +765,6 @@ const bodyHitSnippet = computed(() => {
   white-space: nowrap;
 }
 
-/* 版本号：与仓库名等权收缩（谁长谁让得多），两边都不会被对方单独饿死；
-   完整值由 title 与详情弹窗兜底（同样不设 min-width）。 */
 .release-tag {
   font-weight: 600;
   font-size: var(--fs-title);
@@ -885,160 +775,9 @@ const bodyHitSnippet = computed(() => {
   white-space: nowrap;
 }
 
-.release-title {
-  font-size: var(--fs-body);
-  color: var(--text);
-  margin: 2px 0 4px;
-}
-
-/* YouTube 视频标题：14px 半粗（与版本号 tag 同重量级），长标题最多两行截断 */
-.release-title-yt {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  line-height: 1.5;
-  margin: 0;
-  font-size: var(--fs-title);
-  font-weight: 600;
-  width: 100%;
-}
-
-.yt-view-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-  font-size: var(--fs-meta);
-  font-weight: 500;
-  color: var(--text-muted);
-  white-space: nowrap;
-  cursor: default;
-}
-
-.yt-view-count svg {
-  width: 11px;
-  height: 11px;
-}
-
-/* 底部行：播放量（左）+ 阅读全文（右），复用按钮行不额外占高 */
-.yt-footer-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  margin-top: 4px;
-}
-
-/* 阅读全文按钮恒定右对齐（无播放量时也保持右侧） */
-.yt-footer-row .release-expand-btn {
-  margin-top: 0;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
 .release-repo-yt {
   color: var(--text-muted);
   font-weight: 500;
-}
-
-/* YouTube B 站风格布局：左封面 + 右标题/简介 */
-.yt-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  margin-top: 6px;
-  min-width: 0;
-}
-
-.yt-thumb-btn {
-  position: relative;
-  flex-shrink: 0;
-  width: 200px;
-  max-width: 42%;
-  padding: 0;
-  border: none;
-  background: none;
-  cursor: pointer;
-  line-height: 0;
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-}
-
-.yt-thumb-btn:disabled {
-  cursor: default;
-}
-
-.yt-thumb {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--bg-subtle);
-}
-
-.yt-thumb-btn:hover .yt-thumb {
-  border-color: var(--border-strong);
-}
-
-.yt-live-badge {
-  position: absolute;
-  right: 6px;
-  bottom: 6px;
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  background: #ff0000;
-  color: #ffffff;
-  font-size: var(--fs-caption);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  line-height: 14px;
-}
-
-/* 视频时长角标：左下角（B 站风格），仅 Data API 模式有 duration 时显示 */
-.yt-duration-badge {
-  position: absolute;
-  left: 6px;
-  bottom: 6px;
-  padding: 1px 5px;
-  border-radius: var(--radius-xs);
-  background: rgba(0, 0, 0, 0.75);
-  color: #ffffff;
-  font-size: var(--fs-caption);
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  line-height: 14px;
-}
-
-.yt-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  /* 子元素收缩到内容宽：阅读全文按钮不再被 stretch 拉满整行 */
-  align-items: flex-start;
-}
-
-.yt-desc {
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: var(--fs-meta);
-  line-height: 1.6;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  width: 100%;
-}
-
-.yt-desc:hover {
-  color: var(--text);
-  /* 二级悬停面：卡片自身已抬到 --hover-surface，同色会把这里的可点提示吃掉 */
-  background: var(--hover-surface-nested);
 }
 
 .release-date {
@@ -1047,199 +786,64 @@ const bodyHitSnippet = computed(() => {
   white-space: nowrap;
 }
 
-/* 中档/窄档日期默认隐藏，由下方 @container 按卡片实宽分三档切换。
-   阈值口径：容器查询量的是**内容盒**（已扣掉卡片 padding 14px×2 + 边框 2px，
-   即外宽 − 30px），不是卡片外宽——按外宽写会差 30px 而让相邻档位错位。
-   换算后再按“能不能装下”定价：
-   709 → 对应外宽 740px：把「长仓库名 + 长版本号 + 可选重要性徽标 + 状态」和
-         完整日期「发布时间: 2026/9/24 22:10:21」同时装下的下限；
-   619 → 对应外宽 650px：中档「2026/9/24 22:10」（保住年份）的下限。
-         默认 750 窗口的卡片约 695px、最小 710 窗口约 655px，两者都落在中档
-         （用户要求：宽度够用就看得到年份），去年份的窄档只在极窄容器出现。
-   不支持 container queries 的环境三条规则都不生效 → 永远显示完整日期，即旧行为，不会坏。 */
 .release-date-mid,
 .release-date-short {
   display: none;
 }
 
 @container (max-width: 709px) {
-  .release-date-full {
-    display: none;
-  }
-
-  .release-date-mid {
-    display: inline;
-  }
+  .release-date-full { display: none; }
+  .release-date-mid { display: inline; }
 }
 
 @container (max-width: 619px) {
-  .release-date-mid {
-    display: none;
-  }
-
-  .release-date-short {
-    display: inline;
-  }
+  .release-date-mid { display: none; }
+  .release-date-short { display: inline; }
 }
-
 
 .release-tag-hf {
   cursor: help;
   text-decoration: underline dotted var(--primary-soft-border);
 }
 
-.release-hf-tooltip {
+:global(.release-summary-tooltip) {
+  padding: 8px 12px;
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  box-shadow: var(--shadow-lg);
+  white-space: pre-wrap;
+}
+
+:global(.release-hf-tooltip) {
   white-space: nowrap;
 }
 
-/* 摘要行：文字 3 行截断；前两行满行，阅读全文按钮悬浮第三行右侧（不足两行时独立成行） */
-.release-summary-line {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  margin-top: 4px;
-  color: var(--text);
-  line-height: 1.55;
-}
-
-/* 内容左对齐、阅读全文按钮右对齐（与视频卡片统一） */
-.release-content {
-  display: flex;
-  flex-direction: column;
-  margin-top: 4px;
-}
-
-.release-content .release-expand-btn {
-  align-self: flex-end;
-}
-
-.release-body-text {
-  margin-top: 4px;
-  color: var(--text);
-  font-size: var(--fs-body);
-  line-height: 1.6;
-  max-height: 9em;
-  overflow: hidden;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
-
-.release-body-text:hover {
-  /* 同 .yt-desc：否则「点击阅读全文」的提示被卡片 hover 吃掉 */
-  background: var(--hover-surface-nested);
-}
-
-.release-expand-btn {
-  margin-top: 4px;
-  font-size: var(--fs-caption);
-}
-
-/* 「稍后提醒」与「阅读全文」默认收起，hover 或键盘聚焦时才淡入：
-   两个按钮每张卡都渲染一遍，常驻时整列是同一串重复文字。
-   只过渡 opacity、不用 display 切换——按钮占位保留，卡片高度与文字排布在
-   指针移入移出时不变，不会出现内容跳动。
-
-   整块包在 (hover: hover) 里：触摸设备没有 hover 态，显隐无从触发，
-   pointer-events: none 还会让点击穿透到卡片内容上（在按钮位置触碰到的是
-   “阅读全文”的打开详情）。默认可见、只在有 hover 能力时才收起，
-   媒体特性不可用或判定不出时也落到“可见”这一侧。
-
-   收起方向带退场迟滞（--delay-hover-out）：卡片之间有间距，指针从一张卡移到
-   下一张时必然经过不属于任何卡的空白，而 8px 的穿越时间（十几毫秒）远短于
-   淡出时长——没有迟滞就是一暗一明的闪烁。展开方向不吃这个延时，落点立刻可见。
-   这张卡一旦不是指针所在的那张，迟滞立刻失效（见下方互斥规则）。 */
 @media (hover: hover) {
   .release-item .release-snooze-btn,
-  .release-expand-btn {
+  .release-item :deep(.release-expand-btn) {
     opacity: 0;
     pointer-events: none;
     transition: opacity var(--dur-hover) var(--ease-out) var(--delay-hover-out);
   }
 
   .release-item:hover .release-snooze-btn,
-  .release-item:hover .release-expand-btn,
+  .release-item:hover :deep(.release-expand-btn),
   .release-item:has(:focus-visible) .release-snooze-btn,
-  .release-item:has(:focus-visible) .release-expand-btn {
+  .release-item:has(:focus-visible) :deep(.release-expand-btn) {
     opacity: 1;
     pointer-events: auto;
     transition: opacity var(--dur-hover) var(--ease-out);
   }
 
-  /* 互斥：一张卡展开着，其余卡片的按钮立刻让位，不走迟滞。
-     迟滞只该压住“指针暂时离开卡片”（擦过、停在卡间缝隙里），不该让上一张卡的
-     按钮陪着下一张卡一起亮——两套按钮同屏会被读成卡顿。
-     范围挂在整个页面上判定，不逐容器枚举：三视图 v-if 互斥，全局同时只有一处
-     列表；枚举则需把 `.release-list` / `.repo-group-body` 都写上，而聚合视图
-     跨 repo 分组移动时仍会漏。将来若出现同屏两份列表，这里需改回逐容器判定。
-     让位时长取 hover 动画的一半：旧钮退得比新钮进得快，读作一次交接。 */
   body:has(.release-item:hover) .release-item:not(:hover) .release-snooze-btn,
-  body:has(.release-item:hover) .release-item:not(:hover) .release-expand-btn {
+  body:has(.release-item:hover) .release-item:not(:hover) :deep(.release-expand-btn) {
     transition: opacity calc(var(--dur-hover) / 2) var(--ease-out);
   }
 }
 
-/* 行内按钮一律取二级悬停面：全局 .btn-sm:hover 与卡片 hover 同为 --hover-surface，
-   不覆盖的话指针压到按钮上看不见它自己的反馈 */
-.release-item .btn-sm:hover {
+.release-item .btn-sm:hover,
+.release-item :deep(.btn-sm:hover) {
   background: var(--hover-surface-nested);
-}
-
-/* 摘要行内按钮：默认独立成行右对齐 */
-.release-summary-line .release-expand-btn {
-  margin-top: 4px;
-  flex-shrink: 0;
-}
-
-/* 摘要超过两行时：按钮悬浮在第三行右侧（盖住行尾，视觉上第三行在按钮处截断） */
-.release-summary-line.has-third-line .release-expand-btn {
-  position: absolute;
-  right: 0;
-  /* 按钮高（约 28px）大于行高（约 20px）：下移半个差值使其相对第三行垂直居中，
-     上缘只进入上一行的行盒留白，不与文字重叠 */
-  bottom: -4px;
-  margin-top: 0;
-}
-
-.release-translating-hint {
-  margin-top: 4px;
-  padding: 12px;
-  color: var(--text-muted);
-  font-size: var(--fs-body);
-  text-align: center;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.release-summary-text {
-  min-width: 0;
-  width: 100%;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  border-radius: var(--radius-sm);
-}
-
-.release-summary-text:focus-visible {
-  outline: 2px solid var(--primary-soft-border);
-  outline-offset: 2px;
-}
-
-.release-summary-tooltip {
-  position: fixed;
-  z-index: var(--z-popover);
-  max-width: min(520px, calc(100vw - 32px));
-  padding: 9px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-lg);
-  color: var(--text);
-  font-size: var(--fs-body);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-  pointer-events: none;
 }
 
 .release-status-meta {
@@ -1254,7 +858,6 @@ const bodyHitSnippet = computed(() => {
   border-radius: var(--radius);
 }
 
-/* 用户旗标：卡片行内贴纸（已标记时常驻）与右上按钮；颜色经 currentColor 注入 */
 .release-flag-chip {
   display: inline-flex;
   align-items: center;
@@ -1272,7 +875,6 @@ const bodyHitSnippet = computed(() => {
   color: var(--text-muted);
 }
 
-/* 已标记时图标用按钮的 color（style 内联了旗标色） */
 .release-flag-action.flagged svg {
   color: inherit;
 }
@@ -1286,7 +888,6 @@ const bodyHitSnippet = computed(() => {
   background: var(--hover-surface-nested);
 }
 
-/* 正文命中片段：单行上下文，点击直达详情阅读全文 */
 .release-hit-snippet {
   display: flex;
   align-items: center;
@@ -1323,5 +924,4 @@ const bodyHitSnippet = computed(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 </style>

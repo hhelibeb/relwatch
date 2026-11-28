@@ -13,7 +13,11 @@ import { join, resolve } from 'node:path'
 
 const SRC = resolve(process.cwd(), 'src')
 const AGENT_DIR = join(SRC, 'components', 'agent')
-const STYLE_CSS = stripComments(readFileSync(join(SRC, 'style.css'), 'utf8'))
+const STYLE_CSS = stripComments(
+  readFileSync(join(SRC, 'styles', 'tokens.css'), 'utf8')
+  + '\n'
+  + readFileSync(join(SRC, 'styles', 'base.css'), 'utf8'),
+)
 
 /** 已被消灭的旧色板：任一回归即说明又出现了第二套品牌色 */
 const LEGACY_PALETTE = [
@@ -252,7 +256,7 @@ describe('列表 hover 语言守卫', () => {
     { file: 'components/ReleaseItem.vue', selector: '.release-item:hover' },
     { file: 'components/ReleaseAggregatedList.vue', selector: '.repo-group-body .release-item:hover' },
     { file: 'components/ReleaseAggregatedList.vue', selector: '.repo-group-header:hover' },
-    { file: 'components/SourceTab.vue', selector: '.source-item:hover' },
+    { file: 'components/source/SourceCard.vue', selector: '.source-item:hover' },
     { file: 'components/LogTab.vue', selector: '.log-item:hover' },
   ]
 
@@ -337,12 +341,14 @@ describe('列表 hover 语言守卫', () => {
 
   it('容器内的可点块用二级悬停面', () => {
     const NESTED_HOVER = [
-      { file: 'components/ReleaseItem.vue', selector: '.yt-desc:hover' },
-      { file: 'components/ReleaseItem.vue', selector: '.release-body-text:hover' },
+      { file: 'components/release/ReleaseVideoCardBody.vue', selector: '.yt-desc:hover' },
+      { file: 'components/release/ReleaseVideoCardBody.vue', selector: '.release-expand-btn:hover' },
+      { file: 'components/release/ReleaseStandardCardBody.vue', selector: '.release-body-text:hover' },
+      { file: 'components/release/ReleaseStandardCardBody.vue', selector: '.release-expand-btn:hover' },
       { file: 'components/ReleaseItem.vue', selector: '.release-link-action:hover' },
       { file: 'components/ReleaseItem.vue', selector: '.release-item .btn-sm:hover' },
-      { file: 'components/SourceTab.vue', selector: '.btn-icon-action:hover:not(:disabled)' },
-      { file: 'components/SourceTab.vue', selector: '.btn-check:hover:not(:disabled)' },
+      { file: 'components/source/SourceCard.vue', selector: '.btn-icon-action:hover:not(:disabled)' },
+      { file: 'components/source/SourceCard.vue', selector: '.btn-check:hover:not(:disabled)' },
     ]
 
     for (const { file, selector } of NESTED_HOVER) {
@@ -511,7 +517,8 @@ describe('次要文字守卫', () => {
 describe('等宽字族守卫', () => {
   it('组件不再重声明字体族', () => {
     const offenders = allStyleSources().flatMap(({ file, css }) => {
-      if (file.split('\\').join('/').endsWith('style.css')) return []
+      const normalized = file.split('\\').join('/')
+      if (normalized.endsWith('style.css') || normalized.endsWith('styles/base.css') || normalized.endsWith('styles/tokens.css')) return []
       return [...css.matchAll(/font-family:\s*([^;{}\r\n]+)/g)]
         .map((m) => m[1].trim())
         .filter((value) => !value.includes('var(--') && value !== 'inherit')

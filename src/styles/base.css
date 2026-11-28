@@ -1,0 +1,859 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+
+/* ── 基础排版 ─────────────────────────────────── */
+body {
+  font-family: 'Segoe UI', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  /* 所有未显式声明字号的文本都落在这档，若留着 14px 就成了绕过 token 的隐性第 10 档 */
+  font-size: var(--fs-body);
+  line-height: 1.5;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: 'tnum';
+  transition: background-color var(--dur-overlay) var(--ease-out), color var(--dur-overlay) var(--ease-out);
+}
+
+::selection {
+  background: var(--primary-soft-border);
+}
+
+/* ── 分隔线拖拽中：全局禁用文本选择 + 保持 col-resize 光标 ── */
+body.agent-resizing {
+  cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
+}
+body.agent-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
+}
+
+/* ── 细滚动条 ─────────────────────────────────── */
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid transparent;
+  border-radius: var(--radius-pill);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+
+.app {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 20px 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  scrollbar-gutter: stable;
+}
+
+.header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.header-bottom {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  max-width: 900px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.app-header h1 {
+  font-size: var(--fs-display);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+/* ── 标签页（下划线文字页签） ────────────────────── */
+.tabs {
+  display: flex;
+  gap: 2px;
+}
+
+.tabs button {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px 7px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-body);
+  transition: color var(--dur-state) var(--ease-out), border-color var(--dur-state) var(--ease-out);
+}
+
+.tabs button:hover {
+  color: var(--text);
+}
+
+.tabs button.active {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--ink);
+}
+
+.tab-icon {
+  width: 14px;
+  height: 14px;
+  margin-right: 5px;
+  flex-shrink: 0;
+}
+
+/* ── 键盘焦点基线 ───────────────────────────── */
+/* 此前只有主按钮、搜索框与输入框清除按钮带焦点样式，Tab 遍历到页签、筛选、
+   菜单项、日历翻页时看不到任何反馈。用 :where() 把特异性压到 0，
+   组件自带的焦点规则（如 .btn-primary 的 box-shadow）仍能覆盖它。 */
+:where(a, button, summary, [role='menuitem'], [role='option'], [role='tab'], [tabindex]):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ── 按钮 ─────────────────────────────────────── */
+.btn-primary {
+  padding: 6px 16px;
+  background: var(--ink);
+  color: var(--on-ink);
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  transition: background var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out), transform var(--dur-hover) var(--ease-out);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: var(--ink-hover);
+}
+
+.btn-primary:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.btn-primary:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.countdown-text {
+  margin-left: auto;
+  margin-right: 8px;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.btn-primary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.app-main {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--app-padding-y) 20px;
+  scrollbar-gutter: stable;
+}
+
+.tab-content {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+/* ── 空状态 ───────────────────────────────────── */
+/* 空态骨架：图标 + 标题 + 说明 + 动作。此前 8 处 .empty 与 3 处自建空态共用同一个
+   36px 半透明灰图标（与白底合成 ≈1.61:1，等于看不见），加载态也借道这里，
+   于是「看不见的图标 + 一行灰字」同时当了空态与加载态。 */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 48px 20px;
+  color: var(--text-muted);
+  font-size: var(--fs-body);
+  text-align: center;
+}
+
+/* 描边图标：48px，用实色代替 opacity 叠加（1.61:1 → 2.56:1）。
+   图标本身是装饰（aria-hidden），空态的语义由标题文字承担，故不追求 4.5:1。
+   遮罩用描边而非填充的 SVG，缩放后仍是一条细线，不会糊成一团灰块。 */
+.empty-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: 4px;
+  background: var(--text-faint);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='22%2012%2016%2012%2014%2015%2010%2015%208%2012%202%2012'/%3E%3Cpath d='M5.45%205.11%202%2012v6a2%202%200%200%200%202%202h16a2%202%200%200%200%202-2v-6l-3.45-6.89A2%202%200%200%200%2016.76%204H7.24a2%202%200%200%200-1.79%201.11z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.empty-title {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.empty-desc {
+  max-width: 420px;
+  font-size: var(--fs-meta);
+  line-height: 1.6;
+}
+
+.empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 紧凑档：弹窗内部或已有容器的空位，不要 48px 图标把内容顶出视区 */
+.empty.empty-compact {
+  padding: 24px 12px;
+  background: var(--bg-subtle);
+  border-radius: var(--radius-sm);
+}
+
+/* ── 骨架屏 ───────────────────────────────────── */
+/* 延迟 100ms 出现：本地数据常在 100ms 内返回，骨架闪一帧比空白更刺眼。
+   只渲染在「列表为空 + 加载中」的组合上，刷新已有列表时不重放。 */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  animation: skeleton-in var(--dur-state) var(--ease-out) 100ms both;
+}
+
+.skeleton-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.skeleton-card .skeleton-item {
+  padding: 14px;
+}
+
+.skeleton-avatar {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: var(--radius-pill);
+}
+
+.skeleton-lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.skeleton-line {
+  height: 10px;
+  border-radius: var(--radius-xs);
+}
+
+.skeleton-line-lg {
+  width: 62%;
+}
+
+.skeleton-line-sm {
+  width: 34%;
+}
+
+.skeleton-avatar,
+.skeleton-line {
+  background: linear-gradient(90deg, var(--bg-subtle) 25%, var(--bg-hover) 37%, var(--bg-subtle) 63%);
+  background-size: 400% 100%;
+  animation: skeleton-shimmer 1.4s linear infinite;
+}
+
+@keyframes skeleton-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* 呼吸感是装饰：减弱动效下保留色块，去掉位移与闪烁 */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-avatar,
+  .skeleton-line {
+    animation: none;
+  }
+}
+
+/* ── 统一错误块 ───────────────────────────────── */
+/* 交替给「一行红字」与 Toast：前者说不出怎么办，后者会消失。
+   错误块把原因留在原位，右侧固定一个重试出口。 */
+.error-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--danger-soft-bg);
+  border-radius: var(--radius-sm);
+  color: var(--danger-soft-text);
+  font-size: var(--fs-meta);
+}
+
+.error-block-msg {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.error-block-retry {
+  flex-shrink: 0;
+}
+
+.btn-secondary {
+  align-self: flex-start;
+  padding: 6px 16px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-body);
+  font-weight: 500;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
+}
+
+.btn-secondary:hover {
+  background: var(--hover-surface);
+  border-color: var(--text-faint);
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
+}
+
+.btn-sm:hover {
+  background: var(--hover-surface);
+  border-color: var(--border-strong);
+}
+
+.btn-sm:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-danger {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.btn-danger:hover {
+  border-color: var(--danger);
+  background: var(--danger-soft-bg);
+  color: var(--danger);
+}
+
+.btn-danger-soft {
+  color: var(--danger);
+}
+
+.btn-danger-soft:hover {
+  border-color: var(--danger);
+  background: var(--danger-soft-bg);
+}
+
+/* ── 输入框 ───────────────────────────────────── */
+.search-input {
+  width: 100%;
+  max-width: 400px;
+  padding: 8px 12px;
+  padding-right: 34px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg);
+  color: var(--text);
+  font-size: var(--fs-body);
+  outline: none;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
+}
+
+.search-input:focus {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.input-clear-wrap {
+  position: relative;
+  display: flex;
+  min-width: 0;
+}
+
+.input-clear-wrap .search-input,
+.input-clear-wrap input {
+  width: 100%;
+}
+
+.input-clear-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-pill);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--fs-meta);
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.input-clear-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.input-clear-btn:focus-visible {
+  outline: 2px solid var(--primary-soft-border);
+  outline-offset: 1px;
+}
+
+.btn-icon-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0 2px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: color var(--dur-state) var(--ease-out);
+}
+
+.btn-icon-link svg {
+  width: 14px;
+  height: 14px;
+}
+
+.btn-icon-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-icon-link:hover {
+  color: var(--primary);
+}
+
+/* ── 表单控件统一 ───────────────────────────────── */
+/* 勾选类控件统一品牌色与尺寸：此前设置页 checkbox 是 OS 默认蓝，
+   与源列表页（accent-color 已设）并排看是两套控件。 */
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+input[type='checkbox']:disabled,
+input[type='radio']:disabled {
+  cursor: not-allowed;
+}
+
+/* 原生 select 触发器：appearance:none + 主题感知箭头，与输入框同一套
+   边框/圆角/焦点环。下拉弹层仍是原生的（保留键盘与无障碍行为）。 */
+.select-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 6px 28px 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--input-bg) var(--select-chevron) no-repeat right 9px center / 12px 12px;
+  color: var(--text);
+  font-size: var(--fs-body);
+  line-height: 1.4;
+  cursor: pointer;
+  outline: none;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
+}
+
+.select-input:hover:not(:disabled) {
+  border-color: var(--border-strong);
+}
+
+.select-input:focus {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.select-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── 搜索命中 ───────────────────────────────────── */
+/* CSS Custom Highlight API：不改动 DOM（摘要截断测量依赖单一文本节点）。
+   不支持的环境（旧 WebView / 测试）静默降级为无高亮，过滤行为不受影响。 */
+::highlight(search-hit) {
+  background-color: var(--primary-soft-border);
+  color: var(--text);
+}
+
+::highlight(search-hit-current) {
+  background-color: var(--primary);
+  color: var(--on-primary);
+}
+
+/* 正文命中片段是自有元素，直接渲染 <mark>，与 API 高亮同一套色 */
+mark.search-hit {
+  background: var(--primary-soft-border);
+  color: var(--text);
+  border-radius: var(--radius-xs);
+  padding: 0 1px;
+}
+
+/* ── 筛选下拉（ReleaseSearchBar / LogTab 共享） ────── */
+.filter-group {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: visible;
+  flex-shrink: 0;
+}
+
+.filter-field {
+  position: relative;
+}
+
+.filter-field:first-child .filter-trigger {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.filter-field:last-child .filter-trigger {
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 8px;
+  border: none;
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--fs-meta);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background var(--dur-hover) var(--ease-out);
+  height: 100%;
+}
+
+.filter-trigger:hover {
+  background: var(--hover-surface);
+}
+
+.filter-divider {
+  width: 1px;
+  background: var(--border);
+  align-self: stretch;
+}
+
+.filter-label {
+  font-size: var(--fs-caption);
+  color: var(--text-muted);
+}
+
+.filter-value {
+  display: inline-flex;
+  align-items: center;
+}
+
+.filter-arrow {
+  width: 12px;
+  height: 12px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+/* 下拉面板公共基类：surface 背景 + 边框 + 圆角 + 阴影 + 层级。
+   filter/sort/more/theme 各下拉共用，仅保留定位与尺寸差异；
+   需更重视觉（如 radius / shadow-lg）时在组件内覆盖。 */
+.dropdown-panel {
+  position: absolute;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+  z-index: var(--z-menu);
+}
+
+.filter-dropdown {
+  top: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  min-width: 100%;
+  padding: 4px;
+  white-space: nowrap;
+}
+
+.filter-dropdown button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 5px 14px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: var(--fs-meta);
+  /* 固定行高：避免中英文混排时行高随字体变化（中文 fallback 行高更大），
+     导致选项按钮高度不一（如「哔哩哔哩」比其他选项高） */
+  line-height: 1.4;
+  cursor: pointer;
+  text-align: left;
+  border-radius: var(--radius-sm);
+  transition: background var(--dur-hover) var(--ease-out);
+}
+
+.filter-dropdown button:hover {
+  background: var(--hover-surface);
+}
+
+.filter-dropdown button.selected {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+/* ── Agent 开合按钮（header 右上，icon-only：机器人 + 展开/收回箭头） ────── */
+.release-agent-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
+}
+.release-agent-btn:hover {
+  background: var(--hover-surface);
+  border-color: var(--border-strong);
+}
+/* 展开态：与工作区激活项同源的 accent 高亮，提示面板当前已打开 */
+.release-agent-btn.open {
+  background: var(--primary-soft-bg);
+  border-color: var(--primary-soft-border);
+}
+.release-agent-btn-icon {
+  width: 14px;
+  height: 14px;
+}
+.release-agent-btn-arrow {
+  width: 10px;
+  height: 10px;
+  color: var(--text-muted);
+}
+.release-agent-btn.open .release-agent-btn-arrow {
+  color: var(--primary);
+}
+/* 版本页搜索/筛选区 sticky 容器：含筛选行与激活筛选 chips 行。
+   LogTab 仍直接用 .log-search-row 自身 sticky，互不影响。 */
+.log-search-sticky {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  margin-bottom: 12px;
+  background: var(--bg);
+  transition: top var(--dur-state) var(--ease-out);
+}
+
+/* ReleaseSearchBar 内的行不再自身 sticky（由 wrapper 统一承担） */
+.log-search-sticky .log-search-row {
+  position: static;
+  margin-bottom: 0;
+}
+
+/* 滚动后 sticky 元素贴顶 */
+.app-main.is-scrolled .log-search-sticky {
+  top: calc(-1 * var(--app-padding-y));
+}
+
+.log-search-row {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 0;
+  background: var(--bg);
+  transition: top var(--dur-state) var(--ease-out);
+}
+
+.log-search-row .search-input {
+  flex: 1;
+  max-width: none;
+}
+
+.log-search-row .input-clear-wrap {
+  flex: 1;
+}
+
+.log-search-row .input-clear-wrap .search-input {
+  max-width: none;
+}
+
+/* 滚动后 sticky 元素贴顶 */
+.app-main.is-scrolled .log-search-row {
+  top: calc(-1 * var(--app-padding-y));
+}
+
+/* ── 发布徽标 / 状态灯（ReleaseItem 与 ReleaseDetailModal 共用，
+   scoped 不共享故收敛至此，避免改一处漏一处） ── */
+.pre-release-badge {
+  display: inline-block;
+  padding: 0 5px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-caption);
+  line-height: 16px;
+  color: var(--text-muted);
+  /* 头部宽度不足时，flex 会按基础宽比例分摊收缩量：不设保底时这个 11px 小徽标
+     会被压到 2 字宽以内，汉字被竖排成「预发／布」（卡片与详情弹窗头部同样中招）。
+     元信息一律不参与收缩，压力交给仓库名/版本号（它们有不省略的兜底）。 */
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.release-importance-chip {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.release-importance-chip.release-importance-high {
+  background: var(--danger-soft-bg);
+  color: var(--danger-soft-text);
+}
+
+.release-importance-chip.release-importance-medium {
+  background: var(--warning-soft-bg);
+  color: var(--warning-soft-text);
+}
+
+.release-importance-chip.release-importance-low {
+  background: var(--success-soft-bg);
+  color: var(--success-soft-text);
+}
+
+.status-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.status-inline::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+  background: var(--text-faint);
+  flex-shrink: 0;
+}
+
+.status-unread,
+.status-pending {
+  color: var(--primary);
+}
+
+.status-unread::before,
+.status-pending::before {
+  background: var(--primary);
+}
+
+.status-snoozed::before {
+  background: var(--warning);
+}
+

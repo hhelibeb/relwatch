@@ -16,21 +16,24 @@ export function usePreviewSelect(opts: {
   preview: (value: string) => void
   restore: () => void
   onSelect: (value: string) => void
+  enablePreview?: () => boolean
 }) {
   const dropdownOpen = ref(false)
   const previewValue = ref<string | null>(null)
   const selectRef = ref<HTMLElement | null>(null)
   let outsideClickHandler: ((e: MouseEvent) => void) | null = null
+  const isPreviewEnabled = () => (opts.enablePreview ? opts.enablePreview() : true)
 
-  // 下拉打开期间向覆盖层总线注册活跃状态（供 useEscapeToTray 判定 Esc 拦截）
   const unregisterOverlay = registerOverlayActive(() => dropdownOpen.value)
 
   function clearPreview() {
+    if (previewValue.value === null) return
     previewValue.value = null
-    opts.restore()
+    if (isPreviewEnabled()) opts.restore()
   }
 
   function setPreview(val: string) {
+    if (!isPreviewEnabled()) return
     previewValue.value = val
     opts.preview(val)
   }
@@ -67,18 +70,14 @@ export function usePreviewSelect(opts: {
     unregisterOverlay()
   })
 
-  /** 确认选中：落地 onSelect 后关闭下拉，焦点移回触发器。 */
   function select(val: string) {
     opts.onSelect(val)
     previewValue.value = null
-    setTimeout(() => {
-      dropdownOpen.value = false
-      // 下拉关闭后把焦点移回触发器，避免 v-if 移除聚焦选项后焦点回退到 body
-      nextTick(() => {
-        const trigger = selectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
-        trigger?.focus()
-      })
-    }, 0)
+    dropdownOpen.value = false
+    nextTick(() => {
+      const trigger = selectRef.value?.querySelector('.theme-select-trigger') as HTMLElement | null
+      trigger?.focus()
+    })
   }
 
   function toggle() {
@@ -112,12 +111,17 @@ export function usePreviewSelect(opts: {
     const currentIndex = options.findIndex((opt) => opt === document.activeElement)
 
     switch (e.key) {
+      case 'Tab': {
+        dropdownOpen.value = false
+        clearPreview()
+        break
+      }
       case 'ArrowDown': {
         e.preventDefault()
         const nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0
         options[nextIndex]?.focus()
         const nextVal = options[nextIndex]?.getAttribute('data-value')
-        if (nextVal) setPreview(nextVal)
+        if (nextVal !== null && nextVal !== undefined) setPreview(nextVal)
         break
       }
       case 'ArrowUp': {
@@ -125,7 +129,7 @@ export function usePreviewSelect(opts: {
         const prevIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1
         options[prevIndex]?.focus()
         const prevVal = options[prevIndex]?.getAttribute('data-value')
-        if (prevVal) setPreview(prevVal)
+        if (prevVal !== null && prevVal !== undefined) setPreview(prevVal)
         break
       }
       case 'Enter':
@@ -134,7 +138,7 @@ export function usePreviewSelect(opts: {
         if (currentIndex >= 0) {
           const option = options[currentIndex] as HTMLElement
           const value = option.getAttribute('data-value')
-          if (value) select(value)
+          if (value !== null) select(value)
         }
         break
       case 'Escape': {
@@ -149,14 +153,14 @@ export function usePreviewSelect(opts: {
         e.preventDefault()
         options[0]?.focus()
         const firstVal = options[0]?.getAttribute('data-value')
-        if (firstVal) setPreview(firstVal)
+        if (firstVal !== null && firstVal !== undefined) setPreview(firstVal)
         break
       }
       case 'End': {
         e.preventDefault()
         options[options.length - 1]?.focus()
         const lastVal = options[options.length - 1]?.getAttribute('data-value')
-        if (lastVal) setPreview(lastVal)
+        if (lastVal !== null && lastVal !== undefined) setPreview(lastVal)
         break
       }
     }
@@ -167,6 +171,7 @@ export function usePreviewSelect(opts: {
     previewValue,
     selectRef,
     toggle,
+    select,
     handleKeydown,
     clearPreview,
   }

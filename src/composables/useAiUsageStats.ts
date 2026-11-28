@@ -4,6 +4,7 @@ import type { AiUsageActionRow, AiUsageSourceRow, AiUsageStats } from '../api/ai
 import type { Source } from '../api/sources'
 import { listSources, sourceDisplayName } from '../api/sources'
 import { toDateKey, parseDateKey } from '../utils/dateKey'
+import { extractErrorMessage } from '../services/feedback'
 
 // ── 纯函数（供组件与单测复用） ────────────────────────────────────────
 
@@ -228,7 +229,7 @@ export function useAiUsageStats() {
     try {
       stats.value = await getAiUsageStats(sourceId.value, days.value)
     } catch (e: unknown) {
-      error.value = e instanceof Error ? e.message : String(e)
+      error.value = extractErrorMessage(e)
       stats.value = null
     } finally {
       loading.value = false

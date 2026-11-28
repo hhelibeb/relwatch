@@ -113,13 +113,14 @@ function mountTab(props: Record<string, unknown> = {}): VueWrapper {
   return mount(ReleaseTab, { props: { releases, ...props }, global: { stubs } }) as unknown as VueWrapper
 }
 
-function pressKey(key: string, opts: { target?: HTMLElement; ctrlKey?: boolean; isComposing?: boolean } = {}) {
+function pressKey(key: string, opts: { target?: HTMLElement; ctrlKey?: boolean; isComposing?: boolean; repeat?: boolean } = {}) {
   const event = new KeyboardEvent('keydown', {
     key,
     bubbles: true,
     cancelable: true,
     ctrlKey: opts.ctrlKey ?? false,
     isComposing: opts.isComposing ?? false,
+    repeat: opts.repeat ?? false,
   })
   ;(opts.target ?? document.body).dispatchEvent(event)
   return event
@@ -173,7 +174,7 @@ describe('ReleaseTab.vue — j/k 列表导航', () => {
     expect(moveSelection).not.toHaveBeenCalled()
   })
 
-  it('详情弹窗打开时不响应（键盘归弹窗）', async () => {
+  it('详情弹窗打开时不响应（键盘归弹窗），对应记录被删除后自动清空并恢复 j/k', async () => {
     const wrapper = mountTab({ active: true })
     wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).vm.$emit('openDetail', releases[0], releases)
     await nextTick()
@@ -181,6 +182,13 @@ describe('ReleaseTab.vue — j/k 列表导航', () => {
 
     pressKey('j')
     expect(moveSelection).not.toHaveBeenCalled()
+
+    await wrapper.setProps({ releases: releases.slice(1) } as Parameters<typeof wrapper.setProps>[0])
+    await nextTick()
+    expect(wrapper.findComponent({ name: 'ReleaseDetailModalStub' }).exists()).toBe(false)
+
+    pressKey('j')
+    expect(moveSelection).toHaveBeenCalledWith(1)
   })
 
   it('有浮层（如卡片封面灯箱）打开时不响应 j/k/Enter', () => {
@@ -211,13 +219,15 @@ describe('ReleaseTab.vue — j/k 列表导航', () => {
     expect(moveSelection).not.toHaveBeenCalled()
   })
 
-  it('Enter 打开选中项；焦点在按钮上时让位给原生点击', () => {
+  it('Enter 打开选中项；焦点在按钮或 tabindex=0 摘要上、或长按 repeat 时不误触发', () => {
     mountTab({ active: true })
 
     pressKey('Enter')
     expect(openSelected).toHaveBeenCalledTimes(1)
 
     pressKey('Enter', { target: appendEl('button') })
+    pressKey('Enter', { target: appendEl('span', { tabindex: '0' }) })
+    pressKey('Enter', { repeat: true })
     expect(openSelected).toHaveBeenCalledTimes(1)
   })
 

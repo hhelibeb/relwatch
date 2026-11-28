@@ -1,8 +1,8 @@
-import { computed, inject, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import type { AgentChatMessage } from '../../api/agent'
 import type { Source } from '../../api/sources'
 import type { ReleaseInfo } from '../../api/releases'
-import { ActiveTabKey } from '../../injection-keys'
+import { useUiStore } from '../../stores/ui'
 import { registerOverlayActive } from '../../composables/contextMenuBus'
 import { useElementFind } from '../../composables/useElementFind'
 
@@ -67,12 +67,13 @@ export function useAgentFind(options: UseAgentFindOptions) {
       || (target instanceof Element && target.closest(PANEL_OWNED_SELECTOR) !== null)
   }
 
-  const injectedActiveTab = inject(ActiveTabKey, null)
-  if (injectedActiveTab) {
-    watch(injectedActiveTab, () => {
+  const ui = useUiStore()
+  watch(
+    () => ui.activeTab,
+    () => {
       findScopeInside.value = false
-    })
-  }
+    },
+  )
 
   function decorationsFingerprint(): string {
     let out = ''

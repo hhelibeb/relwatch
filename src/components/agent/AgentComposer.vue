@@ -1,101 +1,49 @@
-<!-- 输入区：chips 行 + textarea + 模型/附件/发送 + 三个菜单
-     （模型 / @ Skill / [[ 实体）+ 会话上下文水位。
-     状态由编排层的 useAgentComposer / useAgentModels / useAgentUsage 持有，
-     本组件纯 props/emit 展示：名称映射/悬浮提示等函数经 props 注入，
-     textarea 元素经 setTextareaEl 回填（composable 的 focus()/replaceTrigger
-     需要），菜单索引回写经 emit 上抛（键盘导航在编排层读写同一 ref）。 -->
 <script setup lang="ts">
-import type { ComponentPublicInstance } from 'vue'
+import { storeToRefs } from 'pinia'
 import { t } from '../../i18n'
 import { formatDate, skillShortName } from '../../utils'
-import type { AgentModelRef, AgentSessionUsage, RpcAvailableModel } from '../../api/agent'
-import type { Source } from '../../api/sources'
-import type { ReleaseInfo } from '../../api/releases'
-import type { AgentEntityRefSeed } from '../../injection-keys'
+import { useAgentStore } from '../../stores/agent'
+import AppIcon from '../ui/AppIcon.vue'
 
-defineProps<{
-  /** textarea 元素回填（useAgentComposer.textareaRef 在编排层） */
-  setTextareaEl: (el: Element | ComponentPublicInstance | null) => void
-  // ── 引用与输入状态 ──
-  entities: AgentEntityRefSeed[]
-  files: string[]
-  instruction: string
-  skillPath: string | null
-  flashKey: string | null
-  attachAnnouncement: string
-  skills: string[]
-  showSkillMenu: boolean
-  showEntityMenu: boolean
-  skillMenuIndex: number
-  entityMenuIndex: number
-  filteredSkills: string[]
-  filteredSources: Source[]
-  filteredReleases: ReleaseInfo[]
-  filteredSourcesCount: number
-  filteredReleasesCount: number
-  entityMenuHasMatch: boolean
-  // ── 模型选择状态 ──
-  showModelMenu: boolean
-  availableModels: RpcAvailableModel[]
-  effectiveModel: AgentModelRef | null
-  modelOnce: boolean
-  activeModelLabel: string
-  modelDefaultSub: string
-  // ── 提交/停止状态 ──
-  submitting: boolean
-  canStop: boolean
-  cancelling: boolean
-  // ── 引用 chip 全文悬浮提示（跟随鼠标，仅文本截断时显示）──
-  chipTooltip: { x: number; y: number; text: string } | null
-  // ── 会话上下文水位状态 ──
-  usageText: string | null
-  usageEstimated: boolean
-  usageHint: string | undefined
-  usage: AgentSessionUsage | null
-  // ── 函数注入（composable 动作经编排层透传；ref 状态回写经 emit）──
-  /** 模型菜单项文案与选中态（models.modelLabel / modelKey 语义） */
-  modelLabel: (m: RpcAvailableModel) => string
-  isModelSelected: (m: RpcAvailableModel) => boolean
-  /** 实体/文件/源/版本的名称映射（useAgentComposer 提供） */
-  entityLabel: (e: AgentEntityRefSeed) => string
-  entityKindLabel: (kind: string) => string
-  fileDisplayName: (path: string) => string
-  sourceDisplayName: (s: Source) => string
-  releaseDisplayName: (r: ReleaseInfo) => string
-  /** chip 悬浮提示（useAgentComposer 提供） */
-  handleChipEnter: (e: MouseEvent, text: string) => void
-  handleChipMove: (e: MouseEvent) => void
-  hideChipTooltip: () => void
-}>()
-
-const emit = defineEmits<{
-  'update:instruction': [value: string]
-  /** 菜单索引回写（K 键盘导航与 hover 共用编排层的同一 ref） */
-  'skill-hover': [index: number]
-  'entity-hover': [index: number]
-  'model-hover': [index: number]
-  /** 动作（原 @click 语义保持，实现在编排层/composable） */
-  submit: []
-  cancel: []
-  input: []
-  keydown: [e: KeyboardEvent]
-  attachFiles: []
-  removeEntity: [index: number]
-  removeFile: [index: number]
-  clearSkill: []
-  pickSkill: [skill: string]
-  pickEntity: [kind: 'source' | 'release', id: number]
-  toggleModelMenu: []
-  pickModel: [model: RpcAvailableModel | null]
-  toggleModelOnce: []
-}>()
+const agent = useAgentStore()
+const {
+  entities,
+  files,
+  instruction,
+  skillPath,
+  flashKey,
+  attachAnnouncement,
+  skills,
+  showSkillMenu,
+  showEntityMenu,
+  skillMenuIndex,
+  entityMenuIndex,
+  filteredSkills,
+  filteredSources,
+  filteredReleases,
+  filteredSourcesCount,
+  filteredReleasesCount,
+  entityMenuHasMatch,
+  showModelMenu,
+  modelMenuIndex,
+  availableModels,
+  effectiveModel,
+  modelOnce,
+  activeModelLabel,
+  modelDefaultSub,
+  submitting,
+  canStop,
+  cancelling,
+  chipTooltip,
+  usageText,
+  usageEstimated,
+  usageHint,
+} = storeToRefs(agent)
 </script>
 
 <template>
   <footer class="agent-ws-input">
     <div class="agent-ws-input-meta">
-      <!-- 引用变更的就地反馈：chip 高亮（不走 Toast——它会遮挡发送按钮）；
-           屏幕阅读器由下方 live region 播报 -->
       <span
         v-for="(e, i) in entities"
         :key="`${e.kind}:${e.id}`"
@@ -104,21 +52,20 @@ const emit = defineEmits<{
       >
         <span
           class="agent-ws-chip-text"
-          @mouseenter="handleChipEnter($event, `${entityKindLabel(e.kind)} · ${entityLabel(e)}`)"
-          @mousemove="handleChipMove"
-          @mouseleave="hideChipTooltip"
-        >{{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}</span>
-        <button class="agent-ws-chip-remove" :title="t('agent.remove_entity')" @click="emit('removeEntity', i)">
-          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+          @mouseenter="agent.handleChipEnter($event, `${agent.entityKindLabel(e.kind)} · ${agent.entityLabel(e)}`)"
+          @mousemove="agent.handleChipMove"
+          @mouseleave="agent.hideChipTooltip"
+        >{{ agent.entityKindLabel(e.kind) }} · {{ agent.entityLabel(e) }}</span>
+        <button class="agent-ws-chip-remove" :title="t('agent.remove_entity')" @click="agent.removeEntity(i)">
+          <AppIcon name="close-icon" :size="10" />
         </button>
       </span>
       <span v-if="skillPath" class="agent-ws-skill-badge" :title="skillPath">
         @{{ skillShortName(skillPath) }}
-        <button class="agent-ws-chip-remove" :title="t('agent.clear_skill')" @click="emit('clearSkill')">
-          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+        <button class="agent-ws-chip-remove" :title="t('agent.clear_skill')" @click="agent.clearSkill()">
+          <AppIcon name="close-icon" :size="10" />
         </button>
       </span>
-      <!-- 本地文件附件：chip 只显示文件名，完整路径放 title -->
       <span
         v-for="(f, i) in files"
         :key="f"
@@ -126,32 +73,32 @@ const emit = defineEmits<{
         :title="f"
       >
         <svg class="agent-ws-chip-file-icon" viewBox="0 0 16 16"><path d="M4 1.5h5L12.5 5v9.5H4z" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/><path d="M9 1.5V5h3.5" stroke="currentColor" stroke-width="1.2" fill="none" stroke-linejoin="round"/></svg>
-        <span class="agent-ws-chip-text">{{ fileDisplayName(f) }}</span>
-        <button class="agent-ws-chip-remove" :title="t('agent.remove_file')" @click="emit('removeFile', i)">
-          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+        <span class="agent-ws-chip-text">{{ agent.fileDisplayName(f) }}</span>
+        <button class="agent-ws-chip-remove" :title="t('agent.remove_file')" @click="agent.removeFile(i)">
+          <AppIcon name="close-icon" :size="10" />
         </button>
       </span>
       <span class="agent-ws-sr-only" aria-live="polite">{{ attachAnnouncement }}</span>
     </div>
     <div class="agent-ws-input-row">
       <textarea
-        :ref="setTextareaEl"
-        :value="instruction"
+        :ref="agent.bindTextareaEl"
+        v-model="instruction"
         class="agent-ws-textarea"
         :placeholder="t('agent.placeholder')"
         rows="3"
-        @input="emit('update:instruction', ($event.target as HTMLTextAreaElement).value); emit('input')"
-        @keydown="emit('keydown', $event)"
+        @input="agent.handleComposerInput()"
+        @keydown="agent.handleComposerKeydown($event)"
       ></textarea>
     </div>
     <div class="agent-ws-input-actions">
-      <button class="agent-ws-model-btn" :class="{ open: showModelMenu }" :title="t('agent.model_pick')" @click="emit('toggleModelMenu')">
+      <button class="agent-ws-model-btn" :class="{ open: showModelMenu }" :title="t('agent.model_pick')" @click="agent.toggleModelMenu()">
         <svg class="agent-ws-model-icon" viewBox="0 0 16 16"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none"/></svg>
         <span class="agent-ws-model-label">{{ activeModelLabel }}</span>
         <svg class="agent-ws-model-caret" viewBox="0 0 16 16"><path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
       </button>
       <div class="agent-ws-input-actions-right">
-        <button class="agent-ws-attach-btn" :title="t('agent.attach_file')" @click="emit('attachFiles')">
+        <button class="agent-ws-attach-btn" :title="t('agent.attach_file')" @click="agent.handleAttachFiles()">
           <svg viewBox="0 0 16 16"><path d="M13 7.5L8 12.5a3 3 0 01-4.2-4.2l5-5a2 2 0 012.8 2.8l-5 5a1 1 0 01-1.4-1.4l4.3-4.3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
         </button>
         <button
@@ -159,7 +106,7 @@ const emit = defineEmits<{
           :class="{ 'agent-ws-stop': canStop }"
           :disabled="submitting && !canStop"
           :title="canStop ? t('agent.stop_hint') : ''"
-          @click="canStop ? emit('cancel') : emit('submit')"
+          @click="canStop ? agent.handleCancel() : agent.handleSubmit()"
         >
           {{ canStop ? (cancelling ? t('agent.stopping') : t('agent.stop')) : submitting ? t('agent.running') : t('agent.submit') }}
         </button>
@@ -167,12 +114,11 @@ const emit = defineEmits<{
 
       <div v-if="showModelMenu" class="agent-ws-menu agent-ws-menu-model">
         <div class="agent-ws-menu-title">{{ t('agent.model_pick') }}</div>
-        <!-- 单次覆盖开关：开启后选择只作用于下一次提交，不改会话长期模型 -->
         <button
           class="agent-ws-menu-item agent-ws-menu-once"
           :class="{ selected: modelOnce }"
           :title="t('agent.model_once_hint')"
-          @click="emit('toggleModelOnce')"
+          @click="agent.toggleModelOnce()"
         >
           <span class="agent-ws-menu-check">{{ modelOnce ? '✓' : '' }}</span>
           <span class="agent-ws-menu-main">{{ t('agent.model_once') }}</span>
@@ -180,8 +126,8 @@ const emit = defineEmits<{
         <button
           class="agent-ws-menu-item"
           :class="{ selected: !effectiveModel }"
-          @mouseenter="emit('model-hover', 0)"
-          @click="emit('pickModel', null)"
+          @mouseenter="modelMenuIndex = 0"
+          @click="agent.pickModel(null)"
         >
           <span class="agent-ws-menu-main">{{ t('agent.model_default') }}</span>
           <span v-if="modelDefaultSub" class="agent-ws-menu-sub">{{ modelDefaultSub }}</span>
@@ -190,26 +136,22 @@ const emit = defineEmits<{
           v-for="(m, i) in availableModels"
           :key="`${m.provider}:${m.id}`"
           class="agent-ws-menu-item"
-          :class="{ selected: isModelSelected(m) }"
-          @mouseenter="emit('model-hover', i + 1)"
-          @click="emit('pickModel', m)"
+          :class="{ selected: agent.isModelSelected(m) }"
+          @mouseenter="modelMenuIndex = i + 1"
+          @click="agent.pickModel(m)"
         >
-          <span class="agent-ws-menu-main">{{ modelLabel(m) }}</span>
+          <span class="agent-ws-menu-main">{{ agent.modelLabel(m) }}</span>
           <span class="agent-ws-menu-sub">{{ m.provider }} · {{ m.id }}</span>
         </button>
         <div v-if="availableModels.length === 0" class="agent-ws-menu-empty">{{ t('agent.model_none') }}</div>
       </div>
     </div>
 
-    <!-- 会话上下文水位（对齐 pi footer 的 `5.2% / 1.0M (auto)`）：放在输入框下方，
-         对齐主流 chat 应用惯例。
-         词元与窗口由后端算（agent_context.rs 复刻 pi 的 getContextUsage） -->
     <div v-if="usageText" class="agent-ws-usage">
       <span class="agent-ws-usage-text" :title="usageHint">{{ usageText }}</span>
       <span v-if="usageEstimated" class="agent-ws-usage-est" :title="t('agent.usage_estimate_hint')">≈</span>
     </div>
 
-    <!-- @ Skill 菜单 -->
     <div v-if="showSkillMenu" class="agent-ws-menu">
       <div class="agent-ws-menu-title">{{ t('agent.skill_pick') }}</div>
       <button
@@ -217,8 +159,8 @@ const emit = defineEmits<{
         :key="s"
         class="agent-ws-menu-item"
         :class="{ selected: i === skillMenuIndex }"
-        @mouseenter="emit('skill-hover', i)"
-        @click="emit('pickSkill', s)"
+        @mouseenter="skillMenuIndex = i"
+        @click="agent.pickSkill(s)"
       >
         <span class="agent-ws-menu-main">@{{ skillShortName(s) }}</span>
         <span class="agent-ws-menu-sub">{{ s }}</span>
@@ -228,7 +170,6 @@ const emit = defineEmits<{
       </div>
     </div>
 
-    <!-- [[ 实体菜单 -->
     <div v-if="showEntityMenu" class="agent-ws-menu agent-ws-menu-entities">
       <div class="agent-ws-menu-title">{{ t('agent.entity_pick') }}</div>
       <template v-if="filteredSources.length">
@@ -241,10 +182,10 @@ const emit = defineEmits<{
           :key="`s${s.id}`"
           class="agent-ws-menu-item"
           :class="{ selected: i === entityMenuIndex }"
-          @mouseenter="emit('entity-hover', i)"
-          @click="emit('pickEntity', 'source', s.id)"
+          @mouseenter="entityMenuIndex = i"
+          @click="agent.pickEntity('source', s.id)"
         >
-          <span class="agent-ws-menu-main">{{ sourceDisplayName(s) }}</span>
+          <span class="agent-ws-menu-main">{{ agent.sourceDisplayName(s) }}</span>
           <span class="agent-ws-menu-sub">{{ s.source_type }} · 监控源 #{{ s.id }}</span>
         </button>
       </template>
@@ -258,17 +199,16 @@ const emit = defineEmits<{
           :key="`r${r.id}`"
           class="agent-ws-menu-item"
           :class="{ selected: filteredSources.length + i === entityMenuIndex }"
-          @mouseenter="emit('entity-hover', filteredSources.length + i)"
-          @click="emit('pickEntity', 'release', r.id)"
+          @mouseenter="entityMenuIndex = filteredSources.length + i"
+          @click="agent.pickEntity('release', r.id)"
         >
-          <span class="agent-ws-menu-main">{{ releaseDisplayName(r) }}</span>
+          <span class="agent-ws-menu-main">{{ agent.releaseDisplayName(r) }}</span>
           <span class="agent-ws-menu-sub">{{ formatDate(r.published_at) }}</span>
         </button>
       </template>
       <div v-if="!entityMenuHasMatch" class="agent-ws-menu-empty">{{ t('agent.no_match') }}</div>
     </div>
 
-    <!-- 引用 chip 全文悬浮提示（跟随鼠标，仅文本截断时显示） -->
     <div v-if="chipTooltip" class="agent-ws-chip-tooltip" :style="{ left: chipTooltip.x + 'px', top: chipTooltip.y + 'px' }">
       {{ chipTooltip.text }}
     </div>

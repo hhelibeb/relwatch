@@ -3,7 +3,7 @@ import { defineComponent, nextTick } from 'vue'
 import { mount } from '@vue/test-utils'
 import { useContextMenu } from '../composables/useContextMenu'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
-import { ShowToastKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
@@ -97,18 +97,17 @@ describe('useContextMenu — 通用关闭行为', () => {
 
   it('复制链接失败时通过 Toast 给出反馈（不再静默失败）', async () => {
     copyTextToClipboardMock.mockRejectedValueOnce(new Error('boom'))
-    const showToast = vi.fn()
-    const wrapper = mount(ContextMenuHarness, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
-    })
+    const ui = useUiStore()
+    const spy = vi.spyOn(ui, 'showToast')
+    const wrapper = mount(ContextMenuHarness)
 
     await wrapper.get('.target').trigger('contextmenu')
     await wrapper.get('.copy').trigger('click')
     await nextTick()
     await nextTick()
 
-    expect(showToast).toHaveBeenCalledTimes(1)
-    expect(String(showToast.mock.calls[0][0])).toContain('boom')
+    expect(spy).toHaveBeenCalledTimes(1)
+    expect(String(spy.mock.calls[0][0])).toContain('boom')
     wrapper.unmount()
   })
 })

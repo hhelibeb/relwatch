@@ -1,10 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { shallowMount, mount } from '@vue/test-utils'
-import { defineComponent, nextTick, ref } from 'vue'
+import { enableAutoUnmount, shallowMount, mount } from '@vue/test-utils'
+import { defineComponent, nextTick } from 'vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
 import ImageLightbox from '../components/common/ImageLightbox.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey, AutoReadDetailKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
+import { useSettingsStore } from '../stores/settings'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import { t, setLocale } from '../i18n'
 import { formatDate, formatDateNoSeconds, formatDateShort, type AutoReadDetailMode } from '../utils'
 import { createRelease } from './helpers'
@@ -55,44 +58,69 @@ const ContextMenuStub = defineComponent({
     </div>`,
 })
 
-function mountRelease(release: ReleaseInfo, provideOverrides: Record<symbol, unknown> = {}) {
+interface ReleaseItemStoreOverrides {
+  toast?: ReturnType<typeof vi.fn>
+  showImportance?: boolean
+  aiEnabled?: boolean
+  agentEnabled?: boolean
+  autoReadDetail?: AutoReadDetailMode
+  openAgentWorkspace?: ReturnType<typeof vi.fn>
+}
+
+function applyReleaseItemStores(overrides: ReleaseItemStoreOverrides = {}) {
+  const ui = useUiStore()
+  if (overrides.toast) {
+    vi.spyOn(ui, 'showToast').mockImplementation(overrides.toast as never)
+  }
+  const settingsStore = useSettingsStore()
+  settingsStore.settings.auto_read_detail = overrides.autoReadDetail ?? 'open'
+  if (overrides.showImportance !== undefined) {
+    settingsStore.settings.show_importance = overrides.showImportance
+  }
+  if (overrides.aiEnabled !== undefined) {
+    settingsStore.settings.deepseek_enabled = overrides.aiEnabled
+    settingsStore.settings.deepseek_api_key_set = overrides.aiEnabled
+  }
+  if (overrides.agentEnabled !== undefined) {
+    useCatalogStore().agentConfig = { enabled: overrides.agentEnabled } as never
+  }
+  if (overrides.openAgentWorkspace) {
+    useAgentStore().bindPanelHandlers({ open: overrides.openAgentWorkspace as never, toggle: vi.fn() })
+  }
+}
+
+function mountRelease(release: ReleaseInfo, overrides: ReleaseItemStoreOverrides = {}) {
+  applyReleaseItemStores(overrides)
   return shallowMount(ReleaseItem, {
     props: { release },
     global: {
-      provide: {
-        [ShowToastKey as symbol]: vi.fn(),
-        // 生产默认档位（open）：未显式提供时组件按 off 处理，点链接会绕过标记
-        [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('open'),
-        ...provideOverrides,
+      stubs: {
+        ReleaseStandardCardBody: false,
+        ReleaseVideoCardBody: false,
+        BaseTooltip: false,
       },
     },
   })
 }
 
-// 最近一次挂载注入的 openAgentWorkspace spy（「发送到 Agent」行为断言用）
 let lastAgentOpen: ReturnType<typeof vi.fn> | null = null
 export function lastOpenAgentWorkspace() {
   return lastAgentOpen
 }
 
-// 菜单测试专用：真实渲染 + ContextMenu stub（右键菜单为事件入口）
-// agentEnabled=true 时菜单含「发送到 Agent」；openAgentWorkspace 记录调用供行为断言
 function mountWithMenus(release: ReleaseInfo, aiEnabled = true, agentEnabled = false) {
   const openAgentWorkspace = vi.fn()
   lastAgentOpen = openAgentWorkspace
+  applyReleaseItemStores({ aiEnabled, agentEnabled, openAgentWorkspace })
   return mount(ReleaseItem, {
     props: { release },
     global: {
-      provide: {
-        [ShowToastKey as symbol]: vi.fn(),
-        [AiEnabledKey as symbol]: ref(aiEnabled),
-        [AgentEnabledKey as symbol]: ref(agentEnabled),
-        [AgentWorkspaceKey as symbol]: openAgentWorkspace,
-      },
       stubs: { MarkdownContent: true, ContextMenu: ContextMenuStub },
     },
   })
 }
+
+enableAutoUnmount(afterEach)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -269,10 +297,7 @@ describe('ReleaseItem.vue — 通知状态操作', () => {
     const toast = vi.fn()
     vi.mocked(setNotificationState).mockRejectedValue(new Error('err.network'))
 
-    const wrapper = shallowMount(ReleaseItem, {
-      props: { release: createRelease({ id: 10, notification_status: 'pending' }) },
-      global: { provide: { [ShowToastKey as symbol]: toast } },
-    })
+    const wrapper = mountRelease(createRelease({ id: 10, notification_status: 'pending' }), { toast })
 
     await wrapper.find('.btn-danger-soft').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -374,23 +399,23 @@ describe('ReleaseItem.vue — 窗口隐藏/失焦后的瞬态层失效（真实�
   })
 
   it('失效期内重放的 focus 不弹摘要提示', async () => {
-    const { wrapper, el } = mountTruncatedSummary()
+    const { el } = mountTruncatedSummary()
     invalidateTransientUi()
 
     await el.trigger('focus')
 
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
   })
 
   it('失效期结束（用户真的动了手）后 focus 恢复正常', async () => {
-    const { wrapper, el } = mountTruncatedSummary()
+    const { el } = mountTruncatedSummary()
     invalidateTransientUi()
     await el.trigger('focus')
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
 
     endTransientUiInvalidation()
     await el.trigger('focus')
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
   })
 
   it('总线清理一并清掉 HF 元数据提示（漏清的瞬态层会在窗口重开时复活）', async () => {
@@ -401,30 +426,30 @@ describe('ReleaseItem.vue — 窗口隐藏/失焦后的瞬态层失效（真实�
     }))
 
     await wrapper.find('.release-tag').trigger('mouseenter', { clientX: 10, clientY: 10 })
-    expect(wrapper.find('.release-hf-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-hf-tooltip')).not.toBeNull()
 
     closeAllContextMenus()
     await nextTick()
 
-    expect(wrapper.find('.release-hf-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-hf-tooltip')).toBeNull()
   })
 })
 
 describe('ReleaseItem.vue — 重要性样式', () => {
   it('ai_importance="大" → release-importance-high', () => {
-    const wrapper = mountRelease(createRelease({ ai_importance: '大' }), { [ShowImportanceKey as symbol]: ref(true) })
+    const wrapper = mountRelease(createRelease({ ai_importance: '大' }), { showImportance: true })
 
     expect(wrapper.find('.release-item').classes()).toContain('release-importance-high')
   })
 
   it('ai_importance="中" → release-importance-medium', () => {
-    const wrapper = mountRelease(createRelease({ ai_importance: '中' }), { [ShowImportanceKey as symbol]: ref(true) })
+    const wrapper = mountRelease(createRelease({ ai_importance: '中' }), { showImportance: true })
 
     expect(wrapper.find('.release-item').classes()).toContain('release-importance-medium')
   })
 
   it('ai_importance="小" → release-importance-low', () => {
-    const wrapper = mountRelease(createRelease({ ai_importance: '小' }), { [ShowImportanceKey as symbol]: ref(true) })
+    const wrapper = mountRelease(createRelease({ ai_importance: '小' }), { showImportance: true })
 
     expect(wrapper.find('.release-item').classes()).toContain('release-importance-low')
   })
@@ -445,14 +470,9 @@ describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
     vi.mocked(setNotificationState).mockRejectedValue(new Error('err.network'))
     vi.mocked(openReleaseUrl).mockResolvedValue(undefined)
 
-    const wrapper = shallowMount(ReleaseItem, {
-      props: { release: createRelease({ id: 5, notification_status: 'pending' }) },
-      global: {
-        provide: {
-          [ShowToastKey as symbol]: toast,
-          [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('open'),
-        },
-      },
+    const wrapper = mountRelease(createRelease({ id: 5, notification_status: 'pending' }), {
+      toast,
+      autoReadDetail: 'open',
     })
 
     await wrapper.find('.release-link-action').trigger('click')
@@ -485,7 +505,7 @@ describe('ReleaseItem.vue — 点击链接标记时序（P0 #3）', () => {
     vi.mocked(openReleaseUrl).mockResolvedValue(undefined)
 
     const wrapper = mountRelease(createRelease({ id: 9, notification_status: 'pending' }), {
-      [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('off'),
+      autoReadDetail: 'off',
     })
 
     await wrapper.find('.release-link-action').trigger('click')
@@ -880,15 +900,15 @@ describe('ReleaseItem.vue — YouTube B 站风格布局', () => {
     const showToast = vi.fn()
     const openAgentWorkspace = vi.fn()
     lastAgentOpen = openAgentWorkspace
+    applyReleaseItemStores({
+      toast: showToast,
+      aiEnabled: true,
+      agentEnabled: false,
+      openAgentWorkspace,
+    })
     const wrapper = mount(ReleaseItem, {
       props: { release },
       global: {
-        provide: {
-          [ShowToastKey as symbol]: showToast,
-          [AiEnabledKey as symbol]: ref(true),
-          [AgentEnabledKey as symbol]: ref(false),
-          [AgentWorkspaceKey as symbol]: openAgentWorkspace,
-        },
         stubs: { MarkdownContent: true, ContextMenu: ContextMenuStub },
       },
     })
@@ -1122,10 +1142,7 @@ describe('ReleaseItem.vue — 旗标操作', () => {
     const toast = vi.fn()
     vi.mocked(setReleaseFlag).mockRejectedValue(new Error('err.release_flag_invalid|9'))
 
-    const wrapper = shallowMount(ReleaseItem, {
-      props: { release: createRelease({ id: 10, flag: 0 }) },
-      global: { provide: { [ShowToastKey as symbol]: toast } },
-    })
+    const wrapper = mountRelease(createRelease({ id: 10, flag: 0 }), { toast })
 
     await wrapper.find('.release-flag-action').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))

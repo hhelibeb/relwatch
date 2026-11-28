@@ -1,7 +1,8 @@
 import { computed, ref } from 'vue'
 import { type NotificationStatus, type ReleaseInfo, setNotificationState, setReleaseFlag } from '../api/releases'
 import { copyImageToClipboard } from '../api/client'
-import type { AgentWorkspaceSeed } from '../injection-keys'
+import type { AgentWorkspaceSeed } from '../types/agent'
+import { extractErrorMessage } from '../services/feedback'
 import { track } from './useUsageTracking'
 import { t } from '../i18n'
 import { releaseFlagColor, releaseFlagged, releaseFlagTitle } from '../utils/releaseFlag'
@@ -29,7 +30,7 @@ export function useReleaseActions(options: UseReleaseActionsOptions) {
       await setReleaseFlag(options.release().id, flag)
       options.onUpdated()
     } catch (e: unknown) {
-      options.showToast?.(t('release.flag_failed') + (e instanceof Error ? e.message : String(e)))
+      options.showToast?.(t('release.flag_failed') + extractErrorMessage(e))
     }
   }
 
@@ -45,7 +46,7 @@ export function useReleaseActions(options: UseReleaseActionsOptions) {
       else options.showToast?.(t('release.marked_read'))
       options.onUpdated()
     } catch (e: unknown) {
-      options.showToast?.(t('release.status_failed') + (e instanceof Error ? e.message : String(e)))
+      options.showToast?.(t('release.status_failed') + extractErrorMessage(e))
     } finally {
       isUpdating.value = false
     }
@@ -65,7 +66,7 @@ export function useReleaseActions(options: UseReleaseActionsOptions) {
       await copyImageToClipboard(url)
       options.showToast?.(t('release.copied'))
     } catch (e: unknown) {
-      options.showToast?.(t('release.copy_image_failed') + (e instanceof Error ? e.message : String(e)))
+      options.showToast?.(t('release.copy_image_failed') + extractErrorMessage(e))
     }
   }
 

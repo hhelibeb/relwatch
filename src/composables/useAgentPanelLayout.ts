@@ -1,7 +1,8 @@
 import { computed, onMounted, onUnmounted, ref, watch, type Ref } from 'vue'
 import { currentMonitor, getCurrentWindow, LogicalSize } from '@tauri-apps/api/window'
 import { commands } from '../bindings'
-import type { AgentWorkspaceSeed } from '../injection-keys'
+import type { AgentWorkspaceSeed } from '../types/agent'
+import { extractErrorMessage } from '../services/feedback'
 import { track } from './useUsageTracking'
 
 export const AGENT_PANEL_DEFAULT_WIDTH = 440
@@ -144,6 +145,7 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
   }
 
   async function openAgentWorkspace(seed?: AgentWorkspaceSeed) {
+    if (!options.agentEnabled.value) return
     agentPanelSeed.value = seed ?? null
     if (agentPanelOpen.value || panelBusy) return
     panelBusy = true
@@ -170,7 +172,7 @@ export function useAgentPanelLayout(options: UseAgentPanelLayoutOptions) {
       await setWindowMinWidth(win, agentWindowMinWidth(mainWidth.value))
       agentPanelOpen.value = true
     } catch (e) {
-      options.onError(String(e))
+      options.onError(extractErrorMessage(e))
     } finally {
       panelBusy = false
     }

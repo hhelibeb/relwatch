@@ -1,13 +1,13 @@
-import { ref, onMounted, onUnmounted, inject } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
-import { ShowToastKey } from '../injection-keys'
+import { extractErrorMessage } from '../services/feedback'
+import { useUiStore } from '../stores/ui'
 import { t } from '../i18n'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from './contextMenuBus'
 
 export function useContextMenu() {
   const contextMenu = ref<{ x: number; y: number; url: string } | null>(null)
-  // 右键菜单复制失败时给用户反馈（未 provide 时静默，component 单测友好）
-  const showToast = inject(ShowToastKey, () => {})
+  const ui = useUiStore()
 
   function closeContextMenu() {
     contextMenu.value = null
@@ -22,7 +22,7 @@ export function useContextMenu() {
     try {
       await copyTextToClipboard(contextMenu.value!.url)
     } catch (e: unknown) {
-      showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+      ui.showToast(t('release.copy_failed') + extractErrorMessage(e))
     }
     closeContextMenu()
   }

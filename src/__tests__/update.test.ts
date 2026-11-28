@@ -5,9 +5,8 @@ import { getVersion } from '@tauri-apps/api/app'
 import { confirm } from '@tauri-apps/plugin-dialog'
 import SettingsTab from '../components/SettingsTab.vue'
 import { openReleaseUrl } from '../api/client'
-import { useAppUpdate, classifyUpdateError } from '../api/update'
+import { useAppUpdate, classifyUpdateError } from '../composables/useAppUpdate'
 import { commands, type UpdaterMetadata } from '../bindings'
-import { ShowToastKey } from '../injection-keys'
 import { defaultSettings } from './helpers'
 import { t, tm } from '../i18n'
 
@@ -401,11 +400,6 @@ describe('SettingsTab「软件更新」分组（位于 about tab）', () => {
   async function mountSettingsTabOnAbout() {
     const wrapper = mount(SettingsTab, {
       props: { settings: { ...defaultSettings } },
-      global: {
-        provide: {
-          [ShowToastKey as symbol]: vi.fn(),
-        },
-      },
     })
     await flushPromises()
     await wrapper.get('[data-testid="settings-tab-about"]').trigger('click')

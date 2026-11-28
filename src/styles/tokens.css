@@ -1,0 +1,248 @@
+/* ── 设计变量 ─────────────────────────────────── */
+:root {
+  color-scheme: light;
+
+  /* 基础色：白底 + 近黑文字，层次靠发丝边框与灰阶拉开 */
+  --bg: #ffffff;
+  --bg-subtle: #f4f4f5;
+  --bg-hover: #e9e9ec;
+  --surface: #ffffff;
+  --input-bg: #ffffff;
+  --control-active: #ffffff;
+
+  /* 悬停面：所有 hover 的背景都取它，不复用 --bg-subtle。
+     深色下 --bg-subtle(#1b1b20) 与 --surface(#18181c) 只差 1.03:1，
+     整行/整项扫过时等于没有反馈。浅色沿用原值，观感不变。 */
+  --hover-surface: #f4f4f5;
+
+  /* 第二级悬停面：嵌在已抬升容器内的可点块（卡片里的摘要文本、行内按钮）。
+     它们若与容器的 hover 同色，就被容器自身底色吃掉；再抬一档后，
+     深浅两套都保持相对 --hover-surface 约 1.10:1 的一步，与「底 → 一级悬停」同幅度。 */
+  --hover-surface-nested: #e9e9ec;
+
+  /* 唯一强调色：只用于链接、版本号、焦点与关键选中态 */
+  --primary: #3e63dd;
+  --primary-hover: #3457c9;
+  /* 压在主色实心底上的文字与图标。深色主题的 --primary 是浅蓝，
+     沿用白字只有 2.1:1；与 --on-ink 同一套语义，不随主题漂移 */
+  --on-primary: #ffffff;
+  /* 兼容别名：历史上 13 处 var(--accent, #2e6fd0) 靠 fallback 存活，组件现已统一改用
+     --primary；保留定义是为了让任何遗漏/新增引用都落到品牌色，而不是回退成旧的第二套蓝。
+     能随主题切换的前提是 data-theme 挂在 <html>（与 :root 同一元素），
+     若主题改挂到 body 或某个包裹 div，这里会固化成浅色值并继承下去。 */
+  --accent: var(--primary);
+
+  /* 墨色实心按钮（主操作） */
+  --ink: #26262b;
+  --ink-hover: #17171a;
+  --on-ink: #ffffff;
+
+  --text: #1c1c1f;
+  --text-muted: #71717a;
+  --text-faint: #a1a1aa;
+  --border: #eaeaed;
+  --border-strong: #d4d4d8;
+
+  /* 语义色：低饱和，只以小圆点/小字出现 */
+  --success: #15803d;
+  --warning: #a16207;
+  --danger: #b91c1c;
+  /* 危险实心按钮的 hover：浅色再压一档明度，深色反而提亮（与 --primary-hover 同向） */
+  --danger-hover: #991b1b;
+
+  /* 语义软色对：徽章/提示的底与字，深浅主题各自取值 */
+  --primary-soft-bg: #eef1fc;
+  --primary-soft-border: #d3dcf4;
+  --primary-soft-text: #3457c9;
+  --success-soft-bg: #e8f3ec;
+  --success-soft-text: #15803d;
+  --warning-soft-bg: #f8efdb;
+  --warning-soft-text: #92610a;
+  --danger-soft-bg: #f9e9e7;
+  --danger-soft-text: #b91c1c;
+  --info-soft-bg: #eef1fc;
+  --info-soft-text: #3457c9;
+  --purple-soft-bg: #f0f0f2;
+  --purple-soft-text: #71717a;
+  --orange-soft-bg: #f0f0f2;
+  --orange-soft-text: #71717a;
+  --neutral-soft-bg: #f4f4f5;
+  --neutral-soft-text: #71717a;
+
+  /* 日历热力色：单色相递进，避免彩虹热力图 */
+  --heat-1: #eef1fc;
+  --heat-2: #d3dcf4;
+  --heat-3: #a9baf0;
+  --heat-4: #7f98e8;
+
+  /* 图表系列色：与整体低饱和语言同源（色相取自语义色与旗标色板，压明度），
+     但不复用 --primary / --danger 本身——那两个带交互与状态语义，
+     画进图里会被读成「选中」或「出错」。
+     「其他」固定中性灰并置于末位，不参与色相循环 */
+  --data-series-1: #4a6cc4;
+  --data-series-2: #2f7d78;
+  --data-series-3: #a2701c;
+  --data-series-4: #7d5cad;
+  --data-series-5: #2f7d4f;
+  --data-series-6: #9c5a4a;
+  --data-series-other: #8b8b94;
+
+  /* 等宽字族：工具输出、代码块、时间戳 */
+  --mono-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 主滚动区纵向内边距；sticky 贴顶时按此值抵消（见 .app-main 与 .log-search-*） */
+  --app-padding-y: 16px;
+
+  /* 字号：6 档，组件内不再出现裸 px。此前实际用着 9 档（9/10/11/12/13/14/15/16/20），
+     其中正文 13px 与元信息 12px 只差 1px——层级实际由颜色单独承担，扫视时
+     标题/正文/注释拉不开。收口后每档只承担一种角色。 */
+  --fs-caption: 11px; /* 徽标、图例、分组标题、表头 */
+  --fs-meta: 12px; /* 时间、计数、辅助说明 */
+  --fs-body: 13px; /* 正文、列表主文本 */
+  --fs-title: 15px; /* 区块标题、弹窗标题、卡片主信息 */
+  --fs-display: 18px; /* 页面级标题 */
+  --fs-metric: 22px; /* 强调数字 */
+
+  /* 圆角数级 */
+  --radius-xs: 3px;
+  --radius-sm: 5px;
+  --radius: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  /* 层级：7 档。不变量比档位本身重要——弹窗必须盖住全局浮层（ReleaseDetailModal
+     的 bodyMenu 与列表 tooltip 曾靠「10010 > 10002 > 10000」口头比大小成立）。
+     因此 popover < toast < modal < popover-modal；新增浮层取现有档位，
+     不要靠累加数字表达优先级。 */
+  --z-sticky: 10; /* 吸顶面板；容器内的定位层（resize 手柄、拖拽提示） */
+  --z-menu: 100; /* 下拉、右键菜单、面板内菜单 */
+  --z-popover: 1000; /* 全局 tooltip（fixed，Teleport 到 body） */
+  /* 原来的 9999 在这里站不住：它高于 --z-modal 2000，等于让 Toast 盖住弹窗操作区，
+     与上面「弹窗必须盖住浮层」的不变量相反。取 1500 让它落在浮层与弹窗之间。 */
+  --z-toast: 1500;
+  --z-modal: 2000; /* 弹窗遮罩 */
+  --z-popover-modal: 2500; /* 弹窗内部 tooltip，同属一个遮罩内的层叠 */
+  --z-dev: 20000; /* 统计调试面板：永远最上层 */
+
+  /* 动效：3 档时长 + 1 条缓动。原 7 种时长按值收敛——0.1/0.12 → hover，
+     0.15/0.18 → state，0.2/0.3/0.35 → overlay；只有浮层那档略快，
+     收掉的是 0.3/0.35 两只长尾，其余保持原有快慢关系。 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-hover: 120ms;
+  --dur-state: 160ms;
+  --dur-overlay: 220ms;
+  /* 退场迟滞：hover 收起方向上先用它压住一档，再走时长。列表卡片之间有间距，
+     指针跨卡时必然经过不属于任何卡的空白，没有延时会看到一暗一明的闪烁。 */
+  --delay-hover-out: 120ms;
+
+  /* 阴影数级：仅浮层（下拉/菜单/Toast/Tooltip）使用，内容层一律无阴影 */
+  --shadow-sm: none;
+  --shadow-md: 0 4px 16px -4px rgba(23, 23, 26, 0.12);
+  --shadow-lg: 0 12px 32px -8px rgba(23, 23, 26, 0.18);
+
+  /* 旗标色板（1-6：红/橙/黄/绿/蓝/紫）：颜色不带语义，具体含义由用户自行赋予；
+     图标为淡填充 + 描边（icons.svg#flag-tag-icon），取中明度保证描边可辨 */
+  --flag-1: #d13438;
+  --flag-2: #e8710a;
+  --flag-3: #b58a00;
+  --flag-4: #107c10;
+  --flag-5: #0f6cbd;
+  --flag-6: #8661c5;
+
+  --focus-ring: 0 0 0 3px rgba(62, 99, 221, 0.20);
+  --accent-prerelease: #71717a;
+  --accent-medium: #a16207;
+
+  /* 原生 select 触发器的下拉箭头：appearance:none 后自绘，颜色随主题取 muted 档 */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%2371717a' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E");
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #101013;
+  --bg-subtle: #1b1b20;
+  --bg-hover: #26262c;
+  --surface: #18181c;
+  --input-bg: #1b1b20;
+  --control-active: #2a2a31;
+
+  /* 比 --bg-subtle 亮一档：值按「同时压过 --surface(#18181c) 与画布 #101013」
+     取，实测 1.12:1 / 1.20:1，与浅色下的 1.10:1 观感相当；再亮就接近 --bg-hover
+     (#26262c)，整行会显得过重。 */
+  --hover-surface: #222228;
+
+  /* 深色若沿用 --bg-hover(#26262c)，相对 --hover-surface 只有 1.05:1——行内按钮压上去
+     等于没反馈；#2a2a32 提到 1.11:1，与浅色的 1.10:1 对齐。 */
+  --hover-surface-nested: #2a2a32;
+
+  --primary: #9aaef2;
+  --primary-hover: #b3c1f6;
+  --on-primary: #18181c;
+
+  --ink: #e4e4e7;
+  --ink-hover: #fafafa;
+  --on-ink: #17171a;
+
+  --text: #e4e4e7;
+  --text-muted: #9d9da6;
+  --text-faint: #63636b;
+  --border: #26262c;
+  --border-strong: #3b3b44;
+
+  --success: #4cc38a;
+  --warning: #e0b45c;
+  --danger: #e56d68;
+  --danger-hover: #ef8f8b;
+
+  /* 软色对：深色主题用半透明底 + 亮色字，保证对比度 */
+  --primary-soft-bg: rgba(154, 174, 242, 0.12);
+  --primary-soft-border: rgba(154, 174, 242, 0.30);
+  --primary-soft-text: #aebdf5;
+  --success-soft-bg: rgba(76, 195, 138, 0.13);
+  --success-soft-text: #4cc38a;
+  --warning-soft-bg: rgba(224, 180, 92, 0.13);
+  --warning-soft-text: #e0b45c;
+  --danger-soft-bg: rgba(229, 109, 104, 0.13);
+  --danger-soft-text: #e56d68;
+  --info-soft-bg: rgba(154, 174, 242, 0.12);
+  --info-soft-text: #aebdf5;
+  --purple-soft-bg: rgba(157, 157, 166, 0.14);
+  --purple-soft-text: #9d9da6;
+  --orange-soft-bg: rgba(157, 157, 166, 0.14);
+  --orange-soft-text: #9d9da6;
+  --neutral-soft-bg: rgba(157, 157, 166, 0.14);
+  --neutral-soft-text: #9d9da6;
+
+  --heat-1: rgba(154, 174, 242, 0.14);
+  --heat-2: rgba(154, 174, 242, 0.24);
+  --heat-3: rgba(154, 174, 242, 0.36);
+  --heat-4: rgba(154, 174, 242, 0.50);
+
+  /* 深底上按同色相提亮、降饱和；黑底直接压深色会糊成一片 */
+  --data-series-1: #8fa6e0;
+  --data-series-2: #62b0a8;
+  --data-series-3: #d4a259;
+  --data-series-4: #a893d6;
+  --data-series-5: #6cba8e;
+  --data-series-6: #c98a78;
+  --data-series-other: #7c7c86;
+
+  --shadow-sm: none;
+  --shadow-md: 0 4px 16px -4px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 12px 32px -8px rgba(0, 0, 0, 0.6);
+
+  /* 暗色下用亮一档的同色相，保证描边与填充在深底上可辨 */
+  --flag-1: #e56d68;
+  --flag-2: #f2921b;
+  --flag-3: #e0b45c;
+  --flag-4: #4cc38a;
+  --flag-5: #6ba4e8;
+  --flag-6: #a88fe0;
+
+  --focus-ring: 0 0 0 3px rgba(154, 174, 242, 0.28);
+  --accent-prerelease: #9d9da6;
+  --accent-medium: #e0b45c;
+
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='none' stroke='%239d9da6' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5l3 3 3-3'/%3E%3C/svg%3E");
+}

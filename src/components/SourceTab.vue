@@ -1,24 +1,54 @@
 <script setup lang="ts">
-import { computed, inject, ref, nextTick, onMounted, onUnmounted, watch } from 'vue'
-import { ShowToastKey } from '../injection-keys'
-import { message, confirm } from '@tauri-apps/plugin-dialog'
-import { type Source, parseSourceUrl, addSource, removeSource, updateSource, batchUpdateSources, batchRemoveSources, buildYoutubeConfig, patchSourceConfig, readConfigFlag, getSourceTypeDef, sourceDisplayName, sourceSearchQuery, sourceRepoKey, sourceTypeDefs } from '../api/sources'
+import { computed, nextTick, onMounted, onUnmounted, ref, toRef } from 'vue'
+import { storeToRefs } from 'pinia'
+import {
+  type Source,
+  parseSourceUrl,
+  addSource,
+  removeSource,
+  updateSource,
+  batchUpdateSources,
+  batchRemoveSources,
+  buildYoutubeConfig,
+  parseYtConfig,
+  patchSourceConfig,
+  getSourceTypeDef,
+  sourceDisplayName,
+  sourceSearchQuery,
+  sourceRepoKey,
+} from '../api/sources'
 import { checkSingleSource, markSourceReleasesRead } from '../api/releases'
-import { openReleaseUrl, translateError } from '../api/client'
+import { openReleaseUrl } from '../api/client'
 import { useContextMenu } from '../composables/useContextMenu'
 import { useDropdown } from '../composables/useDropdown'
 import { useBulkSelection } from '../composables/useBulkSelection'
 import { track } from '../composables/useUsageTracking'
+import { confirmAction, extractErrorMessage } from '../services/feedback'
+import { useUiStore } from '../stores/ui'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import EmptyState from './common/EmptyState.vue'
 import ErrorBlock from './common/ErrorBlock.vue'
 import SkeletonList from './common/SkeletonList.vue'
-import { ActiveTabKey, AgentEnabledKey, AgentPanelOpenKey, AgentWorkspaceKey } from '../injection-keys'
+import BaseBulkBar from './ui/BaseBulkBar.vue'
+import BaseTooltip from './ui/BaseTooltip.vue'
+import SourceAddBar, { type HeaderMode } from './source/SourceAddBar.vue'
+import SourceCard from './source/SourceCard.vue'
+import { useSourceSortFilter, type SortDirection, type SourceSortField } from './source/useSourceSortFilter'
 import { t, tm } from '../i18n'
-import { formatDate } from '../utils'
 import { ENTITY_DRAG_MIME } from './agent/agentChatUtils'
 
-const props = defineProps<{ sources: Source[]; polling: boolean; unreadReleaseCounts: Record<string, number>; totalReleaseCounts: Record<string, number>; showSourceTypeIcons: boolean; /** 源列表加载中（App 侧状态）：仅在列表为空时渲染骨架 */ loading?: boolean; /** 源列表加载失败信息：列表为空时用错误块代替空态 */ loadError?: string }>()
+const props = defineProps<{
+  sources: Source[]
+  polling: boolean
+  unreadReleaseCounts: Record<string, number>
+  totalReleaseCounts: Record<string, number>
+  showSourceTypeIcons: boolean
+  loading?: boolean
+  loadError?: string
+}>()
+
 const emit = defineEmits<{
   update: []
   checkResult: [count: number]
@@ -27,60 +57,37 @@ const emit = defineEmits<{
   openUnreadReleases: [query: string]
 }>()
 
+const ui = useUiStore()
+const catalog = useCatalogStore()
+const agentStore = useAgentStore()
+const { activeTab } = storeToRefs(ui)
+const { agentEnabled } = storeToRefs(catalog)
+const { panelOpen: agentPanelOpen } = storeToRefs(agentStore)
+
+const addBarRef = ref<InstanceType<typeof SourceAddBar> | null>(null)
+const headerMode = ref<HeaderMode>('add')
 const urlInput = ref('')
-const urlInputEl = ref<HTMLInputElement | null>(null)
-/* 添加源的请求在途：与列表加载态（props.loading）分开 */
 const addBusy = ref(false)
 const checkingId = ref<number | null>(null)
 const highlightedId = ref<number | null>(null)
 const openMoreId = ref<number | null>(null)
-const showToast = inject(ShowToastKey, () => {})
-// 新增 YouTube 源时的订阅内容复选框（帖子恒 false，暂不支持）
 const subscribeVideos = ref(true)
 const subscribeLive = ref(true)
 const subscribePosts = ref(false)
-// 新增源高亮动画的定时器句柄；连续添加时先 clear 旧定时器，避免旧回调截断新源高亮
 let highlightTimer: ReturnType<typeof setTimeout> | undefined
 
-const sourceSearch = ref('')
-const trimmedSourceSearch = computed(() => sourceSearch.value.trim())
-const hasActiveSourceSearch = computed(() => trimmedSourceSearch.value.length > 0)
+const {
+  sourceSearch,
+  trimmedSourceSearch,
+  hasActiveSourceSearch,
+  sourceSortField,
+  sourceSortDirection,
+  sortedSources,
+  sortFieldOptions,
+  sortDirectionOptions,
+  sortLabelText,
+} = useSourceSortFilter(toRef(props, 'sources'), toRef(props, 'unreadReleaseCounts'))
 
-const SOURCE_SORT_FIELD_STORAGE_KEY = 'relwatch.source.sort.field'
-const SOURCE_SORT_DIRECTION_STORAGE_KEY = 'relwatch.source.sort.direction'
-
-type SourceSortField = 'default' | 'name' | 'status' | 'type' | 'created'
-type SortDirection = 'asc' | 'desc'
-
-function isSourceSortField(value: string | null): value is SourceSortField {
-  return value === 'default' || value === 'name' || value === 'status' || value === 'type' || value === 'created'
-}
-
-function isSortDirection(value: string | null): value is SortDirection {
-  return value === 'asc' || value === 'desc'
-}
-
-function readStoredSourceSortField(): SourceSortField {
-  try {
-    const value = window.localStorage.getItem(SOURCE_SORT_FIELD_STORAGE_KEY)
-    return isSourceSortField(value) ? value : 'default'
-  } catch {
-    return 'default'
-  }
-}
-
-function readStoredSourceSortDirection(): SortDirection {
-  try {
-    const value = window.localStorage.getItem(SOURCE_SORT_DIRECTION_STORAGE_KEY)
-    return isSortDirection(value) ? value : 'desc'
-  } catch {
-    return 'desc'
-  }
-}
-
-type HeaderMode = 'add' | 'search'
-const sourceSortField = ref<SourceSortField>(readStoredSourceSortField())
-const sourceSortDirection = ref<SortDirection>(readStoredSourceSortDirection())
 const openSort = ref(false)
 const sortDropdown = useDropdown({
   openState: openSort,
@@ -88,44 +95,48 @@ const sortDropdown = useDropdown({
   hoverOpen: false,
 })
 
-// 每行"更多"面板：共享 openMoreId，同一时刻只有一个面板打开
 const moreDropdown = useDropdown({
   openState: openMoreId,
   closedKey: null,
   hoverOpen: false,
 })
-// Agent：启用开关 + 工作区唤起（源实体带入）
-const agentEnabledRef = inject(AgentEnabledKey, ref(false))
-const agentEnabled = computed(() => agentEnabledRef.value)
-const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
-// 工作区打开状态：拖拽落点存在时才启用源拖拽，否则恢复文本选择
-const agentPanelOpen = inject(AgentPanelOpenKey, ref(false))
 
-function handleSendToAgent(source: Source) {
-  moreDropdown.close()
-  track('source.send_agent')
-  openAgentWorkspace({ entities: [{ kind: 'source', id: source.id }] })
+const visibleSourceIds = computed(() => sortedSources.value.map((s) => s.id))
+const bulkSelection = useBulkSelection<number>({
+  visibleIds: visibleSourceIds,
+  active: computed(() => activeTab.value === 'sources'),
+})
+const { selectionMode, selectedIds: selectedSourceIds, selectedCount } = bulkSelection
+const bulkBusy = ref(false)
+let pendingShiftClick = false
+
+const { contextMenu, closeContextMenu, handleContextMenu, handleMenuAction } = useContextMenu()
+const contextMenuItems = computed<ContextMenuItem[]>(() => [
+  { id: 'open', label: t('context.open') },
+  { id: 'copy', label: t('context.copy_link') },
+])
+
+function sourceKey(source: Source): string {
+  return sourceRepoKey(source.source_type, source.owner, source.repo)
 }
 
-// ---- 拖拽：把监控源作为实体拖入 Agent 工作区 ----
-function handleDragStart(e: DragEvent, source: Source) {
-  if (!agentEnabled.value || !agentPanelOpen.value) return
-  const data = JSON.stringify({ kind: 'source', id: source.id })
-  e.dataTransfer?.setData(ENTITY_DRAG_MIME, data)
-  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
+function unreadReleaseCount(source: Source): number {
+  return props.unreadReleaseCounts[sourceKey(source)] || 0
 }
-const headerMode = ref<HeaderMode>('add')
-const activeTab = inject(ActiveTabKey, ref('sources'))
+
+function sourceHomeUrl(source: Source): string {
+  return getSourceTypeDef(source.source_type)?.homeUrl(source.owner, source.repo)
+    ?? `https://github.com/${source.owner}/${source.repo}`
+}
 
 function toggleHeaderMode() {
   headerMode.value = headerMode.value === 'add' ? 'search' : 'add'
   track(headerMode.value === 'add' ? 'source.switch_add' : 'source.switch_search')
 }
 
-/* 空态出口：把用户直接送到输入框（搜索模式下它是隐藏的） */
 function focusAddInput() {
   headerMode.value = 'add'
-  void nextTick(() => urlInputEl.value?.focus())
+  void nextTick(() => addBarRef.value?.focusAddInput())
 }
 
 function selectSortField(field: SourceSortField) {
@@ -139,402 +150,6 @@ function selectSortDirection(dir: SortDirection) {
   sortDropdown.close()
   track('source.sort')
 }
-
-async function handleBulkToggle(enabled: boolean) {
-  const ids = [...selectedSourceIds.value]
-  if (ids.length === 0) return
-  track(enabled ? 'source.bulk_resume' : 'source.bulk_pause')
-  bulkBusy.value = true
-  try {
-    await batchUpdateSources(ids, enabled)
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)))
-  } finally {
-    bulkBusy.value = false
-  }
-}
-
-async function handleBulkMuteToggle(muted: boolean) {
-  const ids = [...selectedSourceIds.value]
-  if (ids.length === 0) return
-  track(muted ? 'source.bulk_mute' : 'source.bulk_unmute')
-  bulkBusy.value = true
-  try {
-    await batchUpdateSources(ids, undefined, muted)
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)))
-  } finally {
-    bulkBusy.value = false
-  }
-}
-
-async function handleBulkRemove() {
-  const ids = [...selectedSourceIds.value]
-  if (ids.length === 0) return
-  const confirmed = await confirm(t('source.bulk_delete_confirm', String(ids.length)), { title: t('source.delete'), kind: 'warning' })
-  if (!confirmed) return
-  track('source.bulk_delete')
-  bulkBusy.value = true
-  try {
-    await batchRemoveSources(ids)
-    clearSelectedSources()
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('source.delete_failed') + (e instanceof Error ? e.message : String(e)))
-  } finally {
-    bulkBusy.value = false
-  }
-}
-
-async function handleMarkSourceRead(source: Source) {
-  moreDropdown.close()
-  const count = unreadReleaseCount(source)
-  if (count <= 0) return
-  const confirmed = await confirm(
-    t('source.mark_all_read_confirm', sourceDisplayName(source), String(count)),
-    { title: t('release.mark_all_read'), kind: 'info' },
-  )
-  if (!confirmed) return
-  track('source.mark_all_read')
-  try {
-    const updated = await markSourceReleasesRead(source.id)
-    if (updated > 0) showToast?.(t('release.bulk_marked_read', String(updated)))
-    emit('update')
-  } catch (e: unknown) {
-    showToast?.(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)))
-  }
-}
-
-function sourceMatchesSearch(source: Source, query: string): boolean {
-  const q = query.trim().toLowerCase()
-  if (!q) return true
-  const name = `${source.owner}/${source.repo}`.toLowerCase()
-  return name.includes(q) ||
-    source.owner.toLowerCase().includes(q) ||
-    source.repo.toLowerCase().includes(q) ||
-    (source.description ?? '').toLowerCase().includes(q)
-}
-
-const filteredSources = computed(() => {
-  const q = trimmedSourceSearch.value
-  if (!q) return props.sources
-  return props.sources.filter(s => sourceMatchesSearch(s, q))
-})
-
-const sortFieldOptions = computed(() => [
-  { value: 'default' as const, label: t('source.sort_default') },
-  { value: 'name' as const, label: t('source.sort_name') },
-  { value: 'status' as const, label: t('source.sort_status') },
-  { value: 'type' as const, label: t('source.sort_type') },
-  { value: 'created' as const, label: t('source.sort_created') },
-])
-
-const sortDirectionOptions = computed(() => [
-  { value: 'asc' as const, label: t('source.sort_asc') },
-  { value: 'desc' as const, label: t('source.sort_desc') },
-])
-
-const { contextMenu, closeContextMenu, handleContextMenu, handleMenuAction } = useContextMenu()
-
-// 右键菜单项：与 useContextMenu 的 action 分发（'open'/'copy'）对应
-const contextMenuItems = computed<ContextMenuItem[]>(() => [
-  { id: 'open', label: t('context.open') },
-  { id: 'copy', label: t('context.copy_link') },
-])
-
-function openSourceUrl(source: Source) {
-  track('source.open_url')
-  openReleaseUrl(sourceHomeUrl(source))
-}
-
-/** 源主页 URL（未知类型回退 GitHub）。 */
-function sourceHomeUrl(source: Source): string {
-  return getSourceTypeDef(source.source_type)?.homeUrl(source.owner, source.repo)
-    ?? `https://github.com/${source.owner}/${source.repo}`
-}
-
-function sourceTypeIcon(type: string): string {
-  return getSourceTypeDef(type)?.icon ?? '/icons.svg#github-mark'
-}
-
-function sourceTypeTitle(type: string): string {
-  const def = getSourceTypeDef(type)
-  return def ? t(def.titleKey) : t('source.type_github')
-}
-
-/** 解析源的 YouTube 订阅配置（缺失字段回退默认：视频/直播勾选、帖子不勾选）。 */
-function parseYtConfig(source: Source): { videos: boolean; live: boolean; posts: boolean } {
-  try {
-    const cfg = source.config ? JSON.parse(source.config) : {}
-    return {
-      videos: cfg.videos !== false,
-      live: cfg.live !== false,
-      posts: !!cfg.posts,
-    }
-  } catch {
-    return { videos: true, live: true, posts: false }
-  }
-}
-
-/** 切换 YouTube 源的订阅内容类型（即时保存）。保留 config 中的其他键（源级开关）。 */
-async function handleYtConfigToggle(source: Source, key: 'videos' | 'live', value: boolean) {
-  track('source.yt_subscribe')
-  const cfg = parseYtConfig(source)
-  cfg[key] = value
-  // 只覆盖订阅三项，不重建整个 config：否则会把 fetch_history / check_prereleases 抹掉
-  const config = patchSourceConfig(source.config, { videos: cfg.videos, live: cfg.live, posts: cfg.posts })
-  try {
-    await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
-    emit('update')
-  } catch (e: unknown) {
-    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
-  }
-}
-
-/** 保存源级开关（三态：undefined = 跟随全局）。 */
-async function handleSourceFlagChange(source: Source, key: 'fetch_history' | 'check_prereleases', value: string) {
-  const flag = value === 'on' ? true : value === 'off' ? false : undefined
-  await saveSourceSettings(source, { flag: { key, value: flag } })
-}
-
-/**
- * 源设置的统一写入：muted 与源级 config 一次提交，失败弹错。
- *
- * 不再提交单源检查间隔：调度只读全局轮询周期（`source.poll_interval_minutes`
- * 恒为 0 = 未设置，仅作为历史透传参数原样回写，见 Migration 20）。
- */
-async function saveSourceSettings(
-  source: Source,
-  patch: { flag: { key: 'fetch_history' | 'check_prereleases'; value: boolean | undefined } },
-) {
-  const config = patchSourceConfig(source.config, { [patch.flag.key]: patch.flag.value })
-  try {
-    await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
-    emit('update')
-  } catch (e: unknown) {
-    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
-  }
-}
-
-/** 源级开关当前取值（'global' | 'on' | 'off'）供下拉绑定。 */
-function sourceFlagValue(source: Source, key: 'fetch_history' | 'check_prereleases'): string {
-  const v = readConfigFlag(source.config, key)
-  return v === undefined ? 'global' : v ? 'on' : 'off'
-}
-
-/** 输入为 YouTube 频道时，展开订阅内容复选框行。 */
-const isYoutubeInput = computed(() => {
-  if (headerMode.value !== 'add') return false
-  const parsed = parseSourceUrl(urlInput.value)
-  return parsed ? !!getSourceTypeDef(parsed.type)?.hasConfigInput : false
-})
-
-/** 计数键统一为 source_type|owner|repo，避免不同类型同 owner/repo 串源。 */
-function sourceKey(source: Source): string {
-  return sourceRepoKey(source.source_type, source.owner, source.repo)
-}
-
-function unreadReleaseCount(source: Source): number {
-  return props.unreadReleaseCounts[sourceKey(source)] || 0
-}
-
-function openSourceReleases(source: Source) {
-  track('source.view_releases')
-  emit('openReleases', sourceSearchQuery(source))
-}
-
-function openSourceUnreadReleases(source: Source) {
-  track('source.pending')
-  emit('openUnreadReleases', sourceSearchQuery(source))
-}
-
-/** 查重：与后端 UNIQUE(source_type, owner, repo) 对齐，含 source_type。 */
-function sourceExists(parsed: { type: string; owner: string; repo: string }): boolean {
-  return props.sources.some(source =>
-    source.source_type === parsed.type &&
-    source.owner.toLowerCase() === parsed.owner.toLowerCase() &&
-    source.repo.toLowerCase() === parsed.repo.toLowerCase()
-  )
-}
-
-async function handleAdd() {
-  const raw = urlInput.value.trim()
-  if (!raw) return
-  track('source.add')
-  const parsed = parseSourceUrl(raw)
-  if (!parsed) {
-    await message(t('source.invalid_url'), { title: t('source.input_invalid'), kind: 'warning' })
-    return
-  }
-  if (sourceExists(parsed)) {
-    showToast?.(t('source.exists'))
-    return
-  }
-  addBusy.value = true
-  try {
-    const def = getSourceTypeDef(parsed.type)
-    // 有专属配置 UI 的类型（YouTube 订阅复选框）才携带 config
-    const config = def?.hasConfigInput
-      ? buildYoutubeConfig(subscribeVideos.value, subscribeLive.value, subscribePosts.value)
-      : undefined
-    if (def?.hasConfigInput && !subscribeVideos.value && !subscribeLive.value) {
-      await message(t('source.require_subscribe'), { title: t('source.input_invalid'), kind: 'warning' })
-      return
-    }
-    const id = await addSource(parsed.type, parsed.owner, parsed.repo, config)
-    if (id === 0) {
-      showToast?.(t('source.exists'))
-      return
-    }
-    urlInput.value = ''
-    // 复位订阅复选框为默认值（下次添加 YouTube 频道时用默认勾选）
-    subscribeVideos.value = true
-    subscribeLive.value = true
-    subscribePosts.value = false
-    highlightedId.value = id
-    clearTimeout(highlightTimer)
-    highlightTimer = setTimeout(() => { highlightedId.value = null }, 2200)
-    emit('update')
-  } catch (e: unknown) {
-    const errMsg = e instanceof Error ? e.message : String(e)
-    await message(tm('source.add_failed', { source_type: parsed.type, owner: parsed.owner, repo: parsed.repo, error: errMsg }), { title: t('settings.error'), kind: 'error' })
-    emit('update')
-  } finally {
-    addBusy.value = false
-  }
-}
-
-async function handleRemove(id: number) {
-  track('source.remove')
-  try {
-    await removeSource(id)
-    emit('update')
-  } catch (e: unknown) {
-    await message(t('source.delete_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
-  }
-}
-
-async function handleToggle(source: Source) {
-  track(source.enabled ? 'source.pause' : 'source.resume')
-  try {
-    await updateSource(source.id, !source.enabled, source.poll_interval_minutes)
-    emit('update')
-  } catch (e: unknown) {
-    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
-  }
-  moreDropdown.close()
-}
-
-async function handleMuteToggle(source: Source) {
-  if (!source.enabled) return
-  track(source.muted ? 'source.unmute' : 'source.mute')
-  try {
-    await updateSource(source.id, source.enabled, source.poll_interval_minutes, !source.muted)
-    emit('update')
-  } catch (e: unknown) {
-    await message(t('source.operation_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
-  }
-  moreDropdown.close()
-}
-
-function onDocumentClick() {
-  moreDropdown.close()
-  sortDropdown.close()
-}
-
-onMounted(() => document.addEventListener('click', onDocumentClick))
-onUnmounted(() => document.removeEventListener('click', onDocumentClick))
-
-watch(sourceSortField, value => {
-  try {
-    window.localStorage.setItem(SOURCE_SORT_FIELD_STORAGE_KEY, value)
-  } catch { /* ignore unavailable storage */ }
-})
-
-watch(sourceSortDirection, value => {
-  try {
-    window.localStorage.setItem(SOURCE_SORT_DIRECTION_STORAGE_KEY, value)
-  } catch { /* ignore unavailable storage */ }
-})
-
-async function handleCheckSingle(id: number) {
-  if (props.polling || checkingId.value !== null) return
-  track('source.check')
-  checkingId.value = id
-  emit('checkBusy', true)
-  try {
-    const result = await checkSingleSource(id)
-    emit('update')
-    emit('checkResult', result.new_releases.length)
-  } catch (e: unknown) {
-    await message(t('source.check_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
-  } finally {
-    checkingId.value = null
-    emit('checkBusy', false)
-  }
-}
-
-function sourceHealthClass(source: Source): string {
-  if (!source.enabled) return 'health-paused'
-  if (source.last_check_status === 'ok') return 'health-ok'
-  if (source.last_check_status === 'error') return 'health-error'
-  return 'health-unknown'
-}
-
-function sourceHealthLabel(source: Source): string {
-  if (!source.enabled) return t('source.health_paused')
-  if (source.muted) return t('source.muted')
-  if (source.last_check_status === 'ok') {
-    return t('source.no_pending_updates')
-  }
-  if (source.last_check_status === 'error') return t('source.health_error')
-  return t('source.health_unknown')
-}
-
-const sortedSources = computed(() => {
-  const direction = sourceSortDirection.value === 'asc' ? 1 : -1
-  // 类型排序基准：按注册表顺序（GitHub → HF → YouTube → B站），未知类型排最后
-  const typeIndex = (type: string) => {
-    const idx = sourceTypeDefs.findIndex(d => d.type === type)
-    return idx === -1 ? sourceTypeDefs.length : idx
-  }
-  return [...filteredSources.value].sort((a, b) => {
-    let result: number
-    if (sourceSortField.value === 'default') {
-      const aPending = props.unreadReleaseCounts[sourceKey(a)] || 0
-      const bPending = props.unreadReleaseCounts[sourceKey(b)] || 0
-      result = aPending - bPending || a.id - b.id
-    } else if (sourceSortField.value === 'name') {
-      result = `${a.owner}/${a.repo}`.localeCompare(`${b.owner}/${b.repo}`)
-    } else if (sourceSortField.value === 'status') {
-      if (a.enabled !== b.enabled) result = a.enabled ? -1 : 1
-      else result = b.id - a.id
-    } else if (sourceSortField.value === 'type') {
-      // 同类型内按名称排序，再按 id 兜底保证稳定
-      result = typeIndex(a.source_type) - typeIndex(b.source_type)
-        || `${a.owner}/${a.repo}`.localeCompare(`${b.owner}/${b.repo}`)
-        || a.id - b.id
-    } else {
-      result = a.created_at.localeCompare(b.created_at) || a.id - b.id
-    }
-    return result * direction
-  })
-})
-
-const visibleSourceIds = computed(() => sortedSources.value.map(s => s.id))
-const bulkSelection = useBulkSelection<number>({
-  visibleIds: visibleSourceIds,
-  active: computed(() => activeTab.value === 'sources'),
-})
-const {
-  selectionMode,
-  selectedIds: selectedSourceIds,
-  selectedCount,
-} = bulkSelection
-const bulkBusy = ref(false)
-let pendingShiftClick = false
 
 function onSelectionCheckboxClick(e: MouseEvent) {
   pendingShiftClick = e.shiftKey
@@ -561,39 +176,244 @@ function clearSelectedSources() {
   track('source.bulk_clear')
 }
 
-const sortLabelText = computed(() => {
-  const labels: Record<SourceSortField, string> = {
-    'default': t('source.sort_default'),
-    'name': t('source.sort_name'),
-    'status': t('source.sort_status'),
-    'type': t('source.sort_type'),
-    'created': t('source.sort_created'),
-  }
-  return labels[sourceSortField.value]
-})
-
-const modeToggleTitle = computed(() => {
-  if (headerMode.value === 'add') {
-    return hasActiveSourceSearch.value
-      ? t('source.search_active_tip', trimmedSourceSearch.value)
-      : t('source.switch_search')
-  }
-  return t('source.switch_add')
-})
-
-function sourceCheckedText(source: Source): string {
-  if (!source.last_checked_at) return t('source.never_checked')
-  return t('source.last_checked', formatDate(source.last_checked_at))
+function handleDragStart(e: DragEvent, source: Source) {
+  if (!agentEnabled.value || !agentPanelOpen.value) return
+  e.dataTransfer?.setData(ENTITY_DRAG_MIME, JSON.stringify({ kind: 'source', id: source.id }))
+  if (e.dataTransfer) e.dataTransfer.effectAllowed = 'copy'
 }
 
-function sourceHealthAriaLabel(source: Source): string {
-  if (!source.enabled) return t('source.health_paused')
-  if (source.last_check_status === 'ok') return t('source.health_normal')
-  if (source.last_check_status === 'error') return t('source.health_error')
-  return t('source.health_unknown')
+function handleSendToAgent(source: Source) {
+  moreDropdown.close()
+  track('source.send_agent')
+  agentStore.openWorkspace({ entities: [{ kind: 'source', id: source.id }] })
 }
 
-const tooltip = ref<{ visible: boolean; x: number; y: number; lines: { text: string; wrap: boolean }[] }>({ visible: false, x: 0, y: 0, lines: [] })
+function openSourceUrl(source: Source) {
+  track('source.open_url')
+  void openReleaseUrl(sourceHomeUrl(source))
+}
+
+function openSourceReleases(source: Source) {
+  track('source.view_releases')
+  emit('openReleases', sourceSearchQuery(source))
+}
+
+function openSourceUnreadReleases(source: Source) {
+  track('source.pending')
+  emit('openUnreadReleases', sourceSearchQuery(source))
+}
+
+function sourceExists(parsed: { type: string; owner: string; repo: string }): boolean {
+  return props.sources.some(
+    (source) =>
+      source.source_type === parsed.type
+      && source.owner.toLowerCase() === parsed.owner.toLowerCase()
+      && source.repo.toLowerCase() === parsed.repo.toLowerCase(),
+  )
+}
+
+async function handleAdd() {
+  const raw = urlInput.value.trim()
+  if (!raw) return
+  track('source.add')
+  const parsed = parseSourceUrl(raw)
+  if (!parsed) {
+    ui.showToast(t('source.invalid_url'))
+    return
+  }
+  if (sourceExists(parsed)) {
+    ui.showToast(t('source.exists'))
+    return
+  }
+  addBusy.value = true
+  try {
+    const def = getSourceTypeDef(parsed.type)
+    const config = def?.hasConfigInput
+      ? buildYoutubeConfig(subscribeVideos.value, subscribeLive.value, subscribePosts.value)
+      : undefined
+    if (def?.hasConfigInput && !subscribeVideos.value && !subscribeLive.value) {
+      ui.showToast(t('source.require_subscribe'))
+      return
+    }
+    const id = await addSource(parsed.type, parsed.owner, parsed.repo, config)
+    if (id === 0) {
+      ui.showToast(t('source.exists'))
+      return
+    }
+    urlInput.value = ''
+    subscribeVideos.value = true
+    subscribeLive.value = true
+    subscribePosts.value = false
+    highlightedId.value = id
+    clearTimeout(highlightTimer)
+    highlightTimer = setTimeout(() => { highlightedId.value = null }, 2200)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(
+      tm('source.add_failed', {
+        source_type: parsed.type,
+        owner: parsed.owner,
+        repo: parsed.repo,
+        error: extractErrorMessage(e),
+      }),
+    )
+    emit('update')
+  } finally {
+    addBusy.value = false
+  }
+}
+
+async function handleRemove(id: number) {
+  track('source.remove')
+  try {
+    await removeSource(id)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.delete_failed') + extractErrorMessage(e))
+  }
+}
+
+async function handleToggle(source: Source) {
+  track(source.enabled ? 'source.pause' : 'source.resume')
+  try {
+    await updateSource(source.id, !source.enabled, source.poll_interval_minutes)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  }
+  moreDropdown.close()
+}
+
+async function handleMuteToggle(source: Source) {
+  if (!source.enabled) return
+  track(source.muted ? 'source.unmute' : 'source.mute')
+  try {
+    await updateSource(source.id, source.enabled, source.poll_interval_minutes, !source.muted)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  }
+  moreDropdown.close()
+}
+
+async function handleYtConfigToggle(source: Source, key: 'videos' | 'live', value: boolean) {
+  track('source.yt_subscribe')
+  const cfg = parseYtConfig(source.config)
+  cfg[key] = value
+  const config = patchSourceConfig(source.config, cfg)
+  try {
+    await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  }
+}
+
+async function handleSourceFlagChange(source: Source, key: 'fetch_history' | 'check_prereleases', value: string) {
+  const flag = value === 'on' ? true : value === 'off' ? false : undefined
+  const config = patchSourceConfig(source.config, { [key]: flag })
+  try {
+    await updateSource(source.id, source.enabled, source.poll_interval_minutes, undefined, config)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  }
+}
+
+async function handleMarkSourceRead(source: Source) {
+  moreDropdown.close()
+  const count = unreadReleaseCount(source)
+  if (count <= 0) return
+  const confirmed = await confirmAction(
+    t('source.mark_all_read_confirm', sourceDisplayName(source), String(count)),
+    { title: t('release.mark_all_read'), kind: 'info' },
+  )
+  if (!confirmed) return
+  track('source.mark_all_read')
+  try {
+    const updated = await markSourceReleasesRead(source.id)
+    if (updated > 0) ui.showToast(t('release.bulk_marked_read', String(updated)))
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  }
+}
+
+async function handleCheckSingle(id: number) {
+  if (props.polling || checkingId.value !== null) return
+  track('source.check')
+  checkingId.value = id
+  emit('checkBusy', true)
+  try {
+    const result = await checkSingleSource(id)
+    emit('update')
+    emit('checkResult', result.new_releases.length)
+  } catch (e: unknown) {
+    ui.showToast(t('source.check_failed') + extractErrorMessage(e))
+  } finally {
+    checkingId.value = null
+    emit('checkBusy', false)
+  }
+}
+
+async function handleBulkToggle(enabled: boolean) {
+  const ids = [...selectedSourceIds.value]
+  if (ids.length === 0) return
+  track(enabled ? 'source.bulk_resume' : 'source.bulk_pause')
+  bulkBusy.value = true
+  try {
+    await batchUpdateSources(ids, enabled)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+async function handleBulkMuteToggle(muted: boolean) {
+  const ids = [...selectedSourceIds.value]
+  if (ids.length === 0) return
+  track(muted ? 'source.bulk_mute' : 'source.bulk_unmute')
+  bulkBusy.value = true
+  try {
+    await batchUpdateSources(ids, undefined, muted)
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.operation_failed') + extractErrorMessage(e))
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+async function handleBulkRemove() {
+  const ids = [...selectedSourceIds.value]
+  if (ids.length === 0) return
+  const confirmed = await confirmAction(t('source.bulk_delete_confirm', String(ids.length)), {
+    title: t('source.delete'),
+    kind: 'warning',
+  })
+  if (!confirmed) return
+  track('source.bulk_delete')
+  bulkBusy.value = true
+  try {
+    await batchRemoveSources(ids)
+    clearSelectedSources()
+    emit('update')
+  } catch (e: unknown) {
+    ui.showToast(t('source.delete_failed') + extractErrorMessage(e))
+  } finally {
+    bulkBusy.value = false
+  }
+}
+
+// 健康点悬浮提示（由 BaseTooltip 统一防溢出与失效守卫）
+const tooltip = ref<{ visible: boolean; x: number; y: number; lines: { text: string; wrap: boolean }[] }>({
+  visible: false,
+  x: 0,
+  y: 0,
+  lines: [],
+})
 
 function showHealthTooltip(e: MouseEvent, source: Source) {
   const lines: { text: string; wrap: boolean }[] = []
@@ -610,154 +430,95 @@ function showHealthTooltip(e: MouseEvent, source: Source) {
   if (source.description) {
     lines.push({ text: t('source.tooltip_about') + source.description, wrap: true })
   }
-  tooltip.value = { visible: true, x: e.clientX + 10, y: e.clientY + 10, lines }
-  nextTick(() => {
-    const el = document.querySelector('.source-health-tooltip') as HTMLElement | null
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    let { x, y } = tooltip.value
-    if (rect.right > window.innerWidth - 4) x = e.clientX - rect.width - 10
-    if (rect.bottom > window.innerHeight - 4) y = e.clientY - rect.height - 10
-    tooltip.value.x = Math.max(4, x)
-    tooltip.value.y = Math.max(4, y)
-  })
+  tooltip.value = { visible: true, x: e.clientX, y: e.clientY, lines }
 }
 
 function hideHealthTooltip() {
   tooltip.value.visible = false
 }
+
+function onDocumentClick() {
+  moreDropdown.close()
+  sortDropdown.close()
+}
+
+onMounted(() => document.addEventListener('click', onDocumentClick))
+onUnmounted(() => {
+  document.removeEventListener('click', onDocumentClick)
+  if (highlightTimer) clearTimeout(highlightTimer)
+})
 </script>
 
 <template>
   <section class="tab-content">
     <div class="source-sticky-panel" :class="{ 'has-bulk-bar': selectionMode }">
-      <div class="source-header">
-        <div class="input-clear-wrap">
-          <input
-            v-if="headerMode === 'add'"
-            ref="urlInputEl"
-            v-model="urlInput"
-            :placeholder="t('source.placeholder')"
-            @keyup.enter="handleAdd"
-          />
-          <input
-            v-else
-            v-model="sourceSearch"
-            :placeholder="t('source.search')"
-            class="search-input"
-          />
-          <span
-            v-if="headerMode === 'search'"
-            class="source-count"
-            :class="{ 'has-clear': sourceSearch !== '' }"
-            :title="t('source.search_result_count', String(sortedSources.length))"
-          >({{ sortedSources.length }})</span>
-          <button
-            v-if="headerMode === 'add' && urlInput"
-            type="button"
-            class="input-clear-btn"
-            :title="t('input.clear')"
-            @click="urlInput = ''"
-          >✕</button>
-          <button
-            v-else-if="headerMode === 'search' && sourceSearch"
-            type="button"
-            class="input-clear-btn"
-            :title="t('input.clear')"
-            @click="sourceSearch = ''"
-          >✕</button>
-        </div>
-        <button v-if="headerMode === 'add'" class="btn-add-source" :disabled="addBusy || !urlInput" @click="handleAdd">{{ t('source.add') }}</button>
-        <div class="sort-group">
-          <button type="button" class="sort-trigger" :aria-expanded="openSort" aria-haspopup="menu" @click.stop="sortDropdown.toggle($event, true)" @keydown="sortDropdown.handleTriggerKeydown($event, true)">
-            <span class="sort-direction-icon" aria-hidden="true">{{ sourceSortDirection === 'asc' ? '↑' : '↓' }}</span>
-            <span>{{ sortLabelText }}</span>
-            <svg class="sort-arrow" width="12" height="12"><use href="/icons.svg#chevron-down-icon"/></svg>
-          </button>
-          <div v-if="openSort" class="dropdown-panel sort-dropdown" role="menu" @click.stop @keydown="sortDropdown.handleDropdownKeydown">
-            <button type="button" role="menuitem" :aria-selected="sourceSortField === opt.value" v-for="opt in sortFieldOptions" :key="opt.value" :class="{ selected: sourceSortField === opt.value }" @click="selectSortField(opt.value)">{{ opt.label }}</button>
-            <div class="sort-dropdown-divider"></div>
-            <button type="button" role="menuitem" :aria-selected="sourceSortDirection === opt.value" v-for="opt in sortDirectionOptions" :key="opt.value" :class="{ selected: sourceSortDirection === opt.value }" @click="selectSortDirection(opt.value)">{{ opt.label }}</button>
-          </div>
-        </div>
-        <button class="btn-select" @click="toggleSelectionMode">
-          <svg class="btn-select-icon" width="13" height="13" aria-hidden="true"><use :href="selectionMode ? '/icons.svg#checkbox-checked-icon' : '/icons.svg#checkbox-icon'"/></svg>
-          {{ selectionMode ? t('source.select_cancel') : t('source.select') }}
-        </button>
-        <button
-          type="button"
-          class="btn-mode-toggle"
-          :class="{ 'has-active-search': headerMode === 'add' && hasActiveSourceSearch }"
-          :title="modeToggleTitle"
-          :aria-label="modeToggleTitle"
-          @click="toggleHeaderMode"
-        >
-          <svg v-if="headerMode === 'add'" width="16" height="16"><use href="/icons.svg#search-icon"/></svg>
-          <span v-else class="mode-toggle-plus" aria-hidden="true">+</span>
-          <span v-if="headerMode === 'add' && hasActiveSourceSearch" class="mode-toggle-dot" aria-hidden="true"></span>
-        </button>
-      </div>
-      <div v-if="headerMode === 'add' && isYoutubeInput" class="yt-subscribe-row">
-        <span class="yt-subscribe-label">{{ t('source.subscribe_title') }}</span>
-        <label class="yt-subscribe-option">
-          <input type="checkbox" v-model="subscribeVideos" />{{ t('source.subscribe_videos') }}
-        </label>
-        <label class="yt-subscribe-option">
-          <input type="checkbox" v-model="subscribeLive" />{{ t('source.subscribe_live') }}
-        </label>
-        <label class="yt-subscribe-option yt-subscribe-disabled" :title="t('source.posts_unsupported')">
-          <input type="checkbox" v-model="subscribePosts" disabled />{{ t('source.subscribe_posts') }}
-        </label>
-      </div>
-      <div v-if="selectionMode" class="bulk-bar">
-        <span class="bulk-count">{{ t('source.bulk_count', String(selectedCount)) }}</span>
-        <button class="btn-sm" @click="selectAllVisible()">
-          <span class="bulk-btn-icon bulk-select-all-icon" aria-hidden="true">✓</span>
-          <span>{{ t('source.bulk_select_all') }}</span>
-        </button>
-        <button class="btn-sm" :disabled="selectedCount === 0" @click="clearSelectedSources()">
-          <span class="bulk-btn-icon bulk-clear-icon" aria-hidden="true">✕</span>
-          <span>{{ t('source.bulk_clear_selection') }}</span>
-        </button>
+      <SourceAddBar
+        ref="addBarRef"
+        v-model:url-input="urlInput"
+        v-model:source-search="sourceSearch"
+        v-model:subscribe-videos="subscribeVideos"
+        v-model:subscribe-live="subscribeLive"
+        v-model:subscribe-posts="subscribePosts"
+        :header-mode="headerMode"
+        :sorted-count="sortedSources.length"
+        :has-active-source-search="hasActiveSourceSearch"
+        :trimmed-source-search="trimmedSourceSearch"
+        :add-busy="addBusy"
+        :open-sort="openSort"
+        :source-sort-field="sourceSortField"
+        :source-sort-direction="sourceSortDirection"
+        :sort-label-text="sortLabelText"
+        :sort-field-options="sortFieldOptions"
+        :sort-direction-options="sortDirectionOptions"
+        :selection-mode="selectionMode"
+        :on-sort-trigger-click="(e) => sortDropdown.toggle(e, true)"
+        :on-sort-trigger-keydown="(e) => sortDropdown.handleTriggerKeydown(e, true)"
+        :on-sort-dropdown-keydown="sortDropdown.handleDropdownKeydown"
+        @add="handleAdd"
+        @toggle-header-mode="toggleHeaderMode"
+        @toggle-selection-mode="toggleSelectionMode"
+        @select-sort-field="selectSortField"
+        @select-sort-direction="selectSortDirection"
+      />
+      <BaseBulkBar
+        v-if="selectionMode"
+        :selected-count="selectedCount"
+        :selected-label="t('source.bulk_count', String(selectedCount))"
+        @select-all="selectAllVisible"
+        @clear="clearSelectedSources"
+      >
         <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkToggle(true)">
-          <svg class="bulk-btn-icon"><use href="/icons.svg#play-icon"/></svg>
+          <svg class="bulk-btn-icon"><use href="/icons.svg#play-icon" /></svg>
           <span>{{ t('source.bulk_resume') }}</span>
         </button>
         <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkToggle(false)">
-          <svg class="bulk-btn-icon"><use href="/icons.svg#pause-icon"/></svg>
+          <svg class="bulk-btn-icon"><use href="/icons.svg#pause-icon" /></svg>
           <span>{{ t('source.bulk_pause') }}</span>
         </button>
         <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkMuteToggle(true)">
-          <svg class="bulk-btn-icon"><use href="/icons.svg#bell-off-icon"/></svg>
+          <svg class="bulk-btn-icon"><use href="/icons.svg#bell-off-icon" /></svg>
           <span>{{ t('source.bulk_mute') }}</span>
         </button>
         <button class="btn-sm" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkMuteToggle(false)">
-          <svg class="bulk-btn-icon"><use href="/icons.svg#bell-icon"/></svg>
+          <svg class="bulk-btn-icon"><use href="/icons.svg#bell-icon" /></svg>
           <span>{{ t('source.bulk_unmute') }}</span>
         </button>
         <button class="btn-sm btn-danger" :disabled="selectedCount === 0 || bulkBusy" @click="handleBulkRemove">
-          <svg class="bulk-btn-icon"><use href="/icons.svg#trash-icon"/></svg>
+          <svg class="bulk-btn-icon"><use href="/icons.svg#trash-icon" /></svg>
           <span>{{ t('source.bulk_delete') }}</span>
         </button>
-      </div>
+      </BaseBulkBar>
     </div>
+
     <div class="source-list">
-      <SkeletonList
-        v-if="props.loading && props.sources.length === 0"
-        :rows="3"
-        :label="t('common.loading')"
-      />
+      <SkeletonList v-if="props.loading && props.sources.length === 0" :rows="3" :label="t('common.loading')" />
       <ErrorBlock
         v-else-if="props.loadError && props.sources.length === 0"
         :message="props.loadError"
         :retry-label="t('common.retry')"
         @retry="emit('update')"
       />
-      <EmptyState
-        v-else-if="props.sources.length === 0"
-        :title="t('source.empty')"
-        :description="t('source.empty_desc')"
-      >
+      <EmptyState v-else-if="props.sources.length === 0" :title="t('source.empty')" :description="t('source.empty_desc')">
         <template #actions>
           <button type="button" class="btn-sm" @click="focusAddInput">{{ t('source.empty_cta') }}</button>
         </template>
@@ -771,136 +532,61 @@ function hideHealthTooltip() {
           <button type="button" class="btn-sm" @click="sourceSearch = ''">{{ t('common.clear_search') }}</button>
         </template>
       </EmptyState>
-      <div v-for="source in sortedSources" :key="source.id" class="source-item" :class="{ 'source-highlight': source.id === highlightedId }" :draggable="agentEnabled && agentPanelOpen" @dragstart="handleDragStart($event, source)">
-      <div v-if="selectionMode" class="source-checkbox">
-        <input type="checkbox" :checked="selectedSourceIds.has(source.id)" @click="onSelectionCheckboxClick" @change="toggleSelection(source.id)" />
+
+      <SourceCard
+        v-for="source in sortedSources"
+        :key="source.id"
+        :source="source"
+        :highlighted="source.id === highlightedId"
+        :selection-mode="selectionMode"
+        :selected="selectedSourceIds.has(source.id)"
+        :show-source-type-icons="props.showSourceTypeIcons"
+        :unread-count="unreadReleaseCount(source)"
+        :polling="props.polling"
+        :checking-id="checkingId"
+        :more-open="openMoreId === source.id"
+        :agent-enabled="agentEnabled"
+        :agent-panel-open="agentPanelOpen"
+        :on-more-trigger-click="(e) => moreDropdown.toggle(e, source.id)"
+        :on-more-trigger-keydown="(e) => moreDropdown.handleTriggerKeydown(e, source.id)"
+        :on-more-dropdown-keydown="moreDropdown.handleDropdownKeydown"
+        @drag-start="handleDragStart($event, source)"
+        @checkbox-click="onSelectionCheckboxClick"
+        @toggle-select="toggleSelection(source.id)"
+        @open-url="openSourceUrl(source)"
+        @context-menu-url="handleContextMenu($event, sourceHomeUrl(source))"
+        @open-releases="openSourceReleases(source)"
+        @open-unread-releases="openSourceUnreadReleases(source)"
+        @show-health-tooltip="showHealthTooltip($event, source)"
+        @hide-health-tooltip="hideHealthTooltip"
+        @check-single="handleCheckSingle(source.id)"
+        @toggle="handleToggle(source)"
+        @yt-config-toggle="(k, v) => handleYtConfigToggle(source, k, v)"
+        @flag-change="(k, v) => handleSourceFlagChange(source, k, v)"
+        @mark-all-read="handleMarkSourceRead(source)"
+        @mute-toggle="handleMuteToggle(source)"
+        @send-to-agent="handleSendToAgent(source)"
+        @remove="handleRemove(source.id)"
+      />
+      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="source-search-result-count">
+        {{ t('source.search_result_count', String(sortedSources.length)) }}
       </div>
-        <div class="source-main">
-          <div class="source-info">
-            <span v-if="props.showSourceTypeIcons" class="source-type-badge" :class="source.source_type" :title="sourceTypeTitle(source.source_type)">
-              <svg><use :href="sourceTypeIcon(source.source_type)"/></svg>
-            </span>
-            <span class="source-name">{{ sourceDisplayName(source) }}</span>
-            <button class="btn-icon-link" @click="openSourceUrl(source)" @contextmenu.prevent.stop="handleContextMenu($event, sourceHomeUrl(source))" :title="t('source.visit')">
-              <svg><use href="/icons.svg#link-icon"/></svg>
-            </button>
-            <button class="btn-icon-link" @click="openSourceReleases(source)" :title="t('source.view_releases')">
-              <svg><use href="/icons.svg#search-icon"/></svg>
-            </button>
-            <span v-if="source.enabled && source.muted" class="source-status">{{ t('source.muted') }}</span>
-            <span v-else-if="source.enabled" class="source-status source-status-on">{{ t('source.enabled') }}</span>
-            <span v-else class="source-status source-status-off">{{ t('source.paused') }}</span>
-          </div>
-          <div class="source-health">
-            <span class="health-dot" :class="sourceHealthClass(source)" :aria-label="sourceHealthAriaLabel(source)" @mouseenter="showHealthTooltip($event, source)" @mouseleave="hideHealthTooltip"></span>
-            <template v-if="source.enabled && source.last_check_status === 'ok'">
-              <button
-                v-if="unreadReleaseCount(source) > 0"
-                class="source-pending-link"
-                @click="openSourceUnreadReleases(source)"
-              >
-                {{ t('source.pending_updates', String(unreadReleaseCount(source))) }}
-              </button>
-              <span class="source-health-meta">{{ sourceCheckedText(source) }}</span>
-            </template>
-            <template v-else>
-              <span class="source-health-label">{{ sourceHealthLabel(source) }}</span>
-              <span class="source-health-meta">{{ sourceCheckedText(source) }}</span>
-              <span v-if="source.consecutive_failures > 0" class="source-health-meta">
-                {{ t('source.failure_count', String(source.consecutive_failures)) }}
-              </span>
-            </template>
-          </div>
-          <div v-if="source.last_check_status === 'error' && source.last_check_message" class="source-error-block">
-            <span class="source-error" :title="translateError(source.last_check_message)">
-              {{ translateError(source.last_check_message) }}
-            </span>
-            <button type="button" class="btn-sm source-error-retry" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)">{{ t('common.retry') }}</button>
-          </div>
-        </div>
-        <div class="source-actions">
-          <button class="btn-icon-action btn-check" :disabled="props.polling || checkingId !== null" @click="handleCheckSingle(source.id)" :title="checkingId === source.id ? t('source.checking') : t('source.check')">
-            <svg><use href="/icons.svg#refresh-icon"/></svg>
-          </button>
-          <button class="btn-icon-action" :class="source.enabled ? 'btn-pause' : 'btn-resume'" @click="handleToggle(source)" :title="source.enabled ? t('source.pause') : t('source.resume')">
-            <svg><use :href="source.enabled ? '/icons.svg#pause-icon' : '/icons.svg#play-icon'"/></svg>
-          </button>
-          <div class="dropdown-more">
-            <button type="button" class="btn-icon-action btn-more" :aria-expanded="openMoreId === source.id" aria-haspopup="menu" @click.stop="moreDropdown.toggle($event, source.id)" @keydown="moreDropdown.handleTriggerKeydown($event, source.id)" :title="t('source.more')">
-              <svg><use href="/icons.svg#more-icon"/></svg>
-            </button>
-            <div v-if="openMoreId === source.id" class="dropdown-panel dropdown-more-panel" role="menu" @click.stop @keydown="moreDropdown.handleDropdownKeydown">
-              <template v-if="getSourceTypeDef(source.source_type)?.hasConfigInput">
-                <div class="dropdown-section-label">{{ t('source.subscribe_title') }}</div>
-                <label class="yt-menu-option">
-                  <input type="checkbox" :checked="parseYtConfig(source).videos" @change="handleYtConfigToggle(source, 'videos', ($event.target as HTMLInputElement).checked)" />{{ t('source.subscribe_videos') }}
-                </label>
-                <label class="yt-menu-option">
-                  <input type="checkbox" :checked="parseYtConfig(source).live" @change="handleYtConfigToggle(source, 'live', ($event.target as HTMLInputElement).checked)" />{{ t('source.subscribe_live') }}
-                </label>
-                <label class="yt-menu-option yt-subscribe-disabled" :title="t('source.posts_unsupported')">
-                  <input type="checkbox" :checked="false" disabled />{{ t('source.subscribe_posts') }}
-                </label>
-                <div class="sort-dropdown-divider"></div>
-              </template>
-              <div class="dropdown-section-label">{{ t('source.settings_title') }}</div>
-              <label class="source-setting-row">
-                <span class="source-setting-label">{{ t('source.fetch_history') }}</span>
-                <select
-                  class="select-input source-setting-input"
-                  :value="sourceFlagValue(source, 'fetch_history')"
-                  @click.stop
-                  @change="handleSourceFlagChange(source, 'fetch_history', ($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="global">{{ t('source.follow_global') }}</option>
-                  <option value="on">{{ t('source.switch_on') }}</option>
-                  <option value="off">{{ t('source.switch_off') }}</option>
-                </select>
-              </label>
-              <label v-if="getSourceTypeDef(source.source_type)?.supportsPrerelease" class="source-setting-row">
-                <span class="source-setting-label">{{ t('source.check_prereleases') }}</span>
-                <select
-                  class="select-input source-setting-input"
-                  :value="sourceFlagValue(source, 'check_prereleases')"
-                  @click.stop
-                  @change="handleSourceFlagChange(source, 'check_prereleases', ($event.target as HTMLSelectElement).value)"
-                >
-                  <option value="global">{{ t('source.follow_global') }}</option>
-                  <option value="on">{{ t('source.switch_on') }}</option>
-                  <option value="off">{{ t('source.switch_off') }}</option>
-                </select>
-              </label>
-              <div class="sort-dropdown-divider"></div>
-              <button v-if="unreadReleaseCount(source) > 0" type="button" role="menuitem" class="dropdown-item" @click="handleMarkSourceRead(source)">
-                <span class="dropdown-icon"><svg><use href="/icons.svg#check-double-icon"/></svg></span>
-                {{ t('source.mark_all_read', String(unreadReleaseCount(source))) }}
-              </button>
-              <button type="button" role="menuitem" class="dropdown-item" :disabled="!source.enabled" :title="!source.enabled ? t('source.mute_disabled_tip') : ''" @click="handleMuteToggle(source)">
-                <span class="dropdown-icon"><svg><use :href="source.muted ? '/icons.svg#bell-icon' : '/icons.svg#bell-off-icon'"/></svg></span>
-                {{ source.muted ? t('source.unmute') : t('source.mute') }}
-              </button>
-              <button v-if="agentEnabled" type="button" role="menuitem" class="dropdown-item" @click="handleSendToAgent(source)">
-                <span class="dropdown-icon"><svg><use href="/icons.svg#agent-icon"/></svg></span>
-                {{ t('agent.send_to') }}
-              </button>
-              <button type="button" role="menuitem" class="dropdown-item dropdown-item-danger" @click="handleRemove(source.id)">
-                <span class="dropdown-icon"><svg><use href="/icons.svg#trash-icon"/></svg></span>
-                {{ t('source.delete') }}
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-      <div v-if="hasActiveSourceSearch && sortedSources.length > 0" class="source-search-result-count">{{ t('source.search_result_count', String(sortedSources.length)) }}</div>
     </div>
+
     <ContextMenu v-if="contextMenu" :x="contextMenu.x" :y="contextMenu.y" :items="contextMenuItems" @action="handleMenuAction" @close="closeContextMenu" />
-    <div v-if="tooltip.visible" class="source-health-tooltip" :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+    <BaseTooltip
+      :visible="tooltip.visible"
+      :x="tooltip.x"
+      :y="tooltip.y"
+      :max-width="360"
+      tooltip-class="source-health-tooltip"
+    >
       <div v-for="(line, i) in tooltip.lines" :key="i" class="tooltip-line" :class="{ 'tooltip-line-wrap': line.wrap }">{{ line.text }}</div>
-    </div>
+    </BaseTooltip>
   </section>
 </template>
+
 <style scoped>
-/* 顶部单行工具区：选择模式下批量栏与主栏作为整体固定 */
 .source-sticky-panel {
   position: sticky;
   top: 0;
@@ -913,153 +599,15 @@ function hideHealthTooltip() {
   top: calc(-1 * var(--app-padding-y));
 }
 
-/* 与版本/日志 tab 的 .log-search-row 对齐：无内边距、无分隔线，保证三个 tab 输入框位置一致 */
-.source-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0;
-  background: var(--bg);
-}
-
-.source-header .input-clear-wrap {
-  flex: 1;
-  min-width: 160px;
-}
-
-.source-header .input-clear-wrap input {
-  flex: 1;
-  padding: 8px 12px;
-  padding-right: 34px;
-  background: var(--input-bg);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text);
-  font-size: var(--fs-body);
-  outline: none;
-  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
-}
-
-.source-header .input-clear-wrap input:focus {
-  border-color: var(--primary);
-  box-shadow: var(--focus-ring);
-}
-
-.source-header .input-clear-wrap .search-input {
-  max-width: none;
-  /* 为计数徽标 + 清空按钮预留右侧空间，避免输入长文本时重叠 */
-  padding-right: 72px;
-}
-
-/* 搜索计数徽标：与版本 tab 同款交互（贴右缘 / 有输入时让位给清空按钮），仅搜索模式显示 */
-.source-count {
-  position: absolute;
-  right: 10px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: var(--fs-meta);
-  color: var(--text-muted);
-  white-space: nowrap;
-  pointer-events: none;
-  transition: right var(--dur-state) var(--ease-out);
-}
-
-.source-count.has-clear {
-  right: 34px;
-}
-
-.btn-add-source {
-  padding: 8px 14px;
-  background: var(--ink);
-  color: var(--on-ink);
-  border: none;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  font-size: var(--fs-body);
-  font-weight: 500;
-  white-space: nowrap;
-  transition: background var(--dur-state) var(--ease-out), transform var(--dur-hover) var(--ease-out);
-}
-
-.btn-add-source:hover:not(:disabled) {
-  background: var(--ink-hover);
-}
-
-.btn-add-source:active:not(:disabled) {
-  transform: translateY(1px);
-}
-
-.btn-add-source:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-mode-toggle {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text-muted);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: all var(--dur-hover) var(--ease-out);
-}
-
-.btn-mode-toggle:hover {
-  background: var(--hover-surface);
-  border-color: var(--border-strong);
-  color: var(--text);
-}
-
-.btn-mode-toggle.has-active-search {
-  background: var(--primary-soft-bg);
-  border-color: var(--primary-soft-border);
-  color: var(--primary);
-}
-
-.mode-toggle-dot {
-  position: absolute;
-  top: 5px;
-  right: 5px;
-  width: 7px;
-  height: 7px;
-  border: 2px solid var(--surface);
-  border-radius: var(--radius-pill);
-  background: var(--primary);
-}
-
-.btn-mode-toggle.has-active-search:hover .mode-toggle-dot {
-  border-color: var(--bg);
-}
-
-.btn-mode-toggle svg {
-  width: 16px;
-  height: 16px;
-}
-
-.mode-toggle-plus {
-  font-size: var(--fs-display);
-  line-height: 1;
-  font-weight: 500;
-}
-
 .source-list {
   display: flex;
   flex-direction: column;
 }
 
-/* 搜索无结果：空态紧贴在搜索栏下方，不要 48px 图标把结果区顶出视区 */
 .source-search-status {
   padding-top: 30px;
 }
 
-/* 搜索结果计数行：不是空态，仅一行行尾提示 */
 .source-search-result-count {
   padding: 8px 0;
   text-align: center;
@@ -1067,133 +615,9 @@ function hideHealthTooltip() {
   font-size: var(--fs-meta);
 }
 
-.source-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 8px;
-  background: transparent;
-  border-bottom: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  transition: background var(--dur-hover) var(--ease-out);
-}
-
-.source-item:hover {
-  background: var(--hover-surface);
-}
-
-.source-main {
-  min-width: 0;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.source-info {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.source-type-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  cursor: help;
-}
-
-.source-type-badge svg {
-  width: 13px;
-  height: 13px;
-}
-
-.source-type-badge.github {
-  background: #181717;
-  color: #ffffff;
-}
-
-.source-type-badge.huggingface {
-  background: #ffffff;
-  color: #ffd21e;
-  border: 1px solid var(--border);
-}
-
-.source-type-badge.youtube {
-  background: #ff0000;
-  color: #ffffff;
-}
-
-.source-type-badge.bilibili {
-  background: #fb7299;
-  color: #ffffff;
-}
-
-.source-name {
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.source-health {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  font-size: var(--fs-meta);
-  color: var(--text-muted);
-}
-
-.source-health-label {
-  color: var(--text);
-}
-
-.source-pending-link {
-  padding: 1px 7px;
-  border: none;
-  border-radius: var(--radius-xs);
-  background: var(--primary-soft-bg);
-  color: var(--primary-soft-text);
-  font: inherit;
-  font-size: var(--fs-meta);
-  font-weight: 500;
-  cursor: pointer;
-  transition: background var(--dur-state) var(--ease-out);
-}
-
-.source-pending-link:hover {
-  background: var(--primary-soft-border);
-}
-
-.source-pending-link:focus-visible {
-  outline: 2px solid var(--primary-soft-border);
-  outline-offset: 2px;
-}
-
-.source-health-meta {
-  color: var(--text-muted);
-}
-
-.source-health-tooltip {
-  position: fixed;
-  z-index: var(--z-popover);
-  padding: 8px 12px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+:global(.source-health-tooltip) {
+  padding: 9px 12px;
   box-shadow: var(--shadow-lg);
-  font-size: var(--fs-meta);
-  line-height: 1.6;
-  pointer-events: none;
-  max-width: 360px;
-  overflow-wrap: break-word;
 }
 
 .tooltip-line {
@@ -1205,497 +629,5 @@ function hideHealthTooltip() {
 .tooltip-line-wrap {
   white-space: normal;
   word-break: break-word;
-}
-
-.health-dot {
-  position: relative;
-  width: 7px;
-  height: 7px;
-  border-radius: var(--radius-pill);
-  flex-shrink: 0;
-  background: var(--text-muted);
-}
-
-.health-dot::before {
-  content: '';
-  position: absolute;
-  top: -5px;
-  left: -5px;
-  right: -5px;
-  bottom: -5px;
-  border-radius: var(--radius-pill);
-}
-
-.health-ok {
-  background: var(--success);
-}
-
-.health-error {
-  background: var(--danger);
-}
-
-.health-paused,
-.health-unknown {
-  background: var(--text-muted);
-}
-
-.source-error {
-  flex: 1;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--fs-meta);
-  color: var(--danger-soft-text);
-}
-
-/* 检查失败：原因留在原位，右侧固定一个重试（旧版只有一行红字，说不出下一步） */
-.source-error-block {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 4px;
-  padding: 3px 4px 3px 8px;
-  background: var(--danger-soft-bg);
-  border-radius: var(--radius-xs);
-}
-
-.source-error-retry {
-  flex-shrink: 0;
-}
-
-.source-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0;
-  background: transparent;
-  font-size: var(--fs-meta);
-  color: var(--text-muted);
-}
-
-.source-status::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-pill);
-  background: var(--text-faint);
-  flex-shrink: 0;
-}
-
-.source-status-on::before {
-  background: var(--success);
-}
-
-.source-status-off::before {
-  background: var(--warning);
-}
-
-.source-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  justify-content: flex-end;
-  flex-shrink: 0;
-}
-
-.dropdown-more {
-  position: relative;
-  display: inline-flex;
-}
-
-/* 侧边弹出面板：radius/shadow 覆盖公共基类（菜单视觉更重） */
-.dropdown-more-panel {
-  top: 100%;
-  right: 0;
-  margin-top: 4px;
-  min-width: 140px;
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
-}
-
-.dropdown-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 14px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: var(--fs-body);
-  cursor: pointer;
-  transition: background var(--dur-hover) var(--ease-out);
-  white-space: nowrap;
-}
-
-.dropdown-item:hover:not(:disabled) {
-  background: var(--hover-surface);
-}
-
-.dropdown-item:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.dropdown-icon {
-  font-size: var(--fs-body);
-  line-height: 1;
-}
-
-.dropdown-icon svg {
-  width: 14px;
-  height: 14px;
-}
-
-.dropdown-item-danger {
-  color: var(--danger);
-}
-
-.dropdown-item-danger:hover:not(:disabled) {
-  background: var(--danger-soft-bg);
-}
-
-.source-highlight {
-  animation: highlight-pulse 2s ease-out;
-}
-
-@keyframes highlight-pulse {
-  0% {
-    background-color: var(--primary-soft-bg);
-  }
-  100% {
-    background-color: transparent;
-  }
-}
-
-/* 图标操作按钮（幽灵风格：默认仅图标，悬停浮现底色） */
-.btn-icon-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 30px;
-  height: 30px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background var(--dur-hover) var(--ease-out), color var(--dur-hover) var(--ease-out);
-  flex-shrink: 0;
-}
-
-.btn-icon-action svg {
-  width: 16px;
-  height: 16px;
-}
-
-/* 行内图标按钮取二级悬停面：父行 .source-item:hover 已抬到 --hover-surface */
-.btn-icon-action:hover:not(:disabled) {
-  background: var(--hover-surface-nested);
-  color: var(--text);
-}
-
-.btn-icon-action:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-check:hover:not(:disabled),
-.btn-pause:hover:not(:disabled),
-.btn-resume:hover:not(:disabled) {
-  background: var(--hover-surface-nested);
-  color: var(--text);
-}
-
-
-.sort-group {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.sort-trigger {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font-size: var(--fs-meta);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
-}
-
-.sort-trigger:hover {
-  background: var(--hover-surface);
-  border-color: var(--border-strong);
-}
-
-.sort-direction-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 13px;
-  height: 13px;
-  color: var(--primary);
-  font-size: var(--fs-body);
-  line-height: 1;
-  font-weight: 700;
-}
-
-.sort-arrow {
-  color: var(--text-muted);
-}
-
-.sort-dropdown {
-  top: calc(100% + 4px);
-  right: 0;
-  min-width: 140px;
-  padding: 4px;
-}
-
-.sort-dropdown button {
-  display: block;
-  width: 100%;
-  padding: 5px 14px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: var(--fs-meta);
-  cursor: pointer;
-  text-align: left;
-  border-radius: var(--radius-sm);
-  transition: background var(--dur-hover) var(--ease-out);
-}
-
-.sort-dropdown button:hover {
-  background: var(--hover-surface);
-}
-
-.sort-dropdown button.selected {
-  font-weight: 600;
-  color: var(--primary);
-}
-
-.sort-dropdown-divider {
-  height: 1px;
-  margin: 4px 2px;
-  background: var(--border);
-}
-
-.btn-select {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font-size: var(--fs-meta);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: background var(--dur-hover) var(--ease-out), border-color var(--dur-hover) var(--ease-out);
-  flex-shrink: 0;
-}
-
-.btn-select:hover {
-  background: var(--hover-surface);
-  border-color: var(--border-strong);
-}
-
-/* YouTube 订阅内容复选框行（添加源时显示） */
-.yt-subscribe-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 14px;
-  padding: 8px 2px 0;
-  font-size: var(--fs-meta);
-  color: var(--text-muted);
-}
-
-.yt-subscribe-label {
-  font-weight: 500;
-  color: var(--text);
-}
-
-.yt-subscribe-option {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  cursor: pointer;
-  color: var(--text);
-  user-select: none;
-}
-
-.yt-subscribe-option input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  cursor: pointer;
-  accent-color: var(--primary);
-}
-
-.yt-subscribe-disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.yt-subscribe-disabled input[type="checkbox"] {
-  cursor: not-allowed;
-}
-
-/* 更多菜单内的订阅配置 */
-.dropdown-section-label {
-  padding: 7px 14px 3px;
-  font-size: var(--fs-caption);
-  color: var(--text-muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-}
-
-.yt-menu-option {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 14px;
-  font-size: var(--fs-body);
-  color: var(--text);
-  cursor: pointer;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.yt-menu-option:hover {
-  background: var(--hover-surface);
-}
-
-.yt-menu-option input[type="checkbox"] {
-  width: 14px;
-  height: 14px;
-  cursor: pointer;
-  accent-color: var(--primary);
-}
-
-.yt-menu-option.yt-subscribe-disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-/* 源设置区（更多面板内）：标签 + 控件同行，控件保持窄宽度不撞开下拉面板 */
-.source-setting-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 4px 14px;
-  font-size: var(--fs-body);
-  color: var(--text);
-  white-space: nowrap;
-}
-
-.source-setting-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* 宽度按最长选项自适应：固定 ch 宽度放不下「跟随全局设置」这类文案
-   （自绘箭头右侧还要留 20px），英文文案更长。菜单内用紧凑留白。 */
-.select-input.source-setting-input {
-  width: auto;
-  min-width: calc(13ch * 1.1);
-  padding: 3px 20px 3px 8px;
-  background-position: right 6px center;
-  flex: none;
-  font-size: var(--fs-meta);
-}
-
-.source-checkbox {
-  display: flex;
-  align-items: center;
-  flex-shrink: 0;
-  padding: 0 4px;
-}
-
-.source-checkbox input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: var(--primary);
-}
-
-.bulk-bar {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  flex-wrap: wrap;
-  padding: 8px 0;
-  background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border);
-  font-size: var(--fs-meta);
-}
-
-.bulk-count {
-  font-weight: 600;
-  color: var(--text);
-  margin-right: 4px;
-}
-
-.bulk-bar .btn-sm {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 7px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  color: var(--text);
-  font-size: var(--fs-meta);
-  cursor: pointer;
-  white-space: nowrap;
-  transition: all var(--dur-hover) var(--ease-out);
-}
-
-.bulk-btn-icon {
-  width: 13px;
-  height: 13px;
-  flex-shrink: 0;
-}
-
-.bulk-select-all-icon,
-.bulk-clear-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--fs-meta);
-  line-height: 1;
-  font-weight: 700;
-}
-
-.bulk-bar .btn-sm:hover:not(:disabled) {
-  background: var(--bg-hover);
-}
-
-.bulk-bar .btn-sm:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.bulk-bar .btn-danger {
-  color: var(--danger);
-}
-
-.bulk-bar .btn-danger:hover:not(:disabled) {
-  background: var(--danger-soft-bg);
-  border-color: var(--danger);
 }
 </style>

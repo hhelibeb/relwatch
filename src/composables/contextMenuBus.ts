@@ -25,8 +25,21 @@
  *    是否消费，避免跨层 ref 透传。接管器可返回 false 主动让路——常驻挂载但当前
  *    并非焦点的面板（如 Agent 工作区侧栏）必须这样做，否则会挤掉版本页搜索。
  */
+import { reactive } from 'vue'
+
 type Closer = () => void
 const closers: Closer[] = []
+
+type OverlayActive = () => boolean
+const overlayStates: OverlayActive[] = []
+
+type FindHandler = () => boolean
+const findHandlers: FindHandler[] = []
+
+export const overlayRegistryState = reactive({
+  overlayVersion: 0,
+  transientInvalidated: false,
+})
 
 export function registerCloser(closer: Closer) {
   closers.push(closer)
@@ -38,38 +51,27 @@ export function unregisterCloser(closer: Closer) {
 }
 
 export function closeAllContextMenus() {
-  // 拷贝一份再遍历，避免迭代过程中被修改
   for (const closer of [...closers]) {
     closer()
   }
 }
 
-type OverlayActive = () => boolean
-const overlayStates: OverlayActive[] = []
-
-/**
- * 注册一个"覆盖层活跃判定"回调，返回注销函数。
- * 覆盖层打开期间回调应返回 true；关闭/卸载后必须注销，避免泄漏与误判。
- */
 export function registerOverlayActive(isActive: OverlayActive): () => void {
   overlayStates.push(isActive)
+  overlayRegistryState.overlayVersion++
   return () => {
     const idx = overlayStates.indexOf(isActive)
-    if (idx !== -1) overlayStates.splice(idx, 1)
+    if (idx !== -1) {
+      overlayStates.splice(idx, 1)
+      overlayRegistryState.overlayVersion++
+    }
   }
 }
 
-/** 是否有任意覆盖层处于打开状态（供 useEscapeToTray 判定 Esc 是否应被覆盖层优先处理） */
 export function hasActiveOverlay(): boolean {
-  // 拷贝一份再遍历，避免回调中注销自身导致跳项
   return [...overlayStates].some((isActive) => isActive())
 }
 
-type FindHandler = () => boolean
-const findHandlers: FindHandler[] = []
-
-/** 注册页内查找接管器（LIFO 优先级），返回注销函数。返回 true 表示已消费 Ctrl+F，
- *  返回 false 表示不归自己管，询问继续往下走。 */
 export function registerFindHandler(handler: FindHandler): () => void {
   findHandlers.push(handler)
   return () => {
@@ -86,30 +88,15 @@ export function dispatchFind(): boolean {
   return false
 }
 
-// ── 瞬态层失效期 ─────────────────────────────────────────────────────────────
-//
-// 为什么需要这一层：窗口隐藏到托盘走的是 Tauri `window.hide()` → Win32 `SW_HIDE`。
-// 实测（Edge/Chromium，WebView2 同内核）：隐藏瞬间只补 `blur` + `visibilitychange`，
-// **不补** `mouseleave`/`mouseout`；重新显示时反过来会把「隐藏前获得焦点的元素」
-// 重放一次 `focus`（WINDOW focus + target focus），且不伴随任何鼠标事件。
-// 于是 focus/hover 驱动的悬浮提示会"诈尸"：鼠标早已不在卡片上，提示却自己冒出来。
-//
-// 失效期语义：窗口刚回来、用户还没产生任何真实输入之前，瞬态提示一律静默。
-// 置位时顺带 closeAllContextMenus()，把已经打开的菜单/提示就地清干净。
-let transientInvalidated = false
-
-/** 窗口隐藏/失焦：关闭全部瞬态层并进入失效期（由 useTransientUiGuard 调用） */
 export function invalidateTransientUi() {
-  transientInvalidated = true
+  overlayRegistryState.transientInvalidated = true
   closeAllContextMenus()
 }
 
-/** 是否处于失效期——hover/focus 驱动的提示在此期间必须静默 */
 export function isTransientUiInvalidated(): boolean {
-  return transientInvalidated
+  return overlayRegistryState.transientInvalidated
 }
 
-/** 用户真实输入到达：解除失效期（由 useTransientUiGuard 调用） */
 export function endTransientUiInvalidation() {
-  transientInvalidated = false
+  overlayRegistryState.transientInvalidated = false
 }

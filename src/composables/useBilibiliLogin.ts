@@ -6,6 +6,7 @@ import {
   setCredential,
 } from '../api/settings'
 import { InvokeI18nError } from '../api/client'
+import { extractErrorMessage } from '../services/feedback'
 import { t } from '../i18n'
 import { track } from './useUsageTracking'
 
@@ -64,7 +65,7 @@ export function useBilibiliLogin(opts: {
       onCookieCleared()
       showToast(t('settings.bilibili_cookie_cleared'))
     } catch (e: unknown) {
-      showToast(t('settings.save_failed') + (e instanceof Error ? e.message : String(e)))
+      showToast(t('settings.save_failed') + extractErrorMessage(e))
     }
   }
 
@@ -91,7 +92,7 @@ export function useBilibiliLogin(opts: {
           biliLoginSettled = true
           stopBiliLoginPolling()
           biliLoginBusy.value = false
-          showToast(t('settings.bilibili_login_failed') + (e instanceof Error ? e.message : String(e)))
+          showToast(t('settings.bilibili_login_failed') + extractErrorMessage(e))
         }
       }
     }, 2000)
@@ -122,7 +123,7 @@ export function useBilibiliLogin(opts: {
         // 其它持续性错误（cookie 读取失败等）→ 提示并停止，不无限重试
         if (key !== null && key !== 'err.bili_login_window_missing' && key !== 'err.bili_login_not_logged_in') {
           biliLoginBusy.value = false
-          showToast(t('settings.bilibili_login_failed') + (e instanceof Error ? e.message : String(e)))
+          showToast(t('settings.bilibili_login_failed') + extractErrorMessage(e))
           return
         }
         needCreate = key === 'err.bili_login_window_missing'
@@ -172,7 +173,7 @@ export function useBilibiliLogin(opts: {
       if (attempt !== biliLoginAttempt) return
       stopBiliLoginPolling()
       biliLoginBusy.value = false
-      showToast(t('settings.bilibili_login_window_failed') + (e instanceof Error ? e.message : String(e)))
+      showToast(t('settings.bilibili_login_window_failed') + extractErrorMessage(e))
     }
   }
 

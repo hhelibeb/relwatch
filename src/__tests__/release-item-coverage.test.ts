@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { shallowMount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { enableAutoUnmount, shallowMount } from '@vue/test-utils'
 import { t } from '../i18n'
 import ReleaseItem from '../components/ReleaseItem.vue'
-import { ShowToastKey, ShowImportanceKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
+import { useSettingsStore } from '../stores/settings'
 import type { ReleaseInfo } from '../api/releases'
 
 vi.mock('../api/releases', () => ({
@@ -27,13 +27,16 @@ vi.mock('../utils', async importOriginal => {
   }
 })
 
-vi.mock('../composables/contextMenuBus', () => ({
-  registerCloser: vi.fn(),
-  unregisterCloser: vi.fn(),
-  closeAllContextMenus: vi.fn(),
-  // 失效期开关：用例里按需 mockReturnValue(true) 模拟「窗口刚隐藏/失焦回来」
-  isTransientUiInvalidated: vi.fn(() => false),
-}))
+vi.mock('../composables/contextMenuBus', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../composables/contextMenuBus')>()
+  return {
+    ...actual,
+    registerCloser: vi.fn(),
+    unregisterCloser: vi.fn(),
+    closeAllContextMenus: vi.fn(),
+    isTransientUiInvalidated: vi.fn(() => false),
+  }
+})
 
 import { setNotificationState, deleteRelease } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
@@ -71,17 +74,30 @@ function createRelease(overrides: Partial<ReleaseInfo> = {}): ReleaseInfo {
   }
 }
 
-function mountRelease(release: ReleaseInfo, provideOverrides: Record<symbol, unknown> = {}) {
+function mountRelease(
+  release: ReleaseInfo,
+  overrides: { toast?: ReturnType<typeof vi.fn>; showImportance?: boolean } = {},
+) {
+  if (overrides.toast) {
+    vi.spyOn(useUiStore(), 'showToast').mockImplementation(overrides.toast as never)
+  }
+  if (overrides.showImportance !== undefined) {
+    useSettingsStore().settings.show_importance = overrides.showImportance
+  }
   return shallowMount(ReleaseItem, {
     props: { release },
     global: {
-      provide: {
-        [ShowToastKey as symbol]: vi.fn(),
-        ...provideOverrides,
+      stubs: {
+        ReleaseStandardCardBody: false,
+        ReleaseVideoCardBody: false,
+        BaseTooltip: false,
+        teleport: false,
       },
     },
   })
 }
+
+enableAutoUnmount(afterEach)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -129,9 +145,7 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
   it('右键菜单选择"复制链接"失败时显示错误 Toast（不再静默失败）', async () => {
     const toast = vi.fn()
     copyTextToClipboardMock.mockRejectedValueOnce(new Error('clipboard busy'))
-    const wrapper = mountRelease(createRelease({ html_url: 'https://example.com/release' }), {
-      [ShowToastKey as symbol]: toast,
-    })
+    const wrapper = mountRelease(createRelease({ html_url: 'https://example.com/release' }), { toast })
 
     await wrapper.find('.release-link-action').trigger('contextmenu', { clientX: 100, clientY: 200 })
 
@@ -161,10 +175,7 @@ describe('ReleaseItem.vue — 右键菜单: 版本链接', () => {
     const toast = vi.fn()
     vi.mocked(deleteRelease).mockRejectedValue(new Error('permission denied'))
 
-    const wrapper = shallowMount(ReleaseItem, {
-      props: { release: createRelease({ id: 99 }) },
-      global: { provide: { [ShowToastKey as symbol]: toast } },
-    })
+    const wrapper = mountRelease(createRelease({ id: 99 }), { toast })
 
     await wrapper.find('.release-link-action').trigger('contextmenu', { clientX: 100, clientY: 200 })
 
@@ -213,9 +224,7 @@ describe('ReleaseItem.vue — 右键菜单: 摘要复制', () => {
   it('摘要复制失败时显示错误 Toast（不再静默失败）', async () => {
     const toast = vi.fn()
     copyTextToClipboardMock.mockRejectedValueOnce(new Error('clipboard busy'))
-    const wrapper = mountRelease(createRelease({ ai_summary: '这是一个修复摘要' }), {
-      [ShowToastKey as symbol]: toast,
-    })
+    const wrapper = mountRelease(createRelease({ ai_summary: '这是一个修复摘要' }), { toast })
 
     await wrapper.find('.release-summary-text').trigger('contextmenu', { clientX: 150, clientY: 250 })
 
@@ -240,14 +249,14 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
 
     const summaryEl = wrapper.find('.release-summary-text')
 
-    // 模拟 scrollHeight > clientHeight (文本被截断)
     Object.defineProperty(summaryEl.element, 'scrollHeight', { value: 100, configurable: true })
     Object.defineProperty(summaryEl.element, 'clientHeight', { value: 40, configurable: true })
 
     await summaryEl.trigger('mouseenter', { clientX: 200, clientY: 300 })
 
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
-    expect(wrapper.find('.release-summary-tooltip').text()).toContain('很长的摘要内容')
+    const tip = document.body.querySelector('.release-summary-tooltip')
+    expect(tip).not.toBeNull()
+    expect(tip?.textContent).toContain('很长的摘要内容')
   })
 
   it('mouseenter 摘要时如果文本未截断则不显示提示', async () => {
@@ -255,13 +264,12 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
 
     const summaryEl = wrapper.find('.release-summary-text')
 
-    // 模拟 scrollHeight <= clientHeight (文本未截断)
     Object.defineProperty(summaryEl.element, 'scrollHeight', { value: 20, configurable: true })
     Object.defineProperty(summaryEl.element, 'clientHeight', { value: 40, configurable: true })
 
     await summaryEl.trigger('mouseenter', { clientX: 200, clientY: 300 })
 
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
   })
 
   it('mouseleave 摘要时隐藏提示', async () => {
@@ -272,10 +280,10 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
     Object.defineProperty(summaryEl.element, 'clientHeight', { value: 40, configurable: true })
 
     await summaryEl.trigger('mouseenter', { clientX: 200, clientY: 300 })
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
 
     await summaryEl.trigger('mouseleave')
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
   })
 
   it('mousemove 时更新提示位置', async () => {
@@ -286,13 +294,11 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
     Object.defineProperty(summaryEl.element, 'clientHeight', { value: 40, configurable: true })
 
     await summaryEl.trigger('mouseenter', { clientX: 200, clientY: 300 })
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
 
-    // 移动鼠标
     await summaryEl.trigger('mousemove', { clientX: 250, clientY: 350 })
 
-    const tooltip = wrapper.find('.release-summary-tooltip')
-    expect(tooltip.exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
   })
 
   it('focus 摘要时如果文本被截断则显示提示', async () => {
@@ -301,7 +307,6 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
     const summaryEl = wrapper.find('.release-summary-text')
     Object.defineProperty(summaryEl.element, 'scrollHeight', { value: 100, configurable: true })
     Object.defineProperty(summaryEl.element, 'clientHeight', { value: 40, configurable: true })
-    // Mock getBoundingClientRect for focus
     summaryEl.element.getBoundingClientRect = vi.fn().mockReturnValue({
       left: 100,
       bottom: 140,
@@ -309,7 +314,7 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
 
     await summaryEl.trigger('focus')
 
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
   })
 
   it('blur 摘要时隐藏提示', async () => {
@@ -320,19 +325,13 @@ describe('ReleaseItem.vue — 摘要悬浮提示', () => {
     Object.defineProperty(summaryEl.element, 'clientHeight', { value: 40, configurable: true })
 
     await summaryEl.trigger('mouseenter', { clientX: 200, clientY: 300 })
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
 
     await summaryEl.trigger('blur')
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
   })
 })
 
-/**
- * 窗口隐藏到托盘（window.hide() = Win32 SW_HIDE）后，Chromium 会在窗口重新显示时
- * 把「隐藏前获得焦点的元素」重放一次 focus（实测 SW_HIDE → SW_SHOW 收到
- * WINDOW focus + target focus，不伴随任何鼠标事件）。
- * 失效期（useTransientUiGuard 置位）内重放的 focus/hover 不得弹出摘要提示。
- */
 describe('ReleaseItem.vue — 窗口隐藏/失焦后的失效期（防止提示诈尸）', () => {
   afterEach(() => {
     isTransientUiInvalidatedMock.mockReturnValue(false)
@@ -341,7 +340,6 @@ describe('ReleaseItem.vue — 窗口隐藏/失焦后的失效期（防止提示�
   function mountTruncatedSummary() {
     const wrapper = mountRelease(createRelease({ ai_summary: '很长的摘要内容'.repeat(50) }))
     const el = wrapper.find('.release-summary-text')
-    // jsdom 无布局引擎：手动造「文本被截断」的条件
     Object.defineProperty(el.element, 'scrollHeight', { value: 100, configurable: true })
     Object.defineProperty(el.element, 'clientHeight', { value: 40, configurable: true })
     el.element.getBoundingClientRect = vi.fn().mockReturnValue({ left: 100, bottom: 140 })
@@ -349,32 +347,32 @@ describe('ReleaseItem.vue — 窗口隐藏/失焦后的失效期（防止提示�
   }
 
   it('失效期内重放的 focus 不弹提示（托盘重开的主复现路径）', async () => {
-    const { wrapper, el } = mountTruncatedSummary()
+    const { el } = mountTruncatedSummary()
     isTransientUiInvalidatedMock.mockReturnValue(true)
 
     await el.trigger('focus')
 
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
   })
 
   it('失效期内 hover 也不弹提示', async () => {
-    const { wrapper, el } = mountTruncatedSummary()
+    const { el } = mountTruncatedSummary()
     isTransientUiInvalidatedMock.mockReturnValue(true)
 
     await el.trigger('mouseenter', { clientX: 200, clientY: 300 })
 
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
   })
 
   it('失效期结束后（用户真的动了手）focus 恢复弹提示', async () => {
-    const { wrapper, el } = mountTruncatedSummary()
+    const { el } = mountTruncatedSummary()
     isTransientUiInvalidatedMock.mockReturnValue(true)
     await el.trigger('focus')
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.release-summary-tooltip')).toBeNull()
 
     isTransientUiInvalidatedMock.mockReturnValue(false)
     await el.trigger('focus')
-    expect(wrapper.find('.release-summary-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.release-summary-tooltip')).not.toBeNull()
   })
 })
 
@@ -383,10 +381,7 @@ describe('ReleaseItem.vue — 状态操作成功消息', () => {
     const toast = vi.fn()
     vi.mocked(setNotificationState).mockResolvedValue(undefined)
 
-    const wrapper = shallowMount(ReleaseItem, {
-      props: { release: createRelease({ id: 10, notification_status: 'clicked' }) },
-      global: { provide: { [ShowToastKey as symbol]: toast } },
-    })
+    const wrapper = mountRelease(createRelease({ id: 10, notification_status: 'clicked' }), { toast })
 
     const snoozeBtn = wrapper.findAll('button').find(b => b.text().includes(t('release.snooze')))
     await snoozeBtn!.trigger('click')
@@ -399,10 +394,7 @@ describe('ReleaseItem.vue — 状态操作成功消息', () => {
     const toast = vi.fn()
     vi.mocked(setNotificationState).mockResolvedValue(undefined)
 
-    const wrapper = shallowMount(ReleaseItem, {
-      props: { release: createRelease({ id: 10, notification_status: 'pending' }) },
-      global: { provide: { [ShowToastKey as symbol]: toast } },
-    })
+    const wrapper = mountRelease(createRelease({ id: 10, notification_status: 'pending' }), { toast })
 
     await wrapper.find('.btn-danger-soft').trigger('click')
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -428,10 +420,9 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
     const wrapper = mountRelease(createRelease({
       ai_summary: '修复bug',
       ai_importance: '大',
-    }), { [ShowImportanceKey as symbol]: ref(true) })
+    }), { showImportance: true })
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(true)
-    // 组件将中文枚举映射为 i18n key（mock 的 t 原样返回 key）
     expect(wrapper.find('.release-importance-chip').text()).toBe(t('release.importance_high'))
   })
 
@@ -439,9 +430,9 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
     const wrapper = mountRelease(createRelease({
       ai_summary: '修复bug',
       ai_importance: null,
-    body_translated: null,
-    extra_metadata: null,
-    source_description: null,
+      body_translated: null,
+      extra_metadata: null,
+      source_description: null,
     }))
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(false)
@@ -449,7 +440,7 @@ describe('ReleaseItem.vue — 显示辅助函数', () => {
 
   it('「显示重要度」关闭时不显示重要性标签，卡片也不带重要度配色 class', () => {
     const wrapper = mountRelease(createRelease({ ai_summary: '修复bug', ai_importance: '大' }), {
-      [ShowImportanceKey as symbol]: ref(false),
+      showImportance: false,
     })
 
     expect(wrapper.find('.release-importance-chip').exists()).toBe(false)

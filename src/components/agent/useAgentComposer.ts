@@ -3,14 +3,14 @@
 // 会话切换时的清空经编排层调 resetForSessionSwitch。
 // 跨域互斥（模型菜单 / rpc 菜单）不反向依赖：菜单显隐状态与选择动作暴露给编排层，
 // 由编排层的键盘导航分发与全局收起逻辑接线。
-import { computed, nextTick, onUnmounted, ref, watch, type Ref } from 'vue'
-import { open } from '@tauri-apps/plugin-dialog'
+import { computed, nextTick, onScopeDispose, ref, watch, type Ref } from 'vue'
 import type { Source } from '../../api/sources'
 import type { ReleaseInfo } from '../../api/releases'
 import { t } from '../../i18n'
 import { getSourceTypeDef } from '../../api/source-registry'
 import { skillShortName } from '../../utils'
-import type { AgentEntityRefSeed } from '../../injection-keys'
+import { extractErrorMessage, openFileDialog } from '../../services/feedback'
+import type { AgentEntityRefSeed } from '../../types/agent'
 import type { SessionSwitchMode } from './useAgentSessions'
 
 const SKILL_TRIGGER = /@([\w\-.\\/]*)$/
@@ -45,7 +45,7 @@ export function useAgentComposer(deps: {
 
   async function handleAttachFiles() {
     try {
-      const picked = await open({ multiple: true, directory: false, title: t('agent.attach_file') })
+      const picked = await openFileDialog({ multiple: true, directory: false, title: t('agent.attach_file') })
       if (!picked) return
       const list = Array.isArray(picked) ? picked : [picked]
       let added = 0
@@ -56,7 +56,7 @@ export function useAgentComposer(deps: {
       }
       if (added > 0) showToast(t('agent.file_attached', String(added)))
     } catch (e) {
-      showToast(String(e))
+      showToast(extractErrorMessage(e))
     }
   }
 
@@ -311,7 +311,7 @@ export function useAgentComposer(deps: {
     if (showEntityMenu.value) showEntityMenu.value = false
   }
 
-  onUnmounted(() => {
+  onScopeDispose(() => {
     if (flashTimer) {
       clearTimeout(flashTimer)
       flashTimer = null

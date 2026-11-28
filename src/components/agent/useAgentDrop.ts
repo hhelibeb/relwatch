@@ -1,5 +1,5 @@
 import { ref, type Ref } from 'vue'
-import type { AgentEntityRefSeed } from '../../injection-keys'
+import type { AgentEntityRefSeed } from '../../types/agent'
 import { isEntityDrag, parseEntityDrag } from './agentChatUtils'
 
 export interface UseAgentDropOptions {

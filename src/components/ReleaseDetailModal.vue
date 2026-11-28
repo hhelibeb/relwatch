@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { ref, computed, watch, inject, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import BaseModal from './ui/BaseModal.vue'
+import AppIcon from './ui/AppIcon.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import ContextMenu, { type ContextMenuItem } from './common/ContextMenu.vue'
 import ImageLightbox from './common/ImageLightbox.vue'
 import FindBar from './common/FindBar.vue'
-import { ShowToastKey, AiEnabledKey, ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
+import { useSettingsStore } from '../stores/settings'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
+import { extractErrorMessage } from '../services/feedback'
 import { type ReleaseInfo } from '../api/releases'
 import { openReleaseUrl, copyTextToClipboard } from '../api/client'
 import { useDragResize, type ResizeDir } from '../composables/useDragResize'
 import { registerCloser, unregisterCloser, closeAllContextMenus } from '../composables/contextMenuBus'
-import { useOverlayEscape } from '../composables/useOverlayEscape'
 import { track } from '../composables/useUsageTracking'
 import { useReleaseActions } from '../composables/useReleaseActions'
 import { useReleaseTranslate } from '../composables/useReleaseTranslate'
@@ -23,11 +28,9 @@ import { fromMediaUrl } from '../utils/imageProxy'
 import type { ReleaseContentMode } from './releaseTypes'
 import { getSourceTypeDef } from '../api/source-registry'
 
-// 版本详情弹窗：卡片只展示单一预览（摘要 > 译文 > 原文），点击后进入弹窗完整阅读，
-// 摘要/译文/原文的内容切换集中在弹窗内进行。
 const props = defineProps<{
   release: ReleaseInfo
-  position: number // 1-based，在当前过滤序列中的位置
+  position: number
   total: number
   hasPrev: boolean
   hasNext: boolean
@@ -36,21 +39,23 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  navigate: [delta: number] // -1 = 更新的版本，1 = 更旧的版本
+  navigate: [delta: number]
   update: []
 }>()
 
-const showToast = inject(ShowToastKey, () => {})
-const aiEnabledRef = inject(AiEnabledKey, ref(false))
-const showImportance = inject(ShowImportanceKey, ref(false))
-const aiEnabled = computed(() => aiEnabledRef.value)
-const agentEnabledRef = inject(AgentEnabledKey, ref(false))
-const openAgentWorkspace = inject(AgentWorkspaceKey, () => {})
-const agentEnabled = computed(() => agentEnabledRef.value)
+const ui = useUiStore()
+const settingsStore = useSettingsStore()
+const catalogStore = useCatalogStore()
+const agentStore = useAgentStore()
 
-// ========== 拖动 / 调整大小 ==========
-// 拖动标题栏移动弹窗，八向手柄调整大小；位置与显式尺寸持久化，下次打开保持
-const modalEl = ref<HTMLElement | null>(null)
+const showToast = (msg: string) => ui.showToast(msg)
+const aiEnabled = computed(() => settingsStore.aiEnabled)
+const showImportance = computed(() => settingsStore.showImportance)
+const agentEnabled = computed(() => catalogStore.agentEnabled)
+const openAgentWorkspace = (seed?: Parameters<typeof agentStore.openWorkspace>[0]) => agentStore.openWorkspace(seed)
+
+const baseModalRef = ref<InstanceType<typeof BaseModal> | null>(null)
+const modalEl = computed(() => baseModalRef.value?.modalEl ?? null)
 const { startDrag, startResize } = useDragResize(modalEl, {
   minWidth: 400,
   minHeight: 300,
@@ -124,9 +129,9 @@ function handleBodyContextMenu(e: MouseEvent) {
 async function copyText(text: string) {
   try {
     await copyTextToClipboard(text)
-    showToast?.(t('release.copied'))
+    showToast(t('release.copied'))
   } catch (e: unknown) {
-    showToast?.(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.copy_failed') + extractErrorMessage(e))
   }
 }
 
@@ -326,44 +331,47 @@ const statusGroup = computed<StatusGroup>(() => {
   return null
 })
 
-// ========== 键盘交互：Esc 逐层关闭，F3 查找跳转，←/→ 在版本间导航 ==========
-useOverlayEscape({
-  onEscape: () => {
-    if (bodyMenu.value) {
-      closeBodyMenu()
-      return
-    }
-    if (flagPopoverOpen.value) {
-      flagPopoverOpen.value = false
-      return
-    }
-    if (findOpen.value) {
-      closeFind()
-      return
-    }
-    handleClose()
-  },
-  onKeydown: (e) => {
-    if (e.key === 'F3' && findOpen.value) {
-      e.preventDefault()
-      if (e.shiftKey) prevFindMatch()
-      else nextFindMatch()
-    } else if (e.key === 'ArrowLeft' && props.hasPrev) {
-      if (bodyMenu.value || isEditableTarget(e.target)) return
-      emit('navigate', -1)
-    } else if (e.key === 'ArrowRight' && props.hasNext) {
-      if (bodyMenu.value || isEditableTarget(e.target)) return
-      emit('navigate', 1)
-    }
-  },
-})
+function handleModalEscape() {
+  if (bodyMenu.value) {
+    closeBodyMenu()
+    return
+  }
+  if (flagPopoverOpen.value) {
+    flagPopoverOpen.value = false
+    return
+  }
+  if (findOpen.value) {
+    closeFind()
+    return
+  }
+  handleClose()
+}
+
+function handleModalKeydown(e: KeyboardEvent) {
+  if (e.key === 'F3' && findOpen.value) {
+    e.preventDefault()
+    if (e.shiftKey) prevFindMatch()
+    else nextFindMatch()
+  } else if (e.key === 'ArrowLeft' && props.hasPrev) {
+    if (bodyMenu.value || isEditableTarget(e.target)) return
+    emit('navigate', -1)
+  } else if (e.key === 'ArrowRight' && props.hasNext) {
+    if (bodyMenu.value || isEditableTarget(e.target)) return
+    emit('navigate', 1)
+  }
+}
+
+function closeTransientMenus() {
+  closeBodyMenu()
+  flagPopoverOpen.value = false
+}
 
 onMounted(() => {
-  registerCloser(closeBodyMenu)
+  registerCloser(closeTransientMenus)
   document.addEventListener('click', closeBodyMenu)
 })
 onUnmounted(() => {
-  unregisterCloser(closeBodyMenu)
+  unregisterCloser(closeTransientMenus)
   document.removeEventListener('click', closeBodyMenu)
 })
 
@@ -428,151 +436,152 @@ function toggleFind() {
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="release-detail-overlay" @click.self="handleClose">
-      <div ref="modalEl" class="release-detail-modal" role="dialog" aria-modal="true">
-        <div class="release-detail-header" @pointerdown="startDrag">
-          <div class="release-detail-heading">
-            <span v-if="showReleaseRepo" class="release-detail-repo" :title="`${release.owner}/${release.repo}`">{{ release.owner }}/{{ release.repo }}</span>
-            <span class="release-detail-tag" :title="release.tag_name">{{ release.tag_name }}</span>
-            <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
-            <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
-            <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
-          </div>
-          <button
-            class="release-detail-close release-detail-find-toggle"
-            :class="{ active: findOpen }"
-            :title="`${t('release.find_in_content')} (Ctrl+F)`"
-            :aria-label="t('release.find_in_content')"
-            @pointerdown.stop
-            @click.stop="toggleFind"
-          >
-            <svg viewBox="0 0 16 16"><use href="/icons.svg#search-icon"/></svg>
-          </button>
-          <div class="release-detail-flag-wrap">
-            <button class="release-detail-close release-detail-flag-btn" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :title="flagTitle" @pointerdown.stop @click.stop="flagPopoverOpen = !flagPopoverOpen">
-              <svg viewBox="0 0 16 16"><use href="/icons.svg#flag-tag-icon"/></svg>
-            </button>
-            <div v-if="flagPopoverOpen" class="dropdown-panel filter-dropdown flag-popover" @click.stop @pointerdown.stop>
-              <button
-                v-for="item in FLAG_ITEMS"
-                :key="item.value"
-                type="button"
-                :class="{ selected: props.release.flag === item.value }"
-                @click="applyFlag(item.value)"
-              >
-                <span class="flag-popover-icon" :style="{ color: item.color }"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
-                {{ t(item.labelKey) }}
-                <span v-if="props.release.flag === item.value" class="flag-popover-check">✓</span>
-              </button>
-              <template v-if="flagged">
-                <div class="flag-popover-divider"></div>
-                <button type="button" @click="applyFlag(0)">{{ t('release.flag_clear') }}</button>
-              </template>
-            </div>
-          </div>
-          <button class="release-detail-close" :title="t('release.detail_close')" @click="handleClose">
-            <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
-          </button>
-        </div>
-        <div class="release-detail-meta">
-          <span class="release-detail-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
-        </div>
-        <div v-if="releaseDisplayTitle(release)" class="release-detail-title">{{ releaseDisplayTitle(release) }}</div>
-        <div v-if="availableModes.length > 1" class="release-view-tabs release-detail-tabs">
-          <button
-            v-for="m in availableModes"
-            :key="m.mode"
-            class="release-view-tab"
-            :class="{ active: viewMode === m.mode }"
-            @click="switchMode(m.mode)"
-          >{{ m.label }}</button>
-        </div>
-        <FindBar
-          v-if="findOpen"
-          v-model="findQuery"
-          class-prefix="release-detail-find"
-          :match-count="findMatchCount"
-          :current-index="findCurrentIndex"
-          :placeholder="t('release.find_in_content')"
-          :prev-label="t('release.find_prev')"
-          :next-label="t('release.find_next')"
-          :close-label="t('release.find_close')"
-          :set-input-el="setFindInputEl"
-          @prev="prevFindMatch"
-          @next="nextFindMatch"
-          @close="closeFind"
-          @input-keydown="handleFindInputKeydown"
-        />
-        <div ref="bodyEl" class="release-detail-body" @click="handleBodyClick" @contextmenu.prevent.stop="handleBodyContextMenu">
-          <!-- 译文 / 原文：完整 Markdown 渲染，无高度限制 -->
-          <div v-if="currentContent" class="release-detail-markdown">
-            <MarkdownContent :content="currentContent" :no-cache="streamingContent" />
-          </div>
-          <div v-else-if="translating && viewMode === 'translated'" class="release-detail-translating">
-            {{ t('release.translating_hint') }}
-          </div>
-          <div v-else class="release-detail-translating">{{ t('release.detail_empty') }}</div>
-          <!-- 中断残留：内容不完整必须写出来，否则用户会拿它当完整译文去引用/复制 -->
-          <div v-if="isPartialTranslation" class="release-detail-interrupted">
-            {{ t('release.translate_interrupted') }}
-          </div>
-        </div>
-        <div class="release-detail-footer">
-          <div class="release-detail-nav">
-            <button
-              class="release-detail-icon-btn"
-              :disabled="!hasPrev"
-              :title="t('release.prev_release')"
-              :aria-label="t('release.prev_release')"
-              @click="emit('navigate', -1)"
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="/icons.svg#chevron-left-icon"/></svg>
-            </button>
-            <span class="release-detail-position">{{ position }} / {{ total }}</span>
-            <button
-              class="release-detail-icon-btn"
-              :disabled="!hasNext"
-              :title="t('release.next_release')"
-              :aria-label="t('release.next_release')"
-              @click="emit('navigate', 1)"
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true"><use href="/icons.svg#chevron-right-icon"/></svg>
-            </button>
-          </div>
-          <div class="release-detail-actions">
-            <!-- 状态组：与卡片同一判据——「已读/忽略」给未消未读的条目（含 snoozed，
-                 用于取消提醒），「稍后提醒」只给已读条目（isReadStatus）；
-                 snoozed 未到期两个谓词都为假，旧版二分会使它只剩「稍后提醒」（重置提醒）。 -->
-            <template v-if="statusGroup">
-              <template v-if="statusGroup === 'unread'">
-                <button class="btn-sm" :disabled="statusUpdating" @click="updateStatus('clicked')">{{ t('release.mark_read') }}</button>
-                <button class="btn-sm btn-danger-soft" :disabled="statusUpdating" @click="updateStatus('ignored')">{{ t('release.ignore') }}</button>
-              </template>
-              <button
-                v-else
-                class="btn-sm"
-                :disabled="statusUpdating"
-                @click="updateStatus('snoozed', SNOOZE_MINUTES)"
-              >{{ t('release.snooze') }}</button>
-              <span class="release-detail-actions-divider"></span>
-            </template>
-            <button v-if="canTranslate" class="btn-sm" :disabled="translating" @click="handleTranslateRelease">{{ t('context.translate') }}</button>
-            <button class="btn-sm" :disabled="!currentContent" @click="handleCopyContent">{{ t('context.copy_content') }}</button>
-            <button class="btn-sm" @click="handleOpenLink">{{ t('release.open_link') }}</button>
-            <button v-if="agentEnabled" class="btn-sm" @click="handleSendToAgent">{{ t('agent.send_to') }}</button>
-          </div>
-        </div>
-        <div
-          v-for="dir in resizeDirs"
-          :key="dir"
-          class="resize-handle"
-          :class="`resize-handle-${dir}`"
-          @pointerdown="startResize($event, dir)"
-        ></div>
+  <BaseModal
+    ref="baseModalRef"
+    overlay-class="release-detail-overlay"
+    modal-class="release-detail-modal"
+    :auto-focus="false"
+    :trap-focus="!bodyMenu && !lightbox"
+    :on-escape="handleModalEscape"
+    :on-keydown="handleModalKeydown"
+    @close="handleClose"
+  >
+    <div class="release-detail-header" @pointerdown="startDrag">
+      <div class="release-detail-heading">
+        <span v-if="showReleaseRepo" class="release-detail-repo" :title="`${release.owner}/${release.repo}`">{{ release.owner }}/{{ release.repo }}</span>
+        <span class="release-detail-tag" :title="release.tag_name">{{ release.tag_name }}</span>
+        <span v-if="showImportance && releaseImportanceText(release)" class="release-importance-chip" :class="releaseImportanceClass(release)">{{ releaseImportanceText(release) }}</span>
+        <span v-if="release.prerelease" class="pre-release-badge">{{ t('release.prerelease') }}</span>
+        <span class="status-inline" :class="statusClass(release.notification_status, release.snooze_until)">{{ statusLabel(release.notification_status, release.snooze_until) }}</span>
       </div>
-      <!-- 右键菜单必须放在 overlay 内、modal 外：modal 拖动后带 transform，
-           会导致其内部 fixed 定位相对 modal 解析并被 overflow:hidden 裁剪 -->
+      <button
+        class="release-detail-close release-detail-find-toggle"
+        :class="{ active: findOpen }"
+        :title="`${t('release.find_in_content')} (Ctrl+F)`"
+        :aria-label="t('release.find_in_content')"
+        @pointerdown.stop
+        @click.stop="toggleFind"
+      >
+        <svg viewBox="0 0 16 16"><use href="/icons.svg#search-icon"/></svg>
+      </button>
+      <div class="release-detail-flag-wrap">
+        <button class="release-detail-close release-detail-flag-btn" :class="{ flagged }" :style="flagColor ? { color: flagColor } : undefined" :title="flagTitle" @pointerdown.stop @click.stop="flagPopoverOpen = !flagPopoverOpen">
+          <svg viewBox="0 0 16 16"><use href="/icons.svg#flag-tag-icon"/></svg>
+        </button>
+        <div v-if="flagPopoverOpen" class="dropdown-panel filter-dropdown flag-popover" @click.stop @pointerdown.stop>
+          <button
+            v-for="item in FLAG_ITEMS"
+            :key="item.value"
+            type="button"
+            :class="{ selected: props.release.flag === item.value }"
+            @click="applyFlag(item.value)"
+          >
+            <span class="flag-popover-icon" :style="{ color: item.color }"><svg><use href="/icons.svg#flag-tag-icon"/></svg></span>
+            {{ t(item.labelKey) }}
+            <span v-if="props.release.flag === item.value" class="flag-popover-check">✓</span>
+          </button>
+          <template v-if="flagged">
+            <div class="flag-popover-divider"></div>
+            <button type="button" @click="applyFlag(0)">{{ t('release.flag_clear') }}</button>
+          </template>
+        </div>
+      </div>
+      <button class="release-detail-close" :title="t('release.detail_close')" @click="handleClose">
+        <AppIcon name="close-icon" />
+      </button>
+    </div>
+    <div class="release-detail-meta">
+      <span class="release-detail-date">{{ t('release.published_at', formatDate(release.published_at)) }}</span>
+    </div>
+    <div v-if="releaseDisplayTitle(release)" class="release-detail-title">{{ releaseDisplayTitle(release) }}</div>
+    <div v-if="availableModes.length > 1" class="release-view-tabs release-detail-tabs">
+      <button
+        v-for="m in availableModes"
+        :key="m.mode"
+        class="release-view-tab"
+        :class="{ active: viewMode === m.mode }"
+        @click="switchMode(m.mode)"
+      >{{ m.label }}</button>
+    </div>
+    <FindBar
+      v-if="findOpen"
+      v-model="findQuery"
+      class-prefix="release-detail-find"
+      :match-count="findMatchCount"
+      :current-index="findCurrentIndex"
+      :placeholder="t('release.find_in_content')"
+      :prev-label="t('release.find_prev')"
+      :next-label="t('release.find_next')"
+      :close-label="t('release.find_close')"
+      :set-input-el="setFindInputEl"
+      @prev="prevFindMatch"
+      @next="nextFindMatch"
+      @close="closeFind"
+      @input-keydown="handleFindInputKeydown"
+    />
+    <div ref="bodyEl" class="release-detail-body" @click="handleBodyClick" @contextmenu.prevent.stop="handleBodyContextMenu">
+      <div v-if="currentContent" class="release-detail-markdown">
+        <MarkdownContent :content="currentContent" :no-cache="streamingContent" />
+      </div>
+      <div v-else-if="translating && viewMode === 'translated'" class="release-detail-translating">
+        {{ t('release.translating_hint') }}
+      </div>
+      <div v-else class="release-detail-translating">{{ t('release.detail_empty') }}</div>
+      <div v-if="isPartialTranslation" class="release-detail-interrupted">
+        {{ t('release.translate_interrupted') }}
+      </div>
+    </div>
+    <div class="release-detail-footer">
+      <div class="release-detail-nav">
+        <button
+          class="release-detail-icon-btn"
+          :disabled="!hasPrev"
+          :title="t('release.prev_release')"
+          :aria-label="t('release.prev_release')"
+          @click="emit('navigate', -1)"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><use href="/icons.svg#chevron-left-icon"/></svg>
+        </button>
+        <span class="release-detail-position">{{ position }} / {{ total }}</span>
+        <button
+          class="release-detail-icon-btn"
+          :disabled="!hasNext"
+          :title="t('release.next_release')"
+          :aria-label="t('release.next_release')"
+          @click="emit('navigate', 1)"
+        >
+          <svg viewBox="0 0 16 16" aria-hidden="true"><use href="/icons.svg#chevron-right-icon"/></svg>
+        </button>
+      </div>
+      <div class="release-detail-actions">
+        <template v-if="statusGroup">
+          <template v-if="statusGroup === 'unread'">
+            <button class="btn-sm" :disabled="statusUpdating" @click="updateStatus('clicked')">{{ t('release.mark_read') }}</button>
+            <button class="btn-sm btn-danger-soft" :disabled="statusUpdating" @click="updateStatus('ignored')">{{ t('release.ignore') }}</button>
+          </template>
+          <button
+            v-else
+            class="btn-sm"
+            :disabled="statusUpdating"
+            @click="updateStatus('snoozed', SNOOZE_MINUTES)"
+          >{{ t('release.snooze') }}</button>
+          <span class="release-detail-actions-divider"></span>
+        </template>
+        <button v-if="canTranslate" class="btn-sm" :disabled="translating" @click="handleTranslateRelease">{{ t('context.translate') }}</button>
+        <button class="btn-sm" :disabled="!currentContent" @click="handleCopyContent">{{ t('context.copy_content') }}</button>
+        <button class="btn-sm" @click="handleOpenLink">{{ t('release.open_link') }}</button>
+        <button v-if="agentEnabled" class="btn-sm" @click="handleSendToAgent">{{ t('agent.send_to') }}</button>
+      </div>
+    </div>
+    <div
+      v-for="dir in resizeDirs"
+      :key="dir"
+      class="resize-handle"
+      :class="`resize-handle-${dir}`"
+      @pointerdown="startResize($event, dir)"
+    ></div>
+
+    <template #overlay-extra>
       <ContextMenu
         v-if="bodyMenu"
         :x="bodyMenu.x"
@@ -587,33 +596,15 @@ function toggleFind() {
         :original-url="lightbox.originalUrl"
         @close="lightbox = null"
       />
-    </div>
-  </Teleport>
+    </template>
+  </BaseModal>
 </template>
 
 <style scoped>
-.release-detail-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal); /* 必须高于全局浮层（--z-popover）与右键菜单（--z-menu） */
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  padding: 24px;
-}
-
-.release-detail-modal {
-  position: relative; /* resize 手柄的定位基座 */
-  display: flex;
-  flex-direction: column;
+:global(.release-detail-modal) {
+  position: relative;
   width: min(760px, 100%);
   max-height: calc(100vh - 48px);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
 }
 
 /* 八向 resize 手柄：透明的边缘/角落热区，右下角带可见握把 */
@@ -779,7 +770,9 @@ function toggleFind() {
 
 .flag-popover {
   top: calc(100% + 6px);
+  left: auto;
   right: 0;
+  transform: none;
   min-width: 150px;
   padding: 4px;
 }

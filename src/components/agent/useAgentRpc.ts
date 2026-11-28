@@ -8,6 +8,7 @@
 import { computed, ref } from 'vue'
 import { getAgentRpcStatus, restartAgentRpc, type AgentRpcStatus } from '../../api/agent'
 import { t } from '../../i18n'
+import { extractErrorMessage } from '../../services/feedback'
 import { useAnchoredMenu } from './useAnchoredMenu'
 
 export function useAgentRpc(deps: {
@@ -64,7 +65,7 @@ export function useAgentRpc(deps: {
       showToast(restarted ? t('agent.rpc_restart_done') : t('agent.rpc_restart_blocked'))
       await loadRpcStatus()
     } catch (e) {
-      showToast(String(e))
+      showToast(extractErrorMessage(e))
     } finally {
       rpcRestarting.value = false
       // 重启发出后菜单使命完成，收起让 toast 成为唯一反馈

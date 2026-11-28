@@ -1,36 +1,23 @@
 <script setup lang="ts">
-// 应用内更新：新版本 Release Note 弹窗。
-//
-// 不复用 ReleaseDetailModal：那个组件的 props 是 ReleaseInfo，内部深度耦合了翻译、
-// 上下版导航、通知状态徽标、拖拽 resize 持久化、右键菜单等业务，而更新检查拿到的
-// 只是 {version, date, body} 三元组。这里只复用 MarkdownContent（marked + DOMPurify
-// 清洗，无业务耦合），其余自绘约 100 行。
-import { ref, computed } from 'vue'
+import { computed } from 'vue'
+import BaseModal from './ui/BaseModal.vue'
+import AppIcon from './ui/AppIcon.vue'
 import MarkdownContent from './common/MarkdownContent.vue'
 import EmptyState from './common/EmptyState.vue'
 import { openReleaseUrl } from '../api/client'
-import { useOverlayEscape } from '../composables/useOverlayEscape'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 import { formatDate } from '../utils'
 
 const props = defineProps<{
   version: string
-  /** RFC3339 字符串（latest.json 的 pub_date），可能为空 */
   date: string | null
-  /** latest.json 的 notes（Markdown），可能为空 */
   body: string | null
 }>()
 
 const emit = defineEmits<{ close: [] }>()
 
-const modalEl = ref<HTMLElement | null>(null)
-
-/** latest.json 的 pub_date 时刻尚未发布（CI 生成产物时写入），
- *  与 GitHub Release 的发布时间不是一回事，因此措辞用「构建」而非「发布」。 */
 const dateText = computed(() => (props.date ? formatDate(props.date) : ''))
-
-/** Release 页面地址：沿用 openReleaseNotes 的既有拼法（tags/v<version>） */
 const releaseUrl = computed(() => `https://github.com/hhelibeb/relwatch/releases/tag/v${props.version}`)
 
 function handleClose() {
@@ -42,66 +29,36 @@ function handleOpenInBrowser(): void {
   track('update.notes_open_browser')
   void openReleaseUrl(releaseUrl.value)
 }
-
-useOverlayEscape({ onEscape: handleClose })
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="update-notes-overlay" @click.self="handleClose">
-      <div ref="modalEl" class="update-notes-modal" role="dialog" aria-modal="true">
-        <div class="update-notes-header">
-          <div class="update-notes-heading">
-            <span class="update-notes-version">v{{ version }}</span>
-            <span v-if="dateText" class="update-notes-date">{{ t('update.notes_built_at', dateText) }}</span>
-          </div>
-          <button class="update-notes-close" :title="t('release.detail_close')" @click="handleClose">
-            <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
-          </button>
-        </div>
-        <div class="update-notes-body">
-          <div v-if="body" class="update-notes-markdown">
-            <MarkdownContent :content="body" />
-          </div>
-          <!-- 防御性空态：SettingsTab 挂载条件是 `showUpdateNotes && updateNotesBody`（body 非空），
-               生产路径拿不到空 body；此处兜底仅在组件被独立复用（未来其他调用方或本文件的
-               「body 为空时显示空态」用例）时生效，避免弹窗渲染空白框。 -->
-          <EmptyState v-else class="update-notes-empty" :title="t('update.notes_empty')" compact />
-        </div>
-        <div class="update-notes-footer">
-          <!-- 保留浏览器入口：GitHub Release 页上有安装包、commit 与历史版本，
-               是弹窗内 Markdown 覆盖不到的部分 -->
-          <button class="btn-sm" @click="handleOpenInBrowser">{{ t('update.notes_open_in_browser') }}</button>
-          <button class="btn-sm" @click="handleClose">{{ t('release.detail_close') }}</button>
-        </div>
+  <BaseModal overlay-class="update-notes-overlay" modal-class="update-notes-modal" @close="handleClose">
+    <div class="update-notes-header">
+      <div class="update-notes-heading">
+        <span class="update-notes-version">v{{ version }}</span>
+        <span v-if="dateText" class="update-notes-date">{{ t('update.notes_built_at', dateText) }}</span>
       </div>
+      <button class="update-notes-close" :title="t('release.detail_close')" @click="handleClose">
+        <AppIcon name="close-icon" />
+      </button>
     </div>
-  </Teleport>
+    <div class="update-notes-body">
+      <div v-if="body" class="update-notes-markdown">
+        <MarkdownContent :content="body" />
+      </div>
+      <EmptyState v-else class="update-notes-empty" :title="t('update.notes_empty')" compact />
+    </div>
+    <div class="update-notes-footer">
+      <button class="btn-sm" @click="handleOpenInBrowser">{{ t('update.notes_open_in_browser') }}</button>
+      <button class="btn-sm" @click="handleClose">{{ t('release.detail_close') }}</button>
+    </div>
+  </BaseModal>
 </template>
 
 <style scoped>
-/* 层级与 ReleaseDetailModal 一致：--z-modal 高于全局浮层 --z-popover 与右键菜单 --z-menu */
-.update-notes-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  padding: 24px;
-}
-
-.update-notes-modal {
-  display: flex;
-  flex-direction: column;
+:global(.update-notes-modal) {
   width: min(620px, 100%);
   max-height: calc(100vh - 48px);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
 }
 
 .update-notes-header {
@@ -152,11 +109,6 @@ useOverlayEscape({ onEscape: handleClose })
 .update-notes-close:hover {
   background: var(--bg-hover);
   color: var(--text);
-}
-
-.update-notes-close svg {
-  width: 14px;
-  height: 14px;
 }
 
 .update-notes-body {

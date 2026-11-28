@@ -1,7 +1,7 @@
-import { invoke, type InvokeArgs } from '@tauri-apps/api/core'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { commands } from '../bindings'
 import { t } from '../i18n'
+import { extractErrorMessage } from '../services/feedback'
 
 export function translateError(raw: string): string {
   const msg = raw.replace(/^Error:\s*/, '')
@@ -12,11 +12,6 @@ export function translateError(raw: string): string {
   return t(key, ...args)
 }
 
-/**
- * invokeI18n 抛出的后端错误：保留原始错误 key 与 `|` 分隔参数，
- * 供调用方做程序化分支（如登录轮询按 key 判断窗口已关闭），
- * message 仍为翻译后的用户可读文案。
- */
 export class InvokeI18nError extends Error {
   constructor(
     public readonly key: string,
@@ -28,15 +23,6 @@ export class InvokeI18nError extends Error {
   }
 }
 
-export async function invokeI18n<T>(cmd: string, args?: InvokeArgs): Promise<T> {
-  try {
-    return await invoke<T>(cmd, args)
-  } catch (e: unknown) {
-    return throwTranslated(e)
-  }
-}
-
-/** 包装 tauri-specta 生成的类型安全命令（Throw 模式），复用统一错误翻译链路。 */
 export async function invokeI18nFn<T>(fn: () => Promise<T>): Promise<T> {
   try {
     return await fn()
@@ -46,18 +32,15 @@ export async function invokeI18nFn<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 function throwTranslated(e: unknown): never {
-  const raw = e instanceof Error ? e.message : String(e)
-  const msg = translateError(raw)
-  const clean = raw.replace(/^Error:\s*/, '')
+  const clean = extractErrorMessage(e)
+  const msg = translateError(clean)
   if (clean.startsWith('err.')) {
     const parts = clean.split('|')
     const err = new InvokeI18nError(parts[0], parts.slice(1), msg)
-    // 保留原始错误调用堆栈，便于定位抛出点
     if (e instanceof Error && e.stack) err.stack = e.stack
     throw err
   }
-  // 非 err.* 错误：复用原始 Error 以保留调用堆栈
-  const err = e instanceof Error ? e : new Error(raw)
+  const err = e instanceof Error ? e : new Error(clean)
   err.message = msg
   throw err
 }

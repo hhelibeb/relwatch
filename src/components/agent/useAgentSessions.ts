@@ -5,7 +5,7 @@
 // - 侧栏运行状态点接收全局队列 queueActive 只读 ref（由聊天核心刷新）。
 import { computed, nextTick, ref, type Ref } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
-import { confirm } from '@tauri-apps/plugin-dialog'
+import { confirmAction, extractErrorMessage } from '../../services/feedback'
 import {
   deleteAgentSession,
   exportAgentSession,
@@ -251,7 +251,7 @@ export function useAgentSessions(deps: {
       // 必须按错误 **key** 判断：错误经 invokeI18nFn 翻译后 message 已是本地化文案，
       // 用 String(e) 比对 key 会永远不相等（取消导出会被误报成失败）。
       const errKey = errorKeyOf(e)
-      if (errKey !== 'err.agent.export_cancelled') showToast(String(e))
+      if (errKey !== 'err.agent.export_cancelled') showToast(extractErrorMessage(e))
     }
   }
 
@@ -295,7 +295,7 @@ export function useAgentSessions(deps: {
     } catch {
       // 查询失败不阻塞删除（按无活跃 run 处理）
     }
-    const confirmed = await confirm(
+    const confirmed = await confirmAction(
       activeRunForSession ? t('agent.delete_session_running_confirm') : t('agent.delete_session_confirm'),
       {
         title: t('agent.delete_session'),
@@ -320,7 +320,7 @@ export function useAgentSessions(deps: {
       }
       showToast(t('agent.session_deleted'))
     } catch (e) {
-      showToast(String(e))
+      showToast(extractErrorMessage(e))
     }
   }
 
@@ -340,7 +340,7 @@ export function useAgentSessions(deps: {
     } catch {
       // 查询失败不阻塞清理（按无活跃 run 处理）
     }
-    const confirmed = await confirm(
+    const confirmed = await confirmAction(
       runningCount > 0 ? t('agent.clear_sessions_running_confirm', String(runningCount)) : t('agent.clear_sessions_confirm'),
       {
         title: t('agent.session_clear'),
@@ -356,7 +356,7 @@ export function useAgentSessions(deps: {
       if (result.failed > 0) showToast(t('agent.clear_sessions_partial', String(result.failed)))
       else showToast(t('agent.sessions_cleared', String(result.deleted)))
     } catch (e) {
-      showToast(String(e))
+      showToast(extractErrorMessage(e))
     }
   }
 

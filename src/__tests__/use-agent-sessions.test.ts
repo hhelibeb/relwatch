@@ -276,7 +276,7 @@ describe('useAgentSessions 删除 / 清理 / 磁盘发现', () => {
     vi.mocked(confirm).mockResolvedValue(true)
     vi.mocked(deleteAgentSession).mockRejectedValueOnce(new Error('db locked'))
     await api.deleteSession('s1', vi.fn().mockResolvedValue(undefined))
-    expect(showToast).toHaveBeenCalledWith('Error: db locked')
+    expect(showToast).toHaveBeenCalledWith('db locked')
     expect(readStorage().length).toBe(1)
   })
 

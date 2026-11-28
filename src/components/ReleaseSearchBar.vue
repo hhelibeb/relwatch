@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import { ref, computed, inject, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { t } from '../i18n'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
 import { getSourceTypeDef, sourceTypeDefs } from '../api/source-registry'
 import { FLAG_ITEMS, flagColorByIndex, releaseFlagged } from '../utils/releaseFlag'
 import { isUnreadStatus } from '../utils'
-import { ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { useSettingsStore } from '../stores/settings'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import type { ReleaseInfo } from '../api/releases'
 import type { ReleaseFlagFilter, ReleaseImportanceFilter, ReleaseSourceFilter, ReleaseStatusFilter, ReleaseVersionFilter, ViewMode } from './releaseTypes'
 
@@ -63,15 +65,12 @@ const filterDropdown = useDropdown({
   hoverOpen: true,
 })
 
-// 「显示重要度」开关（App.vue provide）：关闭时漏斗面板不含重要度分组、chips 不显示重要度
-const showImportance = inject(ShowImportanceKey, ref(false))
+const settingsStore = useSettingsStore()
+const catalogStore = useCatalogStore()
+const agentStore = useAgentStore()
 
-// 深度搜索的能力边界：正文索引受字符水位约束，越界时只覆盖近期正文。
-// 这条边界必须显式告知用户，不能让「搜不到」被误读成「不存在」；Agent 工作区可用时
-// 同时给出下一步动作（它的检索不受该水位约束）。缺省（未 provide，如单组件测试）取
-// Agent 未启用，与设置项默认一致。
-const agentEnabled = inject(AgentEnabledKey, ref(false))
-const openAgentWorkspace = inject(AgentWorkspaceKey, null)
+const showImportance = computed(() => settingsStore.showImportance)
+const agentEnabled = computed(() => catalogStore.agentEnabled)
 const showDeepSearchLimit = computed(() => props.deepSearch === true && props.bodyTruncated === true)
 
 const statusDisplayText = computed(() => {
@@ -142,7 +141,7 @@ const versionDisplayText = computed(() => {
 })
 
 // ── 选项计数标注：「未读 / 已标记」等高频选项在 label 后追加 (n)；0 条不追加 ──
-const unreadCount = computed(() => props.releases.filter(r => isUnreadStatus(r.notification_status)).length)
+const unreadCount = computed(() => props.releases.filter(r => isUnreadStatus(r.notification_status, r.snooze_until)).length)
 const flaggedCount = computed(() => props.releases.filter(r => releaseFlagged(r)).length)
 const withCount = (label: string, n: number) => (n > 0 ? `${label} (${n})` : label)
 
@@ -496,10 +495,10 @@ function clearAllFilters() {
     <div v-if="showDeepSearchLimit" class="deep-search-limit">
       <span>{{ t('release.deep_search_recent_only') }}</span>
       <button
-        v-if="agentEnabled && openAgentWorkspace"
+        v-if="agentEnabled"
         type="button"
         class="deep-search-limit-action"
-        @click="openAgentWorkspace()"
+        @click="agentStore.openWorkspace()"
       >{{ t('release.deep_search_agent_hint') }}</button>
     </div>
     <div v-if="activeChips.length" class="filter-chips-row">

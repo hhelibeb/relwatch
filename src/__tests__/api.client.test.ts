@@ -11,7 +11,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { t } from '../i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
-  invokeI18n,
+  invokeI18nFn,
   InvokeI18nError,
   openReleaseUrl,
   copyTextToClipboard,
@@ -68,34 +68,24 @@ afterEach(() => {
 
 const mockCtx = { drawImage: vi.fn() }
 
-// ── invokeI18n ───────────────────────────────────────────────────
+// ── invokeI18nFn ─────────────────────────────────────────────────
 
-describe('invokeI18n', () => {
-  it('成功时返回 invoke 结果', async () => {
-    vi.mocked(invoke).mockResolvedValue({ ok: 1 })
+describe('invokeI18nFn', () => {
+  it('成功时返回命令结果', async () => {
+    const fn = vi.fn().mockResolvedValue({ ok: 1 })
 
-    const result = await invokeI18n<{ ok: number }>('some_command', { a: 1 })
+    const result = await invokeI18nFn<{ ok: number }>(fn)
 
-    expect(invoke).toHaveBeenCalledWith('some_command', { a: 1 })
+    expect(fn).toHaveBeenCalledOnce()
     expect(result).toEqual({ ok: 1 })
-  })
-
-  it('无参数命令只传命令名', async () => {
-    vi.mocked(invoke).mockResolvedValue(undefined)
-
-    await invokeI18n('some_command')
-
-    expect(invoke).toHaveBeenCalledWith('some_command', undefined)
   })
 
   it('Error 且带 err. 前缀时抛 InvokeI18nError（携带原始 key/args，翻译消息并保留堆栈）', async () => {
     const original = new Error('Error: err.repo_verify_failed|microsoft/vscode')
-    vi.mocked(invoke).mockRejectedValue(original)
+    const fn = vi.fn().mockRejectedValue(original)
 
-    // 真实 i18n 字典：err.repo_verify_failed 渲染为「验证仓库失败: {0}」
-    await expect(invokeI18n('some_command')).rejects.toThrow(t('err.repo_verify_failed', 'microsoft/vscode'))
-    // 抛 InvokeI18nError：message 已翻译，且携带原始错误 key 与参数供调用方分支判断
-    const err = (await invokeI18n('some_command').catch(e => e)) as InvokeI18nError
+    await expect(invokeI18nFn(fn)).rejects.toThrow(t('err.repo_verify_failed', 'microsoft/vscode'))
+    const err = (await invokeI18nFn(fn).catch(e => e)) as InvokeI18nError
     expect(err).toBeInstanceOf(InvokeI18nError)
     expect(err.key).toBe('err.repo_verify_failed')
     expect(err.args).toEqual(['microsoft/vscode'])
@@ -103,15 +93,15 @@ describe('invokeI18n', () => {
   })
 
   it('Error 无 err. 前缀时仅去前缀，不翻译', async () => {
-    vi.mocked(invoke).mockRejectedValue(new Error('Error: network timeout'))
+    const fn = vi.fn().mockRejectedValue(new Error('Error: network timeout'))
 
-    await expect(invokeI18n('some_command')).rejects.toThrow('network timeout')
+    await expect(invokeI18nFn(fn)).rejects.toThrow('network timeout')
   })
 
   it('非 Error 抛出值转换为 Error', async () => {
-    vi.mocked(invoke).mockRejectedValue('raw string')
+    const fn = vi.fn().mockRejectedValue('raw string')
 
-    await expect(invokeI18n('some_command')).rejects.toThrow('raw string')
+    await expect(invokeI18nFn(fn)).rejects.toThrow('raw string')
   })
 })
 

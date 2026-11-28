@@ -11,7 +11,7 @@
 // - 时序无冲突：useEscapeToTray 是 document 捕获期监听，hasActiveOverlay() 命中
 //   后直接 return 不最小化；本监听（冒泡期）随后关菜单。
 // - Esc 关菜单后焦点回归触发按钮（对齐 useDropdown 的焦点管理习惯）。
-import { computed, onUnmounted, ref, watch, type Ref } from 'vue'
+import { computed, onScopeDispose, ref, watch, type Ref } from 'vue'
 import { registerOverlayActive } from '../../composables/contextMenuBus'
 
 export interface AnchoredMenuOptions {
@@ -63,7 +63,7 @@ export function useAnchoredMenu(options: AnchoredMenuOptions) {
     else document.removeEventListener('keydown', handleDocumentKeydown)
   })
 
-  onUnmounted(() => {
+  onScopeDispose(() => {
     document.removeEventListener('keydown', handleDocumentKeydown)
     unregisterOverlay()
   })

@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, mount, type VueWrapper } from '@vue/test-utils'
-import { defineComponent, nextTick, ref, type Ref } from 'vue'
+import { defineComponent, nextTick, ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
-import { ShowImportanceKey, AutoReadDetailKey } from '../injection-keys'
+import { useSettingsStore } from '../stores/settings'
 import type { ReleaseInfo } from '../api/releases'
 import { setNotificationState } from '../api/releases'
 import type { AutoReadDetailMode } from '../utils'
@@ -976,33 +976,31 @@ describe('ReleaseTab 旗标与版本类型过滤', () => {
 // ── 显示重要度开关 ───────────────────────────────────────────────
 
 describe('ReleaseTab 显示重要度开关', () => {
-  function mountWithImportance(visible: Ref<boolean>) {
+  function mountWithImportance(visible: boolean) {
+    useSettingsStore().settings.show_importance = visible
     return mount(ReleaseTab, {
       props: { releases },
-      global: {
-        stubs,
-        provide: { [ShowImportanceKey as symbol]: visible },
-      },
+      global: { stubs },
     })
   }
 
   it('关闭开关只停用过滤，不清掉已选的重要度筛选（开关恢复后重新生效）', async () => {
-    const importanceVisible = ref(true)
-    const wrapper = mountWithImportance(importanceVisible)
+    const settingsStore = useSettingsStore()
+    const wrapper = mountWithImportance(true)
     const bar = wrapper.findComponent({ name: 'ReleaseSearchBarStub' })
     await bar.vm.$emit('update:importanceFilter', '大')
     await nextTick()
     expect(bar.props('importanceFilter')).toBe('大')
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(true)
 
-    importanceVisible.value = false
+    settingsStore.settings.show_importance = false
     await nextTick()
     // 值保留（否则持久化后等于永久丢掉用户的选择），只是不再参与过滤
     expect(bar.props('importanceFilter')).toBe('大')
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(false)
     expect(JSON.parse(localStorage.getItem('relwatch.release.view')!).importanceFilter).toBe('大')
 
-    importanceVisible.value = true
+    settingsStore.settings.show_importance = true
     await nextTick()
     expect(wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).props('isFiltering')).toBe(true)
   })
@@ -1169,9 +1167,10 @@ describe('ReleaseTab 打开详情自动标为已读', () => {
   const setNotificationStateMock = vi.mocked(setNotificationState)
 
   function mountWithAutoRead(mode: AutoReadDetailMode) {
+    useSettingsStore().settings.auto_read_detail = mode
     return mount(ReleaseTab, {
       props: { releases },
-      global: { stubs, provide: { [AutoReadDetailKey as symbol]: ref(mode) } },
+      global: { stubs },
     })
   }
 
@@ -1233,9 +1232,10 @@ describe('ReleaseTab 打开详情自动标为已读', () => {
 
   it('已忽略的条目打开时不被改写成已读', async () => {
     const ignored = [{ ...releases[0], notification_status: 'ignored' as const }]
+    useSettingsStore().settings.auto_read_detail = 'open'
     const wrapper = mount(ReleaseTab, {
       props: { releases: ignored },
-      global: { stubs, provide: { [AutoReadDetailKey as symbol]: ref<AutoReadDetailMode>('open') } },
+      global: { stubs },
     })
     await wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).vm.$emit('openDetail', ignored[0], ignored)
     await flushAsync()
@@ -1244,9 +1244,10 @@ describe('ReleaseTab 打开详情自动标为已读', () => {
   })
 
   async function openSingle(release: ReleaseInfo, mode: AutoReadDetailMode) {
+    useSettingsStore().settings.auto_read_detail = mode
     const wrapper = mount(ReleaseTab, {
       props: { releases: [release] },
-      global: { stubs, provide: { [AutoReadDetailKey as symbol]: ref(mode) } },
+      global: { stubs },
     })
     await wrapper.findComponent({ name: 'ReleaseSimpleListStub' }).vm.$emit('openDetail', release, [release])
     await flushAsync()

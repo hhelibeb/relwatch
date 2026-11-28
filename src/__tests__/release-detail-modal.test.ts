@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { nextTick, reactive, ref } from 'vue'
+import { nextTick, reactive } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
 import ReleaseDetailModal from '../components/ReleaseDetailModal.vue'
 import MarkdownContent from '../components/common/MarkdownContent.vue'
-import { ShowImportanceKey, AiEnabledKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { useSettingsStore } from '../stores/settings'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import { openReleaseUrl, copyImageToClipboard, copyTextToClipboard } from '../api/client'
 import { translateRelease, setNotificationState } from '../api/releases'
 import { events } from '../bindings'
@@ -72,10 +74,28 @@ function mountModal(body: string | null = BODY_WITH_LINK_AND_IMAGE) {
   })
 }
 
-function mountModalWithRelease(release: ReleaseInfo, provide: Record<symbol, unknown> = {}) {
+interface ModalStoreOverrides {
+  showImportance?: boolean
+  aiEnabled?: boolean
+  agentEnabled?: boolean
+  openAgentWorkspace?: ReturnType<typeof vi.fn>
+}
+
+function mountModalWithRelease(release: ReleaseInfo, overrides: ModalStoreOverrides = {}) {
+  const settingsStore = useSettingsStore()
+  if (overrides.showImportance !== undefined) settingsStore.settings.show_importance = overrides.showImportance
+  if (overrides.aiEnabled !== undefined) {
+    settingsStore.settings.deepseek_enabled = overrides.aiEnabled
+    settingsStore.settings.deepseek_api_key_set = overrides.aiEnabled
+  }
+  if (overrides.agentEnabled !== undefined) {
+    useCatalogStore().agentConfig = { enabled: overrides.agentEnabled } as never
+  }
+  if (overrides.openAgentWorkspace) {
+    useAgentStore().bindPanelHandlers({ open: overrides.openAgentWorkspace as never, toggle: vi.fn() })
+  }
   return mount(ReleaseDetailModal, {
     props: { release, position: 1, total: 1, hasPrev: false, hasNext: false },
-    global: { provide },
   })
 }
 
@@ -104,13 +124,13 @@ describe('ReleaseDetailModal — 显示重要度开关', () => {
     const release = { ...makeRelease(null), ai_importance: '大' }
 
     // modal 经 Teleport 渲染到 body，断言走 document.body
-    const on = mountModalWithRelease(release, { [ShowImportanceKey as symbol]: ref(true) })
+    const on = mountModalWithRelease(release, { showImportance: true })
     await nextTick()
     expect(document.body.querySelectorAll('.release-importance-chip').length).toBe(1)
     on.unmount()
     expect(document.body.querySelector('.release-importance-chip')).toBeNull()
 
-    const off = mountModalWithRelease(release, { [ShowImportanceKey as symbol]: ref(false) })
+    const off = mountModalWithRelease(release, { showImportance: false })
     await nextTick()
     expect(document.body.querySelector('.release-importance-chip')).toBeNull()
     off.unmount()
@@ -306,7 +326,7 @@ describe('ReleaseDetailModal — 流式翻译', () => {
   }
 
   function mountWithAi(release: ReleaseInfo) {
-    return mountModalWithRelease(release, { [AiEnabledKey as symbol]: ref(true) })
+    return mountModalWithRelease(release, { aiEnabled: true })
   }
 
   function actionButton(label: string): HTMLButtonElement | undefined {
@@ -833,8 +853,8 @@ describe('ReleaseDetailModal — 状态操作组', () => {
   it('Agent 启用时点击「发送到 Agent」唤起工作区、预置当前版本引用并关窗', async () => {
     const openAgentWorkspace = vi.fn()
     const wrapper = mountModalWithRelease(unreadRelease(), {
-      [AgentEnabledKey as symbol]: ref(true),
-      [AgentWorkspaceKey as symbol]: openAgentWorkspace,
+      agentEnabled: true,
+      openAgentWorkspace,
     })
 
     actionButton(t('agent.send_to'))!.click()

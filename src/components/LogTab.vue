@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
-import { message, confirm } from '@tauri-apps/plugin-dialog'
 import { type LogEntry, searchLogs, clearLogs } from '../api/logs'
 import { t, tm } from '../i18n'
 import { translateError } from '../api/client'
 import { formatDate, logLevelClass } from '../utils'
 import { useDropdown } from '../composables/useDropdown'
 import { track } from '../composables/useUsageTracking'
+import { confirmAction, extractErrorMessage } from '../services/feedback'
+import { useUiStore } from '../stores/ui'
 import EmptyState from './common/EmptyState.vue'
 import ErrorBlock from './common/ErrorBlock.vue'
 import SkeletonList from './common/SkeletonList.vue'
 
 const props = defineProps<{ refreshKey: number }>()
 const emit = defineEmits<{ update: [] }>()
+const ui = useUiStore()
 
 const logs = ref<LogEntry[]>([])
 const totalLogs = ref(0)
@@ -57,7 +59,7 @@ async function loadData() {
     if (id === loadId) {
       logs.value = []
       totalLogs.value = 0
-      error.value = t('app.load_failed', e instanceof Error ? e.message : String(e))
+      error.value = t('app.load_failed', extractErrorMessage(e))
     }
   } finally {
     // 仅最新调用负责复位 loading，避免被陈旧响应提前清除
@@ -131,7 +133,7 @@ function renderMessage(entry: LogEntry): string {
 }
 
 async function handleClearLogs() {
-  const confirmed = await confirm(t('log.clear_confirm'), { title: t('log.clear'), kind: 'warning' })
+  const confirmed = await confirmAction(t('log.clear_confirm'), { title: t('log.clear'), kind: 'warning' })
   if (!confirmed) return
   track('log.clear')
   try {
@@ -140,7 +142,7 @@ async function handleClearLogs() {
     await loadData()
     emit('update')
   } catch (e: unknown) {
-    await message(t('log.clear_failed') + (e instanceof Error ? e.message : String(e)), { title: t('settings.error'), kind: 'error' })
+    ui.showToast(t('log.clear_failed') + extractErrorMessage(e))
   }
 }
 

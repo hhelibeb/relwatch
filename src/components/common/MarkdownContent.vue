@@ -65,14 +65,16 @@ function parseAndSanitize(content: string): string {
 </script>
 
 <script setup lang="ts">
-import { computed, ref, inject, watch, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import hljs from 'highlight.js/lib/common'
 import { copyTextToClipboard } from '../../api/client'
-import { ShowToastKey } from '../../injection-keys'
+import { useUiStore } from '../../stores/ui'
+import { extractErrorMessage } from '../../services/feedback'
 import { t } from '../../i18n'
 
 const props = defineProps<{ content: string | null; noCache?: boolean }>()
-const showToast = inject(ShowToastKey, () => {})
+const ui = useUiStore()
+const showToast = (msg: string) => ui.showToast(msg)
 
 const html = computed(() => {
   if (!props.content) return ''
@@ -133,7 +135,7 @@ async function handleCopyCode(code: HTMLElement, btn: HTMLButtonElement) {
     }, 1600)
     copyTimers.add(timer)
   } catch (e: unknown) {
-    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    showToast(t('release.copy_failed') + extractErrorMessage(e))
   }
 }
 

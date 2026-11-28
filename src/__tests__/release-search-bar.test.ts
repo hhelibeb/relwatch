@@ -1,24 +1,37 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, shallowMount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
-import { ref } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
 import ReleaseSearchBar from '../components/ReleaseSearchBar.vue'
 import ReleaseItem from '../components/ReleaseItem.vue'
-import { ShowImportanceKey, AgentEnabledKey, AgentWorkspaceKey } from '../injection-keys'
+import { useSettingsStore } from '../stores/settings'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import { t } from '../i18n'
 import { createRelease } from './helpers'
 import type { ReleaseInfo } from '../api/releases'
 
-/**
- * ReleaseSearchBar.vue 行为测试（真实 i18n 字典，不 mock）
- *
- * 组件为受控模式：状态由 props 传入、通过 emit 传出。
- * 末尾附 ReleaseTab 集成（ReleaseSearchBar 实例化契约）。
- */
-// 需要断言「显示重要度」行为的用例显式注入开关（组件缺省为关闭，见 ShowImportanceKey 注释）
-const withImportanceShown = { [ShowImportanceKey as symbol]: ref(true) }
+interface StoreOverrides {
+  showImportance?: boolean
+  agentEnabled?: boolean
+  openAgentWorkspace?: ReturnType<typeof vi.fn>
+}
 
-function createWrapper(props: Record<string, unknown> = {}, provideOverrides: Record<symbol, unknown> = {}) {
+const withImportanceShown: StoreOverrides = { showImportance: true }
+
+function applyStoreOverrides(overrides: StoreOverrides = {}) {
+  if (overrides.showImportance !== undefined) {
+    useSettingsStore().settings.show_importance = overrides.showImportance
+  }
+  if (overrides.agentEnabled !== undefined) {
+    useCatalogStore().agentConfig = { enabled: overrides.agentEnabled } as never
+  }
+  if (overrides.openAgentWorkspace) {
+    useAgentStore().bindPanelHandlers({ open: overrides.openAgentWorkspace as never, toggle: vi.fn() })
+  }
+}
+
+function createWrapper(props: Record<string, unknown> = {}, overrides: StoreOverrides = {}) {
+  applyStoreOverrides(overrides)
   return mount(ReleaseSearchBar, {
     props: {
       modelValue: '',
@@ -30,7 +43,6 @@ function createWrapper(props: Record<string, unknown> = {}, provideOverrides: Re
       versionFilter: 'all',
       ...props,
     },
-    global: { provide: provideOverrides },
   })
 }
 
@@ -518,11 +530,11 @@ async function setReleaseTabProps(wrapper: ReturnType<typeof createReleaseTabWra
   await wrapper.setProps(props as Parameters<typeof wrapper.setProps>[0])
 }
 
-function createReleaseTabWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTestProps> = {}, provideOverrides: Record<symbol, unknown> = {}) {
+function createReleaseTabWrapper(releases: ReleaseInfo[] = [], props: Partial<ReleaseTabTestProps> = {}, overrides: StoreOverrides = {}) {
+  applyStoreOverrides(overrides)
   return shallowMount(ReleaseTab, {
     props: { releases, ...props },
     global: {
-      provide: provideOverrides,
       stubs: {
         ReleaseSimpleList: false,
         ReleaseAggregatedList: false,
@@ -981,7 +993,7 @@ describe('ReleaseSearchBar — 激活筛选 chips', () => {
 // ============ 深度搜索能力边界标注 ============
 
 describe('ReleaseSearchBar — 深度搜索能力边界', () => {
-  const agentOn = { [AgentEnabledKey as symbol]: ref(true) }
+  const agentOn: StoreOverrides = { agentEnabled: true }
 
   it('未越界时不显示提示', () => {
     const wrapper = createWrapper({ deepSearch: true, bodyTruncated: false })
@@ -1005,7 +1017,7 @@ describe('ReleaseSearchBar — 深度搜索能力边界', () => {
   it('Agent 关闭时不追加 Agent 提示', () => {
     const wrapper = createWrapper(
       { deepSearch: true, bodyTruncated: true },
-      { [AgentEnabledKey as symbol]: ref(false) },
+      { agentEnabled: false },
     )
 
     expect(wrapper.find('.deep-search-limit-action').exists()).toBe(false)
@@ -1015,7 +1027,7 @@ describe('ReleaseSearchBar — 深度搜索能力边界', () => {
     const openAgentWorkspace = vi.fn()
     const wrapper = createWrapper(
       { deepSearch: true, bodyTruncated: true },
-      { ...agentOn, [AgentWorkspaceKey as symbol]: openAgentWorkspace },
+      { ...agentOn, openAgentWorkspace },
     )
 
     const action = wrapper.find('.deep-search-limit-action')
@@ -1027,21 +1039,8 @@ describe('ReleaseSearchBar — 深度搜索能力边界', () => {
 })
 
 describe('ReleaseSearchBar — 显示重要度开关', () => {
-  // App provide ShowImportanceKey=false（设置默认值）：漏斗面板不含重要度分组，chips 不显示重要度
   function mountWithoutImportance(props: Record<string, unknown> = {}) {
-    return mount(ReleaseSearchBar, {
-      props: {
-        modelValue: '',
-        statusFilter: 'all',
-        importanceFilter: 'all',
-        sourceFilter: 'all',
-        viewMode: 'simple',
-        flagFilter: 'all',
-        versionFilter: 'all',
-        ...props,
-      },
-      global: { provide: { [ShowImportanceKey as symbol]: ref(false) } },
-    })
+    return createWrapper(props, { showImportance: false })
   }
 
   it('关闭时漏斗面板不含重要度分组（4 组）', async () => {
@@ -1060,5 +1059,23 @@ describe('ReleaseSearchBar — 显示重要度开关', () => {
     const chips = wrapper.findAll('.filter-chip')
     expect(chips).toHaveLength(1)
     expect(chips[0].text()).toContain(t('release.filter_unread'))
+  })
+})
+
+describe('ReleaseSearchBar — 未读计数口径', () => {
+  it('未到期的 snoozed 记录不计入未读数，已到期的计入', async () => {
+    const future = new Date(Date.now() + 3600_000).toISOString()
+    const past = new Date(Date.now() - 3600_000).toISOString()
+    const wrapper = createWrapper({
+      releases: [
+        createRelease({ id: 1, notification_status: 'pending' }),
+        createRelease({ id: 2, notification_status: 'snoozed', snooze_until: future }),
+        createRelease({ id: 3, notification_status: 'snoozed', snooze_until: past }),
+      ],
+    })
+    const statusField = wrapper.findAll('.filter-field')[2]
+    await statusField.find('.filter-trigger').trigger('click')
+    const unreadBtn = statusField.findAll('.filter-dropdown button')[1]
+    expect(unreadBtn.text()).toBe(`${t('release.filter_unread')} (2)`)
   })
 })

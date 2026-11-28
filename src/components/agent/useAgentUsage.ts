@@ -11,11 +11,16 @@ import { formatCostUsd, formatTokenCount } from './agentChatUtils'
 
 export function useAgentUsage(activeKey: Ref<string>) {
   const usage = ref<AgentSessionUsage | null>(null)
+  let usageEpoch = 0
 
-  async function loadUsage() {
+  async function loadUsage(key: string = activeKey.value) {
+    const epoch = ++usageEpoch
     try {
-      usage.value = await getAgentSessionUsage(activeKey.value)
+      const next = await getAgentSessionUsage(key)
+      if (epoch !== usageEpoch || key !== activeKey.value) return
+      usage.value = next
     } catch {
+      if (epoch !== usageEpoch || key !== activeKey.value) return
       usage.value = null
     }
   }

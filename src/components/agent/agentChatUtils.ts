@@ -3,8 +3,9 @@
 // 依赖 i18n 文案的函数（runErrorText / runModelLabel / runDurationText）以 `t`
 // 为参注入（调用点传入），不直接 import i18n 实例——保持模块纯函数性质与单测便利。
 import type { AgentChatBlock, AgentChatMessage, AgentModelRef, AgentRunSummary } from '../../bindings'
-import type { AgentEntityRefSeed } from '../../injection-keys'
+import type { AgentEntityRefSeed } from '../../types/agent'
 import { InvokeI18nError } from '../../api/client'
+import { extractErrorMessage } from '../../services/feedback'
 
 /** i18n 翻译函数形状（与 src/i18n 的 t 一致，注入以解耦全局 locale 状态）。 */
 export type TranslateFn = (key: string, ...args: string[]) => string
@@ -197,6 +198,6 @@ export function formatTokenCount(count: number): string {
  *  InvokeI18nError 直接带 key；其余情况仅当原文就是未翻译的 err.* 键时返回。 */
 export function errorKey(e: unknown): string | null {
   if (e instanceof InvokeI18nError) return e.key
-  const raw = (e instanceof Error ? e.message : String(e)).replace(/^Error:\s*/, '')
+  const raw = extractErrorMessage(e)
   return raw.startsWith('err.') ? raw.split('|')[0] : null
 }

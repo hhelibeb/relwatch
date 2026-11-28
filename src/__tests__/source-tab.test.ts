@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SourceTab from '../components/SourceTab.vue'
-import { ShowToastKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
 import { t } from '../i18n'
 import { createSource, type TestSource } from './helpers'
 import { message, confirm } from '@tauri-apps/plugin-dialog'
@@ -51,7 +51,7 @@ function mountSourceTab(
     loadError?: string
   } = {},
 ) {
-  const showToast = vi.fn()
+  const showToast = vi.spyOn(useUiStore(), 'showToast')
   const wrapper = mount(SourceTab, {
     props: {
       sources,
@@ -63,9 +63,6 @@ function mountSourceTab(
       loadError: opts.loadError ?? '',
     },
     global: {
-      provide: {
-        [ShowToastKey as symbol]: showToast,
-      },
       stubs: { ContextMenu: true },
     },
   })
@@ -149,7 +146,7 @@ describe('SourceTab — 添加 Source', () => {
   })
 
   it('YouTube 源视频直播均未勾选时阻止添加并提示', async () => {
-    const { wrapper } = mountSourceTab([])
+    const { wrapper, showToast } = mountSourceTab([])
     const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
@@ -163,11 +160,11 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(addSourceMock).not.toHaveBeenCalled()
-    expect(messageMock).toHaveBeenCalledWith(t('source.require_subscribe'), expect.any(Object))
+    expect(showToast).toHaveBeenCalledWith(t('source.require_subscribe'))
   })
 
-  it('输入无效 URL 时，显示错误对话框而不调用 addSource', async () => {
-    const { wrapper } = mountSourceTab([])
+  it('输入无效 URL 时，显示错误提示而不调用 addSource', async () => {
+    const { wrapper, showToast } = mountSourceTab([])
     const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
@@ -176,7 +173,7 @@ describe('SourceTab — 添加 Source', () => {
     await flushPromises()
 
     expect(addSourceMock).not.toHaveBeenCalled()
-    expect(messageMock).toHaveBeenCalledWith(t('source.invalid_url'), expect.any(Object))
+    expect(showToast).toHaveBeenCalledWith(t('source.invalid_url'))
   })
 
   it('输入已存在的 source 时，显示 toast 提示', async () => {
@@ -207,9 +204,9 @@ describe('SourceTab — 添加 Source', () => {
     expect(showToast).toHaveBeenCalledWith(t('source.exists'))
   })
 
-  it('addSource 抛出错误时，显示错误对话框（含错误详情）', async () => {
+  it('addSource 抛出错误时，显示错误提示（含错误详情）', async () => {
     addSourceMock.mockRejectedValue(new Error('Network error'))
-    const { wrapper } = mountSourceTab([])
+    const { wrapper, showToast } = mountSourceTab([])
     const input = addInput(wrapper)
     const addButton = wrapper.get('.btn-add-source')
 
@@ -217,10 +214,7 @@ describe('SourceTab — 添加 Source', () => {
     await addButton.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('Network error'),
-      expect.any(Object)
-    )
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Network error'))
   })
 
   it('添加成功后，emit update', async () => {
@@ -288,10 +282,10 @@ describe('SourceTab — 删除单个 Source', () => {
     expect(wrapper.emitted('update')).toBeTruthy()
   })
 
-  it('removeSource 抛出错误时，显示错误对话框', async () => {
+  it('removeSource 抛出错误时，显示错误提示', async () => {
     removeSourceMock.mockRejectedValue(new Error('Delete failed'))
     const source = createSource({ id: 5 })
-    const { wrapper } = mountSourceTab([source])
+    const { wrapper, showToast } = mountSourceTab([source])
 
     const moreButton = wrapper.get('.btn-more')
     await moreButton.trigger('click')
@@ -300,10 +294,7 @@ describe('SourceTab — 删除单个 Source', () => {
     await deleteButton.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('Delete failed'),
-      expect.any(Object)
-    )
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Delete failed'))
   })
 })
 
@@ -333,19 +324,16 @@ describe('SourceTab — 启用/禁用 Source', () => {
     expect(updateSourceMock).toHaveBeenCalledWith(3, true, 60)
   })
 
-  it('updateSource 抛出错误时，显示错误对话框', async () => {
+  it('updateSource 抛出错误时，显示错误提示', async () => {
     updateSourceMock.mockRejectedValue(new Error('Update failed'))
     const source = createSource({ id: 3, enabled: true })
-    const { wrapper } = mountSourceTab([source])
+    const { wrapper, showToast } = mountSourceTab([source])
 
     const pauseButton = wrapper.get('.btn-pause')
     await pauseButton.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('Update failed'),
-      expect.any(Object)
-    )
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Update failed'))
   })
 })
 
@@ -441,7 +429,6 @@ describe('SourceTab — 检查单个 Source 更新', () => {
         showSourceTypeIcons: true,
       },
       global: {
-        provide: { [ShowToastKey as symbol]: vi.fn() },
         stubs: { ContextMenu: true },
       },
     })
@@ -450,19 +437,16 @@ describe('SourceTab — 检查单个 Source 更新', () => {
     expect(checkButton.attributes('disabled')).toBeDefined()
   })
 
-  it('checkSingleSource 抛出错误时，显示错误对话框', async () => {
+  it('checkSingleSource 抛出错误时，显示错误提示', async () => {
     checkSingleSourceMock.mockRejectedValue(new Error('Check failed'))
     const source = createSource({ id: 11 })
-    const { wrapper } = mountSourceTab([source])
+    const { wrapper, showToast } = mountSourceTab([source])
 
     const checkButton = wrapper.get('.btn-check')
     await checkButton.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('Check failed'),
-      expect.any(Object)
-    )
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('Check failed'))
   })
 
   it('正在检查其他 source 时，所有检查按钮禁用', async () => {
@@ -882,11 +866,11 @@ describe('SourceTab — Tooltip', () => {
     await healthDot.trigger('mouseenter', { clientX: 100, clientY: 100 })
     await flushPromises()
 
-    expect(wrapper.find('.source-health-tooltip').exists()).toBe(true)
-    const tooltip = wrapper.get('.source-health-tooltip')
-    expect(tooltip.text()).toContain(t('source.tooltip_status'))
-    expect(tooltip.text()).toContain(t('source.tooltip_history'))
-    expect(tooltip.text()).toContain(t('source.tooltip_about'))
+    const tooltip = document.body.querySelector('.source-health-tooltip')
+    expect(tooltip).not.toBeNull()
+    expect(tooltip!.textContent).toContain(t('source.tooltip_status'))
+    expect(tooltip!.textContent).toContain(t('source.tooltip_history'))
+    expect(tooltip!.textContent).toContain(t('source.tooltip_about'))
   })
 
   it('鼠标离开健康图标时隐藏 tooltip', async () => {
@@ -895,10 +879,10 @@ describe('SourceTab — Tooltip', () => {
 
     const healthDot = wrapper.get('.health-dot')
     await healthDot.trigger('mouseenter', { clientX: 100, clientY: 100 })
-    expect(wrapper.find('.source-health-tooltip').exists()).toBe(true)
+    expect(document.body.querySelector('.source-health-tooltip')).not.toBeNull()
 
     await healthDot.trigger('mouseleave')
-    expect(wrapper.find('.source-health-tooltip').exists()).toBe(false)
+    expect(document.body.querySelector('.source-health-tooltip')).toBeNull()
   })
 
   it('disabled source 的 tooltip 显示暂停状态', async () => {
@@ -909,8 +893,9 @@ describe('SourceTab — Tooltip', () => {
     await healthDot.trigger('mouseenter', { clientX: 100, clientY: 100 })
     await flushPromises()
 
-    const tooltip = wrapper.get('.source-health-tooltip')
-    expect(tooltip.text()).toContain(t('source.health_paused'))
+    const tooltip = document.body.querySelector('.source-health-tooltip')
+    expect(tooltip).not.toBeNull()
+    expect(tooltip!.textContent).toContain(t('source.health_paused'))
   })
 
   it('无 totalReleaseCounts 时 tooltip 不显示历史版本信息', async () => {
@@ -923,8 +908,9 @@ describe('SourceTab — Tooltip', () => {
     await healthDot.trigger('mouseenter', { clientX: 100, clientY: 100 })
     await flushPromises()
 
-    const tooltip = wrapper.get('.source-health-tooltip')
-    expect(tooltip.text()).not.toContain(t('source.tooltip_history'))
+    const tooltip = document.body.querySelector('.source-health-tooltip')
+    expect(tooltip).not.toBeNull()
+    expect(tooltip!.textContent).not.toContain(t('source.tooltip_history'))
   })
 })
 
@@ -1322,12 +1308,12 @@ describe('SourceTab — 源设置', () => {
 
   it('保存失败时弹出错误提示', async () => {
     updateSourceMock.mockRejectedValueOnce(new Error('boom'))
-    const { wrapper } = mountSourceTab([createSource()])
+    const { wrapper, showToast } = mountSourceTab([createSource()])
     const panel = await openMore(wrapper)
 
     await panel.findAll('select')[0].setValue('off')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalled()
+    expect(showToast).toHaveBeenCalled()
   })
 })

@@ -1,10 +1,11 @@
 import { ref, watch, onScopeDispose } from 'vue'
-import { events } from '../bindings'
+import { subscribeTranslateChunk } from '../api/event-bridge'
 import { translateRelease, type ReleaseInfo } from '../api/releases'
+import { extractErrorMessage } from '../services/feedback'
 import { t } from '../i18n'
 import { track } from './useUsageTracking'
 
-/** 流式分片合帧窗口（ms）：与 Agent 工作区同口径（见 useAgentChat 的 RPC_FLUSH_MS）。
+/** 流式分片合帧窗口（ms）：与 Agent 工作区同口径（见 agentRpcStream.ts 的 RPC_FLUSH_MS）。
  *  逐分片渲染会让主线程饱和（每片一次全量 Markdown 重解析 + 组件重渲染），
  *  定窗合并把渲染次数从分片频率降到 ≤20 次/秒。 */
 const STREAM_FLUSH_MS = 50
@@ -72,9 +73,9 @@ export function useReleaseTranslate(opts: {
     pending = []
     const id = opts.release().id
     streamId = id
-    const off = await events.releaseTranslateChunk.listen((e) => {
-      if (streamId === null || e.payload.release_id !== streamId) return
-      handleChunk(e.payload.delta)
+    const off = await subscribeTranslateChunk((payload) => {
+      if (streamId === null || payload.release_id !== streamId) return
+      handleChunk(payload.delta)
     })
     // 注册是异步的：await 期间可能已经收尾（组件卸载、切到别的版本），此时没人会
     // 再来退订这个监听器，只能当场退掉
@@ -123,7 +124,7 @@ export function useReleaseTranslate(opts: {
       // 先收尾再回调：onError 要能看到完整的部分文本（调用方据此决定是否回退视图）
       stopStream()
       translating.value = false
-      opts.showToast?.(t('release.translate_failed') + (e instanceof Error ? e.message : String(e)))
+      opts.showToast?.(t('release.translate_failed') + extractErrorMessage(e))
       opts.onError?.()
     }
   }

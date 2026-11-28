@@ -1,7 +1,5 @@
-<!-- 最近 run 状态横幅 + 配置推迟生效提示 + 运行历史面板。
-     状态由编排层的 useAgentChat（latestRun/queueHint/runs）与 useAgentRpc
-     （rpcRestartPending）持有，本组件纯 props/emit 展示。 -->
 <script setup lang="ts">
+import { storeToRefs } from 'pinia'
 import { t } from '../../i18n'
 import {
   runErrorText,
@@ -11,86 +9,72 @@ import {
   runStatusLabel,
 } from './agentChatUtils'
 import type { AgentRunSummary } from '../../api/agent'
+import { useAgentStore } from '../../stores/agent'
+import AppIcon from '../ui/AppIcon.vue'
 
-defineProps<{
-  latestRun: AgentRunSummary | undefined
-  queueHint: string | null
-  queueOccupiedBy: string | null
-  /** 占用会话标题（跳转入口的文案）：由编排层用 sessionTitleOf 算好传入 */
-  queueOccupiedByTitle: string
-  sessionTitle: string
-  historyOpen: boolean
-  actionsExpanded: boolean
-  runs: AgentRunSummary[]
-  rpcRestartPending: boolean
-  /** 占用会话跳转、打开/复制会话入口等需要完整 run 信息的回调 */
-  switchSession: (key: string) => void
-  openSession: (run: AgentRunSummary) => void
-  copySessionCommand: (run: AgentRunSummary) => void
-  retry: (run: AgentRunSummary) => void
-}>()
-
-const emit = defineEmits<{
-  'update:historyOpen': [value: boolean]
-  'update:actionsExpanded': [value: boolean]
-}>()
+const agent = useAgentStore()
+const {
+  latestRun,
+  queueHint,
+  queueOccupiedBy,
+  queueOccupiedByTitle,
+  sessionTitle,
+  historyOpen,
+  actionsExpanded,
+  runs,
+  rpcRestartPending,
+} = storeToRefs(agent)
 
 function runEntityCount(run: AgentRunSummary): number {
   return runEntities(run).length
 }
 
-/** 终态判定（success / failed / timeout / cancelled）：历史面板仅对终态 run 展示「重试」。 */
 function isTerminalRun(run: AgentRunSummary): boolean {
   return run.status !== 'pending' && run.status !== 'running'
 }
 </script>
 
 <template>
-  <!-- 最近 run 状态横幅 -->
   <div v-if="latestRun" class="agent-ws-banner" :class="`status-${latestRun.status}`">
     <span class="agent-ws-banner-status">{{ runStatusLabel(latestRun.status, t) }}</span>
-    <!-- 排队提示：被其他会话占用时可点击 → 一键跳到占用会话（在那里点「停止」让路） -->
     <span
       v-if="latestRun.status === 'pending' && queueHint"
       class="agent-ws-banner-queue"
       :class="{ clickable: !!queueOccupiedBy }"
       :title="queueHint"
-      @click="queueOccupiedBy && switchSession(queueOccupiedBy)"
+      @click="queueOccupiedBy && agent.switchSession(queueOccupiedBy)"
     >{{ queueOccupiedBy ? t('agent.queue_occupied_by', queueOccupiedByTitle) : queueHint }}</span>
     <span v-if="runErrorText(latestRun, t)" class="agent-ws-banner-error" :title="runErrorText(latestRun, t) ?? ''">{{ runErrorText(latestRun, t) }}</span>
     <span class="agent-ws-banner-text">{{ latestRun.instruction || sessionTitle }}</span>
     <span v-if="latestRun.status === 'running' || latestRun.status === 'pending'" class="agent-ws-banner-spinner" aria-hidden="true"></span>
     <span class="agent-ws-banner-actions">
-      <button class="btn-sm" :class="{ active: historyOpen }" :title="t('agent.run_history_title')" @click="emit('update:historyOpen', !historyOpen)">
+      <button class="btn-sm" :class="{ active: historyOpen }" :title="t('agent.run_history_title')" @click="historyOpen = !historyOpen">
         {{ t('agent.run_history_title') }}
       </button>
       <template v-if="latestRun.session_path">
         <template v-if="actionsExpanded">
-          <button class="btn-sm" :title="t('agent.open_session')" @click="openSession(latestRun)">{{ t('agent.open_session') }}</button>
-          <button class="btn-sm" :title="t('agent.copy_command_hint')" @click="copySessionCommand(latestRun)">{{ t('agent.copy_command') }}</button>
+          <button class="btn-sm" :title="t('agent.open_session')" @click="agent.handleOpenSession(latestRun)">{{ t('agent.open_session') }}</button>
+          <button class="btn-sm" :title="t('agent.copy_command_hint')" @click="agent.handleCopySessionCommand(latestRun)">{{ t('agent.copy_command') }}</button>
         </template>
         <button
           class="btn-sm agent-ws-banner-toggle"
           :title="actionsExpanded ? t('agent.collapse_actions') : t('agent.expand_actions')"
-          @click="emit('update:actionsExpanded', !actionsExpanded)"
+          @click="actionsExpanded = !actionsExpanded"
         >{{ actionsExpanded ? '>>' : '<<' }}</button>
       </template>
     </span>
   </div>
 
-  <!-- 配置推迟生效提示：改了 pi 路径/模型/skill 后有 run 在跑，
-       重启被推迟到当前任务结束——不提示的话用户会以为改了没生效 -->
   <div v-if="rpcRestartPending" class="agent-ws-pending-restart">
     <span class="agent-ws-pending-restart-icon" aria-hidden="true"></span>
     <span class="agent-ws-pending-restart-text">{{ t('agent.config_pending_restart') }}</span>
   </div>
 
-  <!-- 运行历史面板（浮层）：耗时 / 模型 / 状态 / 引用实体 -->
   <div v-if="historyOpen" class="agent-ws-history">
     <div class="agent-ws-history-head">
       <span class="agent-ws-history-title">{{ t('agent.run_history_title') }}</span>
-      <button class="agent-ws-history-close" :title="t('release.detail_close')" @click="emit('update:historyOpen', false)">
-        <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+      <button class="agent-ws-history-close" :title="t('release.detail_close')" @click="historyOpen = false">
+        <AppIcon name="close-icon" :size="12" />
       </button>
     </div>
     <ul class="agent-ws-history-list">
@@ -104,7 +88,7 @@ function isTerminalRun(run: AgentRunSummary): boolean {
           </span>
         </span>
         <span class="agent-ws-history-actions">
-          <button v-if="isTerminalRun(r)" class="btn-sm" :title="t('agent.retry')" @click="retry(r)">{{ t('agent.retry') }}</button>
+          <button v-if="isTerminalRun(r)" class="btn-sm" :title="t('agent.retry')" @click="agent.handleRetry(r)">{{ t('agent.retry') }}</button>
         </span>
       </li>
       <li v-if="runs.length === 0" class="agent-ws-history-empty">{{ t('agent.run_history_empty') }}</li>

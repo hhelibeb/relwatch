@@ -1,0 +1,113 @@
+.settings-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 2px 0 24px;
+  background: transparent;
+}
+
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.setting-label {
+  font-size: var(--fs-body);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.setting-label[data-dirty]::after {
+  content: '●';
+  color: var(--warning);
+  font-size: var(--fs-caption);
+  margin-left: 2px;
+}
+
+.label-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+}
+
+.setting-input {
+  padding: 8px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: var(--fs-body);
+  outline: none;
+  transition: border-color var(--dur-state) var(--ease-out), box-shadow var(--dur-state) var(--ease-out);
+}
+
+.setting-input:focus {
+  border-color: var(--primary);
+  box-shadow: var(--focus-ring);
+}
+
+.setting-input-narrow {
+  width: 14ch;
+}
+
+.setting-select {
+  width: max-content;
+  min-width: calc(14ch * 1.25);
+  max-width: 100%;
+}
+
+.setting-note {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.setting-link {
+  font-size: var(--fs-meta);
+  color: var(--primary);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.setting-link:hover {
+  text-decoration: underline;
+}
+
+.setting-row-checkbox {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+.setting-section-title {
+  font-size: var(--fs-title);
+  font-weight: 600;
+  margin: 0;
+}
+
+.setting-section-desc {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  margin: 4px 0 12px;
+  line-height: 1.5;
+}
+
+.setting-hint {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  line-height: 1.5;
+  flex-basis: 100%;
+  width: 100%;
+  margin-left: 0;
+  margin-top: -2px;
+}

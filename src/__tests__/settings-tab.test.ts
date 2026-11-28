@@ -1,7 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
+import { defineComponent } from 'vue'
+import { storeToRefs } from 'pinia'
 import SettingsTab from '../components/SettingsTab.vue'
-import { ShowToastKey } from '../injection-keys'
+import { useSettingsStore } from '../stores/settings'
 import type { AppSettings } from '../api/settings'
 import {
   updateSettings,
@@ -16,13 +18,17 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   confirm: vi.fn(),
 }))
 
-vi.mock('../api/settings', () => ({
-  updateSettings: vi.fn().mockResolvedValue(undefined),
-  setCredential: vi.fn().mockResolvedValue(undefined),
-  testDeepseekConnection: vi.fn().mockResolvedValue('ok'),
-  exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
-  importBackup: vi.fn().mockResolvedValue(undefined),
-}))
+vi.mock('../api/settings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/settings')>()
+  return {
+    ...actual,
+    updateSettings: vi.fn().mockResolvedValue(undefined),
+    setCredential: vi.fn().mockResolvedValue(undefined),
+    testDeepseekConnection: vi.fn().mockResolvedValue('ok'),
+    exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
+    importBackup: vi.fn().mockResolvedValue(undefined),
+  }
+})
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
@@ -70,11 +76,6 @@ function createSettings(overrides: Partial<AppSettings> = {}): AppSettings {
 function mountSettings(settings: AppSettings = createSettings()) {
   return mount(SettingsTab, {
     props: { settings },
-    global: {
-      provide: {
-        [ShowToastKey as symbol]: vi.fn(),
-      },
-    },
   })
 }
 
@@ -256,5 +257,57 @@ describe('SettingsTab — 保存原子性（P0 #2）', () => {
     const settingsOrder = vi.mocked(updateSettings).mock.invocationCallOrder[0]
     const credOrder = vi.mocked(setCredential).mock.invocationCallOrder[0]
     expect(settingsOrder).toBeLessThan(credOrder)
+  })
+
+  it('主设置保存成功后若凭据写入失败，不回滚已落盘的主题且仍 emit update 同步轮询间隔', async () => {
+    const wrapper = mountSettings(createSettings({ theme: 'light', poll_interval_minutes: 15 }))
+
+    await wrapper.get('input[type="number"]').setValue(30)
+    await clickSidebar(wrapper, 'settings.appearance')
+    const themeSelect = wrapper.findAll('.theme-select')[1]
+    await themeSelect.get('.theme-select-trigger').trigger('click')
+    const darkOption = themeSelect.findAll('.theme-select-option').find(option => option.text() === t('settings.theme_dark'))
+    await darkOption!.trigger('click')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+
+    await clickSidebar(wrapper, 'settings.ai')
+    const apiKeyInput = wrapper.find('input[type="password"]')
+    await apiKeyInput.setValue('sk-bad')
+    setCredentialMock.mockRejectedValueOnce(new Error('keyring denied'))
+
+    await wrapper.get('.setting-actions .btn-primary').trigger('click')
+    await flushPromises()
+
+    expect(updateSettingsMock).toHaveBeenCalledOnce()
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(wrapper.emitted('update')?.[0]).toEqual([true])
+    expect((apiKeyInput.element as HTMLInputElement).value).toBe('sk-bad')
+  })
+
+  it('父组件透传 settingsStore.settings 时不会触发无限递归更新', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const Host = defineComponent({
+        components: { SettingsTab },
+        setup() {
+          const settingsStore = useSettingsStore()
+          const { settings } = storeToRefs(settingsStore)
+          return { settings, settingsStore }
+        },
+        template: '<SettingsTab :settings="settings" />',
+      })
+
+      const wrapper = mount(Host)
+      await flushPromises()
+
+      wrapper.vm.settingsStore.setSettings(createSettings({ poll_interval_minutes: 45 }))
+      await flushPromises()
+
+      expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('Maximum recursive updates exceeded'))
+      expect((wrapper.get('input[type="number"]').element as HTMLInputElement).value).toBe('45')
+      wrapper.unmount()
+    } finally {
+      warnSpy.mockRestore()
+    }
   })
 })

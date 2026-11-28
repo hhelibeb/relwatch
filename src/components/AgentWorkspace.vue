@@ -1,31 +1,17 @@
 <script setup lang="ts">
-import { ref, reactive, computed, inject, onMounted, onUnmounted, nextTick, watch, type ComponentPublicInstance } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { events } from '../bindings'
-import { AppCatalogKey, ShowToastKey, type AgentWorkspaceSeed, type AgentEntityRefSeed } from '../injection-keys'
-import {
-  AGENT_TIMEOUT_MAX,
-  AGENT_TIMEOUT_MIN,
-  getAgentConfig,
-  getAgentAvailableModels,
-  openAgentSession,
-  getAgentSessionCommand,
-  saveAgentConfig,
-  type AgentQueueItem,
-  type AgentRunSummary,
-} from '../api/agent'
-import { listSources, type Source } from '../api/sources'
-import { getReleaseCatalog, type ReleaseInfo } from '../api/releases'
-import { copyTextToClipboard } from '../api/client'
+import { isEventBridgeMounted } from '../api/event-bridge'
+import type { AgentWorkspaceSeed } from '../types/agent'
 import { t } from '../i18n'
-import { useAgentUsage } from './agent/useAgentUsage'
-import { useAgentRpc } from './agent/useAgentRpc'
-import { useAgentModels } from './agent/useAgentModels'
-import { useAgentComposer } from './agent/useAgentComposer'
-import { useAgentSessions } from './agent/useAgentSessions'
-import { useAgentChat } from './agent/useAgentChat'
+import { useUiStore } from '../stores/ui'
+import { useCatalogStore } from '../stores/catalog'
+import { useAgentStore } from '../stores/agent'
 import { useAgentFind } from './agent/useAgentFind'
 import { useAgentDrop } from './agent/useAgentDrop'
+import AppIcon from './ui/AppIcon.vue'
 import AgentRpcIndicator from './agent/AgentRpcIndicator.vue'
 import AgentSessionSidebar from './agent/AgentSessionSidebar.vue'
 import AgentRunBanner from './agent/AgentRunBanner.vue'
@@ -35,281 +21,26 @@ import FindBar from './common/FindBar.vue'
 
 const props = defineProps<{ seed?: AgentWorkspaceSeed | null; width?: number }>()
 const emit = defineEmits<{ close: [] }>()
-const showToast = inject(ShowToastKey, () => {})
-// 面板宽度：默认 440；App.vue 传入的是壳布局算出的当前面板宽（视口 − 主界面 − 分隔线）
-const panelWidth = computed(() => props.width ?? 440)
 
-// ── 数据源：全局 skill 列表 + 实体目录（优先复用 AppCatalogKey，单组件测试回退本地）────
-const sharedCatalog = inject(AppCatalogKey, null)
-const skills = ref<string[]>([])
-const sources = sharedCatalog ? sharedCatalog.sources : ref<Source[]>([])
-const releases = sharedCatalog ? sharedCatalog.releases : ref<ReleaseInfo[]>([])
-const catalogReady = ref<{ source: boolean; release: boolean }>(
-  sharedCatalog
-    ? { source: sharedCatalog.sourcesLoaded.value, release: sharedCatalog.releasesLoaded.value }
-    : { source: false, release: false },
-)
-if (sharedCatalog) {
-  watch([sharedCatalog.sourcesLoaded, sharedCatalog.releasesLoaded], ([source, release]) => {
-    catalogReady.value = { source, release }
-  })
-}
+const ui = useUiStore()
+const catalog = useCatalogStore()
+const agent = useAgentStore()
 
-// ── 全局队列（侧栏状态点 / 横幅「被谁占用」共用）：编排层持有、useAgentChat 写入 ──
-const queueActive = ref<AgentQueueItem[]>([])
-
-// ── 引用与输入区：草稿/引用/菜单/chip 反馈由其持有 ──
 const {
-  instruction,
-  entities,
-  skillPath,
-  files,
-  textareaRef,
-  showSkillMenu,
-  showEntityMenu,
-  skillMenuIndex,
-  entityMenuIndex,
-  flashKey,
-  attachAnnouncement,
-  chipTooltip,
-  filteredSkills,
-  filteredSources,
-  filteredReleases,
-  filteredSourcesCount,
-  filteredReleasesCount,
-  entityMenuHasMatch,
-  handleInput: parseComposerInput,
-  handleAttachFiles,
-  removeFile,
-  fileDisplayName,
-  addEntity,
-  afterAttach,
-  removeEntity,
-  entityLabel,
-  entityKindLabel,
-  handleChipEnter,
-  handleChipMove,
-  hideChipTooltip,
-  sourceDisplayName,
-  releaseDisplayName,
-  pickSkill,
-  clearSkill,
-  pickEntity,
-  resetForSessionSwitch: resetComposerForSessionSwitch,
-  focus: focusComposer,
-  focusAtEnd,
-  closeMenus,
-} = useAgentComposer({ showToast, skills, sources, releases })
-
-// textarea 渲染在 AgentComposer 内：经函数 ref 回填 composable 的元素 ref
-// （focus() 等经 textareaRef 读写光标；键盘导航的菜单索引在编排层持有，经 emit 回写）
-function setTextareaEl(el: Element | ComponentPublicInstance | null) {
-  textareaRef.value = el as HTMLTextAreaElement | null
-}
-
-
-// ── 会话管理：索引/发现/重命名/⋯菜单/删除/清理/搜索/侧栏折叠 ──
-const {
-  sessions,
   activeKey,
-  sessionTitle,
-  sessionQuery,
   sidebarOpen,
-  toggleSidebar,
-  discoverSessions,
-  switchTo,
-  registerNew,
-  currentMeta,
-  renamingKey,
-  renameInput,
-  startRename,
-  commitRename,
-  cancelRename,
-  setRenameEl,
-  openMenuKey,
-  setSessionMoreEl,
-  sessionMenuStyle,
-  toggleSessionMenu,
-  onSessionListScroll,
-  handleDeleteFromMenu,
-  handleExportSession,
-  updateModel,
-  persistSessionMeta,
-  handleClearSessions,
-  visibleSessions,
-  sessionTitleOf,
-  resetForSessionSwitch: resetSessionsForSessionSwitch,
-} = useAgentSessions({
-  showToast,
-  queueActive,
-  // 删除活跃会话后的清空：不清 files/oneShotModel/modelOnce——删除会话后
-  // 草稿/附件保留是现状行为；聊天核心的 delete mode 不动，仅 loadChat 换新会话内容。
-  // 闭包引用下方 useAgentChat 解构的 loadChat（异步回调执行时已初始化）。
-  onActiveDeleted: async () => {
-    resetComposerForSessionSwitch('delete')
-    resetModelsForSessionSwitch(
-      'delete',
-      sessions.value.find((s) => s.key === activeKey.value)?.model ?? null,
-    )
-    await loadChat()
-  },
-})
-
-// ── 会话上下文水位 ──
-const { usage, loadUsage, usageText, usageEstimated, usageHint } = useAgentUsage(activeKey)
-
-// ── 模型选择：会话级落库经回调转调会话管理，不互相 import ──
-const {
-  availableModels,
-  currentModel,
-  selectedModel,
-  oneShotModel,
-  modelOnce,
-  effectiveModel,
-  showModelMenu,
-  modelMenuIndex,
-  modelLabel,
-  isModelSelected,
-  activeModelLabel,
-  modelDefaultSub,
-  toggleModelMenu,
-  pickModel,
-  toggleModelOnce,
-  resetForSessionSwitch: resetModelsForSessionSwitch,
-} = useAgentModels({
-  onPersistModel: (model) => updateModel(activeKey.value, model),
-  // 模型菜单打开时收起引用菜单（同屏互斥）
-  onMenuOpen: () => {
-    showSkillMenu.value = false
-    showEntityMenu.value = false
-  },
-})
-
-// ── pi 进程健康：指示灯 + 状态菜单 + 重启 ──
-const {
-  rpcStatus,
-  rpcRestarting,
-  rpcMenuOpen,
-  rpcDotEl,
-  rpcMenuStyle,
-  loadRpcStatus,
-  toggleRpcMenu,
-  rpcRestartPending,
-  handleRestartRpc,
-} = useAgentRpc({
-  showToast,
-  // rpc 菜单打开时收起输入区各菜单（同屏互斥）
-  onMenuOpen: () => {
-    showModelMenu.value = false
-    showSkillMenu.value = false
-    showEntityMenu.value = false
-  },
-})
-// 灯按钮渲染在 AgentRpcIndicator 内：经函数 ref 回填 composable 的锚点 ref
-function setRpcDotEl(el: Element | ComponentPublicInstance | null) {
-  rpcDotEl.value = el as HTMLElement | null
-}
-// ── 聊天核心：历史/流式合帧/轮询/滚动 + 提交/停止/重试 ──
-// composer / models 的草稿与模型 ref、usage 句柄经入参注入；
-// sessionTitle / persistSessionMeta 引用上方 sessions 解构变量。
-const {
-  messages,
-  messagesLoading,
-  submitting,
-  runs,
   scrollRef,
-  cancelling,
-  liveMessages,
   displayedMessages,
-  isLiveMessage,
-  latestRun,
-  canStop,
-  queueOccupiedBy,
-  queueHint,
   messageDecorations,
-  loadChat,
-  handleRpcStream,
-  handleSubmit,
-  handleCancel,
-  onRunFinished,
-  runFailedNote,
-  handleRetry,
-  handleRetryEdit,
-  resetForSessionSwitch: resetChatForSessionSwitch,
-} = useAgentChat({
-  activeKey,
-  showToast,
-  instruction,
-  entities,
-  skillPath,
-  files,
-  focusAtEnd,
-  effectiveModel,
-  selectedModel,
-  oneShotModel,
-  modelOnce,
-  usage,
-  loadUsage,
-  sessionTitle,
-  persistSessionMeta,
-  showSkillMenu,
-  showEntityMenu,
-  loadRpcStatus,
   sources,
   releases,
-  catalogReady,
-  queueActive,
-})
+  liveMessages,
+  submitting,
+} = storeToRefs(agent)
 
-// 滚动容器元素回填（scrollRef 为 useAgentChat 持有的同一 ref）
-function setChatScrollEl(el: Element | ComponentPublicInstance | null) {
-  scrollRef.value = el as HTMLElement | null
-}
-
-/** 输入触发（textarea @input）：先收起模型菜单，再解析 @/[[ 触发词。 */
-function handleInput() {
-  showModelMenu.value = false
-  parseComposerInput()
-}
-
-// ── 会话切换组合（编排层接线：逐项调用各 composable 的清空接口）──
-function switchSession(key: string) {
-  if (key === activeKey.value) return
-  // 不中止原会话的 run：各会话在各自进程里独立执行（并发上限内并行、超出则排队），
-  // pending 取消只插标记不碰进程；切回会话时由 loadChat 从 runs 推导恢复停止按钮
-  // ——各会话独立启停，互不误杀。
-  switchTo(key)
-  // chat：只停轮询（各会话状态分片存放，切走即不可见、切回还在，无需清）
-  resetChatForSessionSwitch('switch')
-  // 模型选择按目标会话的持久化记录还原（无记录 = 跟随默认模型）
-  resetModelsForSessionSwitch(
-    'switch',
-    sessions.value.find((s) => s.key === key)?.model ?? null,
-  )
-  void loadChat()
-  // composer：引用/指令清空 + 附件清空（「这一轮的输入」不跟着用户漂移到另一会话）
-  resetComposerForSessionSwitch('switch')
-  // sessions：重命名/⋯菜单收起
-  resetSessionsForSessionSwitch('switch')
-}
-
-function startNewSession() {
-  // 当前已是未提交草稿且无内容 → 不重复新建
-  const cur = currentMeta()
-  if (cur?.draft && messages.value.length === 0 && runs.value.length === 0) return
-  // 新建即登记：立即写入索引并持久化，未提交的会话也可见、可恢复
-  registerNew()
-  resetComposerForSessionSwitch('new')
-  resetModelsForSessionSwitch('new', null)
-  resetSessionsForSessionSwitch('new')
-  // chat：立即清 messages/runs + 流式/提交态复位（new 不停轮询）
-  resetChatForSessionSwitch('new')
-  void loadChat()
-  nextTick(() => focusComposer())
-}
-
-
+const panelWidth = computed(() => props.width ?? 440)
 const rootEl = ref<HTMLElement | null>(null)
+
 const {
   findScopeInside,
   findOpen,
@@ -333,421 +64,6 @@ const {
   isStreaming: () => liveMessages.value.length > 0 || submitting.value,
 })
 
-// ── 运行历史面板（耗时 / 模型 / 状态 / 引用实体）──
-const historyOpen = ref(false)
-
-// ── 超时引导（行动建议 + 就地调时长）──
-const timeoutSecs = ref(300)
-const adjustingTimeout = ref(false)
-const timeoutInput = ref('')
-
-function startAdjustTimeout() {
-  adjustingTimeout.value = true
-  timeoutInput.value = String(timeoutSecs.value)
-}
-
-async function saveTimeout() {
-  const v = Number(timeoutInput.value)
-  if (!Number.isInteger(v) || v < AGENT_TIMEOUT_MIN || v > AGENT_TIMEOUT_MAX) {
-    showToast(t('agent.timeout_range'))
-    return
-  }
-  try {
-    const cfg = await getAgentConfig()
-    cfg.timeout_seconds = v
-    await saveAgentConfig(cfg)
-    if (sharedCatalog) void sharedCatalog.loadAgentConfig()
-    timeoutSecs.value = v
-    adjustingTimeout.value = false
-    showToast(t('agent.timeout_saved', String(v)))
-  } catch (e) {
-    showToast(String(e))
-  }
-}
-
-
-// 横幅快捷操作（在 Agent 中打开 / 复制命令）折叠状态：默认折叠节省空间，点击 << 展开、>> 收起
-const actionsExpanded = ref(false)
-
-let unlistenRunFinished: UnlistenFn | undefined
-let unlistenRpcStream: UnlistenFn | undefined
-let unlistenReleaseState: UnlistenFn | undefined
-
-/** 目录刷新合帧窗口（ms）：与 App.vue 的 releases 刷新同口径。
- *  release-state-changed 在批量操作（连点已读/忽略/删除）时会连续到达，
- *  不合帧就是每事件一次 200 行全量查询。 */
-const CATALOG_REFRESH_FRAME_MS = 50
-let catalogRefreshTimer: ReturnType<typeof setTimeout> | null = null
-
-/**
- * 拉取实体目录（监控源 + 版本）并写入名称映射。
- *
- * 两个请求各自结算（allSettled 而非 all）：任一失败若整体抛出，sources/releases
- * 双双保持原值——首次加载时就是双空，整个面板生命周期内所有 chip 都退化成 `#id`。
- */
-async function refreshEntityCatalog() {
-  if (sharedCatalog) {
-    await Promise.allSettled([sharedCatalog.loadSources(), sharedCatalog.loadReleases()])
-    return
-  }
-  const [srcs, rels] = await Promise.allSettled([listSources(), getReleaseCatalog()])
-  if (srcs.status === 'fulfilled') {
-    sources.value = srcs.value
-    catalogReady.value.source = true
-  }
-  if (rels.status === 'fulfilled') {
-    releases.value = rels.value
-    catalogReady.value.release = true
-  }
-}
-
-/** 合帧刷新实体目录（release-state-changed / 拖入未知实体时调用）。 */
-function scheduleCatalogRefresh() {
-  if (sharedCatalog) {
-    sharedCatalog.scheduleRefreshCatalog()
-    return
-  }
-  if (catalogRefreshTimer !== null) return
-  catalogRefreshTimer = setTimeout(() => {
-    catalogRefreshTimer = null
-    void refreshEntityCatalog()
-  }, CATALOG_REFRESH_FRAME_MS)
-}
-
-function ensureEntityKnown(entity: AgentEntityRefSeed) {
-  const known =
-    entity.kind === 'source'
-      ? sources.value.some((s) => s.id === entity.id)
-      : releases.value.some((r) => r.id === entity.id)
-  if (!known) scheduleCatalogRefresh()
-}
-
-if (sharedCatalog) {
-  watch(sharedCatalog.agentConfig, (cfg) => {
-    if (!cfg) return
-    skills.value = cfg.skills
-    timeoutSecs.value = cfg.timeout_seconds
-  }, { immediate: true })
-}
-
-async function loadCatalog() {
-  if (!sharedCatalog?.agentConfig.value) {
-    try {
-      const cfg = await getAgentConfig()
-      skills.value = cfg.skills
-      timeoutSecs.value = cfg.timeout_seconds
-    } catch {
-      // 配置读取失败不阻塞工作区使用（技能菜单为空，超时保持默认值）
-    }
-  }
-  if (!sharedCatalog || !sharedCatalog.sourcesLoaded.value || !sharedCatalog.releasesLoaded.value) {
-    await refreshEntityCatalog()
-  }
-  await loadModels()
-}
-
-async function loadModels() {
-  try {
-    const info = await getAgentAvailableModels()
-    availableModels.value = info.models
-    currentModel.value = info.current
-  } catch {
-    availableModels.value = []
-    currentModel.value = null
-  } finally {
-    // 模型枚举会惰性拉起常驻 pi 进程（Agent 启用时），它与挂载时的 loadRpcStatus
-    // 并发，后者可能先于进程就绪返回 false，灯便停在过时的灰色快照上，直到用户
-    // 点灯才变绿——观感像「点击把进程点出来了」。枚举结束后补查一次，
-    // 让灯与实际进程状态一致（查询本身惰性，不额外拉起进程）
-    void loadRpcStatus()
-  }
-}
-
-
-// ── 运行操作（终端恢复）──
-async function handleOpenSession(run: AgentRunSummary) {
-  if (!run.session_path) return
-  try {
-    await openAgentSession(run.id)
-  } catch (e) {
-    showToast(String(e))
-  }
-}
-
-async function handleCopySessionCommand(run: AgentRunSummary) {
-  if (!run.session_path) return
-  try {
-    const cmd = await getAgentSessionCommand(run.id)
-    await copyTextToClipboard(cmd)
-    showToast(t('agent.command_copied'))
-  } catch (e) {
-    showToast(String(e))
-  }
-}
-
-/** 点菜单及其触发控件之外任意区域 → 收起当前打开的菜单（下拉菜单通用行为）。 */
-function onDocumentPointerDown(e: MouseEvent | PointerEvent) {
-  // 通过捕获期触发，确保在菜单项 @click 之前执行；点中的若是菜单或触发控件本身，
-  // 交由其自身逻辑（切换/选择）处理，其余一律收起。
-  const t = e.target as EventTarget | null
-  if (!(t instanceof Element)) return
-  if (t.closest('.agent-ws-menu')) return
-  if (t.closest('.agent-ws-model-btn')) return // 模型菜单的触发按钮，交给 toggleModelMenu
-  if (t.closest('.agent-ws-session-menu')) return // 会话 ⋯ 菜单
-  if (t.closest('.agent-ws-session-more')) return // 会话 ⋯ 触发按钮，交给 toggleSessionMenu
-  if (t.closest('.agent-ws-rpc-wrap')) return // pi 状态菜单及其触发灯，交给 toggleRpcMenu
-  // 点输入框：技能/实体菜单跟随输入（显隐由输入框自身事件管理），保持不动；
-  // 但与输入无关的模型菜单 / pi 状态菜单 / 会话菜单仍应收起
-  const inTextarea = t.closest('.agent-ws-textarea') !== null
-  if (showModelMenu.value) showModelMenu.value = false
-  // composer.closeMenus(excludeTextarea)：点输入框不收 skill/entity 菜单的豁免语义
-  closeMenus(inTextarea)
-  // pi 状态菜单：点空白即收起
-  if (rpcMenuOpen.value) rpcMenuOpen.value = false
-  // 会话菜单：点空白即收起（重命名输入框有自己的 Enter/Esc，不走这里）
-  if (openMenuKey.value && !t.closest('.agent-ws-rename-input')) openMenuKey.value = null
-}
-
-
-// ── 子组件接线（props/emits 面较宽，对象展开收敛模板宽度）──
-// reactive 自动解包内部 ref/computed，与逐个 :prop 传值等价
-// AgentRunBanner：状态横幅 + 推迟生效提示 + 历史面板
-const runBannerProps = reactive({
-  latestRun,
-  queueHint,
-  queueOccupiedBy,
-  queueOccupiedByTitle: computed(() => (queueOccupiedBy.value ? sessionTitleOf(queueOccupiedBy.value) : '')),
-  sessionTitle,
-  runs,
-  rpcRestartPending,
-  switchSession,
-  openSession: handleOpenSession,
-  copySessionCommand: handleCopySessionCommand,
-  retry: handleRetry,
-})
-const runBannerHandlers = {
-  'update:historyOpen': (v: boolean) => (historyOpen.value = v),
-  'update:actionsExpanded': (v: boolean) => (actionsExpanded.value = v),
-}
-
-// AgentSessionSidebar：会话侧栏展示 + ⋯菜单（Teleport 在子组件内）
-const sidebarProps = reactive({
-  sidebarOpen,
-  sessions,
-  visibleSessions,
-  activeKey,
-  renamingKey,
-  openMenuKey,
-  sessionMenuStyle,
-  setRenameEl,
-  setSessionMoreEl,
-})
-const sidebarHandlers = {
-  switch: switchSession,
-  scrollList: onSessionListScroll,
-  commitRename,
-  cancelRename,
-  toggleMenu: toggleSessionMenu,
-  exportSession: handleExportSession,
-  rename: startRename,
-  deleteFromMenu: handleDeleteFromMenu,
-  clearSessions: handleClearSessions,
-}
-
-// AgentMessageList：消息区展示 + 超时引导
-const messageListProps = reactive({
-  messagesLoading,
-  liveCount: computed(() => liveMessages.value.length),
-  displayedMessages,
-  messageDecorations,
-  isLiveMessage,
-  entityKindLabel,
-  entityLabel,
-  handleChipEnter,
-  handleChipMove,
-  hideChipTooltip,
-  runFailedNote,
-  retry: handleRetry,
-  retryEdit: handleRetryEdit,
-  adjustingTimeout,
-  timeoutInput,
-})
-const messageListHandlers = {
-  'update:adjustingTimeout': (v: boolean) => (adjustingTimeout.value = v),
-  'update:timeoutInput': (v: string) => (timeoutInput.value = v),
-  startAdjustTimeout,
-  saveTimeout,
-  cancelAdjustTimeout: () => (adjustingTimeout.value = false),
-}
-
-// AgentComposer：输入区展示 + 三个菜单 + 水位条
-const composerProps = reactive({
-  setTextareaEl,
-  entities,
-  files,
-  skillPath,
-  flashKey,
-  attachAnnouncement,
-  skills,
-  showSkillMenu,
-  showEntityMenu,
-  skillMenuIndex,
-  entityMenuIndex,
-  filteredSkills,
-  filteredSources,
-  filteredReleases,
-  filteredSourcesCount,
-  filteredReleasesCount,
-  entityMenuHasMatch,
-  showModelMenu,
-  availableModels,
-  effectiveModel,
-  modelOnce,
-  activeModelLabel,
-  modelDefaultSub,
-  submitting,
-  canStop,
-  cancelling,
-  usageText,
-  usageEstimated,
-  usageHint,
-  usage,
-  chipTooltip,
-  modelLabel,
-  isModelSelected,
-  entityLabel,
-  entityKindLabel,
-  fileDisplayName,
-  sourceDisplayName,
-  releaseDisplayName,
-  handleChipEnter,
-  handleChipMove,
-  hideChipTooltip,
-})
-const composerHandlers = {
-  'skill-hover': (i: number) => (skillMenuIndex.value = i),
-  'entity-hover': (i: number) => (entityMenuIndex.value = i),
-  'model-hover': (i: number) => (modelMenuIndex.value = i),
-  submit: () => handleSubmit(),
-  cancel: () => handleCancel(),
-  input: handleInput,
-  keydown: handleKeydown,
-  attachFiles: handleAttachFiles,
-  removeEntity,
-  removeFile,
-  clearSkill,
-  pickSkill,
-  pickEntity,
-  toggleModelMenu,
-  pickModel,
-  toggleModelOnce,
-}
-
-// ── 键盘统一入口 ──
-// 菜单打开时：按键先交给菜单（Enter/Tab 选择项、Escape 关闭），一律不触发提交；
-// 无菜单时：无修饰键 Enter 提交。避免「选菜单项的同时消息被自动发出」。
-function handleKeydown(e: KeyboardEvent) {
-  // 输入法组合期（中文候选词确认回车）不触发提交/菜单导航
-  if (e.isComposing) return
-  if (showSkillMenu.value || showEntityMenu.value || showModelMenu.value) {
-    handleMenuKeydown(e)
-    return
-  }
-  if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
-    e.preventDefault()
-    // 运行中/排队中/提交中：按钮已变为「停止」或禁用，Enter 若继续提交会与按钮
-    // 语义矛盾（显式「停止」与隐式「排队新 run」并存）。与按钮一致：禁止提交并提示。
-    if (canStop.value || submitting.value) {
-      showToast(t('agent.enter_while_running'))
-      return
-    }
-    void handleSubmit()
-  }
-}
-
-// ── 菜单键盘导航 ──
-function handleMenuKeydown(e: KeyboardEvent) {
-  if (showModelMenu.value) {
-    const total = 1 + availableModels.value.length
-    if (total > 1) {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault()
-        modelMenuIndex.value = (modelMenuIndex.value + 1) % total
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault()
-        modelMenuIndex.value = (modelMenuIndex.value - 1 + total) % total
-      } else if (e.key === 'Enter' || e.key === 'Tab') {
-        e.preventDefault()
-        if (modelMenuIndex.value === 0) {
-          pickModel(null)
-        } else {
-          const m = availableModels.value[modelMenuIndex.value - 1]
-          if (m) pickModel(m)
-        }
-      } else if (e.key === 'Escape') {
-        e.preventDefault()
-        showModelMenu.value = false
-      }
-    }
-    return
-  }
-  if (showSkillMenu.value) {
-    const total = filteredSkills.value.length
-    if (total === 0) return
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      skillMenuIndex.value = (skillMenuIndex.value + 1) % total
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      skillMenuIndex.value = (skillMenuIndex.value - 1 + total) % total
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault()
-      const s = filteredSkills.value[skillMenuIndex.value]
-      if (s) pickSkill(s)
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      showSkillMenu.value = false
-    }
-    return
-  }
-  if (showEntityMenu.value) {
-    const total = filteredSourcesCount.value + filteredReleasesCount.value
-    if (total === 0) return
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      entityMenuIndex.value = (entityMenuIndex.value + 1) % total
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      entityMenuIndex.value = (entityMenuIndex.value - 1 + total) % total
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault()
-      const i = entityMenuIndex.value
-      const s = filteredSources.value.length
-      if (i < s) {
-        const src = filteredSources.value[i]
-        pickEntity('source', src.id)
-      } else {
-        const rel = filteredReleases.value[i - s]
-        if (rel) pickEntity('release', rel.id)
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      showEntityMenu.value = false
-    }
-  }
-}
-
-// ── 预置实体（右键「发送到 Agent」入口携带）：打开时写入 chips ──
-function applySeed() {
-  if (!props.seed?.entities?.length) return
-  for (const e of props.seed.entities) {
-    // 面板刚挂载时目录还在路上（loadCatalog 未返回），这里顺手校验一次：
-    // 目录里没有就补拉，避免预置引用停在 `#id` 上
-    ensureEntityKnown(e)
-    addEntity(e)
-  }
-}
-
 const {
   dragOver,
   headerDropOver,
@@ -760,56 +76,65 @@ const {
 } = useAgentDrop({
   findScopeInside,
   onAttachEntity: (entity) => {
-    ensureEntityKnown(entity)
-    afterAttach(entity, addEntity(entity))
+    agent.ensureEntityKnown(entity)
+    agent.afterAttach(entity, agent.addEntity(entity))
   },
-  onStartNewSession: startNewSession,
+  onStartNewSession: agent.startNewSession,
 })
 
+const fallbackUnlisteners: UnlistenFn[] = []
+let wsDisposed = false
+
 onMounted(async () => {
-  applySeed()
-  await Promise.all([loadCatalog(), loadChat(), loadRpcStatus()])
-  const recovered = await discoverSessions()
-  if (recovered > 0) showToast(t('agent.sessions_recovered', String(recovered)))
-  unlistenRunFinished = await events.agentRunFinished.listen((e) => {
-    void onRunFinished(e.payload.session_key)
-  })
-  unlistenRpcStream = await events.agentRpcStream.listen((e) => {
-    handleRpcStream(e.payload)
-  })
-  if (!sharedCatalog) {
-    unlistenReleaseState = await events.releaseStateChanged.listen(() => {
-      scheduleCatalogRefresh()
-    })
+  agent.mountWorkspaceRuntime()
+  agent.applySeed(props.seed)
+  await Promise.all([agent.loadCatalog(), agent.loadChat(), agent.loadRpcStatus()])
+  if (wsDisposed) return
+  const recovered = await agent.discoverSessions()
+  if (wsDisposed) return
+  if (recovered > 0) ui.showToast(t('agent.sessions_recovered', String(recovered)))
+
+  if (!isEventBridgeMounted()) {
+    const offs = await Promise.all([
+      events.agentRunFinished.listen((e) => {
+        void agent.onRunFinished(e.payload.session_key)
+      }),
+      events.agentRpcStream.listen((e) => {
+        agent.handleRpcStream(e.payload)
+      }),
+      events.releaseStateChanged.listen(() => {
+        catalog.scheduleRefreshCatalog()
+      }),
+    ])
+    if (wsDisposed) {
+      for (const off of offs) off()
+      return
+    }
+    fallbackUnlisteners.push(...offs)
   }
+
   await nextTick()
-  focusComposer()
-  document.addEventListener('pointerdown', onDocumentPointerDown, true)
+  if (wsDisposed) return
+  agent.focusComposer()
+  document.addEventListener('pointerdown', agent.handleDocumentPointerDown, true)
 })
 
 watch(
   () => props.seed,
-  () => applySeed(),
+  (seed) => agent.applySeed(seed),
 )
 
 onUnmounted(() => {
-  unlistenRunFinished?.()
-  unlistenRpcStream?.()
-  unlistenReleaseState?.()
-  if (catalogRefreshTimer !== null) {
-    clearTimeout(catalogRefreshTimer)
-    catalogRefreshTimer = null
-  }
-  document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+  wsDisposed = true
+  for (const off of fallbackUnlisteners) off()
+  fallbackUnlisteners.length = 0
+  agent.cleanupWorkspaceRuntime()
+  document.removeEventListener('pointerdown', agent.handleDocumentPointerDown, true)
 })
-
 </script>
 
 <template>
   <div ref="rootEl" class="agent-ws" :style="{ flexBasis: panelWidth + 'px' }">
-    <!-- 头部标题栏：拖入 = 新建会话并放入引用。
-         注意 @dragover / @drop **不加 .prevent 修饰符**——是否拦截由处理器内部
-         按拖拽类型决定（非实体拖拽放行给原生，见 onHeaderDragOver / handleDropNewSession）。 -->
     <header
       class="agent-ws-header"
       :class="{ 'drop-over': headerDropOver }"
@@ -823,18 +148,8 @@ onUnmounted(() => {
         <span>{{ t('agent.workspace_title') }}</span>
       </div>
       <div class="agent-ws-header-actions">
-        <!-- pi 常驻进程健康指示：点灯弹状态菜单（状态详情 + 重启入口）。
-             状态/菜单逻辑在 useAgentRpc（编排层持有），展示在本子组件。 -->
-        <AgentRpcIndicator
-          :rpc-status="rpcStatus"
-          :rpc-restarting="rpcRestarting"
-          :rpc-menu-open="rpcMenuOpen"
-          :rpc-menu-style="rpcMenuStyle"
-          :set-dot-el="setRpcDotEl"
-          @toggle-menu="toggleRpcMenu"
-          @restart="handleRestartRpc"
-        />
-        <button class="btn-sm" :title="t('agent.session_new')" @click="startNewSession">
+        <AgentRpcIndicator />
+        <button class="btn-sm" :title="t('agent.session_new')" @click="agent.startNewSession()">
           <svg class="agent-ws-btn-icon"><use href="/icons.svg#plus-icon" /></svg>
           <span class="agent-ws-btn-label">{{ t('agent.session_new') }}</span>
         </button>
@@ -847,21 +162,17 @@ onUnmounted(() => {
         >
           <svg class="agent-ws-btn-icon"><use href="/icons.svg#search-icon" /></svg>
         </button>
-        <button class="btn-sm agent-ws-sessions-btn" :class="{ active: sidebarOpen }" :title="t('agent.session_list')" @click="toggleSidebar">
+        <button class="btn-sm agent-ws-sessions-btn" :class="{ active: sidebarOpen }" :title="t('agent.session_list')" @click="agent.toggleSidebar()">
           <svg class="agent-ws-btn-icon"><use href="/icons.svg#list-icon" /></svg>
           <span class="agent-ws-btn-label">{{ t('agent.session_list') }}</span>
         </button>
         <button class="agent-ws-close" :title="t('release.detail_close')" @click="emit('close')">
-          <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+          <AppIcon name="close-icon" :size="13" />
         </button>
       </div>
-      <!-- 拖拽悬停提示：虚线框 + 目的说明 -->
       <div v-if="headerDropOver" class="agent-ws-drop-hint agent-ws-drop-hint-header">{{ t('agent.drop_new_session') }}</div>
     </header>
 
-    <!-- 工作区主体：拖入 = 添加到当前会话。
-         同样不加 .prevent：非实体拖拽（如选中的对话文本）必须放行，
-         否则输入框自身的原生「拖入即插入」会被取消（回归）。 -->
     <div
       class="agent-ws-main"
       :class="{ 'drag-over': dragOver }"
@@ -869,11 +180,8 @@ onUnmounted(() => {
       @dragleave="onDragLeave"
       @drop="handleDrop"
     >
-      <!-- 拖拽悬停提示：虚线框 + 目的说明 -->
       <div v-if="dragOver" class="agent-ws-drop-hint agent-ws-drop-hint-main">{{ t('agent.drop_current_session') }}</div>
-      <!-- 左侧：聊天区（会话侧栏折叠时占满全宽） -->
       <section class="agent-ws-chat">
-        <!-- 查找栏：只搜聊天消息（会话列表有自己的过滤框，输入区不是可查找文本） -->
         <FindBar
           v-if="findOpen"
           v-model="findQuery"
@@ -891,52 +199,19 @@ onUnmounted(() => {
           @close="closeFind"
           @input-keydown="handleFindInputKeydown"
         />
-        <!-- 最近 run 状态横幅 + 配置推迟生效提示 + 运行历史面板：
-             状态来自 useAgentChat / useAgentRpc，展示在 AgentRunBanner -->
-        <AgentRunBanner
-          v-model:history-open="historyOpen"
-          v-model:actions-expanded="actionsExpanded"
-          v-bind="runBannerProps"
-          v-on="runBannerHandlers"
-        />
-
-        <!-- 消息区：三种气泡形态 + messageDecorations 展示在 AgentMessageList；
-             滚动容器 ref 经 scrollRef prop 回填 useAgentChat -->
-        <AgentMessageList
-          :set-scroll-el="setChatScrollEl"
-          v-bind="messageListProps"
-          v-on="messageListHandlers"
-        />
-
-        <!-- 输入区：chips 行 + textarea + 模型/附件/发送 + 三个菜单 + 水位条
-             展示在 AgentComposer；状态在编排层 composable，动作/索引回写经 emit -->
-        <AgentComposer
-          v-model:instruction="instruction"
-          v-bind="composerProps"
-          @update:instruction="instruction = $event"
-          v-on="composerHandlers"
-        />
+        <AgentRunBanner />
+        <AgentMessageList />
+        <AgentComposer />
       </section>
 
-      <!-- 右侧：会话侧栏（可折叠，折叠时聊天区占满全宽）：
-           列表/搜索/重命名/⋯菜单（Teleport 在子组件内）展示在 AgentSessionSidebar -->
-      <AgentSessionSidebar
-        v-model:session-query="sessionQuery"
-        v-model:rename-input="renameInput"
-        v-bind="sidebarProps"
-        v-on="sidebarHandlers"
-      />
+      <AgentSessionSidebar />
     </div>
   </div>
 </template>
 
-<!-- 菜单基类族（.agent-ws-menu*）非 scoped 共享：Teleport 到 body 的浮层菜单
-     只带渲染组件的 data-v 属性，编排层 scoped 规则不再命中（见 agent-shared.css） -->
 <style src="./agent/agent-shared.css"></style>
 <style scoped>
 .agent-ws {
-  /* 宽度由壳布局（App.vue）决定：flex-basis 取当前面板宽，grow 吃掉窗口边缘拖拽的全部增量，
-   * 窗口变窄时先压到 min-width 280，再把主界面挤到它的 min-width（710） */
   flex: 1 1 280px;
   min-width: 280px;
   height: 100%;
@@ -944,7 +219,6 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--bg);
   color: var(--text);
-  /* 左侧分隔线由 App.vue 的 .agent-divider 承担（可拖拽调节宽度），不再重复画边框 */
   overflow: hidden;
 }
 .agent-ws-main.drag-over {
@@ -952,7 +226,6 @@ onUnmounted(() => {
   outline-offset: -4px;
 }
 
-/* 拖拽悬停提示层：虚线框内居中说明文字，不拦截事件 */
 .agent-ws-drop-hint {
   position: absolute;
   display: flex;
@@ -966,11 +239,9 @@ onUnmounted(() => {
   pointer-events: none;
   z-index: var(--z-sticky);
 }
-/* 标题栏提示：覆盖整栏 */
 .agent-ws-drop-hint-header {
   inset: 0;
 }
-/* 工作区提示：顶部居中悬浮条 */
 .agent-ws-drop-hint-main {
   top: 12px;
   left: 50%;
@@ -981,7 +252,6 @@ onUnmounted(() => {
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 
-/* 头部 */
 .agent-ws-header {
   position: relative;
   display: flex;
@@ -991,7 +261,6 @@ onUnmounted(() => {
   border-bottom: 1px solid var(--border);
   background: var(--bg);
 }
-/* 拖到标题栏：独立虚线框 */
 .agent-ws-header.drop-over {
   outline: 2px dashed var(--primary);
   outline-offset: -4px;
@@ -1013,7 +282,6 @@ onUnmounted(() => {
   align-items: center;
   gap: 6px;
 }
-/* 头部操作按钮：图标 + 文字统一 flex 布局，图标垂直居中于文字 */
 .agent-ws-header-actions .btn-sm {
   display: inline-flex;
   align-items: center;
@@ -1027,7 +295,6 @@ onUnmounted(() => {
 .agent-ws-btn-label {
   font-size: var(--fs-meta);
 }
-/* 会话侧栏开关：激活态与侧栏选中态同源 accent 高亮 */
 .agent-ws-sessions-btn.active {
   background: var(--primary-soft-bg);
   border-color: var(--primary-soft-border);
@@ -1051,7 +318,6 @@ onUnmounted(() => {
   height: 13px;
 }
 
-/* 主体：边栏 + 聊天 */
 .agent-ws-main {
   position: relative;
   flex: 1;
@@ -1065,7 +331,6 @@ onUnmounted(() => {
   border-color: var(--primary-soft-border);
 }
 
-/* 聊天区（position: relative 供运行历史浮层 .agent-ws-history 定位） */
 .agent-ws-chat {
   position: relative;
   flex: 1;
@@ -1074,5 +339,4 @@ onUnmounted(() => {
   flex-direction: column;
   background: var(--bg);
 }
-
 </style>

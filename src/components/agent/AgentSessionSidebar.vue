@@ -1,91 +1,61 @@
-<!-- 会话侧栏：搜索 / 列表 / 重命名输入 / ⋯菜单（Teleport 到 body）。
-     状态与动作由编排层的 useAgentSessions 持有，本组件纯 props/emit 展示。 -->
 <script setup lang="ts">
+import { storeToRefs } from 'pinia'
 import { t } from '../../i18n'
 import { formatDate } from '../../utils'
-import type { ComponentPublicInstance } from 'vue'
-import type { SessionMeta } from './useAgentSessions'
+import { useAgentStore } from '../../stores/agent'
+import AppIcon from '../ui/AppIcon.vue'
 
-interface SidebarSession extends SessionMeta {
-  state: { status: string; position: number } | null
-}
-
-defineProps<{
-  /** 侧栏折叠状态（模板为多根，class 无法透传，故用显式 prop） */
-  sidebarOpen: boolean
-  sessions: SessionMeta[]
-  visibleSessions: SidebarSession[]
-  activeKey: string
-  sessionQuery: string
-  renamingKey: string | null
-  renameInput: string
-  openMenuKey: string | null
-  sessionMenuStyle: { left: string; top: string }
-  /** 重命名输入框 / ⋯按钮元素回填（composable 的 renameEl / sessionMoreEls 锚点），
-   *  key 标识属于哪个会话。用普通函数 ref 形式从子组件模板回填。 */
-  setRenameEl: (el: Element | ComponentPublicInstance | null, key: string) => void
-  setSessionMoreEl: (el: Element | ComponentPublicInstance | null, key: string) => void
-}>()
-
-const emit = defineEmits<{
-  'update:sessionQuery': [value: string]
-  'update:renameInput': [value: string]
-  switch: [key: string]
-  scrollList: []
-  commitRename: []
-  cancelRename: []
-  toggleMenu: [key: string]
-  exportSession: [key: string, format: 'md' | 'json']
-  rename: [key: string]
-  deleteFromMenu: []
-  clearSessions: []
-}>()
+const agent = useAgentStore()
+const {
+  sidebarOpen,
+  sessions,
+  visibleSessions,
+  activeKey,
+  sessionQuery,
+  renamingKey,
+  renameInput,
+  openMenuKey,
+  sessionMenuStyle,
+} = storeToRefs(agent)
 </script>
 
 <template>
   <aside class="agent-ws-sidebar" :class="{ collapsed: !sidebarOpen }">
     <div class="agent-ws-sidebar-title">{{ t('agent.session_list') }}</div>
-    <!-- 会话搜索：标题自动取首条指令前 40 字，高度相似且上限 200 条，
-         没有搜索就只能靠「清理旧会话」一刀切 -->
     <div v-if="sessions.length > 1" class="agent-ws-session-search">
       <input
-        :value="sessionQuery"
+        v-model="sessionQuery"
         class="agent-ws-session-search-input"
         type="search"
         :placeholder="t('agent.session_search_placeholder')"
         :aria-label="t('agent.session_search')"
-        @input="emit('update:sessionQuery', ($event.target as HTMLInputElement).value)"
       />
     </div>
-    <ul class="agent-ws-session-list" @scroll="emit('scrollList')">
+    <ul class="agent-ws-session-list" @scroll="agent.onSessionListScroll()">
       <li
         v-for="s in visibleSessions"
         :key="s.key"
         class="agent-ws-session-item"
         :class="{ active: s.key === activeKey, draft: s.draft }"
         :title="s.title"
-        @click="emit('switch', s.key)"
+        @click="agent.switchSession(s.key)"
       >
-        <!-- data-esc-local：Esc 由本控件独占（取消重命名），全局逐层退出跳过它。
-             否则全局捕获期的 blur 会先触发 @blur 提交、再走 @keydown.esc 取消，语义自相矛盾。 -->
         <input
           v-if="renamingKey === s.key"
-          :ref="(el) => setRenameEl(el, s.key)"
-          :value="renameInput"
+          :ref="(el) => agent.setRenameEl(el, s.key)"
+          v-model="renameInput"
           class="agent-ws-rename-input"
           type="text"
           data-esc-local
           :placeholder="t('agent.session_rename_placeholder')"
-          @input="emit('update:renameInput', ($event.target as HTMLInputElement).value)"
           @click.stop
-          @keydown.enter.prevent="emit('commitRename')"
-          @keydown.esc.prevent="emit('cancelRename')"
-          @blur="emit('commitRename')"
+          @keydown.enter.prevent="agent.commitRename()"
+          @keydown.esc.prevent="agent.cancelRename()"
+          @blur="agent.commitRename()"
         />
         <template v-else>
           <span class="agent-ws-session-name">
             {{ s.title }}
-            <!-- 运行状态点：执行中（蓝）/ 排队第 N 位（橙）——全局队列驱动 -->
             <span
               v-if="s.state"
               class="agent-ws-session-dot"
@@ -97,12 +67,11 @@ const emit = defineEmits<{
             </span>
           </span>
           <span class="agent-ws-session-time">{{ formatDate(new Date(s.updatedAt).toISOString()) }}</span>
-          <!-- ⋯ 菜单：重命名 / 导出 md / 导出 json / 删除（菜单浮层在下方 Teleport，见 agent-ws-session-menu） -->
           <button
-            :ref="(el) => setSessionMoreEl(el, s.key)"
+            :ref="(el) => agent.setSessionMoreEl(el, s.key)"
             class="agent-ws-session-more"
             :title="t('agent.session_menu')"
-            @click.stop="emit('toggleMenu', s.key)"
+            @click.stop="agent.toggleSessionMenu(s.key)"
           >
             <svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="1.1" fill="currentColor"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/><circle cx="12.5" cy="8" r="1.1" fill="currentColor"/></svg>
           </button>
@@ -111,26 +80,24 @@ const emit = defineEmits<{
       <li v-if="sessions.length === 0" class="agent-ws-session-empty">{{ t('agent.session_empty') }}</li>
       <li v-else-if="visibleSessions.length === 0" class="agent-ws-session-empty">{{ t('agent.session_no_match') }}</li>
     </ul>
-    <button v-if="sessions.length > 1" class="agent-ws-session-clear" :title="t('agent.session_clear')" @click="emit('clearSessions')">
-      <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none" /></svg>
+    <button v-if="sessions.length > 1" class="agent-ws-session-clear" :title="t('agent.session_clear')" @click="agent.handleClearSessions()">
+      <AppIcon name="close-icon" :size="10" />
       {{ t('agent.session_clear') }}
     </button>
   </aside>
 
-  <!-- 会话 ⋯ 菜单：Teleport 到 body 后以 ⋯ 按钮为锚 fixed 定位
-       （侧边栏仅 140px 宽且 overflow:hidden，absolute 定位会被裁剪，须脱离文档流盖在上层）。 -->
   <Teleport to="body">
     <div v-if="openMenuKey" class="agent-ws-menu agent-ws-session-menu" :style="sessionMenuStyle" @click.stop>
-      <button class="agent-ws-menu-item" @click="emit('rename', openMenuKey!)">
+      <button class="agent-ws-menu-item" @click="agent.startRename(openMenuKey!)">
         <span class="agent-ws-menu-main">{{ t('agent.session_rename') }}</span>
       </button>
-      <button class="agent-ws-menu-item" @click="emit('exportSession', openMenuKey!, 'md')">
+      <button class="agent-ws-menu-item" @click="agent.handleExportSession(openMenuKey!, 'md')">
         <span class="agent-ws-menu-main">{{ t('agent.session_export_md') }}</span>
       </button>
-      <button class="agent-ws-menu-item" @click="emit('exportSession', openMenuKey!, 'json')">
+      <button class="agent-ws-menu-item" @click="agent.handleExportSession(openMenuKey!, 'json')">
         <span class="agent-ws-menu-main">{{ t('agent.session_export_json') }}</span>
       </button>
-      <button class="agent-ws-menu-item danger" @click="emit('deleteFromMenu')">
+      <button class="agent-ws-menu-item danger" @click="agent.handleDeleteFromMenu()">
         <span class="agent-ws-menu-main">{{ t('agent.delete_session') }}</span>
       </button>
     </div>

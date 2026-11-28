@@ -82,7 +82,7 @@ describe('useAgentRpc', () => {
     const { api } = setup({ showToast })
     vi.mocked(restartAgentRpc).mockRejectedValue(new Error('nope'))
     await api.handleRestartRpc()
-    expect(showToast).toHaveBeenCalledWith('Error: nope')
+    expect(showToast).toHaveBeenCalledWith('nope')
     expect(api.rpcRestarting.value).toBe(false)
     expect(api.rpcMenuOpen.value).toBe(false)
   })

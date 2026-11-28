@@ -31,6 +31,23 @@ export function buildYoutubeConfig(videos: boolean, live: boolean, posts = false
   return JSON.stringify({ videos, live, posts })
 }
 
+export function parseYtConfig(config: string | null | undefined): {
+  videos: boolean
+  live: boolean
+  posts: boolean
+} {
+  try {
+    const cfg = config ? JSON.parse(config) : {}
+    return {
+      videos: cfg.videos !== false,
+      live: cfg.live !== false,
+      posts: !!cfg.posts,
+    }
+  } catch {
+    return { videos: true, live: true, posts: false }
+  }
+}
+
 /**
  * 在已有 config 上打补丁（undefined 表示删除该键）：源级开关与 YouTube 订阅明细
  * 共用 `sources.config` 这一个槽位，所以任何一侧写入都必须**保留另一侧的键**，

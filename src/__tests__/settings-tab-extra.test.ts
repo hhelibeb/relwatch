@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises } from '@vue/test-utils'
 import SettingsTab from '../components/SettingsTab.vue'
-import { ShowToastKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
 import type { AppSettings } from '../api/settings'
 import {
   updateSettings,
@@ -19,13 +19,17 @@ vi.mock('@tauri-apps/plugin-dialog', () => ({
   confirm: vi.fn(),
 }))
 
-vi.mock('../api/settings', () => ({
-  updateSettings: vi.fn().mockResolvedValue(undefined),
-  setCredential: vi.fn().mockResolvedValue(undefined),
-  testDeepseekConnection: vi.fn().mockResolvedValue(undefined),
-  exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
-  importBackup: vi.fn().mockResolvedValue(undefined),
-}))
+vi.mock('../api/settings', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/settings')>()
+  return {
+    ...actual,
+    updateSettings: vi.fn().mockResolvedValue(undefined),
+    setCredential: vi.fn().mockResolvedValue(undefined),
+    testDeepseekConnection: vi.fn().mockResolvedValue(undefined),
+    exportBackup: vi.fn().mockResolvedValue('/tmp/relwatch-backup.zip'),
+    importBackup: vi.fn().mockResolvedValue(undefined),
+  }
+})
 
 vi.mock('../api/client', () => ({
   openReleaseUrl: vi.fn(),
@@ -78,7 +82,7 @@ function mountSettings(settings: AppSettings = createSettings()) {
     props: { settings },
     global: {
       provide: {
-        [ShowToastKey as symbol]: vi.fn(),
+        
       },
     },
   })
@@ -170,12 +174,12 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
   })
 
   it('DeepSeek prompt 不含 {} 时保存失败，显示错误提示', async () => {
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings({ deepseek_prompt: 'no placeholder here' }) },
       global: {
         provide: {
-          [ShowToastKey as symbol]: showToast,
+          
         },
       },
     })
@@ -189,13 +193,13 @@ describe('SettingsTab — AI 设置保存（凭据 + 配置）', () => {
   })
 
   it('保存失败时显示错误信息（含 Error message）', async () => {
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     updateSettingsMock.mockRejectedValueOnce(new Error('database locked'))
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
       global: {
         provide: {
-          [ShowToastKey as symbol]: showToast,
+          
         },
       },
     })
@@ -248,7 +252,8 @@ describe('SettingsTab — 轮询间隔变更检测', () => {
 })
 
 describe('SettingsTab — DeepSeek 连接测试', () => {
-  it('测试成功，显示成功对话框', async () => {
+  it('测试成功，通过 Toast 显示成功提示', async () => {
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
@@ -258,12 +263,12 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
     await flushPromises()
 
     expect(testDeepseekConnectionMock).toHaveBeenCalledOnce()
-    // 命令成功后文案由前端按 i18n key 渲染
-    expect(messageMock).toHaveBeenCalledWith(t('settings.connection_success'), expect.objectContaining({ kind: 'info' }))
+    expect(showToast).toHaveBeenCalledWith(t('settings.connection_success'))
   })
 
-  it('测试失败，显示错误对话框', async () => {
+  it('测试失败，通过 Toast 显示失败提示', async () => {
     testDeepseekConnectionMock.mockRejectedValueOnce(new Error('timeout'))
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
@@ -271,15 +276,13 @@ describe('SettingsTab — DeepSeek 连接测试', () => {
     await testBtn!.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      expect.stringContaining('timeout'),
-      expect.objectContaining({ kind: 'error' }),
-    )
+    expect(showToast).toHaveBeenCalledWith(expect.stringContaining('timeout'))
   })
 })
 
-describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
-  it('成功对话框标题使用 i18n key 而非硬编码英文', async () => {
+describe('SettingsTab — DeepSeek 测试结果 i18n（P1 #8）', () => {
+  it('成功提示使用 i18n key 而非硬编码英文', async () => {
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
@@ -287,14 +290,12 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
     await testBtn!.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      t('settings.connection_success'),
-      expect.objectContaining({ title: t('settings.deepseek_test_title') }),
-    )
+    expect(showToast).toHaveBeenCalledWith(t('settings.connection_success'))
   })
 
-  it('失败对话框标题同样使用 i18n key', async () => {
+  it('失败提示同样使用 i18n key', async () => {
     testDeepseekConnectionMock.mockRejectedValueOnce(new Error('boom'))
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mountSettings()
     await clickSidebar(wrapper, 'settings.ai')
 
@@ -302,10 +303,7 @@ describe('SettingsTab — DeepSeek 测试标题 i18n（P1 #8）', () => {
     await testBtn!.trigger('click')
     await flushPromises()
 
-    expect(messageMock).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ title: t('settings.deepseek_test_title') }),
-    )
+    expect(showToast).toHaveBeenCalledWith(t('settings.connect_failed') + 'boom')
   })
 })
 
@@ -350,10 +348,10 @@ describe('SettingsTab — AI 地址端点实时预览', () => {
 
 describe('SettingsTab — 备份导出', () => {
   it('导出成功，显示成功 toast 并 emit update', async () => {
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      global: { provide: {  } },
     })
     await clickSidebar(wrapper, 'settings.data')
 
@@ -368,10 +366,10 @@ describe('SettingsTab — 备份导出', () => {
   it('导出取消（后端返回 err.backup_cancelled_export），显示取消 toast', async () => {
     // 新 contract：后端用稳定 err key 表示用户取消；mock 模拟 invokeI18nFn 翻译后的消息
     exportBackupMock.mockRejectedValueOnce(new Error(t('err.backup_cancelled_export')))
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      global: { provide: {  } },
     })
     await clickSidebar(wrapper, 'settings.data')
 
@@ -383,10 +381,10 @@ describe('SettingsTab — 备份导出', () => {
 
   it('导出失败（非取消错误），显示失败 toast', async () => {
     exportBackupMock.mockRejectedValueOnce(new Error('disk full'))
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      global: { provide: {  } },
     })
     await clickSidebar(wrapper, 'settings.data')
 
@@ -400,10 +398,10 @@ describe('SettingsTab — 备份导出', () => {
 describe('SettingsTab — 备份导入', () => {
   it('用户取消确认对话框，不执行导入', async () => {
     confirmMock.mockResolvedValueOnce(false)
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      global: { provide: {  } },
     })
     await clickSidebar(wrapper, 'settings.data')
 
@@ -417,10 +415,10 @@ describe('SettingsTab — 备份导入', () => {
   it('导入取消（后端返回 err.backup_cancelled_import），显示取消 toast', async () => {
     // 新 contract：后端用稳定 err key 表示用户取消；mock 模拟 invokeI18nFn 翻译后的消息
     importBackupMock.mockRejectedValueOnce(new Error(t('err.backup_cancelled_import')))
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      global: { provide: {  } },
     })
     await clickSidebar(wrapper, 'settings.data')
 
@@ -432,10 +430,10 @@ describe('SettingsTab — 备份导入', () => {
 
   it('导入失败（非取消错误），显示失败 toast', async () => {
     importBackupMock.mockRejectedValueOnce(new Error('corrupt file'))
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(SettingsTab, {
       props: { settings: createSettings() },
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      global: { provide: {  } },
     })
     await clickSidebar(wrapper, 'settings.data')
 

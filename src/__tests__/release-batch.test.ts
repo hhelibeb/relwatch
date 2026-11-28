@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { enableAutoUnmount, mount, flushPromises } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import ReleaseTab from '../components/ReleaseTab.vue'
-import { ShowToastKey } from '../injection-keys'
+import { useUiStore } from '../stores/ui'
 import { t } from '../i18n'
 import { createRelease } from './helpers'
 import { confirm } from '@tauri-apps/plugin-dialog'
@@ -34,11 +34,11 @@ function mountReleaseTab(releases = [
   createRelease({ id: 2, owner: 'vuejs', repo: 'core', tag_name: 'v3.4.0', published_at: '2025-02-01T00:00:00Z', notification_status: 'pending' }),
   createRelease({ id: 3, owner: 'microsoft', repo: 'vscode', tag_name: 'v1.90.0', published_at: '2025-01-01T00:00:00Z', notification_status: 'clicked' }),
 ], extraProps: Record<string, unknown> = {}) {
-  const showToast = vi.fn()
+  const ui = useUiStore()
+  const showToast = vi.spyOn(ui, 'showToast')
   const wrapper = mount(ReleaseTab, {
     props: { releases, active: true, ...extraProps },
     global: {
-      provide: { [ShowToastKey as symbol]: showToast },
       stubs: { ContextMenu: true, MarkdownContent: true },
     },
     attachTo: document.body,
@@ -175,12 +175,13 @@ describe('ReleaseTab — 批量操作与全部标为已读', () => {
     const boxes = wrapper.findAll('.release-select-box input[type="checkbox"]')
 
     await boxes[0].trigger('click', { shiftKey: false })
-    await boxes[0].setValue(true)
     expect(wrapper.get('.bulk-count').text()).toBe(t('release.bulk_count', '1'))
 
     await boxes[2].trigger('click', { shiftKey: true })
-    await boxes[2].setValue(true)
     expect(wrapper.get('.bulk-count').text()).toBe(t('release.bulk_count', '3'))
+
+    await boxes[3].trigger('click', { shiftKey: false })
+    expect(wrapper.get('.bulk-count').text()).toBe(t('release.bulk_count', '4'))
   })
 
   it('搜索或筛选变化时自动剪枝不再可见的已选项', async () => {

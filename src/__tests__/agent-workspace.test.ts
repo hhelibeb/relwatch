@@ -89,8 +89,8 @@ import {
 import { listSources } from '../api/sources'
 import { getReleaseCatalog } from '../api/releases'
 import type { ReleaseInfo } from '../api/releases'
-import type { AgentEntityRefSeed } from '../injection-keys'
-import { ShowToastKey, ActiveTabKey } from '../injection-keys'
+import type { AgentEntityRefSeed } from '../types/agent'
+import { useUiStore } from '../stores/ui'
 import { InvokeI18nError } from '../api/client'
 import { dispatchFind, registerFindHandler, hasActiveOverlay } from '../composables/contextMenuBus'
 
@@ -251,7 +251,7 @@ beforeEach(() => {
 describe('AgentWorkspace 冒烟', () => {
   it('渲染标题、会话边栏、输入区', async () => {
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     expect(wrapper.text()).toContain(t('agent.workspace_title'))
@@ -305,7 +305,7 @@ describe('AgentWorkspace 冒烟', () => {
     const SKILL = 'E:\\project\\relwatch\\.pi\\skills\\commit\\SKILL.md'
     vi.mocked(getAgentConfig).mockResolvedValue(agentConfig([SKILL]))
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     const ta = wrapper.find('.agent-ws-textarea')
@@ -340,7 +340,7 @@ describe('AgentWorkspace 冒烟', () => {
     vi.mocked(runAgentJob).mockClear() // 本 describe 的 beforeEach 不负责清 runAgentJob，调用计数会跨用例累积
     const wrapper = mount(AgentWorkspace, {
       props: { seed },
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     const ta = wrapper.find('.agent-ws-textarea')
@@ -398,7 +398,7 @@ describe('AgentWorkspace 冒烟', () => {
       }),
     ])
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     const text = wrapper.text()
@@ -482,7 +482,7 @@ describe('AgentWorkspace 冒烟', () => {
       },
     ])
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     const ta = wrapper.find('.agent-ws-textarea')
@@ -584,14 +584,14 @@ describe('AgentWorkspace 冒烟', () => {
   })
 
   it('拖到标题栏：切换新会话并预置实体引用', async () => {
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     // 预置一个历史会话：初始处于旧会话（非新会话状态）
     localStorage.setItem(
       'relwatch.agent.sessions.v1',
       JSON.stringify([{ key: 'old-session', title: '旧会话', updatedAt: Date.now() }]),
     )
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     // 初始：处于旧会话、无引用 chip、无草稿会话
@@ -624,14 +624,14 @@ describe('AgentWorkspace 冒烟', () => {
   })
 
   it('拖到工作区主体：添加到当前会话（不新建）', async () => {
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     // 预置一个历史会话：初始处于旧会话
     localStorage.setItem(
       'relwatch.agent.sessions.v1',
       JSON.stringify([{ key: 'old-session', title: '旧会话', updatedAt: Date.now() }]),
     )
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     const main = wrapper.find('.agent-ws-main')
@@ -814,7 +814,7 @@ describe('AgentWorkspace 冒烟', () => {
       },
     ])
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     const text = wrapper.text()
@@ -838,7 +838,7 @@ describe('AgentWorkspace 冒烟', () => {
       JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
     )
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey]: vi.fn() } },
+      
     })
     await flushPromises()
     // 提交：冻结历史快照 + 本地回显用户消息
@@ -922,7 +922,7 @@ describe('AgentWorkspace 冒烟', () => {
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })
 
-  it('切会话丢弃未处理的流式事件：旧会话 delta 不写入新会话', async () => {
+  it('切会话隔离流式分片：旧会话 delta 不串入新会话，切回旧会话后仍保留', async () => {
     const base = Date.now()
     localStorage.setItem(
       'relwatch.agent.sessions.v1',
@@ -933,7 +933,6 @@ describe('AgentWorkspace 冒烟', () => {
     )
     const wrapper = mount(AgentWorkspace, { global: { provide: {} } })
     await flushPromises()
-    // 旧会话（session-a，激活中）的 delta 入队后立即切到 session-b
     const emitRpc = (event: string) => {
       const handler = rpcHandlers.get('agent-rpc-stream') as ((e: { payload: unknown }) => void) | undefined
       handler?.({ payload: { session_key: 'session-a', run_id: 1, event } })
@@ -943,8 +942,12 @@ describe('AgentWorkspace 冒烟', () => {
     await itemB!.trigger('click')
     await flushPromises()
     await flushRpcFrame()
-    // 新会话消息区不出现旧会话的流式文本（事件被丢弃，不复活）
     expect(wrapper.text()).not.toContain('旧会话流式文本')
+
+    const itemA = wrapper.findAll('.agent-ws-session-item').find((i) => i.text().includes('a'))
+    await itemA!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('旧会话流式文本')
     wrapper.unmount()
     localStorage.removeItem('relwatch.agent.sessions.v1')
   })
@@ -1039,9 +1042,9 @@ describe('AgentWorkspace 冒烟', () => {
         run_count: 3,
       },
     ])
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     // 侧栏出现该会话，并带「已恢复」标记（索引曾丢失，由文件重建）
@@ -1090,9 +1093,9 @@ describe('AgentWorkspace 冒烟', () => {
         run_count: 1,
       },
     ])
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     expect(wrapper.text()).toContain('我改过的标题')
@@ -1140,7 +1143,7 @@ describe('AgentWorkspace 冒烟', () => {
       }),
     ])
 
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey]: vi.fn() } } })
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
     const note = wrapper.find('.agent-ws-run-failed')
     expect(note.exists()).toBe(true)
@@ -1170,7 +1173,7 @@ describe('AgentWorkspace 冒烟', () => {
     vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
     vi.mocked(listAgentRuns).mockResolvedValue([makeRun()])
 
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey]: vi.fn() } } })
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
     const buttons = wrapper.findAll('.agent-ws-run-failed-actions button')
     await buttons[1].trigger('click')
@@ -1195,9 +1198,9 @@ describe('AgentWorkspace 冒烟', () => {
     vi.mocked(listAgentRuns).mockResolvedValue([
       makeRun({ entities: '[{"kind":"release","id":7}]' }),
     ])
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     await wrapper.findAll('.agent-ws-run-failed-actions button')[0].trigger('click')
@@ -1222,9 +1225,9 @@ describe('AgentWorkspace 冒烟', () => {
     vi.mocked(listAgentRuns).mockResolvedValue([
       makeRun({ entities: '[{"kind":"release","id":7}]' }),
     ])
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     await wrapper.findAll('.agent-ws-run-failed-actions button')[0].trigger('click')
@@ -1244,7 +1247,7 @@ describe('AgentWorkspace 冒烟', () => {
     vi.mocked(listAgentMessages).mockResolvedValue([sampleMessages()[0]])
     vi.mocked(listAgentRuns).mockResolvedValue([makeRun({ status: 'cancelled', error: null })])
 
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey]: vi.fn() } } })
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
     const note = wrapper.find('.agent-ws-run-failed')
     expect(note.exists()).toBe(true)
@@ -1269,9 +1272,9 @@ describe('AgentWorkspace 冒烟', () => {
       makeRun({ id: 22, status: 'running', instruction: '继续', error: null, created_at: '2025-01-01T00:05:00.000Z' }),
       makeRun({ id: 20, created_at: '2025-01-01T00:00:00.000Z' }),
     ])
-    const showToast = vi.fn()
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
     const wrapper = mount(AgentWorkspace, {
-      global: { provide: { [ShowToastKey as symbol]: showToast } },
+      
     })
     await flushPromises()
     await wrapper.findAll('.agent-ws-run-failed-actions button')[0].trigger('click')
@@ -1433,8 +1436,8 @@ describe('AgentWorkspace P2 打磨', () => {
     vi.mocked(exportAgentSession).mockRejectedValueOnce(
       new InvokeI18nError('err.agent.export_cancelled', [], t('err.agent.export_cancelled')),
     )
-    const showToast = vi.fn()
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
     await wrapper.findAll('.agent-ws-session-item')[0].find('.agent-ws-session-more').trigger('click')
     await findTeleportedAll('.agent-ws-session-menu .agent-ws-menu-item')[1].trigger('click')
@@ -1570,8 +1573,8 @@ describe('AgentWorkspace P2 打磨', () => {
   it('pi 进程指示灯：点灯弹菜单展示状态与 pid，菜单内重启', async () => {
     vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 4321, process_count: 1, restart_pending: false })
     vi.mocked(restartAgentRpc).mockResolvedValue(true)
-    const showToast = vi.fn()
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
 
     const dot = wrapper.find('.agent-ws-rpc-dot')
@@ -1597,8 +1600,8 @@ describe('AgentWorkspace P2 打磨', () => {
 
   it('未运行时菜单只显状态详情，无重启项（无物可重启，杜绝假重启）', async () => {
     vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: false, pid: null, process_count: 0, restart_pending: false })
-    const showToast = vi.fn()
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
 
     await wrapper.find('.agent-ws-rpc-dot').trigger('click')
@@ -1630,8 +1633,8 @@ describe('AgentWorkspace P2 打磨', () => {
   it('有任务在跑时重启被拒：提示「请先停止」而非谎报成功', async () => {
     vi.mocked(getAgentRpcStatus).mockResolvedValue({ running: true, pid: 1, process_count: 1, restart_pending: false })
     vi.mocked(restartAgentRpc).mockResolvedValue(false)
-    const showToast = vi.fn()
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
     await wrapper.find('.agent-ws-rpc-dot').trigger('click')
     await flushPromises()
@@ -1763,8 +1766,8 @@ describe('AgentWorkspace P2 打磨', () => {
       JSON.stringify([{ key: 'test-session', title: 't', updatedAt: Date.now() }]),
     )
     vi.mocked(openDialog).mockResolvedValue(['C:/a.log'])
-    const showToast = vi.fn()
-    const wrapper = mount(AgentWorkspace, { global: { provide: { [ShowToastKey as symbol]: showToast } } })
+    const showToast = vi.spyOn(useUiStore(), 'showToast')
+    const wrapper = mount(AgentWorkspace, {  })
     await flushPromises()
 
     await wrapper.find('.agent-ws-attach-btn').trigger('click')
@@ -1877,13 +1880,13 @@ describe('AgentWorkspace 页内查找（Ctrl+F 边界）', () => {
     ]
   }
 
-  const activeTab = ref('releases')
+  
 
   /** attachTo：归属判定靠 document 捕获期监听，挂载在文档树上才能收到面板内事件。 */
   function mountWs(attached = true) {
     return mount(AgentWorkspace, {
       ...(attached ? { attachTo: document.body } : {}),
-      global: { provide: { [ShowToastKey]: vi.fn(), [ActiveTabKey]: activeTab } },
+      
     })
   }
 
@@ -1906,7 +1909,7 @@ describe('AgentWorkspace 页内查找（Ctrl+F 边界）', () => {
   }
 
   beforeEach(() => {
-    activeTab.value = 'releases'
+    useUiStore().activeTab = 'releases'
   })
 
   it('面板内交互后 dispatchFind 打开查找栏，只搜聊天消息，支持计数/Enter/Esc', async () => {
@@ -2040,7 +2043,7 @@ describe('AgentWorkspace 页内查找（Ctrl+F 边界）', () => {
     pointerDownOn(wrapper.find('.agent-ws-textarea').element)
 
     // 不先开查找栏：打开会顺带把焦点交给查找框（focusin），会掩盖归属变化本身
-    activeTab.value = 'logs'
+    useUiStore().activeTab = 'logs'
     await nextTick()
     expect(dispatchFind()).toBe(false)
 

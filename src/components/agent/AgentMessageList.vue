@@ -1,13 +1,9 @@
-<!-- 消息区：三种气泡形态（user / assistant / toolResult/bash）+
-     messageDecorations（实体 chip / skill 徽章 / 失败备注 + 重试 / 超时引导）。
-     状态与动作由编排层持有，本组件纯 props/emit 展示；滚动容器经
-     setScrollEl prop 回填（useAgentChat 的滚动逻辑用）。 -->
 <script setup lang="ts">
+import { storeToRefs } from 'pinia'
 import { t } from '../../i18n'
 import MarkdownContent from '../common/MarkdownContent.vue'
-import type { AgentChatMessage, AgentRunSummary } from '../../api/agent'
-import type { AgentEntityRefSeed } from '../../injection-keys'
-import type { ComponentPublicInstance } from 'vue'
+import type { AgentRunSummary } from '../../api/agent'
+import { useAgentStore } from '../../stores/agent'
 import {
   canRetry,
   isToolError,
@@ -18,45 +14,15 @@ import {
 } from './agentChatUtils'
 import { skillShortName } from '../../utils'
 
-/** user 气泡装饰（useAgentChat.messageDecorations 元素）。 */
-interface MessageDecoration {
-  run: AgentRunSummary | undefined
-  entities: AgentEntityRefSeed[]
-  main: string
-  folded: string | null
-}
-
-defineProps<{
-  /** 滚动容器元素回填（useAgentChat.scrollRef 在编排层，经此函数 ref 绑定） */
-  setScrollEl: (el: Element | ComponentPublicInstance | null) => void
-  messagesLoading: boolean
-  liveCount: number
-  displayedMessages: AgentChatMessage[]
-  messageDecorations: (MessageDecoration | null)[]
-  isLiveMessage: (msg: AgentChatMessage) => boolean
-  /** 实体 chip 悬浮提示 + 名称映射（useAgentComposer 提供，经编排层注入） */
-  entityKindLabel: (kind: string) => string
-  entityLabel: (e: AgentEntityRefSeed) => string
-  handleChipEnter: (e: MouseEvent, text: string) => void
-  handleChipMove: (e: MouseEvent) => void
-  hideChipTooltip: () => void
-  /** 失败备注文案（useAgentChat.runFailedNote） */
-  runFailedNote: (run: AgentRunSummary | undefined) => string | null
-  retry: (run: AgentRunSummary) => void
-  retryEdit: (run: AgentRunSummary) => void
-  /** 超时引导：输入状态与保存动作在编排层 */
-  adjustingTimeout: boolean
-  timeoutInput: string
-}>()
-
-const emit = defineEmits<{
-  'update:adjustingTimeout': [value: boolean]
-  'update:timeoutInput': [value: string]
-  /** 进入调整态：timeoutSecs 在编排层，由编排层把初值写入 timeoutInput */
-  startAdjustTimeout: []
-  saveTimeout: []
-  cancelAdjustTimeout: []
-}>()
+const agent = useAgentStore()
+const {
+  messagesLoading,
+  liveMessages,
+  displayedMessages,
+  messageDecorations,
+  adjustingTimeout,
+  timeoutInput,
+} = storeToRefs(agent)
 
 function isTimeoutRun(run: AgentRunSummary | undefined): boolean {
   return run?.status === 'timeout'
@@ -77,8 +43,8 @@ function toolArgsSummary(args: string): string {
 </script>
 
 <template>
-  <div :ref="(el) => setScrollEl(el)" class="agent-ws-messages">
-    <div v-if="messagesLoading && displayedMessages.length === 0 && liveCount === 0" class="agent-ws-hint">{{ t('agent.loading') }}</div>
+  <div :ref="agent.bindChatScrollEl" class="agent-ws-messages">
+    <div v-if="messagesLoading && displayedMessages.length === 0 && liveMessages.length === 0" class="agent-ws-hint">{{ t('agent.loading') }}</div>
     <div v-else-if="displayedMessages.length === 0" class="agent-ws-hint agent-ws-hint-empty">
       {{ t('agent.workspace_empty') }}
     </div>
@@ -89,16 +55,15 @@ function toolArgsSummary(args: string): string {
         class="agent-ws-msg-row"
         :class="`role-${msg.role}`"
       >
-        <!-- user 消息：右对齐气泡 -->
         <div v-if="msg.role === 'user'" class="agent-ws-bubble agent-ws-bubble-user">
           <div v-if="messageDecorations[idx]?.run" class="agent-ws-bubble-meta">
             <span v-for="e in messageDecorations[idx]?.entities ?? []" :key="`${e.kind}:${e.id}`" class="agent-ws-chip">
               <span
                 class="agent-ws-chip-text"
-                @mouseenter="handleChipEnter($event, `${entityKindLabel(e.kind)} · ${entityLabel(e)}`)"
-                @mousemove="handleChipMove"
-                @mouseleave="hideChipTooltip"
-              >{{ entityKindLabel(e.kind) }} · {{ entityLabel(e) }}</span>
+                @mouseenter="agent.handleChipEnter($event, `${agent.entityKindLabel(e.kind)} · ${agent.entityLabel(e)}`)"
+                @mousemove="agent.handleChipMove"
+                @mouseleave="agent.hideChipTooltip"
+              >{{ agent.entityKindLabel(e.kind) }} · {{ agent.entityLabel(e) }}</span>
             </span>
             <span v-if="messageDecorations[idx]?.run?.skill_path" class="agent-ws-skill-badge">@{{ skillShortName(messageDecorations[idx]?.run?.skill_path ?? '') }}</span>
           </div>
@@ -107,8 +72,6 @@ function toolArgsSummary(args: string): string {
             <summary>{{ t('agent.prompt_full') }}</summary>
             <pre class="agent-ws-fold-body">{{ messageDecorations[idx]?.folded }}</pre>
           </details>
-          <!-- 非成功终态内联备注 + 重试入口：这轮为什么挂了、怎么再来一次，
-               都在对话流里可追溯（横幅只显示最近一次 run） -->
           <div
             v-if="canRetry(messageDecorations[idx]?.run)"
             class="agent-ws-run-failed"
@@ -118,51 +81,46 @@ function toolArgsSummary(args: string): string {
             }"
           >
             <span class="agent-ws-run-failed-status">{{ runStatusLabel(messageDecorations[idx]!.run!.status, t) }}</span>
-            <span class="agent-ws-run-failed-text" :title="runFailedNote(messageDecorations[idx]?.run) ?? ''">
-              {{ runFailedNote(messageDecorations[idx]?.run) || runStatusLabel(messageDecorations[idx]!.run!.status, t) }}
+            <span class="agent-ws-run-failed-text" :title="agent.runFailedNote(messageDecorations[idx]?.run) ?? ''">
+              {{ agent.runFailedNote(messageDecorations[idx]?.run) || runStatusLabel(messageDecorations[idx]!.run!.status, t) }}
             </span>
-            <!-- 结果未知（终态事件丢失）：与真失败区分——任务可能已经跑完，
-                 直接重跑会重复烧词元、重复副作用 -->
             <span v-if="messageDecorations[idx]!.run!.status === 'unknown'" class="agent-ws-run-advice">{{ t('agent.unknown_advice') }}</span>
             <span class="agent-ws-run-failed-actions">
-              <button class="btn-sm" :title="t('agent.retry')" @click="retry(messageDecorations[idx]!.run!)">
+              <button class="btn-sm" :title="t('agent.retry')" @click="agent.handleRetry(messageDecorations[idx]!.run!)">
                 {{ t('agent.retry') }}
               </button>
-              <button class="btn-sm" :title="t('agent.retry_edit')" @click="retryEdit(messageDecorations[idx]!.run!)">
+              <button class="btn-sm" :title="t('agent.retry_edit')" @click="agent.handleRetryEdit(messageDecorations[idx]!.run!)">
                 {{ t('agent.retry_edit') }}
               </button>
             </span>
-            <!-- 超时引导：行动建议 + 就地调时长（timeout 每次调度重读，无需重启进程） -->
             <template v-if="isTimeoutRun(messageDecorations[idx]?.run)">
               <span class="agent-ws-run-advice">{{ t('agent.timeout_advice') }}</span>
               <span v-if="!adjustingTimeout" class="agent-ws-run-advice-actions">
-                <button class="btn-sm" :title="t('agent.timeout_adjust')" @click="emit('startAdjustTimeout')">
+                <button class="btn-sm" :title="t('agent.timeout_adjust')" @click="agent.startAdjustTimeout()">
                   {{ t('agent.timeout_adjust') }}
                 </button>
               </span>
               <span v-else class="agent-ws-run-advice-adjust">
                 <input
-                  :value="timeoutInput"
+                  v-model="timeoutInput"
                   type="number"
                   min="10"
                   max="3600"
                   class="agent-ws-timeout-input"
                   :placeholder="t('agent.timeout_placeholder')"
-                  @input="emit('update:timeoutInput', ($event.target as HTMLInputElement).value)"
-                  @keydown.enter.prevent="emit('saveTimeout')"
+                  @keydown.enter.prevent="agent.saveTimeout()"
                 />
-                <button class="btn-sm" @click="emit('saveTimeout')">{{ t('agent.timeout_save') }}</button>
-                <button class="btn-sm" @click="emit('cancelAdjustTimeout')">{{ t('agent.timeout_cancel') }}</button>
+                <button class="btn-sm" @click="agent.saveTimeout()">{{ t('agent.timeout_save') }}</button>
+                <button class="btn-sm" @click="agent.cancelAdjustTimeout()">{{ t('agent.timeout_cancel') }}</button>
               </span>
             </template>
           </div>
         </div>
 
-        <!-- assistant 消息：左对齐，Markdown + 思考/工具折叠 -->
         <div v-else-if="msg.role === 'assistant'" class="agent-ws-bubble agent-ws-bubble-assistant">
           <div v-if="msg.model" class="agent-ws-bubble-model">{{ msg.model }}</div>
           <template v-for="(block, bi) in msg.blocks" :key="bi">
-            <MarkdownContent v-if="block.kind === 'text'" :content="block.kind === 'text' ? block.text : ''" :no-cache="isLiveMessage(msg)" />
+            <MarkdownContent v-if="block.kind === 'text'" :content="block.kind === 'text' ? block.text : ''" :no-cache="agent.isLiveMessage(msg)" />
             <details v-else-if="block.kind === 'thinking'" class="agent-ws-fold agent-ws-fold-thinking">
               <summary>{{ t('agent.thinking') }}</summary>
               <pre class="agent-ws-fold-body">{{ block.kind === 'thinking' ? block.text : '' }}</pre>
@@ -181,7 +139,6 @@ function toolArgsSummary(args: string): string {
           </template>
         </div>
 
-        <!-- toolResult：折叠卡片 -->
         <div v-else-if="msg.role === 'toolResult' || msg.role === 'bash'" class="agent-ws-tool-card" :class="{ 'tool-error': isToolError(msg) }">
           <div class="agent-ws-tool-head">
             <svg class="agent-ws-tool-icon"><use href="/icons.svg#terminal-icon" /></svg>
@@ -195,7 +152,6 @@ function toolArgsSummary(args: string): string {
           </details>
         </div>
 
-        <!-- 其他（custom 等）：左对齐文本 -->
         <div v-else class="agent-ws-bubble agent-ws-bubble-assistant">
           <p class="agent-ws-msg-text">{{ blockText(msg.blocks) || '…' }}</p>
         </div>

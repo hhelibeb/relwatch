@@ -3,10 +3,10 @@
 // 仅开发模式（import.meta.env.DEV）下通过 Ctrl+Shift+U 呼出，生产构建永不加载。
 // 不进入任何用户 UI；事件名映射内置在此组件，不占用产品 i18n。
 import { ref, computed, onMounted } from 'vue'
-import { confirm } from '@tauri-apps/plugin-dialog'
 import { getUsageStats, clearUsageStats, type UsageStatRow } from '../api/usage'
 import { flushUsageTrackingNow } from '../composables/useUsageTracking'
 import { useOverlayEscape } from '../composables/useOverlayEscape'
+import { confirmAction, extractErrorMessage } from '../services/feedback'
 
 const emit = defineEmits<{ close: [] }>()
 
@@ -114,14 +114,14 @@ async function load() {
     await flushUsageTrackingNow()
     rows.value = await getUsageStats()
   } catch (e: unknown) {
-    error.value = e instanceof Error ? e.message : String(e)
+    error.value = extractErrorMessage(e)
   } finally {
     loading.value = false
   }
 }
 
 async function handleClear() {
-  const ok = await confirm('确定清空全部使用统计？此操作不可恢复。', {
+  const ok = await confirmAction('确定清空全部使用统计？此操作不可恢复。', {
     title: '清空使用统计',
     kind: 'warning',
   })

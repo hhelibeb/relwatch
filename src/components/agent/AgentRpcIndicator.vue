@@ -1,56 +1,38 @@
-<!-- pi RPC 进程池健康指示：点灯弹状态菜单（状态详情 + 重启入口）。
-     重启是低频排障操作，收进菜单而非一级按钮；未运行时菜单不提供
-     重启项（无物可重启，首次提交时进程会自动拉起）。
-     状态与菜单逻辑由编排层的 useAgentRpc 持有，本组件纯 props/emit 展示。 -->
 <script setup lang="ts">
-import type { ComponentPublicInstance } from 'vue'
-import type { AgentRpcStatus } from '../../api/agent'
+import { storeToRefs } from 'pinia'
 import { t } from '../../i18n'
+import { useAgentStore } from '../../stores/agent'
 
-const props = defineProps<{
-  rpcStatus: AgentRpcStatus | null
-  rpcRestarting: boolean
-  rpcMenuOpen: boolean
-  rpcMenuStyle: { left: string; top: string }
-  /** 灯按钮元素回填：编排层持有 useAgentRpc 的 rpcDotEl（菜单以灯为锚定位），
-   *  经此函数 ref 从子组件模板回填（VNodeRef 签名的 el 可能是 SVGSVGElement 等）。 */
-  setDotEl: (el: Element | ComponentPublicInstance | null) => void
-}>()
-
-const emit = defineEmits<{ toggleMenu: []; restart: [] }>()
+const agent = useAgentStore()
+const { rpcStatus, rpcRestarting, rpcMenuOpen, rpcMenuStyle } = storeToRefs(agent)
 </script>
 
 <template>
   <div class="agent-ws-rpc-wrap">
     <button
-      :ref="props.setDotEl"
+      :ref="agent.bindRpcDotEl"
       class="agent-ws-rpc-dot"
       :class="{ running: rpcStatus?.running, restarting: rpcRestarting }"
       :title="rpcStatus?.running ? t('agent.rpc_running') : t('agent.rpc_stopped')"
       :aria-label="t('agent.rpc_status')"
-      @click="emit('toggleMenu')"
+      @click="agent.toggleRpcMenu()"
     ></button>
-    <!-- Teleport 到 body：header 贴窗口顶缘，absolute 定位无论上弹/下弹
-         都会被窗口边缘或后续层叠内容吃掉；fixed + 高 z-index 才能盖在最上层 -->
     <Teleport to="body">
       <div v-if="rpcMenuOpen" class="agent-ws-menu agent-ws-menu-rpc" :style="rpcMenuStyle">
-        <!-- 状态详情（非交互）：只陈述事实，操作在下方独立分区 -->
         <div class="agent-ws-rpc-status">
           <span class="agent-ws-rpc-status-dot" :class="{ on: rpcStatus?.running }" aria-hidden="true"></span>
           <div class="agent-ws-rpc-status-text">
             <span class="agent-ws-rpc-status-main">{{ rpcStatus?.running ? t('agent.rpc_running') : t('agent.rpc_stopped') }}</span>
-            <!-- 副行优先报进程数：>1 说明有会话正在并行，是比单个 pid 更有信息量的状态。 -->
             <span v-if="!rpcStatus?.running" class="agent-ws-rpc-status-sub">{{ t('agent.rpc_not_started_hint') }}</span>
             <span v-else-if="rpcStatus.process_count > 1" class="agent-ws-rpc-status-sub">{{ t('agent.rpc_processes', String(rpcStatus.process_count)) }}</span>
             <span v-else-if="rpcStatus.pid" class="agent-ws-rpc-status-sub">pid {{ rpcStatus.pid }}</span>
           </div>
         </div>
-        <!-- 重启入口：仅运行中提供（未运行时点击无物可重启，且首次提交会自动拉起） -->
         <button
           v-if="rpcStatus?.running"
           class="agent-ws-menu-item"
           :disabled="rpcRestarting"
-          @click="emit('restart')"
+          @click="agent.handleRestartRpc()"
         >
           <span class="agent-ws-menu-main">{{ t('agent.rpc_restart') }}</span>
         </button>

@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref } from 'vue'
-import { ShowToastKey } from '../injection-keys'
+import { computed, onMounted, ref } from 'vue'
+import { useUiStore } from '../stores/ui'
+import BaseModal from './ui/BaseModal.vue'
+import AppIcon from './ui/AppIcon.vue'
 import AiUsageHeatmap from './AiUsageHeatmap.vue'
 import AiUsageDonut from './AiUsageDonut.vue'
 import EmptyState from './common/EmptyState.vue'
@@ -18,17 +20,15 @@ import type { AiUsageSourceRow } from '../api/aiUsage'
 import { copyTextToClipboard } from '../api/client'
 import { useDragResize } from '../composables/useDragResize'
 import { sourceDisplayName } from '../api/sources'
-import { useOverlayEscape } from '../composables/useOverlayEscape'
+import { extractErrorMessage } from '../services/feedback'
 import { track } from '../composables/useUsageTracking'
 import { t } from '../i18n'
 
-// AI 词元用量统计弹窗：GitHub 风格日历热力图（按天）+ 饼图/表格切换（按源分组）。
-// 数据入口 get_ai_usage_stats：一次返回逐日/按源/按操作三组聚合，筛选条件三者共享。
 const emit = defineEmits<{ close: [] }>()
 
-const showToast = inject(ShowToastKey, () => {})
-
-const modalEl = ref<HTMLElement | null>(null)
+const ui = useUiStore()
+const baseModalRef = ref<InstanceType<typeof BaseModal> | null>(null)
+const modalEl = computed(() => baseModalRef.value?.modalEl ?? null)
 const { startDrag, startResize } = useDragResize(modalEl, {
   minWidth: 520,
   minHeight: 380,
@@ -117,9 +117,9 @@ async function copyTable() {
       t('aiUsage.col_total'),
     ]
     await copyTextToClipboard(buildSourceTsv(headers, tableRows.value, t('aiUsage.no_source')))
-    showToast(t('aiUsage.copied'))
+    ui.showToast(t('aiUsage.copied'))
   } catch (e: unknown) {
-    showToast(t('release.copy_failed') + (e instanceof Error ? e.message : String(e)))
+    ui.showToast(t('release.copy_failed') + extractErrorMessage(e))
   }
 }
 
@@ -131,24 +131,23 @@ function handleClose() {
   emit('close')
 }
 
-useOverlayEscape({
-  onEscape: handleClose,
-  stopPropagation: true,
-})
-
 onMounted(() => {
   track('settings.ai_usage_open')
 })
 </script>
 
 <template>
-  <Teleport to="body">
-    <div class="ai-usage-overlay" @click.self="handleClose">
-      <div ref="modalEl" class="ai-usage-modal" role="dialog" aria-modal="true">
+  <BaseModal
+    ref="baseModalRef"
+    overlay-class="ai-usage-overlay"
+    modal-class="ai-usage-modal"
+    :escape-stop-propagation="true"
+    @close="handleClose"
+  >
         <div class="ai-usage-header" @pointerdown="startDrag">
           <span class="ai-usage-title">{{ t('aiUsage.title') }}</span>
           <button class="ai-usage-close" :title="t('release.detail_close')" @click="handleClose">
-            <svg viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+            <AppIcon name="close-icon" />
           </button>
         </div>
 
@@ -273,34 +272,14 @@ onMounted(() => {
           :class="`resize-handle-${dir}`"
           @pointerdown="startResize($event, dir as 'n')"
         ></div>
-      </div>
-    </div>
-  </Teleport>
+  </BaseModal>
 </template>
 
 <style scoped>
-.ai-usage-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: var(--z-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.45);
-  padding: 24px;
-}
-
-.ai-usage-modal {
+:global(.ai-usage-modal) {
   position: relative;
-  display: flex;
-  flex-direction: column;
   width: min(760px, 100%);
   max-height: calc(100vh - 48px);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lg);
-  overflow: hidden;
 }
 
 .ai-usage-header {
