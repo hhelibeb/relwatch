@@ -6,12 +6,16 @@ impl ProcessScope {
     }
 }
 
-pub(crate) fn configure_spawn_command(binary: &str) -> tokio::process::Command {
+pub(crate) fn configure_spawn_command(
+    binary: &str,
+    args: &[String],
+) -> Result<tokio::process::Command, String> {
     let mut cmd = tokio::process::Command::new(binary);
+    cmd.args(args);
     // 独立进程组首领，使 kill_process_tree 的负 pid 能整树击杀且不误伤主进程组。
     cmd.process_group(0);
     cmd.kill_on_drop(true);
-    cmd
+    Ok(cmd)
 }
 
 pub(crate) fn configure_probe_command(_cmd: &mut std::process::Command) {}

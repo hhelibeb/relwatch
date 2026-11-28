@@ -76,13 +76,32 @@ impl Drop for ProcessScope {
 unsafe impl Send for ProcessScope {}
 unsafe impl Sync for ProcessScope {}
 
-pub(crate) fn configure_spawn_command(binary: &str) -> tokio::process::Command {
-    // npm 全局安装的 pi.cmd 是批处理，CreateProcess 无法直接执行，需经 cmd /C 解释。
-    let mut cmd = tokio::process::Command::new("cmd");
-    cmd.arg("/C").arg(binary);
+pub(crate) fn configure_spawn_command(
+    binary: &str,
+    args: &[String],
+) -> Result<tokio::process::Command, String> {
+    let mut cmd = if super::is_exe_binary(binary) {
+        // .exe 直接交给 CreateProcess，不经过 shell，无需转义
+        let mut c = tokio::process::Command::new(binary.trim());
+        c.args(args);
+        c
+    } else {
+        // npm 全局安装的 pi.cmd 是批处理，CreateProcess 无法直接执行，需经 cmd /C 解释。
+        // cmd 会对命令行做二次解析，元字符即使被加上引号也仍会被当作命令分隔/展开，
+        // 故对这类参数 fail-closed 拒绝，而不是把它们交给 shell 去解释。
+        if let Some((c, part)) = super::cmd_unsafe_char(
+            std::iter::once(binary).chain(args.iter().map(String::as_str)),
+        ) {
+            log::warn!("agent 启动参数含 cmd 元字符，拒绝启动: {:?}", part);
+            return Err(format!("err.agent.unsafe_arg|{} in {}", c, part));
+        }
+        let mut c = tokio::process::Command::new("cmd");
+        c.arg("/C").arg(binary).args(args);
+        c
+    };
     cmd.creation_flags(CREATE_NO_WINDOW);
     cmd.kill_on_drop(true);
-    cmd
+    Ok(cmd)
 }
 
 pub(crate) fn configure_probe_command(cmd: &mut std::process::Command) {
@@ -100,6 +119,18 @@ pub fn kill_process_tree(pid: u32) {
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
+
+    #[test]
+    fn spawn_command_rejects_metacharacters_for_batch_binary() {
+        let err = configure_spawn_command("C:\\a&b\\pi.cmd", &["--mode".into()]).unwrap_err();
+        assert!(err.starts_with("err.agent.unsafe_arg|"), "{}", err);
+    }
+
+    #[test]
+    fn spawn_command_bypasses_shell_for_exe() {
+        // .exe 走 CreateProcess，不经过 cmd /C，参数不会被二次解释
+        assert!(configure_spawn_command("C:\\a&b\\pi.exe", &["x&y".into()]).is_ok());
+    }
 
     #[test]
     fn process_scope_terminates_child_on_drop() {

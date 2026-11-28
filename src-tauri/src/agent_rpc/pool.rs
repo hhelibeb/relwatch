@@ -471,11 +471,11 @@ impl RpcManager {
             if let Some(factory) = &self.spawn_override {
                 factory(&config)
             } else {
-                build_pi_command(&config, &binary, &scoped_patterns)
+                build_pi_command(&config, &binary, &scoped_patterns)?
             }
             #[cfg(not(test))]
             {
-                build_pi_command(&config, &binary, &scoped_patterns)
+                build_pi_command(&config, &binary, &scoped_patterns)?
             }
         };
 
@@ -583,8 +583,31 @@ fn build_pi_command(
     config: &AgentConfig,
     binary: &str,
     scoped_patterns: &[String],
-) -> tokio::process::Command {
-    let mut cmd = os::configure_spawn_command(binary);
+) -> Result<tokio::process::Command, String> {
+    let mut args: Vec<String> = [
+        "--mode",
+        "rpc",
+        "--no-context-files",
+        "--no-approve",
+        "--no-extensions",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    for skill in &config.skills {
+        args.push("--skill".to_string());
+        args.push(skill.clone());
+    }
+    if let Some(m) = &config.model {
+        args.push("--model".to_string());
+        args.push(m.clone());
+    }
+    if !scoped_patterns.is_empty() {
+        args.push("--models".to_string());
+        args.push(scoped_patterns.join(","));
+    }
+    let mut cmd = os::configure_spawn_command(binary, &args)?;
+    // 工作目录走 CreateProcess 的 lpCurrentDirectory，不经 shell 解释
     if let Some(wd) = config
         .working_dir
         .as_deref()
@@ -593,23 +616,7 @@ fn build_pi_command(
     {
         cmd.current_dir(wd);
     }
-    cmd.args([
-        "--mode",
-        "rpc",
-        "--no-context-files",
-        "--no-approve",
-        "--no-extensions",
-    ]);
-    for skill in &config.skills {
-        cmd.args(["--skill", skill]);
-    }
-    if let Some(m) = &config.model {
-        cmd.args(["--model", m]);
-    }
-    if !scoped_patterns.is_empty() {
-        cmd.args(["--models", &scoped_patterns.join(",")]);
-    }
-    cmd
+    Ok(cmd)
 }
 
 #[cfg(test)]

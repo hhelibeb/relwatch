@@ -738,20 +738,48 @@ pub fn session_path_for_key(session_key: &str) -> std::path::PathBuf {
 }
 
 pub fn is_valid_session_key(key: &str) -> bool {
-    let k = key.trim();
-    !k.is_empty()
-        && k.chars().count() <= 128
-        && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    // 不做 trim：首尾空白会原样进入文件名（`ws- abc .jsonl`），
+    // 需要 trim 的调用方（如命令层收到的用户输入）自己先 trim。
+    !key.is_empty()
+        && key.chars().count() <= 128
+        && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+/// 会话路径是否可安全交给 pi 读写：必须直接位于 agent-sessions 目录下、
+/// 文件名为 `ws-<合法 session key>.jsonl`。
+///
+/// 字符串前缀比较挡不住 `..`（`<dir>/../../../x.jsonl` 依然命中前缀），
+/// 故先按路径组件拒绝 `..`/`.`，再要求余下部分只能是单层合法文件名。
 pub fn is_safe_session_path(path: &str) -> bool {
+    if Path::new(path)
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir | std::path::Component::CurDir))
+    {
+        return false;
+    }
     let dir = agent_sessions_dir();
-    let norm = |p: &Path| p.to_string_lossy().replace('\\', "/").to_lowercase();
+    // Windows/macOS 文件系统默认大小写不敏感，比较前统一小写；
+    // Linux 大小写敏感，降级比较会把不同目录当成同一个。
+    let norm = |p: &Path| {
+        let s = p.to_string_lossy().replace('\\', "/");
+        if cfg!(any(windows, target_os = "macos")) {
+            s.to_lowercase()
+        } else {
+            s
+        }
+    };
     let p = norm(Path::new(path));
+    // 目录末尾的斜杠会让 strip_prefix 后多出一个 `/`，先削掉
     let d = norm(&dir);
-    p.strip_prefix(&d)
-        .map(|rest| rest.is_empty() || rest.starts_with('/'))
-        .unwrap_or(false)
+    let d = d.trim_end_matches('/');
+    let Some(rest) = p.strip_prefix(d).and_then(|r| r.strip_prefix('/')) else {
+        return false;
+    };
+    // 只接受直接子文件，不接受子目录或空剩余（空剩余 = 目录本身）
+    if rest.is_empty() || rest.contains('/') {
+        return false;
+    }
+    session_key_from_path(Path::new(rest)).is_some_and(|k| is_valid_session_key(&k))
 }
 
 pub fn session_key_from_path(path: &Path) -> Option<String> {
@@ -918,6 +946,37 @@ pub fn prune_session_files_and_db(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_session_path_accepts_only_direct_session_files() {
+        let dir = agent_sessions_dir();
+        let ok = dir.join("ws-abc-123.jsonl");
+        assert!(
+            is_safe_session_path(&ok.to_string_lossy()),
+            "目录内的 ws-<key>.jsonl 应通过"
+        );
+
+        // 前缀比较能命中，但 `..` 会把实际路径抛出目录外
+        let escape = dir.join("..").join("..").join("evil.jsonl");
+        assert!(
+            !is_safe_session_path(&escape.to_string_lossy()),
+            "含 .. 的路径必须拒绝"
+        );
+
+        assert!(!is_safe_session_path(&dir.join("notes.jsonl").to_string_lossy()));
+        assert!(!is_safe_session_path(&dir.join("ws-a b.jsonl").to_string_lossy()));
+        // key 首尾空白不得靠 trim 蒙混过关
+        assert!(!is_safe_session_path(&dir.join("ws- abc .jsonl").to_string_lossy()));
+        assert!(!is_valid_session_key(" abc"));
+        assert!(!is_valid_session_key("abc "));
+        assert!(!is_safe_session_path(
+            &dir.join("sub").join("ws-a.jsonl").to_string_lossy()
+        ));
+        assert!(
+            !is_safe_session_path(&dir.to_string_lossy()),
+            "目录本身不是会话文件"
+        );
+    }
 
     /// 构造一条 message entry 的 JSON 行（直接拼字符串便于测试）。
     fn entry(id: &str, parent: Option<&str>, message: serde_json::Value) -> String {

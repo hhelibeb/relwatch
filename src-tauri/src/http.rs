@@ -396,6 +396,18 @@ pub async fn fetch_page_with_retry(
     with_retry(default_should_retry, || async { fetch_page(client, url, token).await }).await
 }
 
+/// 分页上限：正常源（GitHub 100 条/页）远达不到；用于把「对端返回自引用 Link」
+/// 从无限翻页降级为一次有界截断。
+pub const MAX_PAGES: usize = 50;
+
+/// 与首请求同源：scheme + host + 端口三者都一致才算，只比 host 会放过
+/// `https://a/b` → `http://a/c` 的明文降级（Authorization 会跟着发出去）。
+fn same_origin(a: &reqwest::Url, b: &reqwest::Url) -> bool {
+    a.scheme() == b.scheme()
+        && a.host_str() == b.host_str()
+        && a.port_or_known_default() == b.port_or_known_default()
+}
+
 pub async fn paginated_fetch(
     client: &reqwest::Client,
     first_url: String,
@@ -403,14 +415,14 @@ pub async fn paginated_fetch(
     token: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, SourceError> {
     let mut all = Vec::new();
-    let mut url = first_url;
+    let first = reqwest::Url::parse(&first_url)
+        .map_err(|_| SourceError::key(0, "err.invalid_url"))?;
+    let mut url = first.clone();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    seen.insert(first.to_string());
 
-    let first_host = reqwest::Url::parse(&url)
-        .ok()
-        .and_then(|u| u.host_str().map(|s| s.to_string()));
-
-    loop {
-        let (items, next_url) = fetch_page_with_retry(client, &url, token).await?;
+    for page in 1..=MAX_PAGES {
+        let (items, next_url) = fetch_page_with_retry(client, url.as_str(), token).await?;
         let count = items.len();
         all.extend(items);
         log::info!(
@@ -427,23 +439,33 @@ pub async fn paginated_fetch(
             }
         }
 
-        match next_url {
-            Some(next) => {
-                let same_host = match (&first_host, reqwest::Url::parse(&next).ok()) {
-                    (Some(fh), Some(nu)) => nu.host_str() == Some(fh.as_str()),
-                    _ => false,
-                };
-                if !same_host {
-                    log::warn!(
-                        "分页拉取中断: next_url host 与首请求不一致 (首={:?}, next={})",
-                        first_host,
-                        next
-                    );
-                    return Err(SourceError::key(0, "err.invalid_next_url"));
-                }
-                url = next;
-            }
-            None => break,
+        let Some(next) = next_url else { break };
+        // Link header 允许相对地址，先 join 成绝对 URL 再校验
+        let mut next = url
+            .join(&next)
+            .map_err(|_| SourceError::key(0, "err.invalid_next_url"))?;
+        // fragment 不参与请求也不影响资源，留着会让 `?page=1#1`、`?page=1#2`
+        // 这类 next 绕过去重，空跑至页数上限
+        next.set_fragment(None);
+        if !same_origin(&first, &next) {
+            log::warn!(
+                "分页拉取中断: next_url 与首请求不同源 (首={}, next={})",
+                crate::redact::redact(first.as_str()),
+                crate::redact::redact(next.as_str())
+            );
+            return Err(SourceError::key(0, "err.invalid_next_url"));
+        }
+        if !seen.insert(next.to_string()) {
+            log::warn!(
+                "分页拉取中断: next_url 重复出现，疑似循环 ({})",
+                crate::redact::redact(next.as_str())
+            );
+            return Err(SourceError::key(0, "err.invalid_next_url"));
+        }
+        url = next;
+
+        if page == MAX_PAGES {
+            log::warn!("分页拉取达到上限 {} 页，停止翻页 (当前 {} 条)", MAX_PAGES, all.len());
         }
     }
 
@@ -541,10 +563,15 @@ pub struct PublicTarget {
 /// - host 为域名：DNS 解析**全部**地址，任一落在私网即拒绝（fail-closed）；
 /// - DNS 解析失败（故障/NXDOMAIN/无网络）：**拒绝**（fail-closed）——fail-open 会放行
 ///   IPv6 zone-id 等无法解析的私网形式，且解析失败时请求本身也无法成功，放行没有收益；
-/// - 解析结果全在 fake-ip 段：返回空 `ips`（不固定），见 `collect_public_ips`。
+/// - 解析结果全在 fake-ip 段：仅当 `allow_fake_ip`（即出口交给代理/TUN，DNS 在
+///   那一侧解析）时返回空 `ips`（不固定），见 `collect_public_ips`；直连模式下
+///   fake-ip 段与其它保留地址一样直接拒绝。
 ///
 /// 错误统一为 `err.*` 格式（i18n 由调用方负责）。
-pub async fn resolve_public_host(url: &str) -> Result<PublicTarget, String> {
+pub async fn resolve_public_host(
+    url: &str,
+    allow_fake_ip: bool,
+) -> Result<PublicTarget, String> {
     let parsed = reqwest::Url::parse(url).map_err(|_| "err.invalid_url".to_string())?;
     // 仅允许 http/https
     if !matches!(parsed.scheme(), "http" | "https") {
@@ -574,7 +601,7 @@ pub async fn resolve_public_host(url: &str) -> Result<PublicTarget, String> {
     let addrs = tokio::net::lookup_host((host.clone(), port))
         .await
         .map_err(|e| format!("err.dns_resolve_failed|{}", e))?;
-    let verified = collect_public_ips(addrs.map(|a| a.ip()))?;
+    let verified = collect_public_ips(addrs.map(|a| a.ip()), allow_fake_ip)?;
     // fake-ip 下公网域名也解析成虚拟地址，无法再区分本地名与远端名：
     // 主机名本身明显指向本机/内网时直接拒绝，避免借 fake-ip 绕回环/内网。
     if verified.is_empty() && is_local_host_name(&host) {
@@ -584,7 +611,10 @@ pub async fn resolve_public_host(url: &str) -> Result<PublicTarget, String> {
 }
 
 /// 把一组 DNS 解析结果收敛为「已通过公网校验的 IP 列表」：
-/// - fake-ip 段地址剔除（TUN/代理的虚拟地址不代表真实目标），不参与校验也不固定；
+/// - fake-ip 段地址在 `allow_fake_ip` 时剔除（TUN/代理的虚拟地址不代表真实目标），
+///   不参与校验也不固定；**直连时不予豁免**——直连没有任何一侧能还原目标，
+///   豁免只会让「首答全落在 fake-ip 段」的域名拿不到 IP 固定，从而在下一次
+///   解析里被重绑定到内网（`198.18.0.0/15` 本就属保留段，公网权威 DNS 不应返回）；
 /// - 其余地址任一落在私网/保留段 → 整批拒绝，不看其余地址；
 /// - 解析成功但一个地址都没返回 → 拒绝（否则会把空列表固定给 client，
 ///   语义上等于"校验通过"，与 fail-closed 自述不符）；
@@ -593,12 +623,13 @@ pub async fn resolve_public_host(url: &str) -> Result<PublicTarget, String> {
 ///   真实内网地址，照旧被拒；IP 字面量不经过 DNS，也照旧被拒。
 fn collect_public_ips<I: IntoIterator<Item = std::net::IpAddr>>(
     addrs: I,
+    allow_fake_ip: bool,
 ) -> Result<Vec<std::net::IpAddr>, String> {
     let mut verified = Vec::new();
     let mut total = 0usize;
     for ip in addrs {
         total += 1;
-        if is_fake_ip(ip) {
+        if allow_fake_ip && is_fake_ip(ip) {
             continue;
         }
         let ip = normalize_ip(ip);
@@ -660,7 +691,10 @@ pub async fn fetch_public_bytes(
 /// 地址与真实目标无关：既无法据此判私网（会把全部请求误杀为 `err.private_url_blocked`），
 /// 也不应由本函数固定（固定后请求直连虚拟地址，只能依赖 TUN 的反查映射）。
 /// 这两种地址被剔除，`ips` 为空时不固定，由 TUN/代理按域名解析——即把出口交给
-/// 已被用户显式信任的网络层。IP 字面量与本地主机名仍然直接拒绝。
+/// 已被用户显式信任的网络层。该豁免只在**存在代理出口**时成立：直连（`none`/
+/// `custom` 但 url 为空）下没有任何一侧能按域名还原目标，此时 fake-ip 段按保留段
+/// 拒绝，否则攻击者可让首答只落在该网段来关闭 DNS 固定，再在第二次解析时返回回环地址。
+/// IP 字面量与本地主机名仍然直接拒绝。
 pub async fn fetch_public_with_headers(
     config: &HttpClientConfig<'_>,
     url: &str,
@@ -669,10 +703,14 @@ pub async fn fetch_public_with_headers(
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err("err.invalid_url".to_string());
     }
+    let allow_fake_ip = !matches!(
+        crate::net::ProxyPolicy::resolve(config.proxy_mode, config.proxy_url)?,
+        crate::net::ProxyDecision::NoProxy
+    );
     let mut current = url.to_string();
     for _ in 0..10 {
         // 解析 + 公网校验，拿到校验通过的 IP 列表（fail-closed）
-        let target = resolve_public_host(&current).await?;
+        let target = resolve_public_host(&current, allow_fake_ip).await?;
         // 固定校验过的 IP 时 reqwest 不再二次解析；fake-ip 环境（ips 为空）则不固定，
         // 让 TUN/代理按域名解析。两种情况下 Host/SNI 都是原始域名，证书校验不受影响。
         let overrides: Vec<(&str, &[std::net::IpAddr])> = if target.ips.is_empty() {
@@ -698,21 +736,23 @@ pub async fn fetch_public_with_headers(
             .send()
             .await
             .map_err(|e| describe_request_error(&e))?;
-        if let Some(loc) = resp
-            .headers()
-            .get(reqwest::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-        {
-            current = reqwest::Url::parse(&current)
-                .map_err(|_| "err.invalid_url".to_string())?
-                .join(loc)
-                .map_err(|_| "err.invalid_url".to_string())?
-                .to_string();
-            // 只跟随 http/https 跳转（join 已保证绝对 URL 合法，这里再收紧 scheme）
-            if !(current.starts_with("https://") || current.starts_with("http://")) {
-                return Err("err.invalid_url".to_string());
+        if resp.status().is_redirection() {
+            if let Some(loc) = resp
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|v| v.to_str().ok())
+            {
+                current = reqwest::Url::parse(&current)
+                    .map_err(|_| "err.invalid_url".to_string())?
+                    .join(loc)
+                    .map_err(|_| "err.invalid_url".to_string())?
+                    .to_string();
+                // 只跟随 http/https 跳转（join 已保证绝对 URL 合法，这里再收紧 scheme）
+                if !(current.starts_with("https://") || current.starts_with("http://")) {
+                    return Err("err.invalid_url".to_string());
+                }
+                continue;
             }
-            continue;
         }
         return read_limited_body(resp, max_bytes).await;
     }
@@ -1108,6 +1148,93 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_paginated_fetch_follows_relative_next() {
+        // Link header 允许相对地址（RFC 8288）。相对 next 需对当前 URL join 后再校验，
+        // 而不是当成非法 URL 直接报错。
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .and(query_param("page", "1"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": 1}]))
+                    .insert_header("link", "</api/v1/items?page=2>; rel=\"next\""),
+            )
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .and(query_param("page", "2"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([{"id": 2}])))
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let first_url = format!("{}/api/v1/items?page=1", mock.uri());
+        let items = paginated_fetch(&client, first_url, None, Some("ghp_secret"))
+            .await
+            .expect("相对 next 应能 join 后继续翻页");
+        assert_eq!(items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_paginated_fetch_rejects_scheme_downgrade() {
+        // 同 host 同端口但 https → http：只比 host 会放过这种降级，
+        // Authorization 就会跟着明文发出去。
+        let mock = MockServer::start().await;
+        let evil = format!(
+            "https://{}/api/v1/items?page=2",
+            mock.uri().trim_start_matches("http://")
+        );
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": 1}]))
+                    .insert_header("link", format!("<{}>; rel=\"next\"", evil)),
+            )
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let first_url = format!("{}/api/v1/items?page=1", mock.uri());
+        let err = paginated_fetch(&client, first_url, None, Some("ghp_secret"))
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_ipc_string().contains("err.invalid_next_url"),
+            "{}",
+            err
+        );
+    }
+
+    #[tokio::test]
+    async fn test_paginated_fetch_rejects_self_referencing_next() {
+        // 自引用 Link 会无限翻页（内存持续增长）。重复 URL 必须 fail-closed。
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/items"))
+            .respond_with(|req: &wiremock::Request| {
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!([{"id": 1}]))
+                    .insert_header("link", format!("<{}>; rel=\"next\"", req.url))
+            })
+            .mount(&mock)
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let first_url = format!("{}/api/v1/items?page=1", mock.uri());
+        let err = paginated_fetch(&client, first_url, None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_ipc_string().contains("err.invalid_next_url"),
+            "{}",
+            err
+        );
+    }
+
+    #[tokio::test]
     async fn test_paginated_fetch_rejects_unparseable_next() {
         let mock = MockServer::start().await;
         // Link header 里的 next 不是合法 URL
@@ -1177,7 +1304,7 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_public_host_ip_literal_returns_pinned_ip() {
         // IP 字面量：直接放行，返回的固定 IP 就是该字面量（无需再解析）
-        let target = resolve_public_host("https://8.8.8.8/x").await.unwrap();
+        let target = resolve_public_host("https://8.8.8.8/x", false).await.unwrap();
         assert_eq!(target.host, "8.8.8.8");
         assert_eq!(
             target.ips,
@@ -1199,7 +1326,7 @@ mod tests {
             "http://localhost:8080/x",
         ];
         for url in blocked {
-            let err = resolve_public_host(url).await.unwrap_err();
+            let err = resolve_public_host(url, false).await.unwrap_err();
             assert!(
                 err.contains("err.private_url_blocked"),
                 "{} 错误码不正确: {}",
@@ -1213,17 +1340,21 @@ mod tests {
     async fn test_resolve_public_host_dns_failure_fails_closed() {
         // .invalid 保留域名不得产出可固定的 IP。两种环境的失败形态不同：
         // 真实 DNS 返回解析失败（fail-closed），TUN fake-ip 下则返回虚拟地址（ips 为空）。
-        match resolve_public_host("https://ssrf-test.invalid/x").await {
-            Err(e) => assert!(
-                e.contains("err.dns_resolve_failed") || e.contains("err.private_url_blocked"),
-                "{}",
-                e
-            ),
-            Ok(target) => assert!(
-                target.ips.is_empty(),
-                "不存在的域名不得得到可固定的 IP: {:?}",
-                target.ips
-            ),
+        // 直连（allow_fake_ip=false）下 fake-ip 段视同保留地址，一律拒绝。
+        for allow_fake_ip in [true, false] {
+            match resolve_public_host("https://ssrf-test.invalid/x", allow_fake_ip).await {
+                Err(e) => assert!(
+                    e.contains("err.dns_resolve_failed") || e.contains("err.private_url_blocked"),
+                    "{}",
+                    e
+                ),
+                Ok(target) => assert!(
+                    allow_fake_ip && target.ips.is_empty(),
+                    "不存在的域名不得得到可固定的 IP (allow_fake_ip={}): {:?}",
+                    allow_fake_ip,
+                    target.ips
+                ),
+            }
         }
     }
 
@@ -1231,7 +1362,7 @@ mod tests {
     async fn test_resolve_public_host_rejects_invalid() {
         for url in ["not-a-url", "ftp://example.com/x", "file:///etc/passwd"] {
             assert!(
-                resolve_public_host(url).await.is_err(),
+                resolve_public_host(url, false).await.is_err(),
                 "{} 应拒绝",
                 url
             );
@@ -1241,7 +1372,9 @@ mod tests {
     #[tokio::test]
     async fn test_resolve_public_host_ipv6_literal() {
         // IPv6 字面量同样返回去重后的固定 IP（公网）
-        let target = resolve_public_host("https://[2606:4700::1111]/x").await.unwrap();
+        let target = resolve_public_host("https://[2606:4700::1111]/x", false)
+            .await
+            .unwrap();
         assert_eq!(target.host, "2606:4700::1111");
         assert_eq!(
             target.ips,
@@ -1251,7 +1384,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_public_host_rejects_private_ipv6_literal() {
-        let err = resolve_public_host("https://[::1]:443/x").await.unwrap_err();
+        let err = resolve_public_host("https://[::1]:443/x", false)
+            .await
+            .unwrap_err();
         assert!(err.contains("err.private_url_blocked"), "{}", err);
     }
 
@@ -1259,7 +1394,7 @@ mod tests {
     fn test_collect_public_ips_rejects_empty() {
         // 解析「成功但零地址」不能当成校验通过：否则会把空列表固定给 client，
         // 语义上等于放行（与 fail-closed 自述不符）
-        let err = collect_public_ips(Vec::new()).unwrap_err();
+        let err = collect_public_ips(Vec::new(), false).unwrap_err();
         assert!(err.contains("err.dns_resolve_failed"), "{}", err);
     }
 
@@ -1271,7 +1406,7 @@ mod tests {
             "127.0.0.1".parse().unwrap(),
             "8.8.8.8".parse().unwrap(),
         ];
-        let err = collect_public_ips(ips).unwrap_err();
+        let err = collect_public_ips(ips, false).unwrap_err();
         assert!(err.contains("err.private_url_blocked"), "{}", err);
     }
 
@@ -1295,7 +1430,7 @@ mod tests {
         // TUN fake-ip 下所有域名都解析成 198.18.x：不能当私网拒绝（会掐断全部图片请求），
         // 也不应固定虚拟地址 → 返回空列表，交由系统/TUN 解析
         let ips: Vec<std::net::IpAddr> = vec!["198.18.0.213".parse().unwrap()];
-        assert!(collect_public_ips(ips).unwrap().is_empty());
+        assert!(collect_public_ips(ips, true).unwrap().is_empty());
 
         // 混合（真实 IP + fake-ip）：只固定真实公网 IP，跳过虚拟地址
         let ips: Vec<std::net::IpAddr> = vec![
@@ -1303,7 +1438,7 @@ mod tests {
             "93.184.216.34".parse().unwrap(),
         ];
         assert_eq!(
-            collect_public_ips(ips).unwrap(),
+            collect_public_ips(ips, true).unwrap(),
             vec!["93.184.216.34".parse::<std::net::IpAddr>().unwrap()]
         );
 
@@ -1312,8 +1447,25 @@ mod tests {
             "198.18.0.213".parse().unwrap(),
             "192.168.1.1".parse().unwrap(),
         ];
-        let err = collect_public_ips(ips).unwrap_err();
+        let err = collect_public_ips(ips, true).unwrap_err();
         assert!(err.contains("err.private_url_blocked"), "{}", err);
+    }
+
+    #[test]
+    fn test_collect_public_ips_rejects_fake_ip_when_direct() {
+        // 直连时没有任何一侧能按域名还原目标，fake-ip 豁免只会让首答全落该网段的域名
+        // 拿不到 IP 固定 → 第二次解析被重绑定到回环/内网。故直连一律拒绝。
+        let fake: std::net::IpAddr = "198.18.0.1".parse().unwrap();
+        let err = collect_public_ips(vec![fake], false).unwrap_err();
+        assert!(err.contains("err.private_url_blocked"), "{}", err);
+
+        // 混入真实公网 IP 也不豁免 fake-ip：那同样会丢掉固定（回归到 DNS 重绑定）
+        let ips: Vec<std::net::IpAddr> = vec!["198.19.0.1".parse().unwrap(), "8.8.8.8".parse().unwrap()];
+        assert!(collect_public_ips(ips, false).is_err());
+
+        // 全公网则正常固定
+        let ips: Vec<std::net::IpAddr> = vec!["8.8.8.8".parse().unwrap()];
+        assert_eq!(collect_public_ips(ips, false).unwrap().len(), 1);
     }
 
     #[test]

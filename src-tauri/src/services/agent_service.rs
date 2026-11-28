@@ -561,9 +561,17 @@ pub async fn export_agent_session_to_path(
 
 fn resolve_session_path_conn(conn: &rusqlite::Connection, run_id: i64) -> AppResult<String> {
     let run = db_agent::get_run(conn, run_id)?.ok_or(AgentRunError::RunNotFound)?;
-    run.session_path
+    let path = run
+        .session_path
         .filter(|p| !p.is_empty())
-        .ok_or_else(|| AppError::validation("err.agent.no_session"))
+        .ok_or_else(|| AppError::validation("err.agent.no_session"))?;
+    // 库里的绝对路径可能来自导入的外部备份，越界路径会让 pi 在会话目录之外读写，
+    // 故与写入侧保持一致，不信任未校验的值。
+    if !is_safe_session_path(&path) {
+        log::warn!("拒绝越界的会话路径: {:?}", path);
+        return Err(AppError::validation("err.agent.session_unsafe"));
+    }
+    Ok(path)
 }
 
 pub async fn get_agent_session_command(pool: &DbPool, run_id: i64) -> AppResult<String> {
@@ -598,6 +606,38 @@ mod tests {
         cfg.enabled = true;
         cfg.skills = vec!["skills/demo.md".into()];
         db_agent::save_agent_config(&mut conn, &cfg).unwrap();
+    }
+
+    #[test]
+    fn resolve_session_path_rejects_out_of_dir_paths() {
+        let pool = init_memory_pool().unwrap();
+        let conn = pool.get().unwrap();
+        let run_id = db_agent::create_run(
+            &conn,
+            &NewRun {
+                session_key: "abc",
+                skill_path: None,
+                entities: &[],
+                instruction: "x",
+                model: None,
+                session_path: None,
+                files: None,
+            },
+        )
+        .unwrap();
+
+        let ok_path = session_path_for_key("abc").to_string_lossy().to_string();
+        db_agent::set_run_session_path(&conn, run_id, &ok_path).unwrap();
+        assert_eq!(resolve_session_path_conn(&conn, run_id).unwrap(), ok_path);
+
+        // 导入的外部备份可以写入任意 session_path，越界值不得拿来启 pi
+        let escape = agent_sessions_dir()
+            .join("..")
+            .join("..")
+            .join("evil.jsonl");
+        db_agent::set_run_session_path(&conn, run_id, &escape.to_string_lossy()).unwrap();
+        let err = resolve_session_path_conn(&conn, run_id).unwrap_err();
+        assert_eq!(err.to_ipc_string(), "err.agent.session_unsafe");
     }
 
     #[tokio::test]

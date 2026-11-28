@@ -62,6 +62,31 @@ pub fn spawn_terminal(
 ) -> Result<(), String> {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+        // .exe 不经过 cmd：直接新开控制台窗口，与 Agent 启动路径保持一致，
+        // 也不会因路径里的 `&`/`%VAR%` 被拒绝。
+        if crate::agent_rpc::is_exe_binary(binary) {
+            let mut cmd = std::process::Command::new(binary.trim());
+            cmd.arg("--session").arg(session_path);
+            if let Some(wd) = working_dir {
+                cmd.current_dir(wd);
+            }
+            cmd.creation_flags(CREATE_NEW_CONSOLE);
+            cmd.spawn().map_err(|e| format!("err.agent.spawn|{}", e))?;
+            return Ok(());
+        }
+        // .cmd/.bat 只能经 `cmd /C start` 拉起，cmd 会二次解释元字符：
+        // 路径里的 `&`、`%VAR%` 足以拆出新命令，故含元字符时直接拒绝。
+        if let Some((c, part)) = crate::agent_rpc::cmd_unsafe_char(
+            std::iter::once(binary)
+                .chain(std::iter::once(session_path))
+                .chain(working_dir),
+        ) {
+            log::warn!("打开会话的参数含 cmd 元字符，拒绝启动: {:?}", part);
+            return Err(format!("err.agent.unsafe_arg|{} in {}", c, part));
+        }
         let mut cmd = std::process::Command::new("cmd");
         cmd.arg("/C").arg("start").arg("");
         if let Some(wd) = working_dir {
